@@ -1,0 +1,205 @@
+# Creates the Modrinth DRAFT project via `rinth project create`, and leaves
+# it a draft. Mirrors dynamic-atmosphere's workflow of the same name.
+#
+# THIS WORKFLOW MUST NEVER SUBMIT THE PROJECT FOR REVIEW. No `rinth project
+# submit`, no `requested_status` anywhere, no submit step now or later, not
+# even disabled/commented out. `project create` itself hardcodes
+# `is_draft: true` and `initial_versions: []` and never touches
+# `requested_status` (verified against rinth's source at the pinned tag
+# below) — submitting is a separate, deliberate, human-gated act that lives
+# outside this repo's workflows entirely.
+#
+# workflow_dispatch ONLY: this talks to the live Modrinth API, and per the
+# house rule for any such workflow (see the release workflow's header) that
+# means never push/pull_request/schedule. It also cannot run at all until
+# this file is on the default branch, which happens only after this repo's
+# PR is merged — that is expected, not a bug to work around; do not add a
+# push trigger to this file to get around it, not even temporarily.
+#
+# ONE-SHOT SAFETY: a live `project create` claims the slug permanently and
+# cannot be re-run to fix a typo. Per lesson 1 (see the release workflow's
+# header for the fuller version of this argument): the dry run must be the
+# path of least resistance, and the live create a deliberate act — not a
+# single step whose --dry-run flag is computed from an input's default. This
+# workflow only has a workflow_dispatch trigger (there is no second event to
+# gate on, unlike the release workflow's release/dispatch split), so the
+# deliberate-act gate here is instead an exact-string confirmation input:
+# the live step runs ONLY when `confirm` is typed as exactly
+# `CREATE-DRAFT-PROJECT`; anything else (including the default, empty
+# string) runs the dry run. Leaving `confirm` at its default is the ordinary
+# path; typing the confirmation string is what it takes to spend the
+# one-shot create.
+
+name: Modrinth draft project create
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: >-
+          Leave blank to dry-run. To run the LIVE, ONE-SHOT project create,
+          type exactly: CREATE-DRAFT-PROJECT
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  # Pinned by hand to the newest real tag as of 2026-09-11 (re-verify at
+  # https://github.com/brooswit-minecraft/rinth/tags before trusting this is
+  # still true), NOT copied from rinth's README. v0.9.1 is 28 commits behind
+  # main (untagged) and ahead of every other tag (v0.9.0, v0.8.0, v0.5.0,
+  # v0.4.0, v0.3.0). `project create`'s printed USAGE string omits
+  # --source-url/--issues-url/--license-url but the flag parser and request
+  # builder both support all three at this tag (src/commands/project.ts,
+  # parseProjectCreateFlags/create) — verify at your tag if you bump this
+  # pin, and fall back to a follow-up `project edit` if it does not hold.
+  RINTH_REF: github:brooswit-minecraft/rinth#v0.9.1
+
+  # Fixed decisions (MINECRAFT-63 integration), do not change without a new
+  # ticket:
+  SLUG: dynamic-vehicles
+  TITLE: Dynamic Vehicles
+  PROJECT_TYPE: mod
+  LICENSE: MIT
+  SOURCE_URL: https://github.com/brooswit-minecraft/dynamic-vehicles
+  ISSUES_URL: https://github.com/brooswit-minecraft/dynamic-vehicles/issues
+
+  # Calls below: see the README's "Releasing to Modrinth"
+  # section (or the ticket comment) for the one-line reasoning behind each.
+  # Categories drawn from
+  # Modrinth's live project_type=mod category list (there is no
+  # weather/atmosphere category) — re-fetch
+  # https://api.modrinth.com/v2/tag/category before trusting this list is
+  # unchanged.
+  CATEGORY_1: game-mechanics
+  CATEGORY_2: transportation
+  CLIENT_SIDE: required
+  SERVER_SIDE: required
+
+jobs:
+  create:
+    name: rinth project create
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Resolve pinned rinth to a commit sha
+        id: resolve
+        run: |
+          sha=$(git ls-remote https://github.com/brooswit-minecraft/rinth "${RINTH_REF#*#}" | cut -f1)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Modrinth draft project create"
+            echo ""
+            echo "Pinned \`RINTH_REF\`: \`$RINTH_REF\`"
+            echo "Resolved to commit: \`$sha\`"
+            echo ""
+            echo "(A pinned tag string alone does not prove what code a runner actually got;"
+            echo "this resolves the tag to a commit sha, which does.)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # --- Dry run (default path) -----------------------------------------
+      # Needs no MODRINTH_TOKEN: `project create --dry-run` never touches
+      # ctx.transport (src/cli.ts's lazy transport getter, src/commands/
+      # project.ts's create()) — verified against rinth's source at the
+      # pinned tag above. Every field in the payload comes straight from the
+      # flags/files below, so what prints here is exactly what a live create
+      # would send.
+      - name: Dry-run project create
+        if: inputs.confirm != 'CREATE-DRAFT-PROJECT'
+        shell: bash
+        run: |
+          bunx --bun "$RINTH_REF" --json project create \
+            --slug "$SLUG" \
+            --title "$TITLE" \
+            --description "$(cat modrinth/short-description.txt)" \
+            --body-file modrinth/body.md \
+            --project-type "$PROJECT_TYPE" \
+            --client-side "$CLIENT_SIDE" \
+            --server-side "$SERVER_SIDE" \
+            --license "$LICENSE" \
+            --category "$CATEGORY_1" \
+            --category "$CATEGORY_2" \
+            --source-url "$SOURCE_URL" \
+            --issues-url "$ISSUES_URL" \
+            --dry-run | tee dry_run_payload.json
+          {
+            echo "### Dry run (no write, no token needed)"
+            echo '```json'
+            cat dry_run_payload.json
+            echo '```'
+            echo ""
+            echo "To run the LIVE create instead, re-dispatch this workflow with \`confirm\` set to exactly \`CREATE-DRAFT-PROJECT\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # --- Live create (deliberate act only) -------------------------------
+      # ONE-SHOT: the slug is claimed the moment this succeeds and cannot be
+      # retried to fix a typo. Gated on the exact confirmation string, never
+      # on this input's mere presence or a computed --dry-run flag — see the
+      # file header for why. `project create` itself hardcodes
+      # `is_draft: true`/`initial_versions: []` and never sets
+      # `requested_status`; nothing below adds a submit step.
+      - name: LIVE project create (one-shot, writes to Modrinth)
+        if: inputs.confirm == 'CREATE-DRAFT-PROJECT'
+        env:
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+        run: |
+          if [ -z "$MODRINTH_TOKEN" ]; then
+            echo "::error::MODRINTH_TOKEN is not set on this repo. Add it as a repo secret before running the live create (see the README runbook)."
+            exit 1
+          fi
+          set +e
+          bunx --bun "$RINTH_REF" --json project create \
+            --slug "$SLUG" \
+            --title "$TITLE" \
+            --description "$(cat modrinth/short-description.txt)" \
+            --body-file modrinth/body.md \
+            --project-type "$PROJECT_TYPE" \
+            --client-side "$CLIENT_SIDE" \
+            --server-side "$SERVER_SIDE" \
+            --license "$LICENSE" \
+            --category "$CATEGORY_1" \
+            --category "$CATEGORY_2" \
+            --source-url "$SOURCE_URL" \
+            --issues-url "$ISSUES_URL" \
+            > create.stdout.log 2> create.stderr.log
+          ec=$?
+          set -e
+          echo "exit_code=$ec" >> "$GITHUB_OUTPUT"
+          project_id=""
+          if [ "$ec" = "0" ]; then
+            project_id=$(jq -r '.id // empty' create.stdout.log 2>/dev/null)
+          fi
+          {
+            echo "### LIVE project create"
+            echo "- exit code: \`$ec\`"
+            if [ -n "$project_id" ]; then
+              echo "- **created project id: \`$project_id\`** — record this as repo variable \`MODRINTH_PROJECT_ID\` (needs repo admin; this workflow does not set it itself, see the README's \"Releasing to Modrinth\" section)"
+            fi
+            echo '```'
+            echo "-- stdout --"; cat create.stdout.log
+            echo "-- stderr --"; cat create.stderr.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$ec" != "0" ]; then
+            echo "::error::rinth project create exited non-zero ($ec) — see the job summary for stderr. If this was a slug conflict, do NOT invent a replacement slug here: report the exact refusal text and stop."
+            exit 1
+          fi
+        id: live_create
+
+      - name: Upload raw create JSON
+        if: always() && inputs.confirm == 'CREATE-DRAFT-PROJECT'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rinth-project-create-json
+          path: |
+            create.stdout.log
+            create.stderr.log
+            dry_run_payload.json
+          if-no-files-found: ignore
+          retention-days: 30

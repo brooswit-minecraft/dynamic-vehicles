@@ -33,3 +33,7 @@ compiling against it.
 
 Every PR that changes `src/` adds one `changelog.d/<TICKET>.md` fragment; see
 `changelog.d/README.md`. Do not edit the version by hand.
+
+## Releasing to Modrinth
+
+The Modrinth project is created as a **draft** by the `Modrinth draft project create` workflow (manual dispatch only). Run it with `confirm` blank for a dry run that prints the payload; the live create needs the exact string `CREATE-DRAFT-PROJECT`, claims the slug permanently, and uses the org-level `MODRINTH_TOKEN`. Nothing here submits the project for Modrinth review; that is a deliberate human step. After a live create, record the printed project id as the repo variable `MODRINTH_PROJECT_ID`.

@@ -3,7 +3,9 @@ name: Release
 # On every push to main, release if changelog.d gained a fragment since the
 # last tag. The version is the last tag bumped by the highest `bump:` level
 # among those fragments (see changelog.d/README.md); nothing is committed
-# back to main. Modrinth publishing is not wired yet.
+# back to main. The GitHub release jar is the shipped artifact: Modrinth gets
+# that exact jar, never a rebuild. Run manually to (re)publish the latest
+# tagged release to Modrinth, e.g. after the project was first created.
 on:
   push:
     branches: [main]
@@ -73,3 +75,63 @@ jobs:
         run: |
           gh release create "v$VERSION" "build/libs/dynamicvehicles-$VERSION.jar" \
             --target "$GITHUB_SHA" --title "dynamic-vehicles $VERSION" --notes-file release-notes.md
+
+      # Modrinth publishes the exact jar attached to the GitHub release.
+      - name: Fetch release jar
+        if: steps.version.outputs.version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p build/libs
+          gh release download "v$VERSION" --pattern "dynamicvehicles-$VERSION.jar" --dir build/libs --clobber
+
+      - uses: oven-sh/setup-bun@v2
+        if: steps.version.outputs.version
+
+      - name: Check existing Modrinth version
+        id: modrinth
+        if: steps.version.outputs.version
+        env:
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+          PROJECT_ID: ${{ vars.MODRINTH_PROJECT_ID }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          test -n "$MODRINTH_TOKEN"
+          test -n "$PROJECT_ID"
+          python3 scripts/check-modrinth-version.py >> "$GITHUB_OUTPUT"
+
+      - name: Publish Modrinth version
+        if: steps.version.outputs.version && steps.modrinth.outputs.exists != 'true'
+        env:
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+          PROJECT_ID: ${{ vars.MODRINTH_PROJECT_ID }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          bunx --bun github:brooswit-minecraft/rinth#v0.10.0 publish "$PROJECT_ID" \
+            --file "build/libs/dynamicvehicles-$VERSION.jar" \
+            --version "$VERSION" --changelog-file release-notes.md \
+            --game-version 1.21.1 --loader neoforge --channel alpha
+
+      - name: Sync Modrinth environment
+        if: steps.version.outputs.version
+        env:
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+          PROJECT_ID: ${{ vars.MODRINTH_PROJECT_ID }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: python3 scripts/sync-modrinth-settings.py
+
+      # Draft projects are invisible to unauthenticated readers, so print what a
+      # packwiz pin needs (version id, file URL, hashes) for the job summary.
+      - name: Record Modrinth version
+        if: steps.version.outputs.version
+        env:
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+          PROJECT_ID: ${{ vars.MODRINTH_PROJECT_ID }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          curl -fsS -H "Authorization: $MODRINTH_TOKEN" -H "User-Agent: brooswit-minecraft/dynamic-vehicles-release" \
+            "https://api.modrinth.com/v2/project/$PROJECT_ID/version" \
+            | jq --arg v "$VERSION" '[.[] | select(.version_number == $v)] | .[0] | {id, project_id, version_number, status, file: .files[0] | {filename, url, hashes}}' \
+            | tee modrinth-version.json
+          { echo "### Modrinth version"; echo '```json'; cat modrinth-version.json; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

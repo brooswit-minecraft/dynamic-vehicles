@@ -1,0 +1,32 @@
+modLoader="javafml" #mandatory
+loaderVersion="${loader_version_range}" #mandatory
+
+license="${mod_license}"
+
+[[mods]] #mandatory
+modId="${mod_id}" #mandatory
+version="${mod_version}" #mandatory
+displayName="${mod_name}" #mandatory
+authors="brooswit"
+description='''Drivable vehicles for NeoForge 1.21.1 that wear the terrain they slide on and drive on the surface properties Dynamic Terrain provides. This build is an empty scaffold.'''
+
+[[dependencies.${mod_id}]]
+    modId="neoforge"
+    type="required"
+    versionRange="[${neo_version},)"
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.${mod_id}]]
+    modId="minecraft"
+    type="required"
+    versionRange="${minecraft_version_range}"
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.${mod_id}]]
+    modId="dynamicterrain"
+    type="required"
+    versionRange="[${terrain_version},)"
+    ordering="AFTER"
+    side="BOTH"

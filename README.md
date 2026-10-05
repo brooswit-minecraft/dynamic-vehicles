@@ -4,9 +4,10 @@ Drivable vehicles for Minecraft (NeoForge 1.21.1, Java 21). Mod ID:
 `dynamicvehicles`. MIT licensed. Built on
 [dynamic-terrain](https://github.com/brooswit-minecraft/dynamic-terrain).
 
-**Current state: scaffold only.** This repo ships an empty mod plus the Gradle
-project, CI and release gate. The first vehicle will be a 4-wheel car (epic
-MINECRAFT-63).
+**Current state: first car.** A drivable 4-wheel car with a simple physics model that
+reports tire slip to Dynamic Terrain. Surface-aware handling (grip, roughness,
+rolling resistance, deformability) comes when Dynamic Terrain exposes
+`SurfaceProperties` (epic MINECRAFT-62). See epic MINECRAFT-63.
 
 ## Architecture principle
 

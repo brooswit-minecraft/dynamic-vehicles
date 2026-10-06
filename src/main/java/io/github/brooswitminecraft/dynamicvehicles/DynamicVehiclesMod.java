@@ -48,6 +48,11 @@ public class DynamicVehiclesMod {
                     .sized(VehicleSpec.TRUCK.width(), VehicleSpec.TRUCK.height()).clientTrackingRange(10).updateInterval(1)
                     .build(ResourceLocation.fromNamespaceAndPath(MODID, "truck").toString()));
     public static final DeferredItem<CarItem> TRUCK_ITEM = ITEMS.register("truck", () -> new CarItem(new Item.Properties().stacksTo(1), TRUCK, 0.5));
+    public static final DeferredHolder<EntityType<?>, EntityType<CarEntity>> TROPHY = ENTITIES.register("trophy_truck",
+            () -> EntityType.Builder.<CarEntity>of(CarEntity::new, MobCategory.MISC)
+                    .sized(VehicleSpec.TROPHY.width(), VehicleSpec.TROPHY.height()).clientTrackingRange(10).updateInterval(1)
+                    .build(ResourceLocation.fromNamespaceAndPath(MODID, "trophy_truck").toString()));
+    public static final DeferredItem<CarItem> TROPHY_ITEM = ITEMS.register("trophy_truck", () -> new CarItem(new Item.Properties().stacksTo(1), TROPHY, 0.9));
     public static final DeferredItem<CarItem> CAR_ITEM = ITEMS.register("car", () -> new CarItem(new Item.Properties().stacksTo(1), CAR, 0.0));
 
     public DynamicVehiclesMod(IEventBus modEventBus, ModContainer modContainer) {
@@ -117,6 +122,7 @@ public class DynamicVehiclesMod {
         if (event.getTabKey() == CreativeModeTabs.TOOLS_AND_UTILITIES) {
             event.accept(CAR_ITEM);
             event.accept(TRUCK_ITEM);
+            event.accept(TROPHY_ITEM);
         }
     }
 
@@ -128,6 +134,7 @@ public class DynamicVehiclesMod {
         public static void registerRenderers(EntityRenderersEvent.RegisterRenderers event) {
             event.registerEntityRenderer(CAR.get(), CarRenderer::new);
             event.registerEntityRenderer(TRUCK.get(), CarRenderer::new);
+            event.registerEntityRenderer(TROPHY.get(), CarRenderer::new);
         }
     }
 }

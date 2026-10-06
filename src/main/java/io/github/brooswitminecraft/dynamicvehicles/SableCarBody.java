@@ -151,8 +151,8 @@ final class SableCarBody {
             }
             // What the tire feels comes from the block it is on (grip, rolling resistance), via Dynamic Terrain.
             SurfaceProperties surface = Surfaces.at(level, hit.getBlockPos());
-            WheelMath.Tire tire = WheelMath.tire(vLong, vLat, force, WheelMath.BASE_FRICTION * surface.grip(),
-                    surface.rollingResistance(), lateralScale, drive, brake, brakeGain, spec.massKg() / 4.0, dt);
+            WheelMath.Tire tire = WheelMath.tire(vLong, vLat, force, WheelMath.BASE_FRICTION * Math.min(1.0, surface.grip() * spec.looseGrip()),
+                    surface.rollingResistance() * spec.rollingScale(), lateralScale, drive, brake, brakeGain, spec.massKg() / 4.0, dt);
             impulseWorld.fma(tire.longitudinal() * dt, forward).fma(tire.lateral() * dt, lateral);
             slipThisTick = Math.max(slipThisTick, tire.slipSpeed());
             if (tire.slipSpeed() > 0.3) {

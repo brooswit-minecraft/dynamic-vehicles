@@ -3,6 +3,9 @@ loaderVersion="${loader_version_range}" #mandatory
 
 license="${mod_license}"
 
+[[accessTransformers]]
+file="META-INF/accesstransformer.cfg"
+
 [[mods]] #mandatory
 modId="${mod_id}" #mandatory
 version="${mod_version}" #mandatory

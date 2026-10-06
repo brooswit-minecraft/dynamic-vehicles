@@ -55,6 +55,7 @@ java.toolchain.languageVersion = JavaLanguageVersion.of(21)
 
 neoForge {
     version = project.neo_version
+    accessTransformers.from('src/main/resources/META-INF/accesstransformer.cfg')
 
     parchment {
         mappingsVersion = project.parchment_mappings_version
@@ -66,6 +67,9 @@ neoForge {
             client()
             if (project.hasProperty('quickPlay')) {
                 programArguments.addAll('--quickPlaySingleplayer', project.property('quickPlay'))
+            }
+            if (project.hasProperty('quickPlayMp')) {
+                programArguments.addAll('--quickPlayMultiplayer', project.property('quickPlayMp'))
             }
             systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
         }

@@ -64,6 +64,23 @@ public class CarEntity extends Entity {
         return getPassengers().isEmpty();
     }
 
+    /**
+     * The car is server-authoritative, so no client may claim control of it. By default the rider's own
+     * client counts as the local controller: it then ignores the server's position updates for the car and
+     * sends its own, unmoved, vehicle position back with ServerboundMoveVehiclePacket, which the server
+     * accepts and which snaps the car back every tick. That made the car refuse to drive.
+     */
+    @Override
+    public boolean isControlledByLocalInstance() {
+        return false;
+    }
+
+    /** Climb one-block steps, as a car on rough terrain must; smoothing makes most steps smaller. */
+    @Override
+    public float maxUpStep() {
+        return 1.0f;
+    }
+
     @Override
     public LivingEntity getControllingPassenger() {
         return getFirstPassenger() instanceof LivingEntity rider ? rider : null;
@@ -83,7 +100,8 @@ public class CarEntity extends Entity {
         LivingEntity rider = getControllingPassenger();
         double throttle = rider == null ? 0.0 : Math.max(-1.0, Math.min(1.0, rider.zza));
         double steer = rider == null ? 0.0 : Math.max(-1.0, Math.min(1.0, rider.xxa));
-        boolean handbrake = rider != null && rider.isShiftKeyDown();
+        // Sneak is vanilla's dismount key, so the handbrake is the jump key (space).
+        boolean handbrake = rider != null && rider.jumping;
 
         // Minecraft yaw 0 faces +Z; the physics heading is the entity's yaw in radians.
         CarPhysics.Step step = CarPhysics.step(new CarPhysics.State(speed, Math.toRadians(getYRot())),
@@ -102,6 +120,10 @@ public class CarEntity extends Entity {
         if (forcedSlipTicks > 0) {
             forcedSlipTicks--;
             slip = Math.max(slip, forcedSlip);
+        }
+        if (tickCount % 20 == 0 && Math.abs(speed) > 0.1) {
+            DynamicVehiclesMod.LOGGER.debug("car {} speed {} m/s at {} {} {}", getUUID(), String.format("%.2f", speed),
+                    String.format("%.1f", getX()), String.format("%.1f", getY()), String.format("%.1f", getZ()));
         }
         reportSlip(slip);
     }

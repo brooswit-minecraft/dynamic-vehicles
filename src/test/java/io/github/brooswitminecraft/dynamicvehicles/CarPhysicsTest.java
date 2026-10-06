@@ -78,4 +78,21 @@ class CarPhysicsTest {
         assertTrue(step.state().speed() < 15);
         assertEquals(0.0, run(new State(15, 0), 0, 0, true, 100).state().speed(), 1e-9);
     }
+
+    @Test
+    void oneSecondOfForwardInputMovesTheCarForwardAlongItsHeading() {
+        // What the entity does each tick for a rider pressing W: zza = 1.
+        double x = 0;
+        double z = 0;
+        Step step = new Step(new State(0, Math.toRadians(90)), 0, 0, 0);
+        for (int tick = 0; tick < 20; tick++) {
+            step = CarPhysics.step(step.state(), 1.0, 0.0, false, DT);
+            double yaw = step.state().heading();
+            x += -Math.sin(yaw) * step.state().speed() * DT;
+            z += Math.cos(yaw) * step.state().speed() * DT;
+        }
+        assertTrue(step.state().speed() > 4.0, "speed after one second: " + step.state().speed());
+        assertTrue(Math.hypot(x, z) > 2.0, "distance after one second: " + Math.hypot(x, z));
+        assertTrue(x < -2.0 && Math.abs(z) < 0.1, "yaw 90 degrees faces -X in Minecraft");
+    }
 }

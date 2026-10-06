@@ -12,8 +12,10 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 
 /**
- * Placeholder look for the first car, built from vanilla blocks (a body, a
- * cabin and four wheels) until a real model exists.
+ * Placeholder look for the car, built from vanilla blocks in the body frame of
+ * {@link CarGeometry}: a chassis and cabin that exactly fill the physics box and
+ * four wheels that sit where the suspension rays end, so the wheels touch the
+ * ground at rest.
  */
 public class CarRenderer extends EntityRenderer<CarEntity> {
     private static final BlockState BODY = Blocks.LIGHT_GRAY_CONCRETE.defaultBlockState();
@@ -28,19 +30,25 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
     public void render(CarEntity car, float yaw, float partialTick, PoseStack pose, MultiBufferSource buffers, int light) {
         pose.pushPose();
         if (car.isRigidBody()) {
-            // The body's origin is its centre, 0.5 m above the entity origin, and the wheels reach the ground
-            // 0.4 m below the entity origin at rest. Rotate about the centre, then draw as before.
-            pose.translate(0.0, 0.5, 0.0);
+            // The entity origin is the bottom centre of the box; the body frame's origin is its centre.
+            pose.translate(0.0, CarGeometry.HALF_Y, 0.0);
             pose.mulPose(car.renderOrientation(partialTick));
-            pose.mulPose(com.mojang.math.Axis.YP.rotationDegrees(180.0f));
-            pose.translate(0.0, -0.9, 0.0);
         } else {
-            pose.mulPose(com.mojang.math.Axis.YP.rotationDegrees(180.0f - yaw));
+            // Simple model: the entity origin is on the ground, the body centre is a ride height above it.
+            pose.translate(0.0, CarGeometry.RIDE_HEIGHT, 0.0);
+            pose.mulPose(com.mojang.math.Axis.YP.rotationDegrees(-yaw));
         }
-        block(pose, buffers, light, BODY, -0.9f, 0.25f, -1.5f, 1.8f, 0.45f, 3.0f);
-        block(pose, buffers, light, CABIN, -0.7f, 0.7f, -0.7f, 1.4f, 0.4f, 1.5f);
-        for (double[] wheel : CarEntity.WHEELS) {
-            block(pose, buffers, light, WHEEL, (float) wheel[0] - 0.15f, 0.0f, (float) wheel[1] - 0.3f, 0.3f, 0.5f, 0.6f);
+        float hx = (float) CarGeometry.HALF_X;
+        float hy = (float) CarGeometry.HALF_Y;
+        float hz = (float) CarGeometry.HALF_Z;
+        // Chassis and cabin together fill the physics box exactly (1.9 x 1.0 x 3.0).
+        block(pose, buffers, light, BODY, -hx, -hy, -hz, 2 * hx, 0.55f, 2 * hz);
+        block(pose, buffers, light, CABIN, -0.75f, -hy + 0.55f, -0.6f, 1.5f, 2 * hy - 0.55f, 1.5f);
+        float r = (float) CarGeometry.WHEEL_RADIUS;
+        float w = (float) CarGeometry.WHEEL_WIDTH;
+        float cy = (float) CarGeometry.wheelCentreY();
+        for (double[] mount : CarGeometry.MOUNTS) {
+            block(pose, buffers, light, WHEEL, (float) mount[0] - w / 2, cy - r, (float) mount[2] - r, w, 2 * r, 2 * r);
         }
         pose.popPose();
         super.render(car, yaw, partialTick, pose, buffers, light);

@@ -30,6 +30,9 @@ public class CarEntity extends Entity {
     /** The Sable rigid body, as Object so this class never loads Sable types (see SableCompat). */
     private Object sableBody;
     private double forcedSlip;
+    private double forcedThrottle;
+    private double forcedSteer;
+    private int forcedDriveTicks;
     private int forcedSlipTicks;
 
     public CarEntity(EntityType<? extends CarEntity> type, Level level) {
@@ -144,6 +147,11 @@ public class CarEntity extends Entity {
         double throttle = rider == null ? 0.0 : Math.max(-1.0, Math.min(1.0, rider.zza));
         double steer = rider == null ? 0.0 : Math.max(-1.0, Math.min(1.0, rider.xxa));
         boolean handbrake = rider != null && rider.jumping;
+        if (forcedDriveTicks > 0) {
+            forcedDriveTicks--;
+            throttle = forcedThrottle;
+            steer = forcedSteer;
+        }
         SableCompat.tick(sableBody, this, throttle, steer, handbrake, DT);
         SableCompat.syncEntity(sableBody, this);
         if (tickCount % 20 == 0) {
@@ -180,6 +188,13 @@ public class CarEntity extends Entity {
     public void forceSlip(double slipSpeed, int ticks) {
         forcedSlip = slipSpeed;
         forcedSlipTicks = ticks;
+    }
+
+    /** Debug: drive as if a rider held these inputs, for a while. */
+    public void forceDrive(double throttle, double steer, int ticks) {
+        forcedThrottle = throttle;
+        forcedSteer = steer;
+        forcedDriveTicks = ticks;
     }
 
     public double speed() {

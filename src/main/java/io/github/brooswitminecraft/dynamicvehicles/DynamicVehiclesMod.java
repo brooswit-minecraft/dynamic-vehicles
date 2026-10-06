@@ -60,6 +60,23 @@ public class DynamicVehiclesMod {
 
     /** Debug entry point: /dvspin <slipSpeed> <ticks> makes every loaded car's wheels report that slip, to exercise terrain wear. */
     private void registerCommands(RegisterCommandsEvent event) {
+        // Debug: /dvdrive <throttle> <steer> <ticks> drives every loaded car as if a rider held those inputs.
+        event.getDispatcher().register(Commands.literal("dvdrive").requires(source -> source.hasPermission(2))
+                .then(Commands.argument("throttle", DoubleArgumentType.doubleArg(-1, 1))
+                        .then(Commands.argument("steer", DoubleArgumentType.doubleArg(-1, 1))
+                                .then(Commands.argument("ticks", IntegerArgumentType.integer(1, 24000)).executes(context -> {
+                                    int cars = 0;
+                                    for (net.minecraft.world.entity.Entity entity : context.getSource().getLevel().getAllEntities()) {
+                                        if (entity instanceof CarEntity car) {
+                                            car.forceDrive(DoubleArgumentType.getDouble(context, "throttle"),
+                                                    DoubleArgumentType.getDouble(context, "steer"), IntegerArgumentType.getInteger(context, "ticks"));
+                                            cars++;
+                                        }
+                                    }
+                                    int count = cars;
+                                    context.getSource().sendSuccess(() -> Component.literal("driving " + count + " car(s)"), true);
+                                    return count;
+                                })))));
         event.getDispatcher().register(Commands.literal("dvspin").requires(source -> source.hasPermission(2))
                 .then(Commands.argument("slip", DoubleArgumentType.doubleArg(0))
                         .then(Commands.argument("ticks", IntegerArgumentType.integer(1, 24000)).executes(context -> {

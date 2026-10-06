@@ -26,6 +26,12 @@ final class SableCarBody {
     /** Wheel mounts in the body frame: x right, y up, z forward. */
     static final double[][] MOUNTS = {{-0.8, -0.4, 1.2}, {0.8, -0.4, 1.2}, {-0.8, -0.4, -1.2}, {0.8, -0.4, -1.2}};
     private static final double GRAVITY = 9.81;
+    private static final double DRIVE_FORCE = 2_300.0; // per wheel, all-wheel drive: about 0.77 g for the car
+    private static final double REVERSE_FORCE = 1_400.0;
+    private static final double BRAKE_FORCE = 3_000.0;
+    private static final double HANDBRAKE_FORCE = 6_000.0;
+    private static final double MAX_SPEED = 32.0;
+    private static final double AIR_DRAG = 0.4; // N per (m/s)^2
 
     private final ServerLevel level;
     private final BoxPhysicsObject box;
@@ -76,6 +82,8 @@ final class SableCarBody {
         Vector3d angular = body.getAngularVelocity(new Vector3d());
         Vector3d down = orientation.transform(new Vector3d(0, -1, 0));
 
+        Vector3d carForward = orientation.transform(new Vector3d(0, 0, 1));
+        double forwardSpeed = linear.dot(carForward);
         boolean touching = false;
         for (double[] mount : MOUNTS) {
             Vector3d local = new Vector3d(mount[0], mount[1], mount[2]);
@@ -97,10 +105,57 @@ final class SableCarBody {
                 continue;
             }
             touching = true;
-            Vector3d impulseWorld = new Vector3d(down).mul(-force * dt);
+            Vector3d up = new Vector3d(down).negate();
+            Vector3d impulseWorld = new Vector3d(up).mul(force * dt);
+
+            // Tire: forward and lateral axes in the plane the tire rolls on, steered on the front axle.
+            boolean front = mount[2] > 0;
+            Vector3d forward = orientation.transform(new Vector3d(0, 0, 1));
+            double steerAngle = front ? steer * WheelMath.maxSteerAngle(forwardSpeed, WheelMath.BASE_FRICTION,
+                    CarPhysics.WHEELBASE, CarPhysics.MAX_STEER) : 0.0;
+            forward.rotateAxis(steerAngle, up.x, up.y, up.z);
+            forward.fma(-forward.dot(up), up).normalize();
+            Vector3d lateral = new Vector3d(up).cross(forward).normalize();
+            double vLong = pointVelocity.dot(forward);
+            double vLat = pointVelocity.dot(lateral);
+
+            double drive = 0.0;
+            double brake = 0.0;
+            double lateralScale = 1.0;
+            if (throttle > 0) {
+                drive = throttle * DRIVE_FORCE * Math.max(0.0, 1.0 - Math.abs(forwardSpeed) / MAX_SPEED);
+            } else if (throttle < 0) {
+                if (forwardSpeed > 0.5) {
+                    brake = -throttle * BRAKE_FORCE;
+                } else {
+                    drive = throttle * REVERSE_FORCE * Math.max(0.0, 1.0 - Math.abs(forwardSpeed) / 8.0);
+                }
+            }
+            if (handbrake && !front) {
+                brake = HANDBRAKE_FORCE;
+                drive = 0.0;
+                lateralScale = 0.35;
+            }
+            WheelMath.Tire tire = WheelMath.tire(vLong, vLat, force, WheelMath.BASE_FRICTION, lateralScale, drive, brake, dt);
+            impulseWorld.fma(tire.longitudinal() * dt, forward).fma(tire.lateral() * dt, lateral);
+            if (tire.slipSpeed() > 0.3) {
+                SlipReporter.report(level, hit.getBlockPos(), tire.slipSpeed(), force / GRAVITY);
+            }
+
             Vector3d impulseLocal = inverse.transform(impulseWorld);
+            // Suspension acts at the contact point; the tire's horizontal force is applied at body height to
+            // keep weight transfer realistic rather than pitching the whole car over.
             Vector3d contactLocal = new Vector3d(local.x, local.y - distance, local.z);
-            body.applyImpulseAtPoint(contactLocal, impulseLocal);
+            Vector3d suspensionLocal = inverse.transform(new Vector3d(up).mul(force * dt));
+            body.applyImpulseAtPoint(contactLocal, suspensionLocal);
+            Vector3d horizontalLocal = new Vector3d(impulseLocal).sub(suspensionLocal);
+            body.applyImpulseAtPoint(new Vector3d(local.x, -0.1, local.z), horizontalLocal);
+        }
+        // Air drag along the velocity.
+        double speed = linear.length();
+        if (speed > 0.5) {
+            Vector3d drag = inverse.transform(new Vector3d(linear).mul(-AIR_DRAG * speed * dt));
+            body.applyImpulseAtPoint(new Vector3d(0, 0, 0), drag);
         }
         if (touching || throttle != 0 || steer != 0 || handbrake) {
             box.wakeUp();

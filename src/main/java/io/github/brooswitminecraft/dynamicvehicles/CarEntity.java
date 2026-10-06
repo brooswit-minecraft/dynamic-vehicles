@@ -26,6 +26,16 @@ public class CarEntity extends Entity {
     private static final double DT = 1.0 / 20.0;
     private static final double GRAVITY = 0.08;
 
+    /** The body's orientation, synced every tick so clients can draw pitch and roll. */
+    private static final net.minecraft.network.syncher.EntityDataAccessor<org.joml.Quaternionf> DATA_ORIENTATION =
+            net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.QUATERNION);
+    private static final net.minecraft.network.syncher.EntityDataAccessor<Boolean> DATA_RIGID_BODY =
+            net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.BOOLEAN);
+
+    // Client side: the last two orientations received, to interpolate between ticks.
+    private final org.joml.Quaternionf previousOrientation = new org.joml.Quaternionf();
+    private final org.joml.Quaternionf currentOrientation = new org.joml.Quaternionf();
+
     private double speed;
     /** The Sable rigid body, as Object so this class never loads Sable types (see SableCompat). */
     private Object sableBody;
@@ -40,7 +50,35 @@ public class CarEntity extends Entity {
     }
 
     @Override
-    protected void defineSynchedData(SynchedEntityData.Builder builder) {}
+    protected void defineSynchedData(SynchedEntityData.Builder builder) {
+        builder.define(DATA_ORIENTATION, new org.joml.Quaternionf());
+        builder.define(DATA_RIGID_BODY, false);
+    }
+
+    @Override
+    public void onSyncedDataUpdated(net.minecraft.network.syncher.EntityDataAccessor<?> key) {
+        super.onSyncedDataUpdated(key);
+        if (DATA_ORIENTATION.equals(key) && level().isClientSide()) {
+            previousOrientation.set(currentOrientation);
+            currentOrientation.set(entityData.get(DATA_ORIENTATION));
+        }
+    }
+
+    /** Server: publish the body's orientation to clients. */
+    void publishOrientation(org.joml.Quaternionf orientation) {
+        entityData.set(DATA_RIGID_BODY, true);
+        entityData.set(DATA_ORIENTATION, orientation);
+    }
+
+    /** Whether this car is driven by a rigid body, so the renderer should draw its full orientation. */
+    public boolean isRigidBody() {
+        return entityData.get(DATA_RIGID_BODY);
+    }
+
+    /** Client: the orientation to draw, interpolated between the last two updates. */
+    public org.joml.Quaternionf renderOrientation(float partialTick) {
+        return previousOrientation.nlerp(currentOrientation, partialTick, new org.joml.Quaternionf());
+    }
 
     @Override
     protected void readAdditionalSaveData(CompoundTag tag) {}

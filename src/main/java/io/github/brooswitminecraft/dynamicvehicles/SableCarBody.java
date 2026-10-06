@@ -131,6 +131,9 @@ final class SableCarBody {
                     drive = throttle * REVERSE_FORCE * Math.max(0.0, 1.0 - Math.abs(forwardSpeed) / 8.0);
                 }
             }
+            if (throttle == 0 && Math.abs(forwardSpeed) < 1.0) {
+                brake = BRAKE_FORCE * 0.5; // parked: hold on a slope instead of rolling away
+            }
             if (handbrake && !front) {
                 brake = HANDBRAKE_FORCE;
                 drive = 0.0;
@@ -171,6 +174,7 @@ final class SableCarBody {
         car.setPos(p.x, p.y - HALF_EXTENTS.y, p.z);
         car.setYRot(yawOf(orientation));
         car.yRotO = car.getYRot();
+        car.publishOrientation(new org.joml.Quaternionf((float) orientation.x, (float) orientation.y, (float) orientation.z, (float) orientation.w));
         Vector3d v = body.getLinearVelocity(new Vector3d());
         car.setDeltaMovement(v.x / 20.0, v.y / 20.0, v.z / 20.0);
     }

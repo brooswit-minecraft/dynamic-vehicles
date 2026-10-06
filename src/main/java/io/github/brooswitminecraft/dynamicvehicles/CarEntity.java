@@ -27,6 +27,8 @@ public class CarEntity extends Entity {
     private static final double GRAVITY = 0.08;
 
     private double speed;
+    /** The Sable rigid body, as Object so this class never loads Sable types (see SableCompat). */
+    private Object sableBody;
     private double forcedSlip;
     private int forcedSlipTicks;
 
@@ -98,6 +100,10 @@ public class CarEntity extends Entity {
             return;
         }
         LivingEntity rider = getControllingPassenger();
+        if (level() instanceof net.minecraft.server.level.ServerLevel serverLevel && SableCompat.usable()) {
+            tickSable(serverLevel, rider);
+            return;
+        }
         double throttle = rider == null ? 0.0 : Math.max(-1.0, Math.min(1.0, rider.zza));
         double steer = rider == null ? 0.0 : Math.max(-1.0, Math.min(1.0, rider.xxa));
         // Sneak is vanilla's dismount key, so the handbrake is the jump key (space).
@@ -126,6 +132,32 @@ public class CarEntity extends Entity {
                     String.format("%.1f", getX()), String.format("%.1f", getY()), String.format("%.1f", getZ()));
         }
         reportSlip(slip);
+    }
+
+    private void tickSable(net.minecraft.server.level.ServerLevel serverLevel, LivingEntity rider) {
+        if (sableBody == null) {
+            sableBody = SableCompat.create(serverLevel, this);
+            if (sableBody == null) {
+                return;
+            }
+        }
+        double throttle = rider == null ? 0.0 : Math.max(-1.0, Math.min(1.0, rider.zza));
+        double steer = rider == null ? 0.0 : Math.max(-1.0, Math.min(1.0, rider.xxa));
+        boolean handbrake = rider != null && rider.jumping;
+        SableCompat.tick(sableBody, this, throttle, steer, handbrake, DT);
+        SableCompat.syncEntity(sableBody, this);
+        if (tickCount % 20 == 0) {
+            DynamicVehiclesMod.LOGGER.debug("car {} {}", getUUID(), SableCompat.describe(sableBody));
+        }
+    }
+
+    @Override
+    public void remove(Entity.RemovalReason reason) {
+        if (sableBody != null) {
+            SableCompat.remove(sableBody);
+            sableBody = null;
+        }
+        super.remove(reason);
     }
 
     /** Every wheel reports the same slip for the block under it; terrain decides what it does. */

@@ -33,3 +33,10 @@ description='''Drivable vehicles for NeoForge 1.21.1 that wear the terrain they 
     versionRange="[${terrain_version},)"
     ordering="AFTER"
     side="BOTH"
+
+[[dependencies.${mod_id}]]
+    modId="sable"
+    type="optional"
+    versionRange="[2.0.5,)"
+    ordering="AFTER"
+    side="BOTH"

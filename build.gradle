@@ -103,7 +103,33 @@ neoForge {
     }
 }
 
+// Sable (PolyForm Shield 1.0.0) is compiled against only; the pack provides it at runtime.
+def sableJar = layout.buildDirectory.file("sable/sable-neoforge-1.21.1-${project.sable_version}.jar")
+def sableCompanionJar = layout.buildDirectory.file("sable/sable-companion-common.jar")
+def sableVersion = project.sable_version
+def sableSha512 = project.sable_sha512
+def sableUrl = project.sable_url
+tasks.register("downloadSable") {
+    outputs.files(sableJar, sableCompanionJar)
+    doLast {
+        def target = sableJar.get().asFile
+        target.parentFile.mkdirs()
+        new URL(sableUrl).withInputStream { input -> target.withOutputStream { it << input } }
+        def actual = java.security.MessageDigest.getInstance("SHA-512").digest(target.bytes).encodeHex().toString()
+        if (actual != sableSha512) {
+            target.delete()
+            throw new GradleException("Sable ${sableVersion} sha512 mismatch: ${actual}")
+        }
+        // The companion math API (Pose3d, ...) ships jar-in-jar inside Sable.
+        def zip = new java.util.zip.ZipFile(target)
+        def entry = zip.entries().find { it.name.startsWith("META-INF/jarjar/sable-companion-common") }
+        sableCompanionJar.get().asFile.withOutputStream { it << zip.getInputStream(entry) }
+        zip.close()
+    }
+}
+
 dependencies {
+    compileOnly files(sableJar, sableCompanionJar).builtBy("downloadSable")
     compileOnly files(terrainJar).builtBy("downloadTerrain")
     testCompileOnly files(terrainJar).builtBy("downloadTerrain")
     testImplementation platform("org.junit:junit-bom:5.11.4")

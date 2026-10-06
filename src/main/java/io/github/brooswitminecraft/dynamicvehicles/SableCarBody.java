@@ -38,6 +38,7 @@ final class SableCarBody {
     private final ServerLevel level;
     private final BoxPhysicsObject box;
     private final RigidBodyHandle body;
+    private double lastSlipSpeed;
 
     private SableCarBody(ServerLevel level, BoxPhysicsObject box, RigidBodyHandle body) {
         this.level = level;
@@ -89,6 +90,7 @@ final class SableCarBody {
         Vector3d carForward = orientation.transform(new Vector3d(0, 0, 1));
         double forwardSpeed = linear.dot(carForward);
         boolean touching = false;
+        double slipThisTick = 0.0;
         java.util.List<Vector3d> hits = new java.util.ArrayList<>();
         for (double[] mount : MOUNTS) {
             Vector3d local = new Vector3d(mount[0], mount[1], mount[2]);
@@ -152,6 +154,7 @@ final class SableCarBody {
             WheelMath.Tire tire = WheelMath.tire(vLong, vLat, force, WheelMath.BASE_FRICTION * surface.grip(),
                     surface.rollingResistance(), lateralScale, drive, brake, brakeGain, dt);
             impulseWorld.fma(tire.longitudinal() * dt, forward).fma(tire.lateral() * dt, lateral);
+            slipThisTick = Math.max(slipThisTick, tire.slipSpeed());
             if (tire.slipSpeed() > 0.3) {
                 SlipReporter.report(level, hit.getBlockPos(), tire.slipSpeed(), force / GRAVITY);
             }
@@ -171,6 +174,7 @@ final class SableCarBody {
             Vector3d drag = inverse.transform(new Vector3d(linear).mul(-AIR_DRAG * speed * dt));
             body.applyImpulseAtPoint(new Vector3d(0, 0, 0), drag);
         }
+        lastSlipSpeed = slipThisTick;
         if (CarDebug.enabled) {
             drawDebug(position, orientation, hits);
         }
@@ -208,6 +212,16 @@ final class SableCarBody {
         for (Vector3d hit : hits) {
             level.sendParticles(green, hit.x, hit.y, hit.z, 1, 0, 0, 0, 0);
         }
+    }
+
+    /** The largest tire slip speed seen on the last tick, m/s. */
+    double lastSlipSpeed() {
+        return lastSlipSpeed;
+    }
+
+    /** The body's speed, m/s. */
+    double speed() {
+        return body.getLinearVelocity(new Vector3d()).length();
     }
 
     /** The body's current orientation, for saving. */

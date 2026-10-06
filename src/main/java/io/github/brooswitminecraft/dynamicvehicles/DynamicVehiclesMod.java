@@ -48,6 +48,7 @@ public class DynamicVehiclesMod {
     public DynamicVehiclesMod(IEventBus modEventBus, ModContainer modContainer) {
         modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.SERVER, CarConfig.SPEC);
         modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.CLIENT, ClientConfig.SPEC);
+        ModSounds.SOUNDS.register(modEventBus);
         ENTITIES.register(modEventBus);
         ITEMS.register(modEventBus);
         modEventBus.addListener(this::commonSetup);

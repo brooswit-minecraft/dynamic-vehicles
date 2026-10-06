@@ -47,6 +47,7 @@ public class DynamicVehiclesMod {
 
     public DynamicVehiclesMod(IEventBus modEventBus, ModContainer modContainer) {
         modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.SERVER, CarConfig.SPEC);
+        modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.CLIENT, ClientConfig.SPEC);
         ENTITIES.register(modEventBus);
         ITEMS.register(modEventBus);
         modEventBus.addListener(this::commonSetup);
@@ -60,6 +61,19 @@ public class DynamicVehiclesMod {
 
     /** Debug entry point: /dvspin <slipSpeed> <ticks> makes every loaded car's wheels report that slip, to exercise terrain wear. */
     private void registerCommands(RegisterCommandsEvent event) {
+        // /dtcar debug on|off: draws each car's physics box (red) and where its suspension rays hit the ground (green).
+        event.getDispatcher().register(Commands.literal("dtcar").requires(source -> source.hasPermission(2))
+                .then(Commands.literal("debug")
+                        .then(Commands.literal("on").executes(context -> {
+                            CarDebug.enabled = true;
+                            context.getSource().sendSuccess(() -> Component.literal("car debug overlay on"), true);
+                            return 1;
+                        }))
+                        .then(Commands.literal("off").executes(context -> {
+                            CarDebug.enabled = false;
+                            context.getSource().sendSuccess(() -> Component.literal("car debug overlay off"), true);
+                            return 1;
+                        }))));
         // Debug: /dvdrive <throttle> <steer> <ticks> drives every loaded car as if a rider held those inputs.
         event.getDispatcher().register(Commands.literal("dvdrive").requires(source -> source.hasPermission(2))
                 .then(Commands.argument("throttle", DoubleArgumentType.doubleArg(-1, 1))

@@ -21,7 +21,7 @@ import net.minecraft.world.phys.Vec3;
  */
 public class CarEntity extends Entity {
     /** Wheel offsets from the car centre: x = right, z = forward, in metres. */
-    static final double[][] WHEELS = {{-0.8, 1.2}, {0.8, 1.2}, {-0.8, -1.2}, {0.8, -1.2}};
+    static final double[][] WHEELS = {{-0.8, 1.2}, {0.8, 1.2}, {-0.8, -1.2}, {0.8, -1.2}}; // x, z; same as CarGeometry.MOUNTS
     static final double MASS_KG = 1200.0;
     private static final double DT = 1.0 / 20.0;
     private static final double GRAVITY = 0.08;
@@ -33,6 +33,17 @@ public class CarEntity extends Entity {
             net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.BOOLEAN);
 
     // Client side: the last two orientations received, to interpolate between ticks.
+    // Client side: received movement and orientation states wait here and are consumed one per tick, so uneven
+    // packet arrival (two updates in one tick, none in the next) does not show up as stutter.
+    private final java.util.ArrayDeque<double[]> movementQueue = new java.util.ArrayDeque<>();
+    private final java.util.ArrayDeque<org.joml.Quaternionf> orientationQueue = new java.util.ArrayDeque<>();
+    private final double[] stepSamples = new double[20];
+    private int stepIndex;
+    private int arrivalsSinceTick;
+    private int zeroArrivalTicks;
+    private int multiArrivalTicks;
+    private int movementStarved;
+    private int orientationStarved;
     private final org.joml.Quaternionf previousOrientation = new org.joml.Quaternionf();
     private final org.joml.Quaternionf currentOrientation = new org.joml.Quaternionf();
 
@@ -60,8 +71,10 @@ public class CarEntity extends Entity {
     public void onSyncedDataUpdated(net.minecraft.network.syncher.EntityDataAccessor<?> key) {
         super.onSyncedDataUpdated(key);
         if (DATA_ORIENTATION.equals(key) && level().isClientSide()) {
-            previousOrientation.set(currentOrientation);
-            currentOrientation.set(entityData.get(DATA_ORIENTATION));
+            orientationQueue.add(new org.joml.Quaternionf(entityData.get(DATA_ORIENTATION)));
+            while (orientationQueue.size() > 6) {
+                orientationQueue.poll();
+            }
         }
     }
 
@@ -74,6 +87,81 @@ public class CarEntity extends Entity {
     /** Whether this car is driven by a rigid body, so the renderer should draw its full orientation. */
     public boolean isRigidBody() {
         return entityData.get(DATA_RIGID_BODY);
+    }
+
+    /** Client: heading (Minecraft yaw, degrees) of the orientation currently shown. */
+    public float heading() {
+        org.joml.Vector3f forward = currentOrientation.transform(new org.joml.Vector3f(0, 0, 1));
+        return (float) Math.toDegrees(Math.atan2(-forward.x, forward.z));
+    }
+
+    /** Client: take the next buffered movement and orientation, one per tick (two when the buffer runs long). */
+    private void consumeClientStates() {
+        if (!isRigidBody()) {
+            return;
+        }
+        double[] move = nextState(movementQueue, movementStarved);
+        movementStarved = move == null && !movementQueue.isEmpty() ? movementStarved + 1 : 0;
+        if (move != null) {
+            setPos(move[0], move[1], move[2]);
+        }
+        if (arrivalsSinceTick == 0) {
+            zeroArrivalTicks++;
+        } else if (arrivalsSinceTick > 1) {
+            multiArrivalTicks++;
+        }
+        arrivalsSinceTick = 0;
+        // Debug measurement: how even is the movement the camera and renderer see, tick to tick?
+        double step = Math.hypot(getX() - xo, getZ() - zo);
+        stepSamples[stepIndex++ % stepSamples.length] = step;
+        if (tickCount % 20 == 0 && stepIndex >= stepSamples.length) {
+            double mean = 0;
+            for (double s : stepSamples) {
+                mean += s;
+            }
+            mean /= stepSamples.length;
+            double dev = 0;
+            for (double s : stepSamples) {
+                dev = Math.max(dev, Math.abs(s - mean));
+            }
+            DynamicVehiclesMod.LOGGER.debug("SMOOTH mean step {} m/tick, worst deviation {} m; raw arrivals: {} ticks with none, {} ticks with 2+ (since last report)", String.format("%.3f", mean), String.format("%.3f", dev), zeroArrivalTicks, multiArrivalTicks);
+            zeroArrivalTicks = 0;
+            multiArrivalTicks = 0;
+        }
+        org.joml.Quaternionf q = nextState(orientationQueue, orientationStarved);
+        orientationStarved = q == null && !orientationQueue.isEmpty() ? orientationStarved + 1 : 0;
+        previousOrientation.set(currentOrientation);
+        if (q != null) {
+            currentOrientation.set(q);
+        }
+    }
+
+    /**
+     * Keep about one state in hand: use one per tick while two or more are waiting, skip ahead when the
+     * queue runs long, and release a lone state only after a tick of waiting so a late packet does not stall us.
+     */
+    private static <T> T nextState(java.util.ArrayDeque<T> queue, int starved) {
+        if (queue.size() >= 4) {
+            queue.poll();
+            return queue.poll();
+        }
+        if (queue.size() >= 2 || (queue.size() == 1 && starved >= 1)) {
+            return queue.poll();
+        }
+        return null;
+    }
+
+    @Override
+    public void lerpTo(double x, double y, double z, float yRot, float xRot, int steps) {
+        if (level().isClientSide() && isRigidBody()) {
+            arrivalsSinceTick++;
+            movementQueue.add(new double[] {x, y, z});
+            while (movementQueue.size() > 6) {
+                movementQueue.poll();
+            }
+            return;
+        }
+        super.lerpTo(x, y, z, yRot, xRot, steps);
     }
 
     /** Client: the orientation to draw, interpolated between the last two updates. */
@@ -158,6 +246,7 @@ public class CarEntity extends Entity {
     public void tick() {
         super.tick();
         if (level().isClientSide()) {
+            consumeClientStates();
             return;
         }
         LivingEntity rider = getControllingPassenger();

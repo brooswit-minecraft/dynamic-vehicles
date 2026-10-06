@@ -68,8 +68,16 @@ public class CarEntity extends Entity {
     private int forcedDriveTicks;
     private int forcedSlipTicks;
 
+    private final VehicleSpec spec;
+
     public CarEntity(EntityType<? extends CarEntity> type, Level level) {
         super(type, level);
+        this.spec = DynamicVehiclesMod.TRUCK.isBound() && type == DynamicVehiclesMod.TRUCK.get() ? VehicleSpec.TRUCK : VehicleSpec.CAR;
+    }
+
+    /** This vehicle's shape and drivetrain: the car's or the truck's. */
+    public VehicleSpec spec() {
+        return spec;
     }
 
     @Override
@@ -318,7 +326,7 @@ public class CarEntity extends Entity {
 
     @Override
     protected Vec3 getPassengerAttachmentPoint(Entity passenger, net.minecraft.world.entity.EntityDimensions dimensions, float scale) {
-        return new Vec3(0.0, 0.55, -0.1);
+        return new Vec3(0.0, spec.seatY(), spec.seatZ());
     }
 
     @Override

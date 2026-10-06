@@ -27,11 +27,11 @@ final class CarSoundsClient {
         var manager = Minecraft.getInstance().getSoundManager();
         var loops = new Loop[] {
                 new Loop(ModSounds.ENGINE_IDLE.get(), car, () -> engineOn(car) ? CarSoundMath.engineMix(car.clientSpeed())[0] * CarSoundMath.engineVolume(car.clientThrottle()) : 0.0,
-                        () -> CarSoundMath.enginePitch(car.clientSpeed(), car.clientThrottle())),
+                        () -> CarSoundMath.enginePitch(car.clientSpeed(), car.clientThrottle()) * car.spec().enginePitch()),
                 new Loop(ModSounds.ENGINE_MID.get(), car, () -> engineOn(car) ? CarSoundMath.engineMix(car.clientSpeed())[1] * CarSoundMath.engineVolume(car.clientThrottle()) : 0.0,
-                        () -> CarSoundMath.enginePitch(car.clientSpeed(), car.clientThrottle())),
+                        () -> CarSoundMath.enginePitch(car.clientSpeed(), car.clientThrottle()) * car.spec().enginePitch()),
                 new Loop(ModSounds.ENGINE_HIGH.get(), car, () -> engineOn(car) ? CarSoundMath.engineMix(car.clientSpeed())[2] * CarSoundMath.engineVolume(car.clientThrottle()) : 0.0,
-                        () -> CarSoundMath.enginePitch(car.clientSpeed(), car.clientThrottle())),
+                        () -> CarSoundMath.enginePitch(car.clientSpeed(), car.clientThrottle()) * car.spec().enginePitch()),
                 new Loop(ModSounds.TIRE_ROUGH.get(), car, () -> surface(car) == Surface.ROUGH ? rolling(car) : 0.0, () -> CarSoundMath.rollingPitch(car.clientSpeed())),
                 new Loop(ModSounds.TIRE_SMOOTH.get(), car, () -> surface(car) == Surface.SMOOTH ? rolling(car) : 0.0, () -> CarSoundMath.rollingPitch(car.clientSpeed())),
                 new Loop(ModSounds.TIRE_SNOW.get(), car, () -> surface(car) == Surface.SNOW ? rolling(car) : 0.0, () -> CarSoundMath.rollingPitch(car.clientSpeed())),

@@ -19,6 +19,8 @@ import net.minecraft.world.level.block.state.BlockState;
  */
 public class CarRenderer extends EntityRenderer<CarEntity> {
     private static final BlockState BODY = Blocks.LIGHT_GRAY_CONCRETE.defaultBlockState();
+    private static final BlockState TRUCK_BODY = Blocks.ORANGE_CONCRETE.defaultBlockState();
+    private static final BlockState BED = Blocks.GRAY_CONCRETE.defaultBlockState();
     private static final BlockState CABIN = Blocks.GLASS.defaultBlockState();
     private static final BlockState WHEEL = Blocks.BLACK_CONCRETE.defaultBlockState();
 
@@ -31,23 +33,32 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
         pose.pushPose();
         if (car.isRigidBody()) {
             // The entity origin is the bottom centre of the box; the body frame's origin is its centre.
-            pose.translate(0.0, CarGeometry.HALF_Y, 0.0);
+            pose.translate(0.0, car.spec().halfY(), 0.0);
             pose.mulPose(car.renderOrientation(partialTick));
         } else {
             // Simple model: the entity origin is on the ground, the body centre is a ride height above it.
-            pose.translate(0.0, CarGeometry.RIDE_HEIGHT, 0.0);
+            pose.translate(0.0, car.spec().rideHeight(), 0.0);
             pose.mulPose(com.mojang.math.Axis.YP.rotationDegrees(-yaw));
         }
-        float hx = (float) CarGeometry.HALF_X;
-        float hy = (float) CarGeometry.HALF_Y;
-        float hz = (float) CarGeometry.HALF_Z;
-        // Chassis and cabin together fill the physics box exactly (1.9 x 1.0 x 3.0).
-        block(pose, buffers, light, BODY, -hx, -hy, -hz, 2 * hx, 0.55f, 2 * hz);
-        block(pose, buffers, light, CABIN, -0.75f, -hy + 0.55f, -0.6f, 1.5f, 2 * hy - 0.55f, 1.5f);
-        float r = (float) CarGeometry.WHEEL_RADIUS;
-        float w = (float) CarGeometry.WHEEL_WIDTH;
-        float cy = (float) CarGeometry.wheelCentreY();
-        for (double[] mount : CarGeometry.MOUNTS) {
+        VehicleSpec spec = car.spec();
+        float hx = (float) spec.halfX();
+        float hy = (float) spec.halfY();
+        float hz = (float) spec.halfZ();
+        if (spec == VehicleSpec.TRUCK) {
+            // Chassis and cab fill the physics box; an open bed behind the cab.
+            block(pose, buffers, light, TRUCK_BODY, -hx, -hy, -hz, 2 * hx, 0.6f, 2 * hz);
+            block(pose, buffers, light, TRUCK_BODY, -hx + 0.1f, -hy + 0.6f, 0.3f, 2 * hx - 0.2f, 2 * hy - 0.6f, hz - 0.3f);
+            block(pose, buffers, light, CABIN, -hx + 0.2f, -hy + 0.8f, 1.2f, 2 * hx - 0.4f, 0.4f, 0.6f);
+            block(pose, buffers, light, BED, -hx, -hy + 0.6f, -hz, 2 * hx, 0.3f, 2 * hz - 2.3f);
+        } else {
+            // Chassis and cabin together fill the physics box exactly (1.9 x 1.0 x 3.0).
+            block(pose, buffers, light, BODY, -hx, -hy, -hz, 2 * hx, 0.55f, 2 * hz);
+            block(pose, buffers, light, CABIN, -0.75f, -hy + 0.55f, -0.6f, 1.5f, 2 * hy - 0.55f, 1.5f);
+        }
+        float r = (float) spec.wheelRadius();
+        float w = (float) spec.wheelWidth();
+        float cy = (float) spec.wheelCentreY();
+        for (double[] mount : spec.mounts()) {
             block(pose, buffers, light, WHEEL, (float) mount[0] - w / 2, cy - r, (float) mount[2] - r, w, 2 * r, 2 * r);
         }
         pose.popPose();

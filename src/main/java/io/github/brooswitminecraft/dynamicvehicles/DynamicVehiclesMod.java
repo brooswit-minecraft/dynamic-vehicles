@@ -43,7 +43,12 @@ public class DynamicVehiclesMod {
             () -> EntityType.Builder.<CarEntity>of(CarEntity::new, MobCategory.MISC)
                     .sized(1.9f, 1.0f).clientTrackingRange(10).updateInterval(1)
                     .build(ResourceLocation.fromNamespaceAndPath(MODID, "car").toString()));
-    public static final DeferredItem<CarItem> CAR_ITEM = ITEMS.register("car", () -> new CarItem(new Item.Properties().stacksTo(1)));
+    public static final DeferredHolder<EntityType<?>, EntityType<CarEntity>> TRUCK = ENTITIES.register("truck",
+            () -> EntityType.Builder.<CarEntity>of(CarEntity::new, MobCategory.MISC)
+                    .sized(VehicleSpec.TRUCK.width(), VehicleSpec.TRUCK.height()).clientTrackingRange(10).updateInterval(1)
+                    .build(ResourceLocation.fromNamespaceAndPath(MODID, "truck").toString()));
+    public static final DeferredItem<CarItem> TRUCK_ITEM = ITEMS.register("truck", () -> new CarItem(new Item.Properties().stacksTo(1), TRUCK, 0.5));
+    public static final DeferredItem<CarItem> CAR_ITEM = ITEMS.register("car", () -> new CarItem(new Item.Properties().stacksTo(1), CAR, 0.0));
 
     public DynamicVehiclesMod(IEventBus modEventBus, ModContainer modContainer) {
         modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.SERVER, CarConfig.SPEC);
@@ -111,6 +116,7 @@ public class DynamicVehiclesMod {
     private void addCreative(BuildCreativeModeTabContentsEvent event) {
         if (event.getTabKey() == CreativeModeTabs.TOOLS_AND_UTILITIES) {
             event.accept(CAR_ITEM);
+            event.accept(TRUCK_ITEM);
         }
     }
 
@@ -121,6 +127,7 @@ public class DynamicVehiclesMod {
         @SubscribeEvent
         public static void registerRenderers(EntityRenderersEvent.RegisterRenderers event) {
             event.registerEntityRenderer(CAR.get(), CarRenderer::new);
+            event.registerEntityRenderer(TRUCK.get(), CarRenderer::new);
         }
     }
 }

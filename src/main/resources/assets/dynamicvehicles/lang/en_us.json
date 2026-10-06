@@ -1,4 +1,6 @@
 {
   "item.dynamicvehicles.car": "Car",
-  "entity.dynamicvehicles.car": "Car"
+  "entity.dynamicvehicles.car": "Car",
+  "item.dynamicvehicles.truck": "Truck",
+  "entity.dynamicvehicles.truck": "Truck"
 }

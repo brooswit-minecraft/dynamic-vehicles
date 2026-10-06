@@ -72,14 +72,20 @@ public final class WheelMath {
     /** As above, with a brake gain above 1 for a parked car that must not creep down a slope. */
     public static Tire tire(double vLong, double vLat, double normalForce, double mu, double rollingCoefficient,
             double lateralScale, double driveForce, double brakeForce, double brakeGain, double dt) {
+        return tire(vLong, vLat, normalForce, mu, rollingCoefficient, lateralScale, driveForce, brakeForce, brakeGain, EFFECTIVE_MASS, dt);
+    }
+
+    /** As above, for a vehicle whose wheel carries {@code effectiveMass} kg. */
+    public static Tire tire(double vLong, double vLat, double normalForce, double mu, double rollingCoefficient,
+            double lateralScale, double driveForce, double brakeForce, double brakeGain, double effectiveMass, double dt) {
         if (!(normalForce > 0) || !(mu > 0)) {
             return new Tire(0.0, 0.0, 0.0);
         }
         double limit = mu * normalForce;
-        double wantLat = -EFFECTIVE_MASS * vLat / dt * RELAXATION * lateralScale;
+        double wantLat = -effectiveMass * vLat / dt * RELAXATION * lateralScale;
         double wantLong;
         if (brakeForce > 0) {
-            double stop = EFFECTIVE_MASS * vLong / dt * RELAXATION * brakeGain;
+            double stop = effectiveMass * vLong / dt * RELAXATION * brakeGain;
             wantLong = -Math.max(-brakeForce, Math.min(brakeForce, stop));
         } else {
             double rolling = Math.abs(vLong) > 0.05 ? -Math.signum(vLong) * rollingCoefficient * normalForce : 0.0;
@@ -87,7 +93,7 @@ public final class WheelMath {
         }
         double demand = Math.hypot(wantLong, wantLat);
         double scale = demand > limit ? limit / demand : 1.0;
-        double slip = demand > limit ? (demand - limit) * dt / EFFECTIVE_MASS : 0.0;
+        double slip = demand > limit ? (demand - limit) * dt / effectiveMass : 0.0;
         return new Tire(wantLong * scale, wantLat * scale, slip);
     }
 
@@ -97,10 +103,15 @@ public final class WheelMath {
      * @return the force the spring pushes the car up with, N (never negative)
      */
     public static double suspensionForce(double compression, double compressionRate) {
+        return suspensionForce(compression, compressionRate, SPRING_RATE, DAMPING_RATE, MAX_FORCE);
+    }
+
+    /** As above, for a vehicle with its own spring, damper and force limit. */
+    public static double suspensionForce(double compression, double compressionRate, double springRate, double dampingRate, double maxForce) {
         if (!(compression > 0)) {
             return 0.0;
         }
-        double force = SPRING_RATE * compression + DAMPING_RATE * compressionRate;
-        return Math.max(0.0, Math.min(MAX_FORCE, force));
+        double force = springRate * compression + dampingRate * compressionRate;
+        return Math.max(0.0, Math.min(maxForce, force));
     }
 }

@@ -23,24 +23,23 @@ import net.minecraft.world.phys.Vec3;
  * with the inverse of the body's orientation.
  */
 final class SableCarBody {
-    static final Vector3d HALF_EXTENTS = new Vector3d(CarGeometry.HALF_X, CarGeometry.HALF_Y, CarGeometry.HALF_Z);
-    static final double MASS_KG = 1200.0;
-    /** Wheel mounts in the body frame: x right, y up, z forward. */
-    static final double[][] MOUNTS = CarGeometry.MOUNTS;
     private static final double GRAVITY = 9.81;
     private static final double DRIVE_FORCE = 2_300.0; // per wheel, all-wheel drive: about 0.77 g for the car
     private static final double REVERSE_FORCE = 1_400.0;
     private static final double BRAKE_FORCE = 3_000.0;
     private static final double HANDBRAKE_FORCE = 6_000.0;
-    private static final double MAX_SPEED = 32.0;
     private static final double AIR_DRAG = 0.4; // N per (m/s)^2
 
+    private final VehicleSpec spec;
+    private final Vector3d halfExtents;
     private final ServerLevel level;
     private final BoxPhysicsObject box;
     private final RigidBodyHandle body;
     private double lastSlipSpeed;
 
-    private SableCarBody(ServerLevel level, BoxPhysicsObject box, RigidBodyHandle body) {
+    private SableCarBody(VehicleSpec spec, ServerLevel level, BoxPhysicsObject box, RigidBodyHandle body) {
+        this.spec = spec;
+        this.halfExtents = new Vector3d(spec.halfX(), spec.halfY(), spec.halfZ());
         this.level = level;
         this.box = box;
         this.body = body;
@@ -58,18 +57,19 @@ final class SableCarBody {
     }
 
     static SableCarBody create(ServerLevel level, CarEntity car) {
+        VehicleSpec spec = car.spec();
         ServerSubLevelContainer container = SubLevelContainer.getContainer(level);
         if (container == null) {
             return null;
         }
         // The entity's origin is the bottom centre of its box; the body's origin is its centre.
-        Vector3d centre = new Vector3d(car.getX(), car.getY() + HALF_EXTENTS.y, car.getZ());
+        Vector3d centre = new Vector3d(car.getX(), car.getY() + spec.halfY(), car.getZ());
         org.joml.Quaternionf saved = car.savedOrientation();
         Quaterniond orientation = saved != null ? new Quaterniond(saved.x, saved.y, saved.z, saved.w) : orientationOf(car.getYRot());
         Pose3d pose = new Pose3d(centre, orientation, new Vector3d(), new Vector3d(1, 1, 1));
-        BoxPhysicsObject box = new BoxPhysicsObject(pose, new Vector3d(HALF_EXTENTS), MASS_KG);
+        BoxPhysicsObject box = new BoxPhysicsObject(pose, new Vector3d(spec.halfX(), spec.halfY(), spec.halfZ()), spec.massKg());
         container.physicsSystem().addObject(box);
-        return new SableCarBody(level, box, RigidBodyHandle.of(level, box));
+        return new SableCarBody(spec, level, box, RigidBodyHandle.of(level, box));
     }
 
     void remove() {
@@ -92,11 +92,11 @@ final class SableCarBody {
         boolean touching = false;
         double slipThisTick = 0.0;
         java.util.List<Vector3d> hits = new java.util.ArrayList<>();
-        for (double[] mount : MOUNTS) {
+        for (double[] mount : spec.mounts()) {
             Vector3d local = new Vector3d(mount[0], mount[1], mount[2]);
             Vector3d offset = orientation.transform(new Vector3d(local));
             Vector3d from = new Vector3d(position).add(offset);
-            Vector3d to = new Vector3d(from).fma(WheelMath.REST_LENGTH + 0.25, down);
+            Vector3d to = new Vector3d(from).fma(spec.restLength() + 0.25, down);
             BlockHitResult hit = level.clip(new ClipContext(new Vec3(from.x, from.y, from.z), new Vec3(to.x, to.y, to.z),
                     ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, car));
             if (hit.getType() == HitResult.Type.MISS) {
@@ -104,11 +104,11 @@ final class SableCarBody {
             }
             hits.add(new Vector3d(hit.getLocation().x, hit.getLocation().y, hit.getLocation().z));
             double distance = hit.getLocation().distanceTo(new Vec3(from.x, from.y, from.z));
-            double compression = WheelMath.REST_LENGTH - distance;
+            double compression = spec.restLength() - distance;
             // Velocity of the mount point: linear + angular x offset. Positive along "down" = squeezing.
             Vector3d pointVelocity = new Vector3d(angular).cross(offset).add(linear);
             double rate = pointVelocity.dot(down);
-            double force = WheelMath.suspensionForce(compression, rate);
+            double force = WheelMath.suspensionForce(compression, rate, spec.springRate(), spec.dampingRate(), spec.maxSpringForce());
             if (force <= 0) {
                 continue;
             }
@@ -120,7 +120,7 @@ final class SableCarBody {
             boolean front = mount[2] > 0;
             Vector3d forward = orientation.transform(new Vector3d(0, 0, 1));
             double steerAngle = front ? steer * WheelMath.maxSteerAngle(forwardSpeed, WheelMath.BASE_FRICTION,
-                    CarPhysics.WHEELBASE, CarPhysics.MAX_STEER) : 0.0;
+                    spec.wheelbase(), CarPhysics.MAX_STEER) : 0.0;
             forward.rotateAxis(steerAngle, up.x, up.y, up.z);
             forward.fma(-forward.dot(up), up).normalize();
             Vector3d lateral = new Vector3d(up).cross(forward).normalize();
@@ -131,28 +131,28 @@ final class SableCarBody {
             double brake = 0.0;
             double lateralScale = 1.0;
             if (throttle > 0) {
-                drive = throttle * DRIVE_FORCE * Math.max(0.0, 1.0 - Math.abs(forwardSpeed) / MAX_SPEED);
+                drive = throttle * DRIVE_FORCE * spec.forceScale() * Math.max(0.0, 1.0 - Math.abs(forwardSpeed) / spec.maxSpeed());
             } else if (throttle < 0) {
                 if (forwardSpeed > 0.5) {
-                    brake = -throttle * BRAKE_FORCE;
+                    brake = -throttle * BRAKE_FORCE * spec.forceScale();
                 } else {
-                    drive = throttle * REVERSE_FORCE * Math.max(0.0, 1.0 - Math.abs(forwardSpeed) / 8.0);
+                    drive = throttle * REVERSE_FORCE * spec.forceScale() * Math.max(0.0, 1.0 - Math.abs(forwardSpeed) / 8.0);
                 }
             }
             double brakeGain = 1.0;
             if (throttle == 0 && Math.abs(forwardSpeed) < 1.5) {
-                brake = BRAKE_FORCE; // parked: hold on a slope instead of rolling away
+                brake = BRAKE_FORCE * spec.forceScale(); // parked: hold on a slope instead of rolling away
                 brakeGain = 6.0;
             }
             if (handbrake && !front) {
-                brake = HANDBRAKE_FORCE;
+                brake = HANDBRAKE_FORCE * spec.forceScale();
                 drive = 0.0;
                 lateralScale = 0.35;
             }
             // What the tire feels comes from the block it is on (grip, rolling resistance), via Dynamic Terrain.
             SurfaceProperties surface = Surfaces.at(level, hit.getBlockPos());
             WheelMath.Tire tire = WheelMath.tire(vLong, vLat, force, WheelMath.BASE_FRICTION * surface.grip(),
-                    surface.rollingResistance(), lateralScale, drive, brake, brakeGain, dt);
+                    surface.rollingResistance(), lateralScale, drive, brake, brakeGain, spec.massKg() / 4.0, dt);
             impulseWorld.fma(tire.longitudinal() * dt, forward).fma(tire.lateral() * dt, lateral);
             slipThisTick = Math.max(slipThisTick, tire.slipSpeed());
             if (tire.slipSpeed() > 0.3) {
@@ -171,7 +171,7 @@ final class SableCarBody {
         // Air drag along the velocity.
         double speed = linear.length();
         if (speed > 0.5) {
-            Vector3d drag = inverse.transform(new Vector3d(linear).mul(-AIR_DRAG * speed * dt));
+            Vector3d drag = inverse.transform(new Vector3d(linear).mul(-AIR_DRAG * spec.forceScale() * speed * dt));
             body.applyImpulseAtPoint(new Vector3d(0, 0, 0), drag);
         }
         lastSlipSpeed = slipThisTick;
@@ -189,7 +189,7 @@ final class SableCarBody {
         Pose3d pose = box.getPose() instanceof Pose3d p ? p : new Pose3d(box.getPose());
         Quaterniond orientation = new Quaterniond(pose.orientation());
         Vector3d p = pose.position();
-        car.setPos(p.x, p.y - HALF_EXTENTS.y, p.z);
+        car.setPos(p.x, p.y - spec.halfY(), p.z);
         car.setYRot(yawOf(orientation));
         car.yRotO = car.getYRot();
         car.publishOrientation(new org.joml.Quaternionf((float) orientation.x, (float) orientation.y, (float) orientation.z, (float) orientation.w));
@@ -204,7 +204,7 @@ final class SableCarBody {
         for (int sx = -1; sx <= 1; sx += 2) {
             for (int sy = -1; sy <= 1; sy += 2) {
                 for (int sz = -1; sz <= 1; sz += 2) {
-                    Vector3d corner = orientation.transform(new Vector3d(sx * CarGeometry.HALF_X, sy * CarGeometry.HALF_Y, sz * CarGeometry.HALF_Z)).add(position);
+                    Vector3d corner = orientation.transform(new Vector3d(sx * spec.halfX(), sy * spec.halfY(), sz * spec.halfZ())).add(position);
                     level.sendParticles(red, corner.x, corner.y, corner.z, 1, 0, 0, 0, 0);
                 }
             }

@@ -21,7 +21,7 @@ import net.minecraft.world.phys.Vec3;
  */
 public class CarEntity extends Entity {
     /** Wheel offsets from the car centre: x = right, z = forward, in metres. */
-    static final double[][] WHEELS = {{-0.8, 1.2}, {0.8, 1.2}, {-0.8, -1.2}, {0.8, -1.2}};
+    static final double[][] WHEELS = {{-0.8, 1.2}, {0.8, 1.2}, {-0.8, -1.2}, {0.8, -1.2}}; // x, z; same as CarGeometry.MOUNTS
     static final double MASS_KG = 1200.0;
     private static final double DT = 1.0 / 20.0;
     private static final double GRAVITY = 0.08;

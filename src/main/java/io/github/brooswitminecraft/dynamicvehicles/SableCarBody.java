@@ -23,10 +23,10 @@ import net.minecraft.world.phys.Vec3;
  * with the inverse of the body's orientation.
  */
 final class SableCarBody {
-    static final Vector3d HALF_EXTENTS = new Vector3d(0.95, 0.5, 1.5);
+    static final Vector3d HALF_EXTENTS = new Vector3d(CarGeometry.HALF_X, CarGeometry.HALF_Y, CarGeometry.HALF_Z);
     static final double MASS_KG = 1200.0;
     /** Wheel mounts in the body frame: x right, y up, z forward. */
-    static final double[][] MOUNTS = {{-0.8, -0.4, 1.2}, {0.8, -0.4, 1.2}, {-0.8, -0.4, -1.2}, {0.8, -0.4, -1.2}};
+    static final double[][] MOUNTS = CarGeometry.MOUNTS;
     private static final double GRAVITY = 9.81;
     private static final double DRIVE_FORCE = 2_300.0; // per wheel, all-wheel drive: about 0.77 g for the car
     private static final double REVERSE_FORCE = 1_400.0;
@@ -89,6 +89,7 @@ final class SableCarBody {
         Vector3d carForward = orientation.transform(new Vector3d(0, 0, 1));
         double forwardSpeed = linear.dot(carForward);
         boolean touching = false;
+        java.util.List<Vector3d> hits = new java.util.ArrayList<>();
         for (double[] mount : MOUNTS) {
             Vector3d local = new Vector3d(mount[0], mount[1], mount[2]);
             Vector3d offset = orientation.transform(new Vector3d(local));
@@ -99,6 +100,7 @@ final class SableCarBody {
             if (hit.getType() == HitResult.Type.MISS) {
                 continue;
             }
+            hits.add(new Vector3d(hit.getLocation().x, hit.getLocation().y, hit.getLocation().z));
             double distance = hit.getLocation().distanceTo(new Vec3(from.x, from.y, from.z));
             double compression = WheelMath.REST_LENGTH - distance;
             // Velocity of the mount point: linear + angular x offset. Positive along "down" = squeezing.
@@ -135,8 +137,10 @@ final class SableCarBody {
                     drive = throttle * REVERSE_FORCE * Math.max(0.0, 1.0 - Math.abs(forwardSpeed) / 8.0);
                 }
             }
-            if (throttle == 0 && Math.abs(forwardSpeed) < 1.0) {
-                brake = BRAKE_FORCE * 0.5; // parked: hold on a slope instead of rolling away
+            double brakeGain = 1.0;
+            if (throttle == 0 && Math.abs(forwardSpeed) < 1.5) {
+                brake = BRAKE_FORCE; // parked: hold on a slope instead of rolling away
+                brakeGain = 6.0;
             }
             if (handbrake && !front) {
                 brake = HANDBRAKE_FORCE;
@@ -146,7 +150,7 @@ final class SableCarBody {
             // What the tire feels comes from the block it is on (grip, rolling resistance), via Dynamic Terrain.
             SurfaceProperties surface = Surfaces.at(level, hit.getBlockPos());
             WheelMath.Tire tire = WheelMath.tire(vLong, vLat, force, WheelMath.BASE_FRICTION * surface.grip(),
-                    surface.rollingResistance(), lateralScale, drive, brake, dt);
+                    surface.rollingResistance(), lateralScale, drive, brake, brakeGain, dt);
             impulseWorld.fma(tire.longitudinal() * dt, forward).fma(tire.lateral() * dt, lateral);
             if (tire.slipSpeed() > 0.3) {
                 SlipReporter.report(level, hit.getBlockPos(), tire.slipSpeed(), force / GRAVITY);
@@ -167,6 +171,9 @@ final class SableCarBody {
             Vector3d drag = inverse.transform(new Vector3d(linear).mul(-AIR_DRAG * speed * dt));
             body.applyImpulseAtPoint(new Vector3d(0, 0, 0), drag);
         }
+        if (CarDebug.enabled) {
+            drawDebug(position, orientation, hits);
+        }
         if (touching || throttle != 0 || steer != 0 || handbrake) {
             box.wakeUp();
         }
@@ -184,6 +191,23 @@ final class SableCarBody {
         car.publishOrientation(new org.joml.Quaternionf((float) orientation.x, (float) orientation.y, (float) orientation.z, (float) orientation.w));
         Vector3d v = body.getLinearVelocity(new Vector3d());
         car.setDeltaMovement(v.x / 20.0, v.y / 20.0, v.z / 20.0);
+    }
+
+    /** Debug overlay: the body box corners (red) and where each suspension ray meets the ground (green). */
+    private void drawDebug(Vector3d position, Quaterniond orientation, java.util.List<Vector3d> hits) {
+        net.minecraft.core.particles.DustParticleOptions red = new net.minecraft.core.particles.DustParticleOptions(new org.joml.Vector3f(1f, 0.1f, 0.1f), 1.2f);
+        net.minecraft.core.particles.DustParticleOptions green = new net.minecraft.core.particles.DustParticleOptions(new org.joml.Vector3f(0.1f, 1f, 0.1f), 1.2f);
+        for (int sx = -1; sx <= 1; sx += 2) {
+            for (int sy = -1; sy <= 1; sy += 2) {
+                for (int sz = -1; sz <= 1; sz += 2) {
+                    Vector3d corner = orientation.transform(new Vector3d(sx * CarGeometry.HALF_X, sy * CarGeometry.HALF_Y, sz * CarGeometry.HALF_Z)).add(position);
+                    level.sendParticles(red, corner.x, corner.y, corner.z, 1, 0, 0, 0, 0);
+                }
+            }
+        }
+        for (Vector3d hit : hits) {
+            level.sendParticles(green, hit.x, hit.y, hit.z, 1, 0, 0, 0, 0);
+        }
     }
 
     /** The body's current orientation, for saving. */

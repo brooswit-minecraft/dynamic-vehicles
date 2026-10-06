@@ -116,4 +116,12 @@ class WheelMathTest {
         double ice = WheelMath.tire(0, 0.5, N, 1.1 * 0.1, 1, 0, 0, DT).slipSpeed();
         assertTrue(ice > road);
     }
+
+    @Test
+    void aParkedBrakeWithGainHoldsHarderAgainstCreep() {
+        double normal = WheelMath.tire(0.1, 0, N, 1.1, 0.02, 1, 0, 3000, 1.0, DT).longitudinal();
+        double held = WheelMath.tire(0.1, 0, N, 1.1, 0.02, 1, 0, 3000, 6.0, DT).longitudinal();
+        assertTrue(held < normal, "more braking force against forward creep");
+        assertTrue(held >= -3000.0, "never more than the brake force");
+    }
 }

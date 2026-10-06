@@ -3,6 +3,7 @@
   "car.engine.mid": { "sounds": [ { "name": "dynamicvehicles:car/engine/engine1", "stream": false } ] },
   "car.engine.high": { "sounds": [ { "name": "dynamicvehicles:car/engine/engine3", "stream": false } ] },
   "car.engine.start": { "sounds": [ "dynamicvehicles:car/engine/start" ] },
+  "car.horn": { "sounds": [ "dynamicvehicles:car/horn/horn" ] },
   "car.engine.stop": { "sounds": [ "dynamicvehicles:car/engine/stop" ] },
   "car.impact.light": { "sounds": [ "dynamicvehicles:car/impact/impact2" ] },
   "car.impact.medium": { "sounds": [ "dynamicvehicles:car/impact/impact1" ] },

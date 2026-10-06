@@ -25,6 +25,8 @@ public final class ModSounds {
     public static final DeferredHolder<SoundEvent, SoundEvent> TIRE_SKID_LIGHT = register("car.tire.skid_light");
     public static final DeferredHolder<SoundEvent, SoundEvent> TIRE_SKID_HARD = register("car.tire.skid_hard");
 
+    public static final DeferredHolder<SoundEvent, SoundEvent> HORN = register("car.horn");
+
     private ModSounds() {}
 
     private static DeferredHolder<SoundEvent, SoundEvent> register(String name) {

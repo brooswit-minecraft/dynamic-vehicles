@@ -56,6 +56,7 @@ public class CarEntity extends Entity {
     private Object clientSounds;
     private double lastTickSpeed;
     private int impactCooldown;
+    private boolean wasHonking;
 
     private double speed;
     private org.joml.Quaternionf savedOrientation;
@@ -118,6 +119,15 @@ public class CarEntity extends Entity {
         if (Math.abs(entityData.get(DATA_SLIP) - s) > 0.05f) {
             entityData.set(DATA_SLIP, s);
         }
+    }
+
+    /** Server: honk once each time space goes down (space is also the handbrake). */
+    private void honkOnPress(boolean pressed) {
+        if (pressed && !wasHonking) {
+            level().playSound(null, getX(), getY() + 0.5, getZ(), ModSounds.HORN.get(),
+                    net.minecraft.sounds.SoundSource.NEUTRAL, 1.0f, 1.0f);
+        }
+        wasHonking = pressed;
     }
 
     /** Server: play an impact when the car has just lost a lot of speed at once. */
@@ -331,6 +341,7 @@ public class CarEntity extends Entity {
         double steer = rider == null ? 0.0 : Math.max(-1.0, Math.min(1.0, rider.xxa));
         // Sneak is vanilla's dismount key, so the handbrake is the jump key (space).
         boolean handbrake = rider != null && rider.jumping;
+        honkOnPress(handbrake);
 
         // Minecraft yaw 0 faces +Z; the physics heading is the entity's yaw in radians.
         CarPhysics.Step step = CarPhysics.step(new CarPhysics.State(speed, Math.toRadians(getYRot())),
@@ -369,6 +380,7 @@ public class CarEntity extends Entity {
         double throttle = rider == null ? 0.0 : Math.max(-1.0, Math.min(1.0, rider.zza));
         double steer = rider == null ? 0.0 : Math.max(-1.0, Math.min(1.0, rider.xxa));
         boolean handbrake = rider != null && rider.jumping;
+        honkOnPress(handbrake);
         if (forcedDriveTicks > 0) {
             forcedDriveTicks--;
             throttle = forcedThrottle;

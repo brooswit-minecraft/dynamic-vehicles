@@ -8,6 +8,8 @@ import dev.ryanhcode.sable.api.physics.object.box.BoxPhysicsObject;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.Pose3d;
+import io.github.brooswitminecraft.dynamicterrain.SurfaceProperties;
+import io.github.brooswitminecraft.dynamicterrain.Surfaces;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.phys.BlockHitResult;
@@ -139,7 +141,10 @@ final class SableCarBody {
                 drive = 0.0;
                 lateralScale = 0.35;
             }
-            WheelMath.Tire tire = WheelMath.tire(vLong, vLat, force, WheelMath.BASE_FRICTION, lateralScale, drive, brake, dt);
+            // What the tire feels comes from the block it is on (grip, rolling resistance), via Dynamic Terrain.
+            SurfaceProperties surface = Surfaces.at(level, hit.getBlockPos());
+            WheelMath.Tire tire = WheelMath.tire(vLong, vLat, force, WheelMath.BASE_FRICTION * surface.grip(),
+                    surface.rollingResistance(), lateralScale, drive, brake, dt);
             impulseWorld.fma(tire.longitudinal() * dt, forward).fma(tire.lateral() * dt, lateral);
             if (tire.slipSpeed() > 0.3) {
                 SlipReporter.report(level, hit.getBlockPos(), tire.slipSpeed(), force / GRAVITY);

@@ -60,6 +60,12 @@ public final class WheelMath {
      */
     public static Tire tire(double vLong, double vLat, double normalForce, double mu, double lateralScale,
             double driveForce, double brakeForce, double dt) {
+        return tire(vLong, vLat, normalForce, mu, ROLLING_RESISTANCE, lateralScale, driveForce, brakeForce, dt);
+    }
+
+    /** As above, with the surface's own rolling resistance coefficient (sand is many times pavement). */
+    public static Tire tire(double vLong, double vLat, double normalForce, double mu, double rollingCoefficient,
+            double lateralScale, double driveForce, double brakeForce, double dt) {
         if (!(normalForce > 0) || !(mu > 0)) {
             return new Tire(0.0, 0.0, 0.0);
         }
@@ -70,7 +76,7 @@ public final class WheelMath {
             double stop = EFFECTIVE_MASS * vLong / dt * RELAXATION;
             wantLong = -Math.max(-brakeForce, Math.min(brakeForce, stop));
         } else {
-            double rolling = Math.abs(vLong) > 0.05 ? -Math.signum(vLong) * ROLLING_RESISTANCE * normalForce : 0.0;
+            double rolling = Math.abs(vLong) > 0.05 ? -Math.signum(vLong) * rollingCoefficient * normalForce : 0.0;
             wantLong = driveForce + rolling;
         }
         double demand = Math.hypot(wantLong, wantLat);

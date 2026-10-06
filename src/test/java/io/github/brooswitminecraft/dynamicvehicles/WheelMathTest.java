@@ -105,4 +105,15 @@ class WheelMathTest {
         // Cornering demand at the limit stays within 80% of mu*g.
         assertTrue(30 * 30 * Math.tan(fast) / 2.4 <= 0.8 * 1.1 * 9.81 + 1e-9);
     }
+
+    @Test
+    void sandRollsHarderThanPavementAndIceHoldsLess() {
+        double pavementDrag = Math.abs(WheelMath.tire(10, 0, N, 1.1, 0.02, 1, 0, 0, DT).longitudinal());
+        double sandDrag = Math.abs(WheelMath.tire(10, 0, N, 1.1 * 0.45, 0.16, 1, 0, 0, DT).longitudinal());
+        assertTrue(sandDrag > 5 * pavementDrag);
+        // On ice (grip ~0.1 of pavement) the same sideways slide cannot be corrected: it reports more slip.
+        double road = WheelMath.tire(0, 0.5, N, 1.1, 1, 0, 0, DT).slipSpeed();
+        double ice = WheelMath.tire(0, 0.5, N, 1.1 * 0.1, 1, 0, 0, DT).slipSpeed();
+        assertTrue(ice > road);
+    }
 }

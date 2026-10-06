@@ -12,7 +12,7 @@ public final class CarConfig {
         USE_SABLE_PHYSICS = builder
                 .comment("Drive the car with Sable rigid-body physics (per-wheel suspension) instead of the simple "
                         + "kinematic model. Needs the Sable mod; without it the simple model is used regardless.")
-                .define("useSablePhysics", false);
+                .define("useSablePhysics", true);
         SPEC = builder.build();
     }
 

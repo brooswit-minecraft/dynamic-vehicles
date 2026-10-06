@@ -36,6 +36,14 @@ final class SableCompat {
         return ((SableCarBody) body).describe();
     }
 
+    static double slip(Object body) {
+        return ((SableCarBody) body).lastSlipSpeed();
+    }
+
+    static double speed(Object body) {
+        return ((SableCarBody) body).speed();
+    }
+
     static void remove(Object body) {
         ((SableCarBody) body).remove();
     }

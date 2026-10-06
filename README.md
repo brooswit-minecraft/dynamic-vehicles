@@ -46,3 +46,7 @@ suspension instead of the simple kinematic model (MINECRAFT-65). Sable is an opt
 is only compiled against, never bundled. **Sable is licensed under the PolyForm Shield License 1.0.0**,
 which allows using and depending on it but not shipping something that competes with it; read it before
 redistributing anything built on it.
+
+## Sounds
+
+The car has an engine (start and stop sounds, idle, mid and high loops faded and pitched by speed and throttle), impact sounds chosen by how much speed a crash sheds, and tire sounds (rolling noise rough or smooth by surface, a snow loop on snow and ice, light and hard skid loops on slip and hard braking). All are positional, so nearby players hear the car. The client config `soundVolume` scales the looping sounds. The car sounds were provided by the repository owner; `scripts/convert_sounds.sh` converts the source WAV files to the mono OGG files in `src/main/resources/assets/dynamicvehicles/sounds/car/`.

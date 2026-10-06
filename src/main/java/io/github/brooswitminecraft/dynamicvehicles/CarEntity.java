@@ -47,6 +47,16 @@ public class CarEntity extends Entity {
     private final org.joml.Quaternionf previousOrientation = new org.joml.Quaternionf();
     private final org.joml.Quaternionf currentOrientation = new org.joml.Quaternionf();
 
+    private static final net.minecraft.network.syncher.EntityDataAccessor<Float> DATA_THROTTLE =
+            net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
+    private static final net.minecraft.network.syncher.EntityDataAccessor<Float> DATA_SLIP =
+            net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
+    /** Client: horizontal speed in m/s from the movement actually shown, and the sound loops for this car. */
+    private double clientSpeed;
+    private Object clientSounds;
+    private double lastTickSpeed;
+    private int impactCooldown;
+
     private double speed;
     private org.joml.Quaternionf savedOrientation;
     /** The Sable rigid body, as Object so this class never loads Sable types (see SableCompat). */
@@ -65,6 +75,8 @@ public class CarEntity extends Entity {
     protected void defineSynchedData(SynchedEntityData.Builder builder) {
         builder.define(DATA_ORIENTATION, new org.joml.Quaternionf());
         builder.define(DATA_RIGID_BODY, false);
+        builder.define(DATA_THROTTLE, 0.0f);
+        builder.define(DATA_SLIP, 0.0f);
     }
 
     @Override
@@ -82,6 +94,63 @@ public class CarEntity extends Entity {
     void publishOrientation(org.joml.Quaternionf orientation) {
         entityData.set(DATA_RIGID_BODY, true);
         entityData.set(DATA_ORIENTATION, orientation);
+    }
+
+    public double clientSpeed() {
+        return clientSpeed;
+    }
+
+    public double clientThrottle() {
+        return entityData.get(DATA_THROTTLE);
+    }
+
+    public double clientSlip() {
+        return entityData.get(DATA_SLIP);
+    }
+
+    /** Server: publish what the sound system needs to hear on every client. */
+    void publishSoundState(double throttle, double slipSpeed) {
+        float t = (float) Math.max(0.0, Math.min(1.0, throttle));
+        float s = (float) CarSoundMath.slipLevel(slipSpeed);
+        if (Math.abs(entityData.get(DATA_THROTTLE) - t) > 0.05f) {
+            entityData.set(DATA_THROTTLE, t);
+        }
+        if (Math.abs(entityData.get(DATA_SLIP) - s) > 0.05f) {
+            entityData.set(DATA_SLIP, s);
+        }
+    }
+
+    /** Server: play an impact when the car has just lost a lot of speed at once. */
+    void checkImpact(double currentSpeed) {
+        if (impactCooldown > 0) {
+            impactCooldown--;
+        }
+        int severity = CarSoundMath.impactSeverity(lastTickSpeed - currentSpeed);
+        lastTickSpeed = currentSpeed;
+        if (severity > 0 && impactCooldown == 0) {
+            impactCooldown = 10;
+            level().playSound(null, getX(), getY() + 0.5, getZ(), ModSounds.impact(severity),
+                    net.minecraft.sounds.SoundSource.NEUTRAL, (float) CarSoundMath.impactVolume(severity),
+                    0.9f + random.nextFloat() * 0.2f);
+        }
+    }
+
+    @Override
+    protected void addPassenger(Entity passenger) {
+        super.addPassenger(passenger);
+        if (!level().isClientSide() && getPassengers().size() == 1) {
+            level().playSound(null, getX(), getY() + 0.5, getZ(), ModSounds.ENGINE_START.get(),
+                    net.minecraft.sounds.SoundSource.NEUTRAL, 0.9f, 1.0f);
+        }
+    }
+
+    @Override
+    protected void removePassenger(Entity passenger) {
+        super.removePassenger(passenger);
+        if (!level().isClientSide() && getPassengers().isEmpty()) {
+            level().playSound(null, getX(), getY() + 0.5, getZ(), ModSounds.ENGINE_STOP.get(),
+                    net.minecraft.sounds.SoundSource.NEUTRAL, 0.9f, 1.0f);
+        }
     }
 
     /** Whether this car is driven by a rigid body, so the renderer should draw its full orientation. */
@@ -247,6 +316,10 @@ public class CarEntity extends Entity {
         super.tick();
         if (level().isClientSide()) {
             consumeClientStates();
+            clientSpeed = Math.hypot(getX() - xo, getZ() - zo) * 20.0;
+            if (clientSounds == null) {
+                clientSounds = CarSoundsClient.start(this);
+            }
             return;
         }
         LivingEntity rider = getControllingPassenger();
@@ -282,6 +355,8 @@ public class CarEntity extends Entity {
                     String.format("%.1f", getX()), String.format("%.1f", getY()), String.format("%.1f", getZ()));
         }
         reportSlip(slip);
+        publishSoundState(Math.abs(throttle), slip);
+        checkImpact(Math.abs(speed));
     }
 
     private void tickSable(net.minecraft.server.level.ServerLevel serverLevel, LivingEntity rider) {
@@ -301,6 +376,8 @@ public class CarEntity extends Entity {
         }
         SableCompat.tick(sableBody, this, throttle, steer, handbrake, DT);
         SableCompat.syncEntity(sableBody, this);
+        publishSoundState(Math.abs(throttle), SableCompat.slip(sableBody) + (handbrake || (throttle < 0 && SableCompat.speed(sableBody) > 8.0) ? 2.0 : 0.0));
+        checkImpact(SableCompat.speed(sableBody));
         if (tickCount % 20 == 0) {
             DynamicVehiclesMod.LOGGER.debug("car {} {}", getUUID(), SableCompat.describe(sableBody));
         }

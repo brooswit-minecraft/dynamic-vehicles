@@ -1,0 +1,16 @@
+{
+  "car.engine.idle": { "sounds": [ { "name": "dynamicvehicles:car/engine/engine0", "stream": false } ] },
+  "car.engine.mid": { "sounds": [ { "name": "dynamicvehicles:car/engine/engine1", "stream": false } ] },
+  "car.engine.high": { "sounds": [ { "name": "dynamicvehicles:car/engine/engine3", "stream": false } ] },
+  "car.engine.start": { "sounds": [ "dynamicvehicles:car/engine/start" ] },
+  "car.engine.stop": { "sounds": [ "dynamicvehicles:car/engine/stop" ] },
+  "car.impact.light": { "sounds": [ "dynamicvehicles:car/impact/impact2" ] },
+  "car.impact.medium": { "sounds": [ "dynamicvehicles:car/impact/impact1" ] },
+  "car.impact.hard": { "sounds": [ "dynamicvehicles:car/impact/impact3" ] },
+  "car.impact.severe": { "sounds": [ "dynamicvehicles:car/impact/impact0" ] },
+  "car.tire.rough": { "sounds": [ { "name": "dynamicvehicles:car/tire/rough", "stream": false } ] },
+  "car.tire.smooth": { "sounds": [ { "name": "dynamicvehicles:car/tire/smooth", "stream": false } ] },
+  "car.tire.snow": { "sounds": [ { "name": "dynamicvehicles:car/tire/snow", "stream": false } ] },
+  "car.tire.skid_light": { "sounds": [ { "name": "dynamicvehicles:car/tire/skid0", "stream": false } ] },
+  "car.tire.skid_hard": { "sounds": [ { "name": "dynamicvehicles:car/tire/skid1", "stream": false } ] }
+}

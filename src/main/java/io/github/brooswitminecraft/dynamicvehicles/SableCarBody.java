@@ -63,7 +63,9 @@ final class SableCarBody {
         }
         // The entity's origin is the bottom centre of its box; the body's origin is its centre.
         Vector3d centre = new Vector3d(car.getX(), car.getY() + HALF_EXTENTS.y, car.getZ());
-        Pose3d pose = new Pose3d(centre, orientationOf(car.getYRot()), new Vector3d(), new Vector3d(1, 1, 1));
+        org.joml.Quaternionf saved = car.savedOrientation();
+        Quaterniond orientation = saved != null ? new Quaterniond(saved.x, saved.y, saved.z, saved.w) : orientationOf(car.getYRot());
+        Pose3d pose = new Pose3d(centre, orientation, new Vector3d(), new Vector3d(1, 1, 1));
         BoxPhysicsObject box = new BoxPhysicsObject(pose, new Vector3d(HALF_EXTENTS), MASS_KG);
         container.physicsSystem().addObject(box);
         return new SableCarBody(level, box, RigidBodyHandle.of(level, box));
@@ -182,6 +184,13 @@ final class SableCarBody {
         car.publishOrientation(new org.joml.Quaternionf((float) orientation.x, (float) orientation.y, (float) orientation.z, (float) orientation.w));
         Vector3d v = body.getLinearVelocity(new Vector3d());
         car.setDeltaMovement(v.x / 20.0, v.y / 20.0, v.z / 20.0);
+    }
+
+    /** The body's current orientation, for saving. */
+    org.joml.Quaternionf orientationF() {
+        box.updatePose();
+        org.joml.Quaterniondc q = box.getPose().orientation();
+        return new org.joml.Quaternionf((float) q.x(), (float) q.y(), (float) q.z(), (float) q.w());
     }
 
     /** Debug summary: height of the body centre above the ground below it, pitch and roll in degrees. */

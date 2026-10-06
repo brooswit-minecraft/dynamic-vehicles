@@ -28,6 +28,10 @@ final class SableCompat {
         ((SableCarBody) body).syncEntity(car);
     }
 
+    static org.joml.Quaternionf orientation(Object body) {
+        return ((SableCarBody) body).orientationF();
+    }
+
     static String describe(Object body) {
         return ((SableCarBody) body).describe();
     }

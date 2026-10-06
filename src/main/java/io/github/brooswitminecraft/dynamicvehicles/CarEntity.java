@@ -37,6 +37,7 @@ public class CarEntity extends Entity {
     private final org.joml.Quaternionf currentOrientation = new org.joml.Quaternionf();
 
     private double speed;
+    private org.joml.Quaternionf savedOrientation;
     /** The Sable rigid body, as Object so this class never loads Sable types (see SableCompat). */
     private Object sableBody;
     private double forcedSlip;
@@ -81,10 +82,29 @@ public class CarEntity extends Entity {
     }
 
     @Override
-    protected void readAdditionalSaveData(CompoundTag tag) {}
+    protected void readAdditionalSaveData(CompoundTag tag) {
+        if (tag.contains("OrientationW")) {
+            savedOrientation = new org.joml.Quaternionf(tag.getFloat("OrientationX"), tag.getFloat("OrientationY"),
+                    tag.getFloat("OrientationZ"), tag.getFloat("OrientationW"));
+        }
+    }
 
     @Override
-    protected void addAdditionalSaveData(CompoundTag tag) {}
+    protected void addAdditionalSaveData(CompoundTag tag) {
+        // The body's full orientation, so a car resting on a slope reloads tilted instead of snapping upright.
+        org.joml.Quaternionf q = sableBody != null ? SableCompat.orientation(sableBody) : savedOrientation;
+        if (q != null) {
+            tag.putFloat("OrientationX", q.x);
+            tag.putFloat("OrientationY", q.y);
+            tag.putFloat("OrientationZ", q.z);
+            tag.putFloat("OrientationW", q.w);
+        }
+    }
+
+    /** The orientation to restore when the body is recreated after a reload, or null to derive it from the yaw. */
+    org.joml.Quaternionf savedOrientation() {
+        return savedOrientation;
+    }
 
     @Override
     public boolean isPickable() {

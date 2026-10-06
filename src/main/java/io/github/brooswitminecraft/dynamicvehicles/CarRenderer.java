@@ -20,6 +20,7 @@ import net.minecraft.world.level.block.state.BlockState;
 public class CarRenderer extends EntityRenderer<CarEntity> {
     private static final BlockState BODY = Blocks.LIGHT_GRAY_CONCRETE.defaultBlockState();
     private static final BlockState TRUCK_BODY = Blocks.ORANGE_CONCRETE.defaultBlockState();
+    private static final BlockState RACE_BODY = Blocks.RED_CONCRETE.defaultBlockState();
     private static final BlockState BED = Blocks.GRAY_CONCRETE.defaultBlockState();
     private static final BlockState CABIN = Blocks.GLASS.defaultBlockState();
     private static final BlockState WHEEL = Blocks.BLACK_CONCRETE.defaultBlockState();
@@ -44,7 +45,12 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
         float hx = (float) spec.halfX();
         float hy = (float) spec.halfY();
         float hz = (float) spec.halfZ();
-        if (spec == VehicleSpec.TRUCK) {
+        if (spec == VehicleSpec.TROPHY) {
+            // A low, wide race body with a small glass canopy and a rear wing.
+            block(pose, buffers, light, RACE_BODY, -hx, -hy, -hz, 2 * hx, 0.45f, 2 * hz);
+            block(pose, buffers, light, CABIN, -0.6f, -hy + 0.45f, -0.2f, 1.2f, 2 * hy - 0.45f, 1.2f);
+            block(pose, buffers, light, BED, -hx + 0.1f, hy - 0.1f, -hz, 2 * hx - 0.2f, 0.1f, 0.5f);
+        } else if (spec == VehicleSpec.TRUCK) {
             // Chassis and cab fill the physics box; an open bed behind the cab.
             block(pose, buffers, light, TRUCK_BODY, -hx, -hy, -hz, 2 * hx, 0.6f, 2 * hz);
             block(pose, buffers, light, TRUCK_BODY, -hx + 0.1f, -hy + 0.6f, 0.3f, 2 * hx - 0.2f, 2 * hy - 0.6f, hz - 0.3f);

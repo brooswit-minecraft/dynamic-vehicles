@@ -27,7 +27,16 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
     @Override
     public void render(CarEntity car, float yaw, float partialTick, PoseStack pose, MultiBufferSource buffers, int light) {
         pose.pushPose();
-        pose.mulPose(com.mojang.math.Axis.YP.rotationDegrees(180.0f - yaw));
+        if (car.isRigidBody()) {
+            // The body's origin is its centre, 0.5 m above the entity origin, and the wheels reach the ground
+            // 0.4 m below the entity origin at rest. Rotate about the centre, then draw as before.
+            pose.translate(0.0, 0.5, 0.0);
+            pose.mulPose(car.renderOrientation(partialTick));
+            pose.mulPose(com.mojang.math.Axis.YP.rotationDegrees(180.0f));
+            pose.translate(0.0, -0.9, 0.0);
+        } else {
+            pose.mulPose(com.mojang.math.Axis.YP.rotationDegrees(180.0f - yaw));
+        }
         block(pose, buffers, light, BODY, -0.9f, 0.25f, -1.5f, 1.8f, 0.45f, 3.0f);
         block(pose, buffers, light, CABIN, -0.7f, 0.7f, -0.7f, 1.4f, 0.4f, 1.5f);
         for (double[] wheel : CarEntity.WHEELS) {

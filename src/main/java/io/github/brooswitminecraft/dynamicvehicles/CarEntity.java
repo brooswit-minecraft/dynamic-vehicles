@@ -427,13 +427,25 @@ public class CarEntity extends Entity {
             throttle = forcedThrottle;
             steer = forcedSteer;
         }
-        SableCompat.tick(sableBody, this, throttle, steer, handbrake, DT);
-        SableCompat.syncEntity(sableBody, this);
-        publishSoundState(Math.abs(throttle), SableCompat.slip(sableBody) + (handbrake || (throttle < 0 && SableCompat.speed(sableBody) > 8.0) ? 2.0 : 0.0));
-        emitEffects(throttle, SableCompat.speed(sableBody), SableCompat.slip(sableBody));
-        checkImpact(SableCompat.speed(sableBody));
-        if (tickCount % 20 == 0) {
-            DynamicVehiclesMod.LOGGER.debug("car {} {}", getUUID(), SableCompat.describe(sableBody));
+        try {
+            SableCompat.tick(sableBody, this, throttle, steer, handbrake, DT);
+            SableCompat.syncEntity(sableBody, this);
+            publishSoundState(Math.abs(throttle), SableCompat.slip(sableBody) + (handbrake || (throttle < 0 && SableCompat.speed(sableBody) > 8.0) ? 2.0 : 0.0));
+            emitEffects(throttle, SableCompat.speed(sableBody), SableCompat.slip(sableBody));
+            checkImpact(SableCompat.speed(sableBody));
+            if (tickCount % 20 == 0) {
+                DynamicVehiclesMod.LOGGER.debug("car {} {}", getUUID(), SableCompat.describe(sableBody));
+            }
+        } catch (RuntimeException dead) {
+            // Sable released the physics body under us (its handle is null). Drop it so the next tick builds a fresh one
+            // from the entity's position, instead of crashing the server.
+            DynamicVehiclesMod.LOGGER.warn("car {} lost its Sable body ({}); rebuilding", getUUID(), dead.toString());
+            try {
+                SableCompat.remove(sableBody);
+            } catch (RuntimeException ignored) {
+                // already gone
+            }
+            sableBody = null;
         }
     }
 

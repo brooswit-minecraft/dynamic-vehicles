@@ -23,16 +23,16 @@ public final class CarConfig {
                 .define("wearEnabled", true);
         WEAR_STRENGTH = builder
                 .comment("Multiplier on the acceleration/braking wear (0 = only real tire slip wears the ground).")
-                .defineInRange("wearStrength", 2.5, 0.0, 10.0);
+                .defineInRange("wearMultiplier", 2.5, 0.0, 10.0);
         SMOKE_ENABLED = builder
                 .comment("Cars emit Dynamic Atmosphere exhaust (while on the throttle and moving) and dust (at speed or sliding). Needs Dynamic Atmosphere.")
                 .define("smokeEnabled", true);
         SMOKE_STRENGTH = builder
                 .comment("Multiplier on how much exhaust and dust each emission puts into the atmosphere (0 = none).")
-                .defineInRange("smokeStrength", 2.5, 0.0, 10.0);
+                .defineInRange("smokeMultiplier", 2.5, 0.0, 10.0);
         SMOKE_INTERVAL_TICKS = builder
                 .comment("Ticks between emissions per car (the per-car cap: one exhaust and one dust emission per interval).")
-                .defineInRange("smokeIntervalTicks", 6, 5, 200);
+                .defineInRange("smokeEmitTicks", 6, 5, 200);
         SPEC = builder.build();
     }
 

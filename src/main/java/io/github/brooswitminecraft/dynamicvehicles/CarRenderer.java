@@ -1,9 +1,13 @@
 package io.github.brooswitminecraft.dynamicvehicles;
 
+import org.joml.Matrix4f;
+
 import com.mojang.blaze3d.vertex.PoseStack;
+import com.mojang.blaze3d.vertex.VertexConsumer;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.MultiBufferSource;
+import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.entity.EntityRenderer;
 import net.minecraft.client.renderer.entity.EntityRendererProvider;
 import net.minecraft.client.renderer.texture.OverlayTexture;
@@ -67,8 +71,54 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
         for (double[] mount : spec.mounts()) {
             block(pose, buffers, light, WHEEL, (float) mount[0] - w / 2, cy - r, (float) mount[2] - r, w, 2 * r, 2 * r);
         }
+        if (ClientConfig.HEADLIGHTS.get()) {
+            headlights(car.lightsOn(), pose, buffers, light, hx, hy, hz);
+        }
         pose.popPose();
         super.render(car, yaw, partialTick, pose, buffers, light);
+    }
+
+    /** Two lamps on the nose, glowing when lit, each with a faint fading beam cone (visual only). */
+    private static void headlights(boolean on, PoseStack pose, MultiBufferSource buffers, int light, float hx, float hy, float hz) {
+        float lampY = -hy + 0.32f;
+        float lampZ = hz - 0.04f;
+        for (int side = -1; side <= 1; side += 2) {
+            float lampX = side * (hx - 0.32f);
+            block(pose, buffers, on ? 0xF000F0 : light, on ? Blocks.SEA_LANTERN.defaultBlockState() : Blocks.WHITE_CONCRETE.defaultBlockState(),
+                    lampX - 0.14f, lampY - 0.09f, lampZ, 0.28f, 0.18f, 0.08f);
+        }
+        double length = ClientConfig.HEADLIGHT_BEAM.get();
+        if (!on || length <= 0.0) {
+            return;
+        }
+        VertexConsumer beam = buffers.getBuffer(RenderType.lightning());
+        Matrix4f m = pose.last().pose();
+        float far = (float) length;
+        float spreadX = 0.16f * far + 0.2f;
+        float spreadY = 0.08f * far + 0.15f;
+        for (int side = -1; side <= 1; side += 2) {
+            float x0 = side * (hx - 0.32f);
+            float z0 = hz + 0.04f;
+            // Near end is a small square at the lamp; far end is wider and fully transparent.
+            float[][] near = {{x0 - 0.1f, lampY - 0.07f}, {x0 + 0.1f, lampY - 0.07f}, {x0 + 0.1f, lampY + 0.07f}, {x0 - 0.1f, lampY + 0.07f}};
+            float[][] end = {{x0 - spreadX, lampY - spreadY}, {x0 + spreadX, lampY - spreadY}, {x0 + spreadX, lampY + spreadY}, {x0 - spreadX, lampY + spreadY}};
+            for (int i = 0; i < 4; i++) {
+                int j = (i + 1) % 4;
+                beamVertex(beam, m, near[i][0], near[i][1], z0, 50);
+                beamVertex(beam, m, near[j][0], near[j][1], z0, 50);
+                beamVertex(beam, m, end[j][0], end[j][1], z0 + far, 0);
+                beamVertex(beam, m, end[i][0], end[i][1], z0 + far, 0);
+                // Same quad, reversed, so it shows from either side.
+                beamVertex(beam, m, end[i][0], end[i][1], z0 + far, 0);
+                beamVertex(beam, m, end[j][0], end[j][1], z0 + far, 0);
+                beamVertex(beam, m, near[j][0], near[j][1], z0, 50);
+                beamVertex(beam, m, near[i][0], near[i][1], z0, 50);
+            }
+        }
+    }
+
+    private static void beamVertex(VertexConsumer consumer, Matrix4f matrix, float x, float y, float z, int alpha) {
+        consumer.addVertex(matrix, x, y, z).setColor(255, 244, 214, alpha);
     }
 
     private static void block(PoseStack pose, MultiBufferSource buffers, int light, BlockState state,

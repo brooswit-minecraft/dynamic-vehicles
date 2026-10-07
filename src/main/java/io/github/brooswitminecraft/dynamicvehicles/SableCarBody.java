@@ -155,8 +155,11 @@ final class SableCarBody {
                     surface.rollingResistance() * spec.rollingScale(), lateralScale, drive, brake, brakeGain, spec.massKg() / 4.0, dt);
             impulseWorld.fma(tire.longitudinal() * dt, forward).fma(tire.lateral() * dt, lateral);
             slipThisTick = Math.max(slipThisTick, tire.slipSpeed());
-            if (tire.slipSpeed() > 0.3) {
-                SlipReporter.report(level, hit.getBlockPos(), tire.slipSpeed(), force / GRAVITY);
+            double wearSlip = CarConfig.WEAR_ENABLED.get()
+                    ? CarEffectsMath.wearSlip(throttle, forwardSpeed, tire.slipSpeed(), CarConfig.WEAR_STRENGTH.get())
+                    : tire.slipSpeed();
+            if (wearSlip > 0.3) {
+                SlipReporter.report(level, hit.getBlockPos(), wearSlip, force / GRAVITY);
             }
 
             Vector3d impulseLocal = inverse.transform(impulseWorld);

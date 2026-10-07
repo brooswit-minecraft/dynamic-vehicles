@@ -4,5 +4,7 @@
   "item.dynamicvehicles.truck": "Truck",
   "entity.dynamicvehicles.truck": "Truck",
   "item.dynamicvehicles.trophy_truck": "Trophy Truck",
-  "entity.dynamicvehicles.trophy_truck": "Trophy Truck"
+  "entity.dynamicvehicles.trophy_truck": "Trophy Truck",
+  "key.dynamicvehicles.headlights": "Cycle headlights (auto, on, off)",
+  "key.categories.dynamicvehicles": "Dynamic Vehicles"
 }

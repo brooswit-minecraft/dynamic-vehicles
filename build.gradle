@@ -128,7 +128,27 @@ tasks.register("downloadSable") {
     }
 }
 
+// Dynamic Atmosphere is compiled against only, like Sable.
+def atmosphereJar = layout.buildDirectory.file("atmosphere/dynamicatmosphere-${project.atmosphere_version}.jar")
+def atmosphereVersion = project.atmosphere_version
+def atmosphereSha512 = project.atmosphere_sha512
+def atmosphereUrl = project.atmosphere_url
+tasks.register("downloadAtmosphere") {
+    outputs.file(atmosphereJar)
+    doLast {
+        def target = atmosphereJar.get().asFile
+        target.parentFile.mkdirs()
+        new URL(atmosphereUrl).withInputStream { input -> target.withOutputStream { it << input } }
+        def actual = java.security.MessageDigest.getInstance("SHA-512").digest(target.bytes).encodeHex().toString()
+        if (actual != atmosphereSha512) {
+            target.delete()
+            throw new GradleException("Dynamic Atmosphere ${atmosphereVersion} sha512 mismatch: ${actual}")
+        }
+    }
+}
+
 dependencies {
+    compileOnly files(atmosphereJar).builtBy("downloadAtmosphere")
     compileOnly files(sableJar, sableCompanionJar).builtBy("downloadSable")
     compileOnly files(terrainJar).builtBy("downloadTerrain")
     testCompileOnly files(terrainJar).builtBy("downloadTerrain")

@@ -9,6 +9,8 @@ public final class ClientConfig {
     public static final ModConfigSpec.DoubleValue CHASE_CAMERA_LAG;
     public static final ModConfigSpec.DoubleValue CHASE_CAMERA_RECENTER_SECONDS;
     public static final ModConfigSpec.DoubleValue SOUND_VOLUME;
+    public static final ModConfigSpec.BooleanValue HEADLIGHTS;
+    public static final ModConfigSpec.DoubleValue HEADLIGHT_BEAM;
     public static final ModConfigSpec.BooleanValue WHEEL_ENABLED;
     public static final ModConfigSpec.IntValue WHEEL_DEVICE;
     public static final ModConfigSpec.ConfigValue<String> WHEEL_NAME_CONTAINS;
@@ -40,6 +42,12 @@ public final class ClientConfig {
         SOUND_VOLUME = builder
                 .comment("Volume of the car's looping engine and tire sounds, 0 to 1 (on top of Minecraft's own sound sliders).")
                 .defineInRange("soundVolume", 1.0, 0.0, 1.0);
+        HEADLIGHTS = builder
+                .comment("Draw car headlights (lamps and a faint beam; visual only, no real light). Press H in a car to cycle auto, on, off; auto is on at night and in rain.")
+                .define("headlights", true);
+        HEADLIGHT_BEAM = builder
+                .comment("Beam length in blocks; 0 draws the lamps only.")
+                .defineInRange("headlightBeamLength", 9.0, 0.0, 24.0);
         builder.push("wheel");
         WHEEL_ENABLED = builder
                 .comment("Drive the car with a steering wheel and pedals (any joystick-class device GLFW sees). The keyboard keeps working alongside it.")

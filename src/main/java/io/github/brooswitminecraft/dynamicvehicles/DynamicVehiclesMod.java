@@ -63,7 +63,12 @@ public class DynamicVehiclesMod {
         ITEMS.register(modEventBus);
         modEventBus.addListener(this::commonSetup);
         modEventBus.addListener(this::addCreative);
+        modEventBus.addListener(this::registerPayloads);
         NeoForge.EVENT_BUS.addListener(this::registerCommands);
+    }
+
+    private void registerPayloads(net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent event) {
+        event.registrar("1").playToServer(LightsTogglePayload.TYPE, LightsTogglePayload.STREAM_CODEC, LightsTogglePayload::handle);
     }
 
     private void commonSetup(FMLCommonSetupEvent event) {

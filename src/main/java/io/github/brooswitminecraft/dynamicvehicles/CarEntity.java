@@ -47,6 +47,9 @@ public class CarEntity extends Entity {
     private final org.joml.Quaternionf previousOrientation = new org.joml.Quaternionf();
     private final org.joml.Quaternionf currentOrientation = new org.joml.Quaternionf();
 
+    /** Headlight mode: 0 auto (on at night and in rain), 1 on, 2 off. */
+    private static final net.minecraft.network.syncher.EntityDataAccessor<Byte> DATA_LIGHTS =
+            net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.BYTE);
     private static final net.minecraft.network.syncher.EntityDataAccessor<Float> DATA_THROTTLE =
             net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
     private static final net.minecraft.network.syncher.EntityDataAccessor<Float> DATA_SLIP =
@@ -86,6 +89,7 @@ public class CarEntity extends Entity {
         builder.define(DATA_ORIENTATION, new org.joml.Quaternionf());
         builder.define(DATA_RIGID_BODY, false);
         builder.define(DATA_THROTTLE, 0.0f);
+        builder.define(DATA_LIGHTS, (byte) 0);
         builder.define(DATA_SLIP, 0.0f);
     }
 
@@ -104,6 +108,26 @@ public class CarEntity extends Entity {
     void publishOrientation(org.joml.Quaternionf orientation) {
         entityData.set(DATA_RIGID_BODY, true);
         entityData.set(DATA_ORIENTATION, orientation);
+    }
+
+    /** Server: auto, then on, then off, then auto again; returns the new mode's name. */
+    String cycleLights() {
+        byte next = (byte) ((entityData.get(DATA_LIGHTS) + 1) % 3);
+        entityData.set(DATA_LIGHTS, next);
+        return next == 0 ? "auto" : next == 1 ? "on" : "off";
+    }
+
+    /** Whether the headlights are lit: on, or auto and dark (night or rain) in the car's world. */
+    public boolean lightsOn() {
+        byte mode = entityData.get(DATA_LIGHTS);
+        if (mode == 1) {
+            return true;
+        }
+        if (mode == 2) {
+            return false;
+        }
+        long time = level().getDayTime() % 24000L;
+        return HeadlightMath.isDark(time, level().getRainLevel(1.0f));
     }
 
     public double clientSpeed() {
@@ -374,8 +398,9 @@ public class CarEntity extends Entity {
             DynamicVehiclesMod.LOGGER.debug("car {} speed {} m/s at {} {} {}", getUUID(), String.format("%.2f", speed),
                     String.format("%.1f", getX()), String.format("%.1f", getY()), String.format("%.1f", getZ()));
         }
-        reportSlip(slip);
+        reportSlip(CarConfig.WEAR_ENABLED.get() ? CarEffectsMath.wearSlip(throttle, speed, slip, CarConfig.WEAR_STRENGTH.get()) : slip);
         publishSoundState(Math.abs(throttle), slip);
+        emitEffects(throttle, speed, slip);
         checkImpact(Math.abs(speed));
     }
 
@@ -398,6 +423,7 @@ public class CarEntity extends Entity {
         SableCompat.tick(sableBody, this, throttle, steer, handbrake, DT);
         SableCompat.syncEntity(sableBody, this);
         publishSoundState(Math.abs(throttle), SableCompat.slip(sableBody) + (handbrake || (throttle < 0 && SableCompat.speed(sableBody) > 8.0) ? 2.0 : 0.0));
+        emitEffects(throttle, SableCompat.speed(sableBody), SableCompat.slip(sableBody));
         checkImpact(SableCompat.speed(sableBody));
         if (tickCount % 20 == 0) {
             DynamicVehiclesMod.LOGGER.debug("car {} {}", getUUID(), SableCompat.describe(sableBody));
@@ -411,6 +437,26 @@ public class CarEntity extends Entity {
             sableBody = null;
         }
         super.remove(reason);
+    }
+
+    /** Server: exhaust while on the throttle and moving, dust at speed or sliding, both from behind the car, at most one of each per interval. */
+    private void emitEffects(double throttle, double speed, double slip) {
+        if (!CarConfig.SMOKE_ENABLED.get() || !AtmosphereCompat.usable() || tickCount % CarConfig.SMOKE_INTERVAL_TICKS.get() != 0
+                || !(level() instanceof net.minecraft.server.level.ServerLevel serverLevel)) {
+            return;
+        }
+        double strength = CarConfig.SMOKE_STRENGTH.get();
+        double yaw = Math.toRadians(getYRot());
+        double back = spec().halfZ() + 0.3;
+        BlockPos rear = BlockPos.containing(getX() + Math.sin(yaw) * back, getY() + 0.5, getZ() - Math.cos(yaw) * back);
+        int exhaust = CarEffectsMath.exhaustAmount(throttle, speed, strength);
+        if (exhaust > 0) {
+            AtmosphereCompat.exhaust(serverLevel, rear, exhaust);
+        }
+        int dust = onGround() ? CarEffectsMath.dustAmount(speed, slip, strength) : 0;
+        if (dust > 0) {
+            AtmosphereCompat.dust(serverLevel, rear.below(), dust);
+        }
     }
 
     /** Every wheel reports the same slip for the block under it; terrain decides what it does. */

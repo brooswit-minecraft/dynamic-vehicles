@@ -18,7 +18,30 @@ public final class WheelMapping {
         }
     }
 
+    /** Known axis layout of a device, found by its GLFW name; pedal rest is where the released pedal sits. */
+    public record Profile(int steerAxis, int throttleAxis, int brakeAxis, PedalRest pedalRest) {}
+
+    /** Layout used for a device with no profile. */
+    public static final Profile GENERIC = new Profile(0, 2, 3, PedalRest.AUTO);
+    /** Logitech G29 through G HUB, measured on a real one: axis 0 wheel, axis 1 accelerator, axis 3 brake, all pedals rest at +1 and go to -1. */
+    public static final Profile G29 = new Profile(0, 1, 3, PedalRest.HIGH);
+
     private WheelMapping() {}
+
+    public static Profile profileFor(String deviceName) {
+        String name = deviceName == null ? "" : deviceName.toLowerCase(java.util.Locale.ROOT);
+        return name.contains("g29") ? G29 : GENERIC;
+    }
+
+    /** A configured axis (-1 = take the profile's) or the profile's value. */
+    public static int axisOr(int configured, int profileAxis) {
+        return configured >= 0 ? configured : profileAxis;
+    }
+
+    /** The configured rest mode; AUTO defers to the profile's when it knows better. */
+    public static PedalRest restOr(PedalRest configured, PedalRest profile) {
+        return configured == PedalRest.AUTO ? profile : configured;
+    }
 
     /** Axis value of a released pedal read from a sample, or NaN if the sample is not at either end (pedal unread or half pressed). */
     public static double detectRest(double sample) {

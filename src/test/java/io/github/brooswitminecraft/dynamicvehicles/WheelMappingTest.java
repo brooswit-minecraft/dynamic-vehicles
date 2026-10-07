@@ -60,4 +60,28 @@ class WheelMappingTest {
         assertEquals(-0.4f, WheelMapping.merge(1.0f, -0.4), 1e-6);
         assertEquals(1.0f, WheelMapping.merge(0.0f, 5.0));
     }
+
+    @Test
+    void g29ProfileMatchesTheMeasuredDevice() {
+        var p = WheelMapping.profileFor("Logitech G HUB G29 Driving Force Racing Wheel USB");
+        assertEquals(WheelMapping.G29, p);
+        // measured on a real G29: released axes 0=0.01 1=1 2=1 3=1; accelerator down gives axis 1 = -1
+        float[] released = {0.01f, 1f, 1f, 1f};
+        float[] accel = {0.01f, -1f, 1f, 1f};
+        float[] brake = {0.01f, 1f, 1f, -1f};
+        var s = new WheelMapping.Settings(p.steerAxis(), p.throttleAxis(), p.brakeAxis(), false, false, false, 0.03, 1.0, 0.03);
+        double rest = WheelMapping.rest(p.pedalRest(), Double.NaN);
+        assertEquals(0.0, WheelMapping.map(released, s, rest, rest).forward(), 0.0);
+        assertEquals(1.0, WheelMapping.map(accel, s, rest, rest).throttle(), 1e-9);
+        assertEquals(1.0, WheelMapping.map(brake, s, rest, rest).brake(), 1e-9);
+    }
+
+    @Test
+    void gamepadsAndUnknownDevicesGetTheGenericProfile() {
+        assertEquals(WheelMapping.GENERIC, WheelMapping.profileFor("Wireless Controller"));
+        assertEquals(3, WheelMapping.axisOr(-1, 3));
+        assertEquals(1, WheelMapping.axisOr(1, 3));
+        assertEquals(WheelMapping.PedalRest.LOW, WheelMapping.restOr(WheelMapping.PedalRest.LOW, WheelMapping.PedalRest.HIGH));
+        assertEquals(WheelMapping.PedalRest.HIGH, WheelMapping.restOr(WheelMapping.PedalRest.AUTO, WheelMapping.PedalRest.HIGH));
+    }
 }

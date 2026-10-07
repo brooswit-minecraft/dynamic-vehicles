@@ -11,6 +11,10 @@ public final class CarConfig {
     public static final ModConfigSpec.BooleanValue SMOKE_ENABLED;
     public static final ModConfigSpec.DoubleValue SMOKE_STRENGTH;
     public static final ModConfigSpec.IntValue SMOKE_INTERVAL_TICKS;
+    public static final ModConfigSpec.BooleanValue COLLISION_BREAKING;
+    public static final ModConfigSpec.DoubleValue COLLISION_MIN_SPEED;
+    public static final ModConfigSpec.DoubleValue COLLISION_MAX_HARDNESS;
+    public static final ModConfigSpec.BooleanValue HEADLAMP_LIGHT;
 
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
@@ -33,6 +37,18 @@ public final class CarConfig {
         SMOKE_INTERVAL_TICKS = builder
                 .comment("Ticks between emissions per car (the per-car cap: one exhaust and one dust emission per interval).")
                 .defineInRange("smokeEmitTicks", 6, 5, 200);
+        COLLISION_BREAKING = builder
+                .comment("A hard hit has a chance to break the block ahead (more likely when faster and for softer blocks); a block that survives is eroded instead. Never breaks unbreakable blocks, block entities or fluids, and at most one block per impact.")
+                .define("collisionBreaking", true);
+        COLLISION_MIN_SPEED = builder
+                .comment("Speed in m/s before the car was stopped below which a hit never breaks a block.")
+                .defineInRange("collisionMinSpeed", 8.0, 0.0, 100.0);
+        COLLISION_MAX_HARDNESS = builder
+                .comment("Hardest block (vanilla destroy speed: dirt 0.5, stone 1.5, logs 2.0, iron blocks 5.0, obsidian 50) a car can break.")
+                .defineInRange("collisionMaxHardness", 3.0, 0.0, 100.0);
+        HEADLAMP_LIGHT = builder
+                .comment("While the headlamps are on and the car is driven, place one invisible light block a few blocks ahead (only into air). All of them are recorded and removed when the lamps go off, the car unloads, or on the next server start.")
+                .define("headlampLight", true);
         SPEC = builder.build();
     }
 

@@ -60,6 +60,9 @@ public class CarEntity extends Entity {
     private double lastTickSpeed;
     private int impactCooldown;
     private boolean wasHonking;
+    /** Server: unit horizontal direction of recent travel, and the headlamp light block this car holds. */
+    private net.minecraft.world.phys.Vec3 heading;
+    private net.minecraft.core.BlockPos lampBlock;
 
     private double speed;
     private org.joml.Quaternionf savedOrientation;
@@ -172,13 +175,48 @@ public class CarEntity extends Entity {
             impactCooldown--;
         }
         int severity = CarSoundMath.impactSeverity(lastTickSpeed - currentSpeed);
+        double speedBefore = lastTickSpeed;
         lastTickSpeed = currentSpeed;
         if (severity > 0 && impactCooldown == 0) {
             impactCooldown = 10;
             level().playSound(null, getX(), getY() + 0.5, getZ(), ModSounds.impact(severity),
                     net.minecraft.sounds.SoundSource.NEUTRAL, (float) CarSoundMath.impactVolume(severity),
                     0.9f + random.nextFloat() * 0.2f);
+            hitBlockAhead(speedBefore);
         }
+    }
+
+    /** Server: a hard hit may break the block ahead (soft and fast is likely), otherwise it erodes it. At most one block. */
+    private void hitBlockAhead(double speedBefore) {
+        if (!CarConfig.COLLISION_BREAKING.get() || heading == null || !(level() instanceof net.minecraft.server.level.ServerLevel serverLevel)) {
+            return;
+        }
+        double reach = spec.halfZ() + 0.6;
+        for (double dy : new double[] {0.4, 1.0}) {
+            net.minecraft.core.BlockPos pos = net.minecraft.core.BlockPos.containing(getX() + heading.x * reach, getY() + dy, getZ() + heading.z * reach);
+            net.minecraft.world.level.block.state.BlockState state = serverLevel.getBlockState(pos);
+            if (state.isAir() || !state.getFluidState().isEmpty()) {
+                continue;
+            }
+            double chance = state.hasBlockEntity() ? 0.0
+                    : CollisionMath.breakChance(speedBefore, state.getDestroySpeed(serverLevel, pos),
+                            CarConfig.COLLISION_MIN_SPEED.get(), CarConfig.COLLISION_MAX_HARDNESS.get());
+            if (chance > 0.0 && random.nextDouble() < chance) {
+                serverLevel.destroyBlock(pos, true, this);
+            } else {
+                SlipReporter.report(serverLevel, pos, speedBefore, MASS_KG);
+            }
+            return;
+        }
+    }
+
+    @Override
+    public void onRemovedFromLevel() {
+        // Runs for every way out of the level: killed, discarded, or unloaded with its chunk.
+        if (level() instanceof net.minecraft.server.level.ServerLevel serverLevel) {
+            lampBlock = HeadlampLight.clear(serverLevel, lampBlock);
+        }
+        super.onRemovedFromLevel();
     }
 
     @Override
@@ -374,6 +412,13 @@ public class CarEntity extends Entity {
                 clientSounds = CarSoundsClient.start(this);
             }
             return;
+        }
+        double travelled = Math.hypot(getX() - xo, getZ() - zo);
+        if (travelled > 0.05) {
+            heading = new net.minecraft.world.phys.Vec3((getX() - xo) / travelled, 0.0, (getZ() - zo) / travelled);
+        }
+        if (tickCount % 2 == 0 && level() instanceof net.minecraft.server.level.ServerLevel lampLevel) {
+            lampBlock = HeadlampLight.update(lampLevel, this, lampBlock);
         }
         LivingEntity rider = getControllingPassenger();
         if (level() instanceof net.minecraft.server.level.ServerLevel serverLevel && SableCompat.usable()) {

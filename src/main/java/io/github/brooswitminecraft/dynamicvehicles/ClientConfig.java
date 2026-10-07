@@ -21,6 +21,9 @@ public final class ClientConfig {
     public static final ModConfigSpec.EnumValue<WheelMapping.PedalRest> WHEEL_PEDAL_REST;
     public static final ModConfigSpec.DoubleValue WHEEL_STEER_DEADZONE;
     public static final ModConfigSpec.DoubleValue WHEEL_STEER_SCALE;
+    public static final ModConfigSpec.DoubleValue WHEEL_LOCK_DEGREES;
+    public static final ModConfigSpec.DoubleValue WHEEL_EFFECTIVE_DEGREES;
+    public static final ModConfigSpec.DoubleValue WHEEL_STEER_CURVE;
     public static final ModConfigSpec.DoubleValue WHEEL_PEDAL_DEADZONE;
 
     static {
@@ -63,8 +66,14 @@ public final class ClientConfig {
                 .defineEnum("pedalRest", WheelMapping.PedalRest.AUTO);
         WHEEL_STEER_DEADZONE = builder.comment("Steering axis values smaller than this count as straight ahead.")
                 .defineInRange("steerDeadzone", 0.03, 0.0, 0.9);
-        WHEEL_STEER_SCALE = builder.comment("Steering multiplier; above 1 reaches full lock before the wheel is fully turned.")
+        WHEEL_STEER_SCALE = builder.comment("Extra steering multiplier on top of the lock settings below; above 1 reaches full lock sooner.")
                 .defineInRange("steerScale", 1.0, 0.1, 4.0);
+        WHEEL_LOCK_DEGREES = builder.comment("How far the wheel turns lock to lock in degrees (G29: 900, or the operating range set in G HUB).")
+                .defineInRange("lockDegrees", 900.0, 90.0, 2700.0);
+        WHEEL_EFFECTIVE_DEGREES = builder.comment("Lock to lock in degrees that should steer the car fully, e.g. 360 = half a turn each way on a 900 degree wheel. Set equal to lockDegrees for the full range. Larger lockDegrees / smaller effectiveDegrees = more sensitive.")
+                .defineInRange("effectiveDegrees", 360.0, 90.0, 2700.0);
+        WHEEL_STEER_CURVE = builder.comment("Response curve: 1 = linear; above 1 is gentler near the centre and still reaches full lock (steer = travel^curve).")
+                .defineInRange("steerCurve", 1.25, 1.0, 3.0);
         WHEEL_PEDAL_DEADZONE = builder.comment("Pedal travel (0-1) below this counts as released.")
                 .defineInRange("pedalDeadzone", 0.03, 0.0, 0.9);
         builder.pop();

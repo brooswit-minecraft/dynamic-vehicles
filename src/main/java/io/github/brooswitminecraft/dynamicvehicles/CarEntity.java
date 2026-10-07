@@ -292,7 +292,14 @@ public class CarEntity extends Entity {
     @Override
     protected void addAdditionalSaveData(CompoundTag tag) {
         // The body's full orientation, so a car resting on a slope reloads tilted instead of snapping upright.
-        org.joml.Quaternionf q = sableBody != null ? SableCompat.orientation(sableBody) : savedOrientation;
+        org.joml.Quaternionf q = savedOrientation;
+        if (sableBody != null) {
+            try {
+                q = SableCompat.orientation(sableBody);
+            } catch (RuntimeException gone) {
+                // Sable has already released the physics body (chunk unload); keep the last known orientation.
+            }
+        }
         if (q != null) {
             tag.putFloat("OrientationX", q.x);
             tag.putFloat("OrientationY", q.y);

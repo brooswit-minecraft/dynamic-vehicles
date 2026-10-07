@@ -114,6 +114,9 @@ public class CarEntity extends Entity {
     String cycleLights() {
         byte next = (byte) ((entityData.get(DATA_LIGHTS) + 1) % 3);
         entityData.set(DATA_LIGHTS, next);
+        // A switch click, higher when the lamps are switched on explicitly, lower for off.
+        level().playSound(null, getX(), getY(), getZ(), net.minecraft.sounds.SoundEvents.LEVER_CLICK,
+                net.minecraft.sounds.SoundSource.NEUTRAL, 0.6F, next == 1 ? 1.3F : next == 2 ? 0.8F : 1.0F);
         return next == 0 ? "auto" : next == 1 ? "on" : "off";
     }
 

@@ -77,15 +77,15 @@ public final class WheelInput {
         // Latch each pedal's released value once, when it is seen sitting at an end of its axis outside a car.
         if (!riding) {
             if (Double.isNaN(detectedThrottleRest)) {
-                detectedThrottleRest = WheelMapping.detectRest(WheelMapping.axis(axes, ClientConfig.WHEEL_THROTTLE_AXIS.get()));
+                detectedThrottleRest = WheelMapping.detectRest(WheelMapping.axis(axes, throttleAxis()));
             }
             if (Double.isNaN(detectedBrakeRest)) {
-                detectedBrakeRest = WheelMapping.detectRest(WheelMapping.axis(axes, ClientConfig.WHEEL_BRAKE_AXIS.get()));
+                detectedBrakeRest = WheelMapping.detectRest(WheelMapping.axis(axes, brakeAxis()));
             }
         } else if (!wasRiding) {
             DynamicVehiclesMod.LOGGER.info("Wheel in use: \"{}\" axes={} pedalRest throttle={} brake={}", deviceName, axes.length,
-                    WheelMapping.rest(ClientConfig.WHEEL_PEDAL_REST.get(), detectedThrottleRest),
-                    WheelMapping.rest(ClientConfig.WHEEL_PEDAL_REST.get(), detectedBrakeRest));
+                    WheelMapping.rest(restMode(), detectedThrottleRest),
+                    WheelMapping.rest(restMode(), detectedBrakeRest));
         }
         wasRiding = riding;
     }
@@ -124,11 +124,27 @@ public final class WheelInput {
 
     private static WheelMapping.Output current() {
         WheelMapping.Settings settings = new WheelMapping.Settings(
-                ClientConfig.WHEEL_STEER_AXIS.get(), ClientConfig.WHEEL_THROTTLE_AXIS.get(), ClientConfig.WHEEL_BRAKE_AXIS.get(),
+                WheelMapping.axisOr(ClientConfig.WHEEL_STEER_AXIS.get(), profile().steerAxis()), throttleAxis(), brakeAxis(),
                 ClientConfig.WHEEL_INVERT_STEER.get(), ClientConfig.WHEEL_COMBINED_PEDALS.get(), ClientConfig.WHEEL_INVERT_PEDALS.get(),
                 ClientConfig.WHEEL_STEER_DEADZONE.get(), ClientConfig.WHEEL_STEER_SCALE.get(), ClientConfig.WHEEL_PEDAL_DEADZONE.get());
-        var mode = ClientConfig.WHEEL_PEDAL_REST.get();
+        var mode = restMode();
         return WheelMapping.map(axes, settings, WheelMapping.rest(mode, detectedThrottleRest), WheelMapping.rest(mode, detectedBrakeRest));
+    }
+
+    private static WheelMapping.Profile profile() {
+        return WheelMapping.profileFor(deviceName);
+    }
+
+    private static int throttleAxis() {
+        return WheelMapping.axisOr(ClientConfig.WHEEL_THROTTLE_AXIS.get(), profile().throttleAxis());
+    }
+
+    private static int brakeAxis() {
+        return WheelMapping.axisOr(ClientConfig.WHEEL_BRAKE_AXIS.get(), profile().brakeAxis());
+    }
+
+    private static WheelMapping.PedalRest restMode() {
+        return WheelMapping.restOr(ClientConfig.WHEEL_PEDAL_REST.get(), profile().pedalRest());
     }
 
     private static boolean isRiding() {

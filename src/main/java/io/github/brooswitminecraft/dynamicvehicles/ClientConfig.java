@@ -47,12 +47,12 @@ public final class ClientConfig {
         WHEEL_NAME_CONTAINS = builder
                 .comment("When device is -1, pick the first device whose name contains this text (case-insensitive). Empty = built-in wheel names (wheel, G29, G920, G923, G27, Driving Force, Racing...).")
                 .define("nameContains", "");
-        WHEEL_STEER_AXIS = builder.comment("Axis index of the steering wheel. /dvwheel shows live axis values.")
-                .defineInRange("steerAxis", 0, 0, 31);
-        WHEEL_THROTTLE_AXIS = builder.comment("Axis index of the throttle (accelerator) pedal. With combinedPedals, the one axis holding both pedals.")
-                .defineInRange("throttleAxis", 2, 0, 31);
-        WHEEL_BRAKE_AXIS = builder.comment("Axis index of the brake pedal. Ignored with combinedPedals.")
-                .defineInRange("brakeAxis", 3, 0, 31);
+        WHEEL_STEER_AXIS = builder.comment("Axis index of the steering wheel, or -1 for the device's built-in profile (Logitech G29 known; others 0). /dvwheel shows live axis values.")
+                .defineInRange("steerAxisOverride", -1, -1, 31);
+        WHEEL_THROTTLE_AXIS = builder.comment("Axis index of the throttle (accelerator) pedal, or -1 for the device's built-in profile (Logitech G29 known; others 2). With combinedPedals, the one axis holding both pedals.")
+                .defineInRange("throttleAxisOverride", -1, -1, 31);
+        WHEEL_BRAKE_AXIS = builder.comment("Axis index of the brake pedal, or -1 for the device's built-in profile (Logitech G29 known; others 3). Ignored with combinedPedals.")
+                .defineInRange("brakeAxisOverride", -1, -1, 31);
         WHEEL_INVERT_STEER = builder.comment("Flip steering direction (default: axis + = wheel turned right).")
                 .define("invertSteer", false);
         WHEEL_COMBINED_PEDALS = builder.comment("Throttle and brake share one axis (centred = neither, one end = throttle, the other = brake).")

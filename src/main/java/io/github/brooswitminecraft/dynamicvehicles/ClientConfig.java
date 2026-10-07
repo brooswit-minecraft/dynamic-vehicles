@@ -70,8 +70,8 @@ public final class ClientConfig {
                 .defineInRange("steerScale", 1.0, 0.1, 4.0);
         WHEEL_LOCK_DEGREES = builder.comment("How far the wheel turns lock to lock in degrees (G29: 900, or the operating range set in G HUB).")
                 .defineInRange("lockDegrees", 900.0, 90.0, 2700.0);
-        WHEEL_EFFECTIVE_DEGREES = builder.comment("Lock to lock in degrees that should steer the car fully, e.g. 360 = half a turn each way on a 900 degree wheel. Set equal to lockDegrees for the full range. Larger lockDegrees / smaller effectiveDegrees = more sensitive.")
-                .defineInRange("effectiveDegrees", 360.0, 90.0, 2700.0);
+        WHEEL_EFFECTIVE_DEGREES = builder.comment("Lock to lock in degrees that should steer the car fully, default 600 = a 1.5x gain on a 900 degree wheel; 360 would be 2.5x. Set equal to lockDegrees for the full range. Larger lockDegrees / smaller effectiveDegrees = more sensitive.")
+                .defineInRange("effectiveDegrees", 600.0, 90.0, 2700.0);
         WHEEL_STEER_CURVE = builder.comment("Response curve: 1 = linear; above 1 is gentler near the centre and still reaches full lock (steer = travel^curve).")
                 .defineInRange("steerCurve", 1.25, 1.0, 3.0);
         WHEEL_PEDAL_DEADZONE = builder.comment("Pedal travel (0-1) below this counts as released.")

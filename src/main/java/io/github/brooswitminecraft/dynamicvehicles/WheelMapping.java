@@ -9,7 +9,8 @@ public final class WheelMapping {
     public enum PedalRest { AUTO, HIGH, LOW }
 
     public record Settings(int steerAxis, int throttleAxis, int brakeAxis, boolean invertSteer, boolean combinedPedals,
-                           boolean invertPedals, double steerDeadzone, double steerScale, double pedalDeadzone) {}
+                           boolean invertPedals, double steerDeadzone, double steerScale, double pedalDeadzone,
+                           double steerCurve) {}
 
     /** steer: positive = left (the vanilla xxa convention the car reads); throttle and brake are 0..1. */
     public record Output(double steer, double throttle, double brake) {
@@ -31,6 +32,11 @@ public final class WheelMapping {
     public static Profile profileFor(String deviceName) {
         String name = deviceName == null ? "" : deviceName.toLowerCase(java.util.Locale.ROOT);
         return name.contains("g29") ? G29 : GENERIC;
+    }
+
+    /** Gain that makes `effectiveDegrees` of wheel travel (lock to lock) reach full lock on a wheel that turns `lockDegrees`. */
+    public static double lockGain(double lockDegrees, double effectiveDegrees) {
+        return effectiveDegrees <= 0 ? 1.0 : Math.max(1.0, lockDegrees / effectiveDegrees);
     }
 
     /** A configured axis (-1 = take the profile's) or the profile's value. */
@@ -68,13 +74,13 @@ public final class WheelMapping {
     }
 
     /** Steering: deadzone, rescale so full lock still reaches 1, scale, clamp, and flip to the car's positive = left. */
-    public static double steer(double value, double deadzone, double scale, boolean invert) {
+    public static double steer(double value, double deadzone, double scale, boolean invert, double curve) {
         double magnitude = Math.abs(value);
         if (magnitude <= deadzone) {
             return 0.0;
         }
         double shaped = (magnitude - deadzone) / (1.0 - deadzone) * scale;
-        shaped = Math.min(1.0, shaped);
+        shaped = Math.pow(Math.min(1.0, shaped), Math.max(1.0, curve));
         double rightPositive = Math.copySign(shaped, value);
         double left = invert ? rightPositive : -rightPositive;
         return left == 0.0 ? 0.0 : left;
@@ -106,7 +112,7 @@ public final class WheelMapping {
     }
 
     public static Output map(float[] axes, Settings s, double throttleRest, double brakeRest) {
-        double steer = steer(axis(axes, s.steerAxis()), s.steerDeadzone(), s.steerScale(), s.invertSteer());
+        double steer = steer(axis(axes, s.steerAxis()), s.steerDeadzone(), s.steerScale(), s.invertSteer(), s.steerCurve());
         if (s.combinedPedals()) {
             return combined(axis(axes, s.throttleAxis()), s.pedalDeadzone(), s.invertPedals(), steer);
         }

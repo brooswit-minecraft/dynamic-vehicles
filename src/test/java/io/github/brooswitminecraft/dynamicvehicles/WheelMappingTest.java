@@ -6,15 +6,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.Test;
 
 class WheelMappingTest {
-    private static final WheelMapping.Settings S = new WheelMapping.Settings(0, 2, 3, false, false, false, 0.05, 1.0, 0.05);
+    private static final WheelMapping.Settings S = new WheelMapping.Settings(0, 2, 3, false, false, false, 0.05, 1.0, 0.05, 1.0);
 
     @Test
     void steeringRightIsNegativeLeftAndDeadzoned() {
-        assertEquals(0.0, WheelMapping.steer(0.03, 0.05, 1.0, false), 0.0);
-        assertEquals(-1.0, WheelMapping.steer(1.0, 0.05, 1.0, false), 1e-9);
-        assertEquals(1.0, WheelMapping.steer(-1.0, 0.05, 1.0, false), 1e-9);
-        assertEquals(1.0, WheelMapping.steer(1.0, 0.05, 1.0, true), 1e-9);
-        assertEquals(-1.0, WheelMapping.steer(0.6, 0.05, 2.0, false), 1e-9, "scale 2 reaches full lock before full travel");
+        assertEquals(0.0, WheelMapping.steer(0.03, 0.05, 1.0, false, 1.0), 0.0);
+        assertEquals(-1.0, WheelMapping.steer(1.0, 0.05, 1.0, false, 1.0), 1e-9);
+        assertEquals(1.0, WheelMapping.steer(-1.0, 0.05, 1.0, false, 1.0), 1e-9);
+        assertEquals(1.0, WheelMapping.steer(1.0, 0.05, 1.0, true, 1.0), 1e-9);
+        assertEquals(-1.0, WheelMapping.steer(0.6, 0.05, 2.0, false, 1.0), 1e-9, "scale 2 reaches full lock before full travel");
     }
 
     @Test
@@ -69,7 +69,7 @@ class WheelMappingTest {
         float[] released = {0.01f, 1f, 1f, 1f};
         float[] accel = {0.01f, -1f, 1f, 1f};
         float[] brake = {0.01f, 1f, -1f, 1f};
-        var s = new WheelMapping.Settings(p.steerAxis(), p.throttleAxis(), p.brakeAxis(), false, false, false, 0.03, 1.0, 0.03);
+        var s = new WheelMapping.Settings(p.steerAxis(), p.throttleAxis(), p.brakeAxis(), false, false, false, 0.03, 1.0, 0.03, 1.0);
         double rest = WheelMapping.rest(p.pedalRest(), Double.NaN);
         assertEquals(0.0, WheelMapping.map(released, s, rest, rest).forward(), 0.0);
         assertEquals(1.0, WheelMapping.map(accel, s, rest, rest).throttle(), 1e-9);
@@ -83,5 +83,18 @@ class WheelMappingTest {
         assertEquals(1, WheelMapping.axisOr(1, 3));
         assertEquals(WheelMapping.PedalRest.LOW, WheelMapping.restOr(WheelMapping.PedalRest.LOW, WheelMapping.PedalRest.HIGH));
         assertEquals(WheelMapping.PedalRest.HIGH, WheelMapping.restOr(WheelMapping.PedalRest.AUTO, WheelMapping.PedalRest.HIGH));
+    }
+
+    @Test
+    void lockGainAndCurveTameTheSteering() {
+        assertEquals(2.5, WheelMapping.lockGain(900, 360), 1e-9);
+        assertEquals(1.0, WheelMapping.lockGain(900, 900), 1e-9);
+        assertEquals(1.0, WheelMapping.lockGain(360, 900), 1e-9, "never less sensitive than the full range");
+        // 360 effective on a 900 wheel: full lock at 40% of the travel
+        assertEquals(-1.0, WheelMapping.steer(0.4, 0.0, 2.5, false, 1.25), 1e-9);
+        assertEquals(-1.0, WheelMapping.steer(1.0, 0.0, 2.5, false, 1.25), 1e-9);
+        // the curve is gentler near the centre than linear
+        assertTrue(Math.abs(WheelMapping.steer(0.1, 0.0, 2.5, false, 1.25)) < Math.abs(WheelMapping.steer(0.1, 0.0, 2.5, false, 1.0)));
+        assertEquals(0.0, WheelMapping.steer(0.0, 0.03, 2.5, false, 1.25), 0.0);
     }
 }

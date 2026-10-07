@@ -126,7 +126,9 @@ public final class WheelInput {
         WheelMapping.Settings settings = new WheelMapping.Settings(
                 WheelMapping.axisOr(ClientConfig.WHEEL_STEER_AXIS.get(), profile().steerAxis()), throttleAxis(), brakeAxis(),
                 ClientConfig.WHEEL_INVERT_STEER.get(), ClientConfig.WHEEL_COMBINED_PEDALS.get(), ClientConfig.WHEEL_INVERT_PEDALS.get(),
-                ClientConfig.WHEEL_STEER_DEADZONE.get(), ClientConfig.WHEEL_STEER_SCALE.get(), ClientConfig.WHEEL_PEDAL_DEADZONE.get());
+                ClientConfig.WHEEL_STEER_DEADZONE.get(),
+                ClientConfig.WHEEL_STEER_SCALE.get() * WheelMapping.lockGain(ClientConfig.WHEEL_LOCK_DEGREES.get(), ClientConfig.WHEEL_EFFECTIVE_DEGREES.get()),
+                ClientConfig.WHEEL_PEDAL_DEADZONE.get(), ClientConfig.WHEEL_STEER_CURVE.get());
         var mode = restMode();
         return WheelMapping.map(axes, settings, WheelMapping.rest(mode, detectedThrottleRest), WheelMapping.rest(mode, detectedBrakeRest));
     }

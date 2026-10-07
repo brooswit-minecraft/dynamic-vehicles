@@ -23,8 +23,8 @@ public final class WheelMapping {
 
     /** Layout used for a device with no profile. */
     public static final Profile GENERIC = new Profile(0, 2, 3, PedalRest.AUTO);
-    /** Logitech G29 through G HUB, measured on a real one: axis 0 wheel, axis 1 accelerator, axis 3 brake, all pedals rest at +1 and go to -1. */
-    public static final Profile G29 = new Profile(0, 1, 3, PedalRest.HIGH);
+    /** Logitech G29 through G HUB, measured on a real one: axis 0 wheel, axis 1 accelerator, axis 2 brake, axis 3 clutch (unused), all pedals rest at +1 and go to -1. */
+    public static final Profile G29 = new Profile(0, 1, 2, PedalRest.HIGH);
 
     private WheelMapping() {}
 

@@ -68,7 +68,7 @@ class WheelMappingTest {
         // measured on a real G29: released axes 0=0.01 1=1 2=1 3=1; accelerator down gives axis 1 = -1
         float[] released = {0.01f, 1f, 1f, 1f};
         float[] accel = {0.01f, -1f, 1f, 1f};
-        float[] brake = {0.01f, 1f, 1f, -1f};
+        float[] brake = {0.01f, 1f, -1f, 1f};
         var s = new WheelMapping.Settings(p.steerAxis(), p.throttleAxis(), p.brakeAxis(), false, false, false, 0.03, 1.0, 0.03);
         double rest = WheelMapping.rest(p.pedalRest(), Double.NaN);
         assertEquals(0.0, WheelMapping.map(released, s, rest, rest).forward(), 0.0);

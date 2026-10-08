@@ -114,4 +114,15 @@ public final class WheelMath {
         double force = springRate * compression + dampingRate * compressionRate;
         return Math.max(0.0, Math.min(maxForce, force));
     }
+
+    /**
+     * Anti-roll bar: a force that resists the two wheels of an axle being compressed differently.
+     * @param compression this wheel's spring compression, metres (0 when airborne)
+     * @param otherCompression the other wheel of the axle
+     * @param barRate N per metre of compression difference
+     * @return extra vertical force on this wheel, N (positive pushes the car up here); the other wheel gets the opposite
+     */
+    public static double antiRollForce(double compression, double otherCompression, double barRate) {
+        return barRate * (Math.max(0.0, compression) - Math.max(0.0, otherCompression));
+    }
 }

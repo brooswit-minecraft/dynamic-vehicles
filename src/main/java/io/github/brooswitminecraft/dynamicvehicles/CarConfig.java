@@ -15,6 +15,8 @@ public final class CarConfig {
     public static final ModConfigSpec.DoubleValue COLLISION_MIN_SPEED;
     public static final ModConfigSpec.DoubleValue COLLISION_MAX_HARDNESS;
     public static final ModConfigSpec.BooleanValue HEADLAMP_LIGHT;
+    public static final ModConfigSpec.BooleanValue TIRE_FORCE_AT_CONTACT;
+    public static final ModConfigSpec.DoubleValue ANTI_ROLL;
 
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
@@ -49,6 +51,12 @@ public final class CarConfig {
         HEADLAMP_LIGHT = builder
                 .comment("While the headlamps are on and the car is driven, place one invisible light block a few blocks ahead (only into air). All of them are recorded and removed when the lamps go off, the car unloads, or on the next server start.")
                 .define("headlampLight", true);
+        TIRE_FORCE_AT_CONTACT = builder
+                .comment("Apply each wheel's tire force (drive, brake, grip) at its contact point on the ground instead of at body height. Realistic weight transfer; the anti-roll bars keep the car upright.")
+                .define("tireForceAtContact", true);
+        ANTI_ROLL = builder
+                .comment("Anti-roll bar stiffness as a multiple of the wheel spring rate (0 = none).")
+                .defineInRange("antiRollRatio", 1.0, 0.0, 10.0);
         SPEC = builder.build();
     }
 

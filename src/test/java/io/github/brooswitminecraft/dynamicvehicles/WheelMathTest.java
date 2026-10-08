@@ -124,4 +124,18 @@ class WheelMathTest {
         assertTrue(held < normal, "more braking force against forward creep");
         assertTrue(held >= -3000.0, "never more than the brake force");
     }
+
+    @Test
+    void antiRollPushesUpTheMoreCompressedWheelAndOppositeOnItsPartner() {
+        double a = WheelMath.antiRollForce(0.2, 0.1, 10_000.0);
+        double b = WheelMath.antiRollForce(0.1, 0.2, 10_000.0);
+        assertEquals(1_000.0, a, 1e-9);
+        assertEquals(-a, b, 1e-9);
+    }
+
+    @Test
+    void antiRollIsZeroWhenLevelAndIgnoresAirborneNegatives() {
+        assertEquals(0.0, WheelMath.antiRollForce(0.15, 0.15, 10_000.0), 0);
+        assertEquals(WheelMath.antiRollForce(0.1, 0.0, 5.0), WheelMath.antiRollForce(0.1, -3.0, 5.0), 0);
+    }
 }

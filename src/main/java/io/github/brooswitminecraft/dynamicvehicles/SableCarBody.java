@@ -92,7 +92,9 @@ final class SableCarBody {
         boolean touching = false;
         double slipThisTick = 0.0;
         java.util.List<Vector3d> hits = new java.util.ArrayList<>();
-        for (double[] mount : spec.mounts()) {
+        double[] compressions = wheelCompressions(position, orientation, down, car);
+        for (int wheel = 0; wheel < spec.mounts().length; wheel++) {
+            double[] mount = spec.mounts()[wheel];
             Vector3d local = new Vector3d(mount[0], mount[1], mount[2]);
             Vector3d offset = orientation.transform(new Vector3d(local));
             Vector3d from = new Vector3d(position).add(offset);
@@ -109,6 +111,10 @@ final class SableCarBody {
             Vector3d pointVelocity = new Vector3d(angular).cross(offset).add(linear);
             double rate = pointVelocity.dot(down);
             double force = WheelMath.suspensionForce(compression, rate, spec.springRate(), spec.dampingRate(), spec.maxSpringForce());
+            int partner = partnerOf(wheel);
+            if (partner >= 0) {
+                force += WheelMath.antiRollForce(compression, compressions[partner], spec.springRate() * CarConfig.ANTI_ROLL.get());
+            }
             if (force <= 0) {
                 continue;
             }
@@ -163,13 +169,15 @@ final class SableCarBody {
             }
 
             Vector3d impulseLocal = inverse.transform(impulseWorld);
-            // Suspension acts at the contact point; the tire's horizontal force is applied at body height to
-            // keep weight transfer realistic rather than pitching the whole car over.
+            // Suspension acts at the contact point. The tire's horizontal force does too (tireForceAtContact),
+            // so braking and cornering transfer weight; the anti-roll bars hold the car up. With the option off it
+            // is applied at body height as before.
             Vector3d contactLocal = new Vector3d(local.x, local.y - distance, local.z);
             Vector3d suspensionLocal = inverse.transform(new Vector3d(up).mul(force * dt));
             body.applyImpulseAtPoint(contactLocal, suspensionLocal);
             Vector3d horizontalLocal = new Vector3d(impulseLocal).sub(suspensionLocal);
-            body.applyImpulseAtPoint(new Vector3d(local.x, -0.1, local.z), horizontalLocal);
+            double tireY = CarConfig.TIRE_FORCE_AT_CONTACT.get() ? contactLocal.y : -0.1;
+            body.applyImpulseAtPoint(new Vector3d(local.x, tireY, local.z), horizontalLocal);
         }
         // Air drag along the velocity.
         double speed = linear.length();
@@ -198,6 +206,33 @@ final class SableCarBody {
         car.publishOrientation(new org.joml.Quaternionf((float) orientation.x, (float) orientation.y, (float) orientation.z, (float) orientation.w));
         Vector3d v = body.getLinearVelocity(new Vector3d());
         car.setDeltaMovement(v.x / 20.0, v.y / 20.0, v.z / 20.0);
+    }
+
+    /** The mount on the same axle on the other side, or -1. */
+    private int partnerOf(int wheel) {
+        double[][] mounts = spec.mounts();
+        for (int i = 0; i < mounts.length; i++) {
+            if (i != wheel && Math.abs(mounts[i][2] - mounts[wheel][2]) < 1e-6 && mounts[i][0] * mounts[wheel][0] < 0) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** Spring compression at each mount this tick (0 when the ray misses), for the anti-roll bars. */
+    private double[] wheelCompressions(Vector3d position, Quaterniond orientation, Vector3d down, CarEntity car) {
+        double[][] mounts = spec.mounts();
+        double[] result = new double[mounts.length];
+        for (int i = 0; i < mounts.length; i++) {
+            Vector3d from = new Vector3d(position).add(orientation.transform(new Vector3d(mounts[i][0], mounts[i][1], mounts[i][2])));
+            Vector3d to = new Vector3d(from).fma(spec.restLength() + 0.25, down);
+            BlockHitResult hit = level.clip(new ClipContext(new Vec3(from.x, from.y, from.z), new Vec3(to.x, to.y, to.z),
+                    ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, car));
+            if (hit.getType() != HitResult.Type.MISS) {
+                result[i] = Math.max(0.0, spec.restLength() - hit.getLocation().distanceTo(new Vec3(from.x, from.y, from.z)));
+            }
+        }
+        return result;
     }
 
     /** Debug overlay: the body box corners (red) and where each suspension ray meets the ground (green). */

@@ -92,23 +92,64 @@ final class SableCarBody {
         boolean touching = false;
         double slipThisTick = 0.0;
         java.util.List<Vector3d> hits = new java.util.ArrayList<>();
-        for (double[] mount : spec.mounts()) {
-            Vector3d local = new Vector3d(mount[0], mount[1], mount[2]);
-            Vector3d offset = orientation.transform(new Vector3d(local));
+
+        // Pass 1: one raycast per wheel, giving every wheel's own compression and suspension force (0 for
+        // a missed ray) up front - the single source both this wheel and its axle partner read from below,
+        // so there is no second, possibly-inconsistent raycast for the anti-roll bars to work from.
+        int wheelCount = spec.mounts().length;
+        BlockHitResult[] wheelHits = new BlockHitResult[wheelCount];
+        Vector3d[] wheelOffsets = new Vector3d[wheelCount];
+        double[] distances = new double[wheelCount];
+        double[] compressions = new double[wheelCount];
+        double[] suspensionForces = new double[wheelCount];
+        for (int wheel = 0; wheel < wheelCount; wheel++) {
+            double[] mount = spec.mounts()[wheel];
+            Vector3d offset = orientation.transform(new Vector3d(mount[0], mount[1], mount[2]));
+            wheelOffsets[wheel] = offset;
             Vector3d from = new Vector3d(position).add(offset);
             Vector3d to = new Vector3d(from).fma(spec.restLength() + 0.25, down);
             BlockHitResult hit = level.clip(new ClipContext(new Vec3(from.x, from.y, from.z), new Vec3(to.x, to.y, to.z),
                     ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, car));
+            wheelHits[wheel] = hit;
             if (hit.getType() == HitResult.Type.MISS) {
                 continue;
             }
-            hits.add(new Vector3d(hit.getLocation().x, hit.getLocation().y, hit.getLocation().z));
             double distance = hit.getLocation().distanceTo(new Vec3(from.x, from.y, from.z));
+            distances[wheel] = distance;
             double compression = spec.restLength() - distance;
-            // Velocity of the mount point: linear + angular x offset. Positive along "down" = squeezing.
+            compressions[wheel] = compression;
             Vector3d pointVelocity = new Vector3d(angular).cross(offset).add(linear);
             double rate = pointVelocity.dot(down);
-            double force = WheelMath.suspensionForce(compression, rate, spec.springRate(), spec.dampingRate(), spec.maxSpringForce());
+            suspensionForces[wheel] = WheelMath.suspensionForce(compression, rate, spec.springRate(), spec.dampingRate(), spec.maxSpringForce());
+        }
+
+        // Pass 2: apply each wheel's anti-roll transfer (symmetric with its partner's by construction - see
+        // WheelMath.antiRollTransfer), then the suspension and tire forces.
+        for (int wheel = 0; wheel < wheelCount; wheel++) {
+            BlockHitResult hit = wheelHits[wheel];
+            if (hit.getType() == HitResult.Type.MISS) {
+                continue;
+            }
+            double[] mount = spec.mounts()[wheel];
+            Vector3d local = new Vector3d(mount[0], mount[1], mount[2]);
+            Vector3d offset = wheelOffsets[wheel];
+            double distance = distances[wheel];
+            double compression = compressions[wheel];
+            hits.add(new Vector3d(hit.getLocation().x, hit.getLocation().y, hit.getLocation().z));
+            Vector3d pointVelocity = new Vector3d(angular).cross(offset).add(linear);
+            double force = suspensionForces[wheel];
+            int partner = partnerOf(wheel);
+            if (partner >= 0) {
+                force += WheelMath.antiRollTransfer(suspensionForces[wheel], compression,
+                        suspensionForces[partner], compressions[partner], spec.springRate() * CarConfig.ANTI_ROLL.get());
+            }
+            // A wheel whose anti-roll transfer leaves it at exactly 0 (or, if its partner's transfer
+            // pushed it slightly past spec.maxSpringForce(), the skip test below does not catch that -
+            // see the maxForce note on antiRollTransfer()) is skipped here. That is behaviour-equivalent
+            // to letting it through: WheelMath.tire() itself returns Tire(0, 0, 0) whenever the force
+            // passed in is not positive, so a wheel this guard let past with force <= 0 would contribute
+            // no drive/brake/lateral impulse and no slip either way - skipping it early just avoids the
+            // raycast-adjacent bookkeeping (touching, wakeUp) for a wheel that could not have mattered.
             if (force <= 0) {
                 continue;
             }
@@ -163,13 +204,15 @@ final class SableCarBody {
             }
 
             Vector3d impulseLocal = inverse.transform(impulseWorld);
-            // Suspension acts at the contact point; the tire's horizontal force is applied at body height to
-            // keep weight transfer realistic rather than pitching the whole car over.
+            // Suspension acts at the contact point. The tire's horizontal force does too (tireForceAtContact),
+            // so braking and cornering transfer weight; the anti-roll bars hold the car up. With the option off it
+            // is applied at body height as before.
             Vector3d contactLocal = new Vector3d(local.x, local.y - distance, local.z);
             Vector3d suspensionLocal = inverse.transform(new Vector3d(up).mul(force * dt));
             body.applyImpulseAtPoint(contactLocal, suspensionLocal);
             Vector3d horizontalLocal = new Vector3d(impulseLocal).sub(suspensionLocal);
-            body.applyImpulseAtPoint(new Vector3d(local.x, -0.1, local.z), horizontalLocal);
+            double tireY = CarConfig.TIRE_FORCE_AT_CONTACT.get() ? contactLocal.y : -0.1;
+            body.applyImpulseAtPoint(new Vector3d(local.x, tireY, local.z), horizontalLocal);
         }
         // Air drag along the velocity.
         double speed = linear.length();
@@ -198,6 +241,22 @@ final class SableCarBody {
         car.publishOrientation(new org.joml.Quaternionf((float) orientation.x, (float) orientation.y, (float) orientation.z, (float) orientation.w));
         Vector3d v = body.getLinearVelocity(new Vector3d());
         car.setDeltaMovement(v.x / 20.0, v.y / 20.0, v.z / 20.0);
+    }
+
+    /**
+     * The mount on the same axle on the other side, or -1. Requires mounts[i][0] and mounts[wheel][0] to
+     * have opposite signs, so a mount sitting exactly on the centreline (x == 0) silently gets no partner
+     * and so no anti-roll bar at all - fine for every vehicle here (none has one), a trap if a future
+     * vehicle adds a centreline wheel.
+     */
+    private int partnerOf(int wheel) {
+        double[][] mounts = spec.mounts();
+        for (int i = 0; i < mounts.length; i++) {
+            if (i != wheel && Math.abs(mounts[i][2] - mounts[wheel][2]) < 1e-6 && mounts[i][0] * mounts[wheel][0] < 0) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     /** Debug overlay: the body box corners (red) and where each suspension ray meets the ground (green). */

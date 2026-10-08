@@ -47,6 +47,17 @@ class WheelMathTest {
     }
 
     @Test
+    void aTireWithNoLoadReturnsAllZeros() {
+        // Pins the contract SableCarBody.tick's `force <= 0` skip relies on: a non-positive normalForce
+        // must zero out every component, not just longitudinal() (asserted above for the no-grip case),
+        // so skipping such a wheel early is behaviour-equivalent to letting it through this call.
+        WheelMath.Tire tire = WheelMath.tire(5, 5, 0, 1.1, 1, 1000, 0, DT);
+        assertEquals(0.0, tire.longitudinal(), 0);
+        assertEquals(0.0, tire.lateral(), 0);
+        assertEquals(0.0, tire.slipSpeed(), 0);
+    }
+
+    @Test
     void aGrippingTireOpposesSidewaysSlidingAndDoesNotSlip() {
         WheelMath.Tire tire = WheelMath.tire(0, 0.3, N, 1.1, 1, 0, 0, DT);
         assertTrue(tire.lateral() < 0, "force opposes +lateral velocity");
@@ -123,5 +134,53 @@ class WheelMathTest {
         double held = WheelMath.tire(0.1, 0, N, 1.1, 0.02, 1, 0, 3000, 6.0, DT).longitudinal();
         assertTrue(held < normal, "more braking force against forward creep");
         assertTrue(held >= -3000.0, "never more than the brake force");
+    }
+
+    @Test
+    void antiRollPushesUpTheMoreCompressedWheelAndOppositeOnItsPartner() {
+        double a = WheelMath.antiRollForce(0.2, 0.1, 10_000.0);
+        double b = WheelMath.antiRollForce(0.1, 0.2, 10_000.0);
+        assertEquals(1_000.0, a, 1e-9);
+        assertEquals(-a, b, 1e-9);
+    }
+
+    @Test
+    void antiRollIsZeroWhenLevelAndIgnoresAirborneNegatives() {
+        assertEquals(0.0, WheelMath.antiRollForce(0.15, 0.15, 10_000.0), 0);
+        assertEquals(WheelMath.antiRollForce(0.1, 0.0, 5.0), WheelMath.antiRollForce(0.1, -3.0, 5.0), 0);
+    }
+
+    @Test
+    void antiRollTransferMatchesTheDesiredForceWhenTheGiverCanAffordIt() {
+        double suspA = WheelMath.suspensionForce(0.2, 0, 19_620.0, 3_400.0, 40_000.0);
+        double suspB = WheelMath.suspensionForce(0.1, 0, 19_620.0, 3_400.0, 40_000.0);
+        double transfer = WheelMath.antiRollTransfer(suspA, 0.2, suspB, 0.1, 10_000.0);
+        assertEquals(1_000.0, transfer, 1e-9);
+    }
+
+    @Test
+    void antiRollTransferCapsAtTheGiversOwnSuspensionForceSoNeitherWheelGoesNegative() {
+        // Wheel A is barely touching (little suspension force); its heavily compressed partner B
+        // wants a much bigger transfer than A has to give. The transfer must cap at A's own force,
+        // not at the raw (unaffordable) desired amount - this is the actual skip-path fix: applying
+        // the capped transfer to A leaves it at exactly zero (correctly grip-less, since it has
+        // nothing left), never negative, and B must receive that same capped amount, not the full
+        // uncapped one, or the axle gains load from nowhere.
+        double suspA = WheelMath.suspensionForce(0.01, 0, 19_620.0, 3_400.0, 40_000.0);
+        double suspB = WheelMath.suspensionForce(0.3, 0, 19_620.0, 3_400.0, 40_000.0);
+        double transferToA = WheelMath.antiRollTransfer(suspA, 0.01, suspB, 0.3, 19_620.0);
+        double transferToB = WheelMath.antiRollTransfer(suspB, 0.3, suspA, 0.01, 19_620.0);
+        assertEquals(-suspA, transferToA, 1e-9, "A can give up at most its own suspension force");
+        assertEquals(suspA, transferToB, 1e-9, "B must receive exactly what A gave, not the raw desired amount");
+        assertEquals(0.0, suspA + transferToA, 1e-9, "A's resulting load is exactly zero, never negative");
+        assertEquals(0.0, transferToA + transferToB, 1e-9, "the pair is antisymmetric: nothing is created or lost");
+    }
+
+    @Test
+    void antiRollTransferIsZeroWhenTheGiverHasNothingToGive() {
+        // Partner is airborne (ray missed: 0 compression, 0 suspension force). Nothing can be
+        // transferred away from a wheel that already carries no load.
+        double transfer = WheelMath.antiRollTransfer(2_000.0, 0.2, 0.0, 0.0, 19_620.0);
+        assertEquals(0.0, transfer, 1e-9);
     }
 }

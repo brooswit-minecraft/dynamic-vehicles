@@ -135,6 +135,12 @@ public final class WheelMath {
      * the pair antisymmetric and the axle's total load unchanged - never clamp each wheel's combined
      * total independently, or the two sides stop summing to zero and the chassis gains load from
      * nowhere.
+     * <p>The cap is the giver's own suspension force, already clamped to its {@code maxForce}, not the
+     * receiver's remaining headroom under its own {@code maxForce} - so the receiver's resulting total
+     * (its suspension force plus this transfer) is not itself re-clamped here, and can exceed
+     * {@code maxForce}, bounded at twice it. Deliberate: re-clamping the receiver alone would, like the
+     * bug this replaces, break the antisymmetric pair (the giver would still have paid the uncapped
+     * amount). Accepted as a rare, bounded overshoot rather than complicating both sides' caps together.
      */
     public static double antiRollTransfer(double suspensionForce, double compression,
             double otherSuspensionForce, double otherCompression, double barRate) {

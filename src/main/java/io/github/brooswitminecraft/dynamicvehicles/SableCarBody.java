@@ -143,6 +143,13 @@ final class SableCarBody {
                 force += WheelMath.antiRollTransfer(suspensionForces[wheel], compression,
                         suspensionForces[partner], compressions[partner], spec.springRate() * CarConfig.ANTI_ROLL.get());
             }
+            // A wheel whose anti-roll transfer leaves it at exactly 0 (or, if its partner's transfer
+            // pushed it slightly past spec.maxSpringForce(), the skip test below does not catch that -
+            // see the maxForce note on antiRollTransfer()) is skipped here. That is behaviour-equivalent
+            // to letting it through: WheelMath.tire() itself returns Tire(0, 0, 0) whenever the force
+            // passed in is not positive, so a wheel this guard let past with force <= 0 would contribute
+            // no drive/brake/lateral impulse and no slip either way - skipping it early just avoids the
+            // raycast-adjacent bookkeeping (touching, wakeUp) for a wheel that could not have mattered.
             if (force <= 0) {
                 continue;
             }

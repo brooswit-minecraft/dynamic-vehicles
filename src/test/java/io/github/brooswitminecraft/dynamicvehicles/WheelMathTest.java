@@ -47,6 +47,17 @@ class WheelMathTest {
     }
 
     @Test
+    void aTireWithNoLoadReturnsAllZeros() {
+        // Pins the contract SableCarBody.tick's `force <= 0` skip relies on: a non-positive normalForce
+        // must zero out every component, not just longitudinal() (asserted above for the no-grip case),
+        // so skipping such a wheel early is behaviour-equivalent to letting it through this call.
+        WheelMath.Tire tire = WheelMath.tire(5, 5, 0, 1.1, 1, 1000, 0, DT);
+        assertEquals(0.0, tire.longitudinal(), 0);
+        assertEquals(0.0, tire.lateral(), 0);
+        assertEquals(0.0, tire.slipSpeed(), 0);
+    }
+
+    @Test
     void aGrippingTireOpposesSidewaysSlidingAndDoesNotSlip() {
         WheelMath.Tire tire = WheelMath.tire(0, 0.3, N, 1.1, 1, 0, 0, DT);
         assertTrue(tire.lateral() < 0, "force opposes +lateral velocity");

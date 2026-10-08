@@ -88,24 +88,26 @@ final class SableCarBody {
         Vector3d down = orientation.transform(new Vector3d(0, -1, 0));
 
         Vector3d carForward = orientation.transform(new Vector3d(0, 0, 1));
-        double forwardSpeed = linear.dot(carForward);
         boolean touching = false;
         double slipThisTick = 0.0;
         java.util.List<Vector3d> hits = new java.util.ArrayList<>();
 
-        // Pass 1: one raycast per wheel, giving every wheel's own compression and suspension force (0 for
-        // a missed ray) up front - the single source both this wheel and its axle partner read from below,
-        // so there is no second, possibly-inconsistent raycast for the anti-roll bars to work from.
+        // Pass 1 (once per tick, not per sub-step): one raycast per wheel, giving every wheel's distance
+        // and compression up front - fixed for the whole tick, because the body's POSE does not move
+        // between our own sub-steps (Sable integrates pose once per game tick, not per call we make here),
+        // so re-casting the same ray from the same pose every sub-step would just repeat the same answer.
+        // This keeps raycasts at exactly 1 per wheel per car per tick, sub-stepped or not.
         int wheelCount = spec.mounts().length;
         BlockHitResult[] wheelHits = new BlockHitResult[wheelCount];
         Vector3d[] wheelOffsets = new Vector3d[wheelCount];
         double[] distances = new double[wheelCount];
         double[] compressions = new double[wheelCount];
-        double[] suspensionForces = new double[wheelCount];
+        int[] partners = new int[wheelCount];
         for (int wheel = 0; wheel < wheelCount; wheel++) {
             double[] mount = spec.mounts()[wheel];
             Vector3d offset = orientation.transform(new Vector3d(mount[0], mount[1], mount[2]));
             wheelOffsets[wheel] = offset;
+            partners[wheel] = partnerOf(wheel);
             Vector3d from = new Vector3d(position).add(offset);
             Vector3d to = new Vector3d(from).fma(spec.restLength() + 0.25, down);
             BlockHitResult hit = level.clip(new ClipContext(new Vec3(from.x, from.y, from.z), new Vec3(to.x, to.y, to.z),
@@ -116,108 +118,159 @@ final class SableCarBody {
             }
             double distance = hit.getLocation().distanceTo(new Vec3(from.x, from.y, from.z));
             distances[wheel] = distance;
-            double compression = spec.restLength() - distance;
-            compressions[wheel] = compression;
-            Vector3d pointVelocity = new Vector3d(angular).cross(offset).add(linear);
-            double rate = pointVelocity.dot(down);
-            suspensionForces[wheel] = WheelMath.suspensionForce(compression, rate, spec.springRate(), spec.dampingRate(), spec.maxSpringForce());
-        }
-
-        // Pass 2: apply each wheel's anti-roll transfer (symmetric with its partner's by construction - see
-        // WheelMath.antiRollTransfer), then the suspension and tire forces.
-        for (int wheel = 0; wheel < wheelCount; wheel++) {
-            BlockHitResult hit = wheelHits[wheel];
-            if (hit.getType() == HitResult.Type.MISS) {
-                continue;
-            }
-            double[] mount = spec.mounts()[wheel];
-            Vector3d local = new Vector3d(mount[0], mount[1], mount[2]);
-            Vector3d offset = wheelOffsets[wheel];
-            double distance = distances[wheel];
-            double compression = compressions[wheel];
+            compressions[wheel] = spec.restLength() - distance;
             hits.add(new Vector3d(hit.getLocation().x, hit.getLocation().y, hit.getLocation().z));
-            Vector3d pointVelocity = new Vector3d(angular).cross(offset).add(linear);
-            double force = suspensionForces[wheel];
-            int partner = partnerOf(wheel);
-            if (partner >= 0) {
-                force += WheelMath.antiRollTransfer(suspensionForces[wheel], compression,
-                        suspensionForces[partner], compressions[partner], spec.springRate() * CarConfig.ANTI_ROLL.get());
-            }
-            // A wheel whose anti-roll transfer leaves it at exactly 0 (or, if its partner's transfer
-            // pushed it slightly past spec.maxSpringForce(), the skip test below does not catch that -
-            // see the maxForce note on antiRollTransfer()) is skipped here. That is behaviour-equivalent
-            // to letting it through: WheelMath.tire() itself returns Tire(0, 0, 0) whenever the force
-            // passed in is not positive, so a wheel this guard let past with force <= 0 would contribute
-            // no drive/brake/lateral impulse and no slip either way - skipping it early just avoids the
-            // raycast-adjacent bookkeeping (touching, wakeUp) for a wheel that could not have mattered.
-            if (force <= 0) {
-                continue;
-            }
-            touching = true;
-            Vector3d up = new Vector3d(down).negate();
-            Vector3d impulseWorld = new Vector3d(up).mul(force * dt);
-
-            // Tire: forward and lateral axes in the plane the tire rolls on, steered on the front axle.
-            boolean front = mount[2] > 0;
-            Vector3d forward = orientation.transform(new Vector3d(0, 0, 1));
-            double steerAngle = front ? steer * WheelMath.maxSteerAngle(forwardSpeed, WheelMath.BASE_FRICTION,
-                    spec.wheelbase(), CarPhysics.MAX_STEER) : 0.0;
-            forward.rotateAxis(steerAngle, up.x, up.y, up.z);
-            forward.fma(-forward.dot(up), up).normalize();
-            Vector3d lateral = new Vector3d(up).cross(forward).normalize();
-            double vLong = pointVelocity.dot(forward);
-            double vLat = pointVelocity.dot(lateral);
-
-            double drive = 0.0;
-            double brake = 0.0;
-            double lateralScale = 1.0;
-            if (throttle > 0) {
-                drive = throttle * DRIVE_FORCE * spec.forceScale() * Math.max(0.0, 1.0 - Math.abs(forwardSpeed) / spec.maxSpeed());
-            } else if (throttle < 0) {
-                if (forwardSpeed > 0.5) {
-                    brake = -throttle * BRAKE_FORCE * spec.forceScale();
-                } else {
-                    drive = throttle * REVERSE_FORCE * spec.forceScale() * Math.max(0.0, 1.0 - Math.abs(forwardSpeed) / 8.0);
-                }
-            }
-            double brakeGain = 1.0;
-            if (throttle == 0 && Math.abs(forwardSpeed) < 1.5) {
-                brake = BRAKE_FORCE * spec.forceScale(); // parked: hold on a slope instead of rolling away
-                brakeGain = 6.0;
-            }
-            if (handbrake && !front) {
-                brake = HANDBRAKE_FORCE * spec.forceScale();
-                drive = 0.0;
-                lateralScale = 0.35;
-            }
-            // What the tire feels comes from the block it is on (grip, rolling resistance), via Dynamic Terrain.
-            SurfaceProperties surface = Surfaces.at(level, hit.getBlockPos());
-            WheelMath.Tire tire = WheelMath.tire(vLong, vLat, force, WheelMath.BASE_FRICTION * Math.min(1.0, surface.grip() * spec.looseGrip()),
-                    surface.rollingResistance() * spec.rollingScale(), lateralScale, drive, brake, brakeGain, spec.massKg() / 4.0, dt);
-            impulseWorld.fma(tire.longitudinal() * dt, forward).fma(tire.lateral() * dt, lateral);
-            slipThisTick = Math.max(slipThisTick, tire.slipSpeed());
-            double wearSlip = CarConfig.WEAR_ENABLED.get()
-                    ? CarEffectsMath.wearSlip(throttle, forwardSpeed, tire.slipSpeed(), CarConfig.WEAR_STRENGTH.get())
-                    : tire.slipSpeed();
-            if (wearSlip > 0.3) {
-                SlipReporter.report(level, hit.getBlockPos(), wearSlip, force / GRAVITY);
-            }
-
-            Vector3d impulseLocal = inverse.transform(impulseWorld);
-            // Suspension acts at the contact point. The tire's horizontal force does too (tireForceAtContact),
-            // so braking and cornering transfer weight; the anti-roll bars hold the car up. With the option off it
-            // is applied at body height as before.
-            Vector3d contactLocal = new Vector3d(local.x, local.y - distance, local.z);
-            Vector3d suspensionLocal = inverse.transform(new Vector3d(up).mul(force * dt));
-            body.applyImpulseAtPoint(contactLocal, suspensionLocal);
-            Vector3d horizontalLocal = new Vector3d(impulseLocal).sub(suspensionLocal);
-            double tireY = CarConfig.TIRE_FORCE_AT_CONTACT.get() ? contactLocal.y : -0.1;
-            body.applyImpulseAtPoint(new Vector3d(local.x, tireY, local.z), horizontalLocal);
         }
-        // Air drag along the velocity.
-        double speed = linear.length();
+
+        // Sub-stepping: run the force step N times per tick instead of once, each at dt/N, so the tire's
+        // relaxation term (demand = effectiveMass * v / dt * RELAXATION - dt is load-bearing there, not
+        // just an output multiplier) and the suspension's damping see a shorter, steadier horizon instead
+        // of one big impulse that can overshoot under hard cornering/braking. Total impulse per tick stays
+        // consistent because every impulse below is force * subDt, summed N times.
+        //
+        // What is held for the tick vs. re-read per sub-step: pose (and so distance/compression/hit, and
+        // the fixed "down"/"carForward" axes) is held, because Sable does not integrate it between our own
+        // calls. Linear/angular VELOCITY is re-read from the body after each sub-step's impulses: unlike
+        // pose, applyImpulseAtPoint changes the body's velocity state immediately, and re-reading it is
+        // exactly what lets each sub-step's tire/suspension force respond to the impulse the previous
+        // sub-step just applied - without that, running N sub-steps from a frozen snapshot would apply the
+        // same force N times at dt/N each, summing to precisely the single-step result, i.e. no benefit at
+        // all. So suspensionForce (which depends on compression RATE, itself velocity-derived) is
+        // recomputed every sub-step even though compression itself is not.
+        int subSteps = Math.max(1, Math.min(4, CarConfig.WHEEL_SUB_STEPS.get()));
+        double subDt = dt / subSteps;
+        double barRate = spec.springRate() * CarConfig.ANTI_ROLL.get();
+        Vector3d subLinear = new Vector3d(linear);
+        Vector3d subAngular = new Vector3d(angular);
+        double[] wearSlipMax = new double[wheelCount];
+        double[] wearSlipForce = new double[wheelCount];
+
+        for (int sub = 0; sub < subSteps; sub++) {
+            double forwardSpeed = subLinear.dot(carForward);
+
+            // Pass 1 of this sub-step: every wheel's suspension force from the CURRENT velocity snapshot,
+            // computed for every wheel before any wheel's pass 2 runs below - so both wheels of an axle
+            // read the same sub-step snapshot, which is what keeps WheelSubStepper.afterAntiRoll's transfer
+            // exactly antisymmetric (see WheelSubStepperTest, which drives this same method).
+            double[] subSuspension = new double[wheelCount];
+            for (int wheel = 0; wheel < wheelCount; wheel++) {
+                if (wheelHits[wheel].getType() == HitResult.Type.MISS) {
+                    continue;
+                }
+                Vector3d pointVelocity = new Vector3d(subAngular).cross(wheelOffsets[wheel]).add(subLinear);
+                double rate = pointVelocity.dot(down);
+                subSuspension[wheel] = WheelMath.suspensionForce(compressions[wheel], rate, spec.springRate(), spec.dampingRate(), spec.maxSpringForce());
+            }
+            double[] forces = WheelSubStepper.afterAntiRoll(subSuspension, compressions, partners, barRate);
+
+            // Pass 2 of this sub-step: suspension and tire forces from this sub-step's forces[].
+            for (int wheel = 0; wheel < wheelCount; wheel++) {
+                BlockHitResult hit = wheelHits[wheel];
+                if (hit.getType() == HitResult.Type.MISS) {
+                    continue;
+                }
+                double force = forces[wheel];
+                // A wheel whose anti-roll transfer leaves it at exactly 0 (or, if its partner's transfer
+                // pushed it slightly past spec.maxSpringForce(), the skip test below does not catch that -
+                // see the maxForce note on antiRollTransfer()) is skipped here. That is behaviour-equivalent
+                // to letting it through: WheelMath.tire() itself returns Tire(0, 0, 0) whenever the force
+                // passed in is not positive, so a wheel this guard let past with force <= 0 would contribute
+                // no drive/brake/lateral impulse and no slip either way - skipping it early just avoids the
+                // raycast-adjacent bookkeeping (touching, wakeUp) for a wheel that could not have mattered.
+                // (maxSpringForce overshoot across sub-steps: each sub-step independently recomputes forces[]
+                // from the live velocity, so a receiver that overshoots to ~2x maxSpringForce in one sub-step
+                // is not compounding on top of a PRIOR sub-step's overshoot - it is the same already-accepted
+                // per-computation overshoot, just evaluated more often at proportionally smaller dt, so the
+                // extra impulse it contributes over the whole tick is the same order as the un-sub-stepped
+                // case, not growing with N.)
+                if (force <= 0) {
+                    continue;
+                }
+                touching = true;
+                double[] mount = spec.mounts()[wheel];
+                Vector3d local = new Vector3d(mount[0], mount[1], mount[2]);
+                double distance = distances[wheel];
+                Vector3d pointVelocity = new Vector3d(subAngular).cross(wheelOffsets[wheel]).add(subLinear);
+                Vector3d up = new Vector3d(down).negate();
+                Vector3d impulseWorld = new Vector3d(up).mul(force * subDt);
+
+                // Tire: forward and lateral axes in the plane the tire rolls on, steered on the front axle.
+                boolean front = mount[2] > 0;
+                Vector3d forward = orientation.transform(new Vector3d(0, 0, 1));
+                double steerAngle = front ? steer * WheelMath.maxSteerAngle(forwardSpeed, WheelMath.BASE_FRICTION,
+                        spec.wheelbase(), CarPhysics.MAX_STEER) : 0.0;
+                forward.rotateAxis(steerAngle, up.x, up.y, up.z);
+                forward.fma(-forward.dot(up), up).normalize();
+                Vector3d lateral = new Vector3d(up).cross(forward).normalize();
+                double vLong = pointVelocity.dot(forward);
+                double vLat = pointVelocity.dot(lateral);
+
+                double drive = 0.0;
+                double brake = 0.0;
+                double lateralScale = 1.0;
+                if (throttle > 0) {
+                    drive = throttle * DRIVE_FORCE * spec.forceScale() * Math.max(0.0, 1.0 - Math.abs(forwardSpeed) / spec.maxSpeed());
+                } else if (throttle < 0) {
+                    if (forwardSpeed > 0.5) {
+                        brake = -throttle * BRAKE_FORCE * spec.forceScale();
+                    } else {
+                        drive = throttle * REVERSE_FORCE * spec.forceScale() * Math.max(0.0, 1.0 - Math.abs(forwardSpeed) / 8.0);
+                    }
+                }
+                double brakeGain = 1.0;
+                if (throttle == 0 && Math.abs(forwardSpeed) < 1.5) {
+                    brake = BRAKE_FORCE * spec.forceScale(); // parked: hold on a slope instead of rolling away
+                    brakeGain = 6.0;
+                }
+                if (handbrake && !front) {
+                    brake = HANDBRAKE_FORCE * spec.forceScale();
+                    drive = 0.0;
+                    lateralScale = 0.35;
+                }
+                // What the tire feels comes from the block it is on (grip, rolling resistance), via Dynamic Terrain.
+                SurfaceProperties surface = Surfaces.at(level, hit.getBlockPos());
+                WheelMath.Tire tire = WheelMath.tire(vLong, vLat, force, WheelMath.BASE_FRICTION * Math.min(1.0, surface.grip() * spec.looseGrip()),
+                        surface.rollingResistance() * spec.rollingScale(), lateralScale, drive, brake, brakeGain, spec.massKg() / 4.0, subDt);
+                impulseWorld.fma(tire.longitudinal() * subDt, forward).fma(tire.lateral() * subDt, lateral);
+                slipThisTick = Math.max(slipThisTick, tire.slipSpeed());
+                // SlipReporter must fire at most once per wheel per tick (not once per sub-step), so we only
+                // track the worst wearSlip seen across this tick's sub-steps here, paired with the force at
+                // the sub-step that produced it (so the reported load matches the reported slip), and report
+                // after the sub-step loop below.
+                double wearSlip = CarConfig.WEAR_ENABLED.get()
+                        ? CarEffectsMath.wearSlip(throttle, forwardSpeed, tire.slipSpeed(), CarConfig.WEAR_STRENGTH.get())
+                        : tire.slipSpeed();
+                if (wearSlip > wearSlipMax[wheel]) {
+                    wearSlipMax[wheel] = wearSlip;
+                    wearSlipForce[wheel] = force;
+                }
+
+                Vector3d impulseLocal = inverse.transform(impulseWorld);
+                // Suspension acts at the contact point. The tire's horizontal force does too (tireForceAtContact),
+                // so braking and cornering transfer weight; the anti-roll bars hold the car up. With the option off it
+                // is applied at body height as before.
+                Vector3d contactLocal = new Vector3d(local.x, local.y - distance, local.z);
+                Vector3d suspensionLocal = inverse.transform(new Vector3d(up).mul(force * subDt));
+                body.applyImpulseAtPoint(contactLocal, suspensionLocal);
+                Vector3d horizontalLocal = new Vector3d(impulseLocal).sub(suspensionLocal);
+                double tireY = CarConfig.TIRE_FORCE_AT_CONTACT.get() ? contactLocal.y : -0.1;
+                body.applyImpulseAtPoint(new Vector3d(local.x, tireY, local.z), horizontalLocal);
+            }
+            // Re-read velocity so the next sub-step's forces respond to the impulses just applied above -
+            // see the note before this loop on why this, and not pose, is what makes sub-stepping matter.
+            subLinear = body.getLinearVelocity(new Vector3d());
+            subAngular = body.getAngularVelocity(new Vector3d());
+        }
+        for (int wheel = 0; wheel < wheelCount; wheel++) {
+            if (wearSlipMax[wheel] > 0.3) {
+                SlipReporter.report(level, wheelHits[wheel].getBlockPos(), wearSlipMax[wheel], wearSlipForce[wheel] / GRAVITY);
+            }
+        }
+        // Air drag along the velocity: once per tick in total, at the full dt, not once per sub-step -
+        // using the velocity as it stands after every sub-step's impulses.
+        double speed = subLinear.length();
         if (speed > 0.5) {
-            Vector3d drag = inverse.transform(new Vector3d(linear).mul(-AIR_DRAG * spec.forceScale() * speed * dt));
+            Vector3d drag = inverse.transform(new Vector3d(subLinear).mul(-AIR_DRAG * spec.forceScale() * speed * dt));
             body.applyImpulseAtPoint(new Vector3d(0, 0, 0), drag);
         }
         lastSlipSpeed = slipThisTick;

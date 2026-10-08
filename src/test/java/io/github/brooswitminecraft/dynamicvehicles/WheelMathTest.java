@@ -138,4 +138,27 @@ class WheelMathTest {
         assertEquals(0.0, WheelMath.antiRollForce(0.15, 0.15, 10_000.0), 0);
         assertEquals(WheelMath.antiRollForce(0.1, 0.0, 5.0), WheelMath.antiRollForce(0.1, -3.0, 5.0), 0);
     }
+
+    @Test
+    void loadedForceNeverGoesNegativeWhenTheOutsideWheelUnloadsHard() {
+        // This wheel is barely touching (little suspension force); its heavily compressed partner's
+        // anti-roll pull would otherwise drive the combined force below zero and drop the wheel's grip
+        // entirely, even though it is still on the ground.
+        double suspension = WheelMath.suspensionForce(0.01, 0, 19_620.0, 3_400.0, 40_000.0);
+        double loaded = WheelMath.loadedForce(suspension, 0.01, 0.3, 19_620.0, 40_000.0);
+        assertEquals(0.0, loaded, 1e-9, "clamped at zero, never negative");
+    }
+
+    @Test
+    void loadedForceAddsAntiRollWithinRange() {
+        double suspension = WheelMath.suspensionForce(0.2, 0, 19_620.0, 3_400.0, 40_000.0);
+        double loaded = WheelMath.loadedForce(suspension, 0.2, 0.1, 10_000.0, 40_000.0);
+        assertEquals(suspension + 1_000.0, loaded, 1e-9);
+    }
+
+    @Test
+    void loadedForceIsStillCappedAtMaxForce() {
+        double loaded = WheelMath.loadedForce(39_000.0, 0.5, 0.0, 50_000.0, 40_000.0);
+        assertEquals(40_000.0, loaded, 1e-9);
+    }
 }

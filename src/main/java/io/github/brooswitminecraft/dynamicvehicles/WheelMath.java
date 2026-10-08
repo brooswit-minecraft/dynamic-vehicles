@@ -125,4 +125,16 @@ public final class WheelMath {
     public static double antiRollForce(double compression, double otherCompression, double barRate) {
         return barRate * (Math.max(0.0, compression) - Math.max(0.0, otherCompression));
     }
+
+    /**
+     * A wheel's suspension force plus its anti-roll correction, clamped exactly like
+     * {@link #suspensionForce} alone: a wheel still touching the ground must never be treated as
+     * unloaded (and so lose all tire grip) just because its axle partner is compressed enough to pull
+     * the anti-roll correction negative.
+     */
+    public static double loadedForce(double suspensionForce, double compression, double otherCompression,
+            double barRate, double maxForce) {
+        double total = suspensionForce + antiRollForce(compression, otherCompression, barRate);
+        return Math.max(0.0, Math.min(maxForce, total));
+    }
 }

@@ -113,7 +113,8 @@ final class SableCarBody {
             double force = WheelMath.suspensionForce(compression, rate, spec.springRate(), spec.dampingRate(), spec.maxSpringForce());
             int partner = partnerOf(wheel);
             if (partner >= 0) {
-                force += WheelMath.antiRollForce(compression, compressions[partner], spec.springRate() * CarConfig.ANTI_ROLL.get());
+                force = WheelMath.loadedForce(force, compression, compressions[partner],
+                        spec.springRate() * CarConfig.ANTI_ROLL.get(), spec.maxSpringForce());
             }
             if (force <= 0) {
                 continue;

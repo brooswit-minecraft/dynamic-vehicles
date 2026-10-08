@@ -140,25 +140,36 @@ class WheelMathTest {
     }
 
     @Test
-    void loadedForceNeverGoesNegativeWhenTheOutsideWheelUnloadsHard() {
-        // This wheel is barely touching (little suspension force); its heavily compressed partner's
-        // anti-roll pull would otherwise drive the combined force below zero and drop the wheel's grip
-        // entirely, even though it is still on the ground.
-        double suspension = WheelMath.suspensionForce(0.01, 0, 19_620.0, 3_400.0, 40_000.0);
-        double loaded = WheelMath.loadedForce(suspension, 0.01, 0.3, 19_620.0, 40_000.0);
-        assertEquals(0.0, loaded, 1e-9, "clamped at zero, never negative");
+    void antiRollTransferMatchesTheDesiredForceWhenTheGiverCanAffordIt() {
+        double suspA = WheelMath.suspensionForce(0.2, 0, 19_620.0, 3_400.0, 40_000.0);
+        double suspB = WheelMath.suspensionForce(0.1, 0, 19_620.0, 3_400.0, 40_000.0);
+        double transfer = WheelMath.antiRollTransfer(suspA, 0.2, suspB, 0.1, 10_000.0);
+        assertEquals(1_000.0, transfer, 1e-9);
     }
 
     @Test
-    void loadedForceAddsAntiRollWithinRange() {
-        double suspension = WheelMath.suspensionForce(0.2, 0, 19_620.0, 3_400.0, 40_000.0);
-        double loaded = WheelMath.loadedForce(suspension, 0.2, 0.1, 10_000.0, 40_000.0);
-        assertEquals(suspension + 1_000.0, loaded, 1e-9);
+    void antiRollTransferCapsAtTheGiversOwnSuspensionForceSoNeitherWheelGoesNegative() {
+        // Wheel A is barely touching (little suspension force); its heavily compressed partner B
+        // wants a much bigger transfer than A has to give. The transfer must cap at A's own force,
+        // not at the raw (unaffordable) desired amount - this is the actual skip-path fix: applying
+        // the capped transfer to A leaves it at exactly zero (correctly grip-less, since it has
+        // nothing left), never negative, and B must receive that same capped amount, not the full
+        // uncapped one, or the axle gains load from nowhere.
+        double suspA = WheelMath.suspensionForce(0.01, 0, 19_620.0, 3_400.0, 40_000.0);
+        double suspB = WheelMath.suspensionForce(0.3, 0, 19_620.0, 3_400.0, 40_000.0);
+        double transferToA = WheelMath.antiRollTransfer(suspA, 0.01, suspB, 0.3, 19_620.0);
+        double transferToB = WheelMath.antiRollTransfer(suspB, 0.3, suspA, 0.01, 19_620.0);
+        assertEquals(-suspA, transferToA, 1e-9, "A can give up at most its own suspension force");
+        assertEquals(suspA, transferToB, 1e-9, "B must receive exactly what A gave, not the raw desired amount");
+        assertEquals(0.0, suspA + transferToA, 1e-9, "A's resulting load is exactly zero, never negative");
+        assertEquals(0.0, transferToA + transferToB, 1e-9, "the pair is antisymmetric: nothing is created or lost");
     }
 
     @Test
-    void loadedForceIsStillCappedAtMaxForce() {
-        double loaded = WheelMath.loadedForce(39_000.0, 0.5, 0.0, 50_000.0, 40_000.0);
-        assertEquals(40_000.0, loaded, 1e-9);
+    void antiRollTransferIsZeroWhenTheGiverHasNothingToGive() {
+        // Partner is airborne (ray missed: 0 compression, 0 suspension force). Nothing can be
+        // transferred away from a wheel that already carries no load.
+        double transfer = WheelMath.antiRollTransfer(2_000.0, 0.2, 0.0, 0.0, 19_620.0);
+        assertEquals(0.0, transfer, 1e-9);
     }
 }

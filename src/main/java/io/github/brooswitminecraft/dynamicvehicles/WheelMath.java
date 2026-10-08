@@ -127,14 +127,20 @@ public final class WheelMath {
     }
 
     /**
-     * A wheel's suspension force plus its anti-roll correction, clamped exactly like
-     * {@link #suspensionForce} alone: a wheel still touching the ground must never be treated as
-     * unloaded (and so lose all tire grip) just because its axle partner is compressed enough to pull
-     * the anti-roll correction negative.
+     * The load this wheel's anti-roll bar actually moves to or from its axle partner this tick: the
+     * desired transfer ({@link #antiRollForce}), capped to what the wheel giving up load can actually
+     * surrender (its own suspension force). Call once per wheel with that wheel's own suspension force
+     * and compression first, the partner's second; the partner's call with the arguments swapped always
+     * returns the exact negation, so applying each wheel's own result to its own suspension force keeps
+     * the pair antisymmetric and the axle's total load unchanged - never clamp each wheel's combined
+     * total independently, or the two sides stop summing to zero and the chassis gains load from
+     * nowhere.
      */
-    public static double loadedForce(double suspensionForce, double compression, double otherCompression,
-            double barRate, double maxForce) {
-        double total = suspensionForce + antiRollForce(compression, otherCompression, barRate);
-        return Math.max(0.0, Math.min(maxForce, total));
+    public static double antiRollTransfer(double suspensionForce, double compression,
+            double otherSuspensionForce, double otherCompression, double barRate) {
+        double desired = antiRollForce(compression, otherCompression, barRate);
+        double giverForce = desired >= 0 ? otherSuspensionForce : suspensionForce;
+        double cap = Math.max(0.0, giverForce);
+        return Math.max(-cap, Math.min(cap, desired));
     }
 }

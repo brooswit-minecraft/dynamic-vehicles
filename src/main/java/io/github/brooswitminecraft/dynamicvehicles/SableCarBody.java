@@ -92,29 +92,56 @@ final class SableCarBody {
         boolean touching = false;
         double slipThisTick = 0.0;
         java.util.List<Vector3d> hits = new java.util.ArrayList<>();
-        double[] compressions = wheelCompressions(position, orientation, down, car);
-        for (int wheel = 0; wheel < spec.mounts().length; wheel++) {
+
+        // Pass 1: one raycast per wheel, giving every wheel's own compression and suspension force (0 for
+        // a missed ray) up front - the single source both this wheel and its axle partner read from below,
+        // so there is no second, possibly-inconsistent raycast for the anti-roll bars to work from.
+        int wheelCount = spec.mounts().length;
+        BlockHitResult[] wheelHits = new BlockHitResult[wheelCount];
+        Vector3d[] wheelOffsets = new Vector3d[wheelCount];
+        double[] distances = new double[wheelCount];
+        double[] compressions = new double[wheelCount];
+        double[] suspensionForces = new double[wheelCount];
+        for (int wheel = 0; wheel < wheelCount; wheel++) {
             double[] mount = spec.mounts()[wheel];
-            Vector3d local = new Vector3d(mount[0], mount[1], mount[2]);
-            Vector3d offset = orientation.transform(new Vector3d(local));
+            Vector3d offset = orientation.transform(new Vector3d(mount[0], mount[1], mount[2]));
+            wheelOffsets[wheel] = offset;
             Vector3d from = new Vector3d(position).add(offset);
             Vector3d to = new Vector3d(from).fma(spec.restLength() + 0.25, down);
             BlockHitResult hit = level.clip(new ClipContext(new Vec3(from.x, from.y, from.z), new Vec3(to.x, to.y, to.z),
                     ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, car));
+            wheelHits[wheel] = hit;
             if (hit.getType() == HitResult.Type.MISS) {
                 continue;
             }
-            hits.add(new Vector3d(hit.getLocation().x, hit.getLocation().y, hit.getLocation().z));
             double distance = hit.getLocation().distanceTo(new Vec3(from.x, from.y, from.z));
+            distances[wheel] = distance;
             double compression = spec.restLength() - distance;
-            // Velocity of the mount point: linear + angular x offset. Positive along "down" = squeezing.
+            compressions[wheel] = compression;
             Vector3d pointVelocity = new Vector3d(angular).cross(offset).add(linear);
             double rate = pointVelocity.dot(down);
-            double force = WheelMath.suspensionForce(compression, rate, spec.springRate(), spec.dampingRate(), spec.maxSpringForce());
+            suspensionForces[wheel] = WheelMath.suspensionForce(compression, rate, spec.springRate(), spec.dampingRate(), spec.maxSpringForce());
+        }
+
+        // Pass 2: apply each wheel's anti-roll transfer (symmetric with its partner's by construction - see
+        // WheelMath.antiRollTransfer), then the suspension and tire forces.
+        for (int wheel = 0; wheel < wheelCount; wheel++) {
+            BlockHitResult hit = wheelHits[wheel];
+            if (hit.getType() == HitResult.Type.MISS) {
+                continue;
+            }
+            double[] mount = spec.mounts()[wheel];
+            Vector3d local = new Vector3d(mount[0], mount[1], mount[2]);
+            Vector3d offset = wheelOffsets[wheel];
+            double distance = distances[wheel];
+            double compression = compressions[wheel];
+            hits.add(new Vector3d(hit.getLocation().x, hit.getLocation().y, hit.getLocation().z));
+            Vector3d pointVelocity = new Vector3d(angular).cross(offset).add(linear);
+            double force = suspensionForces[wheel];
             int partner = partnerOf(wheel);
             if (partner >= 0) {
-                force = WheelMath.loadedForce(force, compression, compressions[partner],
-                        spec.springRate() * CarConfig.ANTI_ROLL.get(), spec.maxSpringForce());
+                force += WheelMath.antiRollTransfer(suspensionForces[wheel], compression,
+                        suspensionForces[partner], compressions[partner], spec.springRate() * CarConfig.ANTI_ROLL.get());
             }
             if (force <= 0) {
                 continue;
@@ -209,7 +236,12 @@ final class SableCarBody {
         car.setDeltaMovement(v.x / 20.0, v.y / 20.0, v.z / 20.0);
     }
 
-    /** The mount on the same axle on the other side, or -1. */
+    /**
+     * The mount on the same axle on the other side, or -1. Requires mounts[i][0] and mounts[wheel][0] to
+     * have opposite signs, so a mount sitting exactly on the centreline (x == 0) silently gets no partner
+     * and so no anti-roll bar at all - fine for every vehicle here (none has one), a trap if a future
+     * vehicle adds a centreline wheel.
+     */
     private int partnerOf(int wheel) {
         double[][] mounts = spec.mounts();
         for (int i = 0; i < mounts.length; i++) {
@@ -218,22 +250,6 @@ final class SableCarBody {
             }
         }
         return -1;
-    }
-
-    /** Spring compression at each mount this tick (0 when the ray misses), for the anti-roll bars. */
-    private double[] wheelCompressions(Vector3d position, Quaterniond orientation, Vector3d down, CarEntity car) {
-        double[][] mounts = spec.mounts();
-        double[] result = new double[mounts.length];
-        for (int i = 0; i < mounts.length; i++) {
-            Vector3d from = new Vector3d(position).add(orientation.transform(new Vector3d(mounts[i][0], mounts[i][1], mounts[i][2])));
-            Vector3d to = new Vector3d(from).fma(spec.restLength() + 0.25, down);
-            BlockHitResult hit = level.clip(new ClipContext(new Vec3(from.x, from.y, from.z), new Vec3(to.x, to.y, to.z),
-                    ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, car));
-            if (hit.getType() != HitResult.Type.MISS) {
-                result[i] = Math.max(0.0, spec.restLength() - hit.getLocation().distanceTo(new Vec3(from.x, from.y, from.z)));
-            }
-        }
-        return result;
     }
 
     /** Debug overlay: the body box corners (red) and where each suspension ray meets the ground (green). */

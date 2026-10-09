@@ -22,6 +22,7 @@
   "key.dynamicvehicles.headlights": "Cycle headlights (auto, on, off)",
   "key.categories.dynamicvehicles": "Dynamic Vehicles",
   "entity.dynamicvehicles.villager.dispatcher": "Dispatcher",
+  "block.dynamicvehicles.dispatch_board": "Dispatch Board",
   "gui.dynamicvehicles.dispatcher.no_offers": "No destinations available right now.",
   "gauge.dynamicvehicles.danger.safe": "Safe",
   "gauge.dynamicvehicles.danger.low": "Low",

@@ -161,12 +161,6 @@ test {
     useJUnitPlatform()
 }
 
-// NeoForge's generated Minecraft artifact belongs to main, not the default
-// Java test configurations. DispatcherProfessionTest (MINECRAFT-105/117) needs
-// that same vanilla/NeoForge API to unit-test POI association without a client.
-sourceSets.test.compileClasspath += sourceSets.main.compileClasspath
-sourceSets.test.runtimeClasspath += sourceSets.main.runtimeClasspath
-
 // Expands `${mod_version}` and friends in neoforge.mods.toml to the values
 // computed above, so the jar's file name and the version baked into the
 // built jar's mods.toml can never drift apart.

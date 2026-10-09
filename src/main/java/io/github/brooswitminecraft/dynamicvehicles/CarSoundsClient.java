@@ -26,12 +26,12 @@ final class CarSoundsClient {
     static Object start(CarEntity car) {
         var manager = Minecraft.getInstance().getSoundManager();
         var loops = new Loop[] {
-                new Loop(ModSounds.ENGINE_IDLE.get(), car, () -> engineOn(car) ? CarSoundMath.engineMix(car.clientSpeed())[0] * CarSoundMath.engineVolume(car.clientThrottle()) : 0.0,
-                        () -> CarSoundMath.enginePitch(car.clientSpeed(), car.clientThrottle()) * car.spec().enginePitch()),
-                new Loop(ModSounds.ENGINE_MID.get(), car, () -> engineOn(car) ? CarSoundMath.engineMix(car.clientSpeed())[1] * CarSoundMath.engineVolume(car.clientThrottle()) : 0.0,
-                        () -> CarSoundMath.enginePitch(car.clientSpeed(), car.clientThrottle()) * car.spec().enginePitch()),
-                new Loop(ModSounds.ENGINE_HIGH.get(), car, () -> engineOn(car) ? CarSoundMath.engineMix(car.clientSpeed())[2] * CarSoundMath.engineVolume(car.clientThrottle()) : 0.0,
-                        () -> CarSoundMath.enginePitch(car.clientSpeed(), car.clientThrottle()) * car.spec().enginePitch()),
+                new Loop(ModSounds.ENGINE_IDLE.get(), car, () -> engineOn(car) ? CarSoundMath.engineMix(car.clientSpeed())[0] * engineVolume(car) : 0.0,
+                        () -> enginePitch(car) * car.spec().enginePitch()),
+                new Loop(ModSounds.ENGINE_MID.get(), car, () -> engineOn(car) ? CarSoundMath.engineMix(car.clientSpeed())[1] * engineVolume(car) : 0.0,
+                        () -> enginePitch(car) * car.spec().enginePitch()),
+                new Loop(ModSounds.ENGINE_HIGH.get(), car, () -> engineOn(car) ? CarSoundMath.engineMix(car.clientSpeed())[2] * engineVolume(car) : 0.0,
+                        () -> enginePitch(car) * car.spec().enginePitch()),
                 new Loop(ModSounds.TIRE_ROUGH.get(), car, () -> surface(car) == Surface.ROUGH ? rolling(car) : 0.0, () -> CarSoundMath.rollingPitch(car.clientSpeed())),
                 new Loop(ModSounds.TIRE_SMOOTH.get(), car, () -> surface(car) == Surface.SMOOTH ? rolling(car) : 0.0, () -> CarSoundMath.rollingPitch(car.clientSpeed())),
                 new Loop(ModSounds.TIRE_SNOW.get(), car, () -> surface(car) == Surface.SNOW ? rolling(car) : 0.0, () -> CarSoundMath.rollingPitch(car.clientSpeed())),
@@ -46,6 +46,21 @@ final class CarSoundsClient {
 
     private static boolean engineOn(CarEntity car) {
         return car.getControllingPassenger() != null;
+    }
+
+    /** This car's current 0..1 load (throttle held without the speed to show for it yet; see
+     * {@link CarSoundMath#loadFactor}), shared by the engine volume and pitch below so they both react
+     * to the same straining-engine condition rather than deriving it separately. */
+    private static double load(CarEntity car) {
+        return CarSoundMath.loadFactor(car.clientThrottle(), car.clientSpeed());
+    }
+
+    private static double engineVolume(CarEntity car) {
+        return CarSoundMath.engineVolume(car.clientThrottle(), load(car));
+    }
+
+    private static double enginePitch(CarEntity car) {
+        return CarSoundMath.enginePitch(car.clientSpeed(), car.clientRev(), load(car));
     }
 
     private static double rolling(CarEntity car) {

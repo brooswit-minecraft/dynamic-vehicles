@@ -30,6 +30,8 @@ import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredItem;
 import net.neoforged.neoforge.registries.DeferredRegister;
 
+import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherProfession;
+
 /** Entry point and registry for the first vehicle, a 4-wheel car (MINECRAFT-63). */
 @Mod(DynamicVehiclesMod.MODID)
 public class DynamicVehiclesMod {
@@ -61,6 +63,7 @@ public class DynamicVehiclesMod {
         ModSounds.SOUNDS.register(modEventBus);
         ENTITIES.register(modEventBus);
         ITEMS.register(modEventBus);
+        DispatcherProfession.PROFESSIONS.register(modEventBus);
         modEventBus.addListener(this::commonSetup);
         modEventBus.addListener(this::addCreative);
         modEventBus.addListener(this::registerPayloads);

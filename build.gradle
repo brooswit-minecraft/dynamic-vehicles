@@ -151,6 +151,13 @@ dependencies {
     compileOnly files(atmosphereJar).builtBy("downloadAtmosphere")
     compileOnly files(sableJar, sableCompanionJar).builtBy("downloadSable")
     compileOnly files(terrainJar).builtBy("downloadTerrain")
+    // dynamicterrain is a REQUIRED (not optional, unlike Sable/Atmosphere above) runtime
+    // dependency per mods.toml, so every `run` config (client/server/data/gameTestServer)
+    // needs it on the runtime classpath too, or NeoForge's mod loader refuses to start at
+    // all ("Mod dynamicvehicles requires dynamicterrain ... Currently, dynamicterrain is
+    // not installed") — it must stay runtimeOnly, not implementation, so it is still not
+    // bundled into this mod's own shipped jar.
+    runtimeOnly files(terrainJar).builtBy("downloadTerrain")
     testCompileOnly files(terrainJar).builtBy("downloadTerrain")
     testImplementation platform("org.junit:junit-bom:5.11.4")
     testImplementation "org.junit.jupiter:junit-jupiter"

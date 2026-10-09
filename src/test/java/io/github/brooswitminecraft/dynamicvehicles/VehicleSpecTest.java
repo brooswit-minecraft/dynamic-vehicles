@@ -56,4 +56,43 @@ class VehicleSpecTest {
             assertEquals(3, mount.length, "each mount is an (x, y, z) triple");
         }
     }
+
+    /**
+     * MINECRAFT-172 backward compat: every existing vehicle still goes through the old (seatY, seatZ)
+     * constructor untouched, which must derive a single driver seat -- at x = 0, seat index 0 -- from
+     * exactly those two numbers, so none of these five specs needed an edit for multi-seat support to land.
+     */
+    @Test
+    void everyExistingVehicleDerivesOneDriverSeatFromItsOldSeatYSeatZ() {
+        for (VehicleSpec spec : java.util.List.of(VehicleSpec.CAR, VehicleSpec.TRUCK, VehicleSpec.TROPHY, VehicleSpec.DRIFT, VehicleSpec.MUSCLE)) {
+            assertEquals(1, spec.seatCount());
+            VehicleSpec.Seat driver = spec.driverSeat();
+            assertEquals(0.0, driver.x(), 1e-9);
+            assertEquals(spec.seatY(), driver.y(), 1e-9);
+            assertEquals(spec.seatZ(), driver.z(), 1e-9);
+        }
+    }
+
+    /** MINECRAFT-172: the new seat list must support at least 8 seats (a future bus: driver + 7 passengers). */
+    @Test
+    void anEightSeatSpecCanBeBuilt() {
+        java.util.List<VehicleSpec.Seat> busSeats = new java.util.ArrayList<>();
+        busSeats.add(new VehicleSpec.Seat(0.0, VehicleSpec.CAR.seatY(), VehicleSpec.CAR.seatZ()));
+        for (int i = 1; i < 8; i++) {
+            busSeats.add(new VehicleSpec.Seat(i % 2 == 0 ? 0.5 : -0.5, VehicleSpec.CAR.seatY(), VehicleSpec.CAR.seatZ() - i * 0.9));
+        }
+        VehicleSpec bus = new VehicleSpec(
+                VehicleSpec.CAR.halfX(), VehicleSpec.CAR.halfY(), VehicleSpec.CAR.halfZ(),
+                VehicleSpec.CAR.mounts(), VehicleSpec.CAR.wheelRadius(), VehicleSpec.CAR.wheelWidth(),
+                VehicleSpec.CAR.rideHeight(), VehicleSpec.CAR.restLength(),
+                VehicleSpec.CAR.massKg(), VehicleSpec.CAR.springRate(), VehicleSpec.CAR.dampingRate(), VehicleSpec.CAR.maxSpringForce(),
+                VehicleSpec.CAR.wheelbase(), VehicleSpec.CAR.maxSpeed(),
+                VehicleSpec.CAR.forceScale(), VehicleSpec.CAR.enginePitch(),
+                VehicleSpec.CAR.seatY(), VehicleSpec.CAR.seatZ(),
+                VehicleSpec.CAR.looseGrip(), VehicleSpec.CAR.rollingScale(),
+                VehicleSpec.CAR.tireTuning(), busSeats);
+
+        assertEquals(8, bus.seatCount());
+        assertEquals(0.0, bus.driverSeat().x(), 1e-9);
+    }
 }

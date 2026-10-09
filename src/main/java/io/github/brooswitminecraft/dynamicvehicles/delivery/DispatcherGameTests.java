@@ -19,7 +19,11 @@ import net.neoforged.neoforge.network.registration.ChannelAttributes;
  * takes the {@code dispatcher} profession, and right-clicking that villager opens the offers UI.
  *
  * <p>Both tests run against {@code data/dynamicvehicles/structure/dispatch_profession.nbt}, a
- * flat 5x4x5 grass platform. {@code ci.yml}'s "Run GameTests" step runs
+ * flat 5x5x5 platform with a 2-block-thick grass floor (y=0..1) and air above (y=2..4) &mdash;
+ * the thick floor is slack for GameTest's own "northwest corner" vs. structure-block-position
+ * bookkeeping (empirically, a single-layer floor left entities standing one layer too low and
+ * suffocating; see this PR's history). Everything here is placed/spawned at local y=2, i.e. the
+ * first air layer above the floor. {@code ci.yml}'s "Run GameTests" step runs
  * {@code ./gradlew runGameTestServer}, which registers this class via the
  * {@code @GameTestHolder} annotation below (NeoForge's ASM mod-file scan finds it; there is no
  * separate manual {@code RegisterGameTestsEvent} listener in {@code DynamicVehiclesMod}, which
@@ -33,8 +37,8 @@ public final class DispatcherGameTests {
 
     @GameTest(template = "dispatch_profession", timeoutTicks = 600)
     public static void joblessVillagerNextToDispatchBoardBecomesDispatcher(GameTestHelper helper) {
-        helper.setBlock(new BlockPos(2, 1, 2), DispatcherBlocks.DISPATCH_BOARD.get());
-        Villager villager = helper.spawn(EntityType.VILLAGER, new BlockPos(2, 1, 3));
+        helper.setBlock(new BlockPos(2, 2, 2), DispatcherBlocks.DISPATCH_BOARD.get());
+        Villager villager = helper.spawn(EntityType.VILLAGER, new BlockPos(2, 2, 3));
         villager.setVillagerData(villager.getVillagerData().setProfession(VillagerProfession.NONE));
 
         helper.succeedWhen(() -> {
@@ -45,10 +49,10 @@ public final class DispatcherGameTests {
 
     @GameTest(template = "dispatch_profession")
     public static void rightClickingADispatcherOpensTheOffersMenu(GameTestHelper helper) {
-        Villager villager = helper.spawn(EntityType.VILLAGER, new BlockPos(2, 1, 2));
+        Villager villager = helper.spawn(EntityType.VILLAGER, new BlockPos(2, 2, 2));
         villager.setVillagerData(villager.getVillagerData().setProfession(DispatcherProfession.DISPATCHER.get()));
         ServerPlayer player = helper.makeMockServerPlayerInLevel();
-        player.moveTo(helper.absolutePos(new BlockPos(2, 1, 3)).getCenter());
+        player.moveTo(helper.absolutePos(new BlockPos(2, 2, 3)).getCenter());
 
         // makeMockServerPlayerInLevel()'s connection never ran the real client's mod-channel
         // negotiation handshake, so NeoForge's NetworkRegistry#checkPacket would otherwise

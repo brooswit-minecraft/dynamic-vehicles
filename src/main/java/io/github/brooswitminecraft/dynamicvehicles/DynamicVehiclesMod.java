@@ -32,10 +32,12 @@ import net.neoforged.neoforge.registries.DeferredRegister;
 
 import io.github.brooswitminecraft.dynamicvehicles.delivery.ContractTickHandler;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.DeliveryHudPayload;
+import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherBlocks;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherInteractionHandler;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherOfferAcceptPayload;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherOfferMenus;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherOfferScreen;
+import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherPoiTypes;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherProfession;
 
 /** Entry point and registry for the first vehicle, a 4-wheel car (MINECRAFT-63). */
@@ -107,6 +109,8 @@ public class DynamicVehiclesMod {
         ModSounds.SOUNDS.register(modEventBus);
         ENTITIES.register(modEventBus);
         ITEMS.register(modEventBus);
+        DispatcherBlocks.BLOCKS.register(modEventBus);
+        DispatcherPoiTypes.POI_TYPES.register(modEventBus);
         DispatcherProfession.PROFESSIONS.register(modEventBus);
         DispatcherOfferMenus.MENUS.register(modEventBus);
         modEventBus.addListener(this::commonSetup);
@@ -194,6 +198,7 @@ public class DynamicVehiclesMod {
             event.accept(INDY_ITEM);
             event.accept(BUS_ITEM);
             event.accept(CARGO_TRUCK_ITEM);
+            event.accept(DispatcherBlocks.DISPATCH_BOARD_ITEM);
         }
     }
 

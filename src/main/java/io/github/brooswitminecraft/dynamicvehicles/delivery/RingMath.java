@@ -3,6 +3,7 @@ package io.github.brooswitminecraft.dynamicvehicles.delivery;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
+import java.util.function.Function;
 
 /**
  * Pure, Minecraft-free math for enumerating structure placement regions
@@ -92,5 +93,29 @@ public final class RingMath {
             ordered.addAll(shuffleRing(regionsInRing(origin, ring), seed, ring));
         }
         return ordered;
+    }
+
+    /**
+     * The slot-count-stop / range-exhaustion search loop a destination
+     * lookup should use (acceptance criterion #6), factored out here —
+     * Minecraft-free, so it stays unit-testable without a server even
+     * though its caller (confirming a candidate) is not — as an injectable
+     * seam: walks {@code regions} in order, calling {@code confirm} on each
+     * and keeping only the non-null results, stopping as soon as
+     * {@code slots} results have been collected or {@code regions} runs
+     * out — whichever comes first.
+     */
+    public static <T> List<T> collectUpToSlots(List<RegionCoord> regions, int slots, Function<RegionCoord, T> confirm) {
+        List<T> found = new ArrayList<>();
+        for (RegionCoord region : regions) {
+            if (found.size() >= slots) {
+                break;
+            }
+            T result = confirm.apply(region);
+            if (result != null) {
+                found.add(result);
+            }
+        }
+        return found;
     }
 }

@@ -104,4 +104,52 @@ class RingMathTest {
         }
         assertEquals(expected, RingMath.destinationRingsUpTo(ORIGIN, maxRing, 123L).size());
     }
+
+    // collectUpToSlots is the slot-count-stop / exhaustion seam
+    // VillagePlacementService.findVillages delegates to (AC6); kept here,
+    // not in a VillagePlacementService test, because that class references
+    // Minecraft types and can't be loaded in a plain unit test JVM.
+
+    @Test
+    void collectUpToSlots_stopsAsSoonAsSlotsAreFilled() {
+        List<RegionCoord> regions = RingMath.destinationRingsUpTo(ORIGIN, 3, 1L);
+        int[] confirmCalls = {0};
+
+        List<RegionCoord> found = RingMath.collectUpToSlots(regions, 2, region -> {
+            confirmCalls[0]++;
+            return region; // every candidate "confirms"
+        });
+
+        assertEquals(2, found.size());
+        assertEquals(2, confirmCalls[0], "should stop checking further regions once slots are filled");
+    }
+
+    @Test
+    void collectUpToSlots_exhaustsGracefullyWhenNothingConfirms() {
+        List<RegionCoord> regions = RingMath.destinationRingsUpTo(ORIGIN, 2, 1L);
+
+        List<RegionCoord> found = RingMath.<RegionCoord>collectUpToSlots(regions, 100, region -> null);
+
+        assertTrue(found.isEmpty());
+    }
+
+    @Test
+    void collectUpToSlots_exhaustsGracefullyWhenNoRegionsAtAll() {
+        List<RegionCoord> found = RingMath.collectUpToSlots(List.of(), 5, region -> region);
+
+        assertTrue(found.isEmpty());
+    }
+
+    @Test
+    void collectUpToSlots_onlyNonNullConfirmationsAreCollectedInOrder() {
+        List<RegionCoord> regions = RingMath.destinationRingsUpTo(ORIGIN, 2, 1L);
+
+        List<RegionCoord> confirmedOnly = regions.stream().limit(5).toList();
+        Set<RegionCoord> confirmedSet = Set.copyOf(confirmedOnly);
+
+        List<RegionCoord> found = RingMath.collectUpToSlots(
+                regions, regions.size(), region -> confirmedSet.contains(region) ? region : null);
+
+        assertEquals(confirmedOnly, found);
+    }
 }

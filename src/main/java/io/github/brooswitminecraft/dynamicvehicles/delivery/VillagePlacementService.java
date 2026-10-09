@@ -18,9 +18,7 @@ import net.minecraft.world.level.levelgen.structure.StructureStart;
 import net.minecraft.world.level.levelgen.structure.placement.RandomSpreadStructurePlacement;
 import net.minecraft.world.level.levelgen.structure.placement.StructurePlacement;
 
-import java.util.ArrayList;
 import java.util.List;
-import java.util.function.Function;
 
 /**
  * Server-side destination-discovery service: given a level and an origin
@@ -127,7 +125,7 @@ public final class VillagePlacementService {
         // within a ring in shuffled (not distance-sorted) order, so the
         // slot-limited result below is already "ordered by ring, nearest
         // first" as required, with no extra sort needed.
-        return collectUpToSlots(RingMath.destinationRingsUpTo(originRegion, maxRing, seed), slots, region -> {
+        return RingMath.collectUpToSlots(RingMath.destinationRingsUpTo(originRegion, maxRing, seed), slots, region -> {
             ChunkPos candidateChunk = placement.getPotentialStructureChunk(
                     seed, region.x() * placement.spacing(), region.z() * placement.spacing());
             StructureStart start = confirmedVillageStart(level, placement, candidateChunk, villageStructures);
@@ -142,28 +140,6 @@ public final class VillagePlacementService {
             int ring = RingMath.ringOf(originRegion, region);
             return new ConfirmedVillage(new VillageIdentity(region, level.dimension()), ring, approxDistance, startPos);
         });
-    }
-
-    /**
-     * The slot-count-stop / range-exhaustion search loop (acceptance
-     * criterion #6), factored out as an injectable seam so it is
-     * unit-testable without a Minecraft server: walks {@code regions} in
-     * order, calling {@code confirm} on each and keeping only the non-null
-     * results, stopping as soon as {@code slots} results have been
-     * collected or {@code regions} runs out — whichever comes first.
-     */
-    static <T> List<T> collectUpToSlots(List<RegionCoord> regions, int slots, Function<RegionCoord, T> confirm) {
-        List<T> found = new ArrayList<>();
-        for (RegionCoord region : regions) {
-            if (found.size() >= slots) {
-                break;
-            }
-            T result = confirm.apply(region);
-            if (result != null) {
-                found.add(result);
-            }
-        }
-        return found;
     }
 
     private static RegionCoord toRegion(BlockPos pos, int spacingInChunks) {

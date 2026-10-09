@@ -119,22 +119,25 @@ public record VehicleSpec(
             2.4, 32.0, 1.0, 1.0, 0.5, -0.1, 1.0, 1.0, TIRE_TUNING);
 
     /**
-     * A heavy, rear-biased-feeling muscle car (MINECRAFT-165): 1700 kg, a 2.2 m wheelbase shorter than the
+     * A heavy, rear-biased-feeling muscle car (MINECRAFT-165): 1700 kg, a 2.3 m wheelbase shorter than the
      * car's 2.4 m (less pitch leverage) under a 0.95 m ride height taller than the car's 0.9 m (more CoM
-     * height above the wheels), driven by {@code forceScale} 2.0 &mdash; double the car's and well past
-     * {@code TROPHY}'s 1.25, the next-strongest vehicle. Spring, damper and the spring force cap are the
-     * car's scaled to its mass (same pattern as {@code DRIFT}), so it sags the same ~0.15 m at rest. The
-     * combination of a short wheelbase, a comparatively tall ride height and a hard-launching engine is a
-     * tuning/feel target for "nearly pops a wheelie on a hard launch" (not a hard physics assertion here;
-     * {@code VehicleSpecMuscleTest} checks the spec's own ingredients for that feel, not a simulated
-     * outcome) &mdash; tires, not assists, explain any wheelspin that shows up first.
+     * height above the wheels), driven by {@code forceScale} 2.1 &mdash; more than double the car's 1.0,
+     * and ahead of {@code forceScale/massKg} (a launch-acceleration proxy: force is {@code forceScale}
+     * times a shared per-wheel constant, so mass is the only other variable) for every existing vehicle,
+     * including {@code TRUCK}'s 1.83 and {@code TROPHY}'s 1.8, the next-strongest raw {@code forceScale}s
+     * on the roster. Spring, damper and the spring force cap are the car's scaled to its mass (same pattern
+     * as {@code DRIFT}), so it sags the same ~0.15 m at rest. The combination of a short wheelbase, a
+     * comparatively tall ride height and a hard-launching engine is a tuning/feel target for "nearly pops a
+     * wheelie on a hard launch" (not a hard physics assertion here; {@code VehicleSpecMuscleTest} checks
+     * the spec's own ingredients for that feel, not a simulated outcome) &mdash; tires, not assists,
+     * explain any wheelspin that shows up first.
      */
     public static final VehicleSpec MUSCLE = new VehicleSpec(
             1.0, 0.5, 1.65,
-            new double[][] {{-0.85, -0.4, 1.1}, {0.85, -0.4, 1.1}, {-0.85, -0.4, -1.1}, {0.85, -0.4, -1.1}},
+            new double[][] {{-0.85, -0.4, 1.15}, {0.85, -0.4, 1.15}, {-0.85, -0.4, -1.15}, {0.85, -0.4, -1.15}},
             0.38, 0.34, 0.95,
             0.7, 1700.0, 27_795.0, 4_816.67, 56_666.67,
-            2.2, 34.0, 2.0, 0.7, 0.5, -0.15, 1.0, 1.0, TireTuning.IDENTITY);
+            2.3, 34.0, 2.1, 0.7, 0.5, -0.15, 1.0, 1.0, TireTuning.IDENTITY);
 
     public double wheelCentreY() {
         return -rideHeight + wheelRadius;

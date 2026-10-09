@@ -10,11 +10,13 @@ import net.minecraft.core.BlockPos;
  * the destination.
  *
  * @param identity      the region + dimension address of this village
- * @param ring          the distance ring it was found in (0 = none, since the
- *                      origin's own region is never a candidate; 1 = nearest)
- * @param approxDistance straight-line block distance from the search origin
- *                       to {@code startBlockPos}
- * @param startBlockPos the actual generated village structure start position,
+ * @param ring          the distance ring it was found in; always &gt;= 1,
+ *                      since ring 0 is the origin's own region and is never
+ *                      a candidate (1 = nearest ring out)
+ * @param approxDistance horizontal (X/Z-only; ignores Y) block distance from
+ *                       the search origin to {@code startBlockPos}
+ * @param startBlockPos the actual generated village structure's bounding-box
+ *                      centre (not merely its placement chunk's middle),
  *                      suitable as a tight arrival/destination criterion
  */
 public record ConfirmedVillage(

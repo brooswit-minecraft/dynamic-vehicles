@@ -210,8 +210,15 @@ public record VehicleSpec(
      * being non-identity. Kept here mainly as the opt-in marker and as the defaults {@code CarConfig}'s own
      * drift tire tuning values mirror, and so pure-function tests of {@link DriftTireModel} have a concrete
      * tuning to exercise without touching config.
+     *
+     * <p>MINECRAFT-210: retuned to sit strictly between {@link TireTuning#IDENTITY} (MUSCLE's tuning) and
+     * the old drift values, closer to muscle than the midpoint for every field but {@code counterSteerAssist}
+     * &mdash; see {@code docs/car-tire-tuning.md} for the full reasoning, including why that one field
+     * deliberately goes the other way (identity's {@code 0.0} is "no slide to recover from", not an "easier"
+     * endpoint, so a muscle-like recovery feel means a HIGHER value than the old drift car's, not one
+     * between it and identity).
      */
-    private static final TireTuning TIRE_TUNING = new TireTuning(0.72, 1.2, 0.45, 0.5, 0.5, 0.6);
+    private static final TireTuning TIRE_TUNING = new TireTuning(0.88, 3.5, 0.15, 0.8, 0.2, 0.8);
 
     /**
      * A low, sporty car: slightly narrower and noticeably lower than the car (0.75 m ride height against

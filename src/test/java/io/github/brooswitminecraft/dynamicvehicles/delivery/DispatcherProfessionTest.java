@@ -1,78 +1,85 @@
 package io.github.brooswitminecraft.dynamicvehicles.delivery;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+
+import java.awt.image.BufferedImage;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+
+import javax.imageio.ImageIO;
 
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
-
-import net.minecraft.core.Holder;
-import net.minecraft.core.registries.BuiltInRegistries;
-import net.minecraft.resources.ResourceKey;
-import net.minecraft.world.entity.ai.village.poi.PoiType;
-import net.minecraft.world.entity.ai.village.poi.PoiTypes;
-import net.minecraft.world.entity.npc.VillagerProfession;
-import net.minecraft.world.level.block.Blocks;
-
 /**
- * Covers what AC7 of MINECRAFT-105 asks for without a running client: that the
- * {@code dispatcher} profession is built correctly and that its job-site predicates
- * resolve against the real vanilla POI registry the way {@link DispatcherProfession}'s
- * javadoc claims (bound to {@code PoiTypes.MEETING}, i.e. the Bell, and nothing else).
+ * MINECRAFT-105/117 AC7 asks for whatever can be unit-tested without a client. This
+ * repo's test sourceSet has no path to vanilla/NeoForge classes (confirmed by CI: even
+ * {@code DispatcherProfession.create()} fails outside a running NeoForge mod loader,
+ * because constructing a {@code VillagerProfession} loads that class, which eagerly
+ * registers ARMORER/BUTCHER/etc. into {@code BuiltInRegistries}, which in turn runs
+ * {@code PoiTypes.bootstrap} and NeoForge's {@code GameData} registry hooks — none of
+ * which are initialized outside FML's own lifecycle). So the profession-registration
+ * code itself (job-site predicates, POI association, actual registry entry) genuinely
+ * needs a running client/dev environment to exercise and is NOT covered here; see the
+ * ticket comment for exactly what a human must do to confirm it.
  *
- * <p>Referencing {@link BuiltInRegistries} triggers vanilla's own static bootstrap
- * (block/POI/profession registration) with no NeoForge mod loader or client involved,
- * so {@link PoiTypes#MEETING} and the other vanilla POI holders used here are real,
- * fully-populated registry entries rather than stubs.
+ * <p>What IS checked here, without any Minecraft/NeoForge dependency: the two static
+ * resources this profession needs to render instead of showing a missing-texture
+ * villager (AC2) are present and shaped the way
+ * {@code VillagerProfessionLayer#getResourceLocation} and vanilla's own profession
+ * overlays require.
  */
 class DispatcherProfessionTest {
-    private static Holder<PoiType> holderFor(ResourceKey<PoiType> key) {
-        return BuiltInRegistries.POINT_OF_INTEREST_TYPE.getHolderOrThrow(key);
+    private static final String RESOURCE_ROOT = "/assets/dynamicvehicles";
+
+    private static InputStream resource(String path) {
+        InputStream in = DispatcherProfessionTest.class.getResourceAsStream(RESOURCE_ROOT + path);
+        if (in == null) {
+            fail("missing resource " + RESOURCE_ROOT + path);
+        }
+        return in;
     }
 
     @Test
-    void nameMatchesTheRegisteredPath() {
-        VillagerProfession dispatcher = DispatcherProfession.create();
-        assertEquals("dispatcher", dispatcher.name());
-    }
-
-    @Test
-    void jobSitePredicatesAcceptTheVanillaMeetingPoiType() {
-        VillagerProfession dispatcher = DispatcherProfession.create();
-        Holder<PoiType> meeting = holderFor(PoiTypes.MEETING);
-
-        assertTrue(dispatcher.heldJobSite().test(meeting), "a Dispatcher must recognize the Bell/meeting POI as its held job site");
-        assertTrue(dispatcher.acquirableJobSite().test(meeting), "an unemployed villager must be able to acquire the Bell/meeting POI as Dispatcher");
-    }
-
-    @Test
-    void jobSitePredicatesRejectOtherVanillaPoiTypes() {
-        VillagerProfession dispatcher = DispatcherProfession.create();
-
-        for (ResourceKey<PoiType> key : List.of(PoiTypes.ARMORER, PoiTypes.FARMER, PoiTypes.LIBRARIAN, PoiTypes.HOME)) {
-            Holder<PoiType> other = holderFor(key);
-            assertFalse(dispatcher.heldJobSite().test(other), () -> key + " must not satisfy the Dispatcher's held job site");
-            assertFalse(dispatcher.acquirableJobSite().test(other), () -> key + " must not satisfy the Dispatcher's acquirable job site");
+    void langFileDeclaresTheDispatcherProfessionName() throws IOException {
+        // Vanilla's own convention, confirmed against this build's shipped
+        // en_us.json: "entity.<namespace>.villager.<profession path>".
+        try (InputStream in = resource("/lang/en_us.json")) {
+            String content = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            assertTrue(content.contains("\"entity.dynamicvehicles.villager.dispatcher\""),
+                    "en_us.json must declare entity.dynamicvehicles.villager.dispatcher");
         }
     }
 
     @Test
-    void dispatcherOffersNothingInThisSlice() {
-        VillagerProfession dispatcher = DispatcherProfession.create();
-        assertTrue(dispatcher.requestedItems().isEmpty(), "no trades/offers belong to this slice");
-        assertTrue(dispatcher.secondaryPoi().isEmpty(), "the Bell is the only POI the Dispatcher uses");
-    }
-
-    @Test
-    void bellBlockStatesAreStillExclusivelyOwnedByTheVanillaMeetingPoiType() {
-        // Guards the central risk this profession is reviewed hardest on: nothing in
-        // this mod may claim the Bell's BlockStates for a type other than vanilla's
-        // own MEETING PoiType (PoiTypes#registerBlockStates throws if a BlockState is
-        // ever mapped to more than one PoiType, so this would fail loudly if it broke).
-        for (var state : Blocks.BELL.getStateDefinition().getPossibleStates()) {
-            assertTrue(PoiTypes.forState(state).map(h -> h.is(PoiTypes.MEETING)).orElse(false), () -> state + " must map to the vanilla MEETING PoiType");
+    void professionTextureIsPresentAndShapedLikeAVillagerOverlay() throws IOException {
+        // VillagerProfessionLayer renders this exact path
+        // (textures/entity/villager/profession/<profession path>.png) as a 64x64
+        // RGBA cutout overlay on top of the villager type texture; vanilla's own
+        // profession overlays (e.g. armorer.png) are 64x64 RGBA.
+        BufferedImage image;
+        try (InputStream in = resource("/textures/entity/villager/profession/dispatcher.png")) {
+            image = ImageIO.read(in);
         }
+        assertEquals(64, image.getWidth(), "profession overlay must be 64px wide like vanilla's villager overlays");
+        assertEquals(64, image.getHeight(), "profession overlay must be 64px tall like vanilla's villager overlays");
+        assertTrue(image.getColorModel().hasAlpha(), "profession overlay must have an alpha channel (it's a cutout layer)");
+
+        boolean sawTransparent = false;
+        boolean sawOpaque = false;
+        for (int y = 0; y < image.getHeight() && !(sawTransparent && sawOpaque); y++) {
+            for (int x = 0; x < image.getWidth(); x++) {
+                int alpha = (image.getRGB(x, y) >>> 24) & 0xFF;
+                if (alpha == 0) {
+                    sawTransparent = true;
+                } else if (alpha == 255) {
+                    sawOpaque = true;
+                }
+            }
+        }
+        assertTrue(sawTransparent, "a cutout overlay covering the whole 64x64 villager skin would not render correctly");
+        assertTrue(sawOpaque, "an entirely transparent overlay would render as no clothing at all");
     }
 }

@@ -36,6 +36,16 @@ final class SableCarBody {
     private final BoxPhysicsObject box;
     private final RigidBodyHandle body;
     private double lastSlipSpeed;
+    private double lastSpinSlip;
+    // One real spin rate per wheel (rad/s), persisted tick to tick and advanced sub-step to sub-step by
+    // WheelMath.spinRate - state, not a value re-derived from scratch each call. See spinRate's own
+    // javadoc for why a gripping wheel is pulled to ground speed rather than carrying forward a stale slip.
+    // Scope note (MINECRAFT-118): lastSpinSlip currently feeds only the debug describe() string below,
+    // deliberately - the OFFICIAL reported slip (slipThisTick/lastSlipSpeed/wearSlip/SlipReporter) must
+    // keep coming from WheelSubStepper.subStepSlipSpeed alone (see that call site's own comment); folding
+    // this state into it would re-entangle the tick-dt-evaluated reporting contract with a value that is
+    // itself integrated sub-step by sub-step, which is exactly what that contract exists to avoid.
+    private final double[] wheelSpin;
 
     private SableCarBody(VehicleSpec spec, ServerLevel level, BoxPhysicsObject box, RigidBodyHandle body) {
         this.spec = spec;
@@ -43,6 +53,7 @@ final class SableCarBody {
         this.level = level;
         this.box = box;
         this.body = body;
+        this.wheelSpin = new double[spec.mounts().length];
     }
 
     /** Body orientation for a Minecraft yaw: the body's +Z axis points where the entity faces. */
@@ -90,6 +101,7 @@ final class SableCarBody {
         Vector3d carForward = orientation.transform(new Vector3d(0, 0, 1));
         boolean touching = false;
         double slipThisTick = 0.0;
+        double spinSlipThisTick = 0.0;
         java.util.List<Vector3d> hits = new java.util.ArrayList<>();
 
         // Pass 1 (once per tick, not per sub-step): one raycast per wheel, giving every wheel's distance
@@ -263,6 +275,19 @@ final class SableCarBody {
                 WheelMath.Tire tire = WheelMath.tire(vLong, vLat, force, gripMu, rollingCoefficient, lateralScale,
                         drive, brake, brakeGain, effectiveMass, subDt);
                 impulseWorld.fma(tire.longitudinal() * subDt, forward).fma(tire.lateral() * subDt, lateral);
+                // Per-wheel spin state (MINECRAFT-73/MINECRAFT-118): advanced from how much of THIS SAME
+                // tire() call's own commandLongitudinal (its internal wantLong, unscaled) the friction
+                // circle could not deliver as longitudinal (that same wantLong, scaled) - both already
+                // computed above, no extra WheelMath.tire call. Using tire()'s own commandLongitudinal
+                // rather than reconstructing a command externally from drive/brake is deliberate: an
+                // external reconstruction missing rolling resistance or the brake's relaxation target would
+                // make excessForce nonzero even while gripping, so a gripping wheel would never stop
+                // "spinning" rather than snapping to ground speed - see WheelMath.spinRate's javadoc.
+                double excessForce = tire.commandLongitudinal() - tire.longitudinal();
+                wheelSpin[wheel] = WheelMath.spinRate(wheelSpin[wheel], spec.wheelRadius(), vLong, excessForce,
+                        WheelMath.WHEEL_INERTIA, subDt);
+                double spinSlip = WheelMath.slipFromSpin(wheelSpin[wheel], spec.wheelRadius(), vLong);
+                spinSlipThisTick = Math.max(spinSlipThisTick, Math.abs(spinSlip));
                 // Reported slip (feeds slipThisTick/lastSlipSpeed/wearSlip/SlipReporter) is evaluated at the
                 // TICK's own dt, not subDt, so it reads the same regardless of wheelSubSteps - see
                 // WheelSubStepper.subStepSlipSpeed's own comment for why. The force above, which this does
@@ -311,6 +336,7 @@ final class SableCarBody {
             body.applyImpulseAtPoint(new Vector3d(0, 0, 0), drag);
         }
         lastSlipSpeed = slipThisTick;
+        lastSpinSlip = spinSlipThisTick;
         if (CarDebug.enabled) {
             drawDebug(position, orientation, hits);
         }
@@ -393,6 +419,7 @@ final class SableCarBody {
         double pitch = Math.toDegrees(Math.asin(Math.max(-1, Math.min(1, fwd.y))));
         double roll = Math.toDegrees(Math.atan2(q.transform(new Vector3d(1, 0, 0)).y, up.y));
         Vector3d v = body.getLinearVelocity(new Vector3d());
-        return String.format("body y=%.3f pitch=%.2f roll=%.2f speed=%.2f", pose.position().y, pitch, roll, v.length());
+        return String.format("body y=%.3f pitch=%.2f roll=%.2f speed=%.2f spinSlip=%.2f",
+                pose.position().y, pitch, roll, v.length(), lastSpinSlip);
     }
 }

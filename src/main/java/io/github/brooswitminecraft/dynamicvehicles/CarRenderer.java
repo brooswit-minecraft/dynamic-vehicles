@@ -20,12 +20,21 @@ import net.minecraft.world.level.block.state.BlockState;
  * {@link CarGeometry}: a chassis and cabin that exactly fill the physics box and
  * four wheels that sit where the suspension rays end, so the wheels touch the
  * ground at rest.
+ *
+ * <p>MINECRAFT-188: {@code DRIFT} is the one exception -- its geometry is built from
+ * {@link #texturedBox}, a hand-rolled textured cuboid (see that method), instead of
+ * {@link #block}'s vanilla {@code BlockState}s, so it can carry the custom livery in
+ * {@code drift_car_body.png}/{@code drift_car_trim.png} (see {@code tools/gen-drift-car-textures.py}).
+ * Every other vehicle's branch below is untouched.
  */
 public class CarRenderer extends EntityRenderer<CarEntity> {
+    private static final ResourceLocation DRIFT_BODY_TEXTURE =
+            ResourceLocation.fromNamespaceAndPath(DynamicVehiclesMod.MODID, "textures/entity/drift_car_body.png");
+    private static final ResourceLocation DRIFT_TRIM_TEXTURE =
+            ResourceLocation.fromNamespaceAndPath(DynamicVehiclesMod.MODID, "textures/entity/drift_car_trim.png");
     private static final BlockState BODY = Blocks.LIGHT_GRAY_CONCRETE.defaultBlockState();
     private static final BlockState TRUCK_BODY = Blocks.ORANGE_CONCRETE.defaultBlockState();
     private static final BlockState RACE_BODY = Blocks.RED_CONCRETE.defaultBlockState();
-    private static final BlockState DRIFT_BODY = Blocks.YELLOW_CONCRETE.defaultBlockState();
     private static final BlockState MUSCLE_BODY = Blocks.BLACK_CONCRETE.defaultBlockState();
     private static final BlockState MUSCLE_STRIPE = Blocks.WHITE_CONCRETE.defaultBlockState();
     private static final BlockState CRAWLER_BODY = Blocks.GREEN_CONCRETE.defaultBlockState();
@@ -62,10 +71,22 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
             block(pose, buffers, light, CABIN, -0.6f, -hy + 0.45f, -0.2f, 1.2f, 2 * hy - 0.45f, 1.2f);
             block(pose, buffers, light, BED, -hx + 0.1f, hy - 0.1f, -hz, 2 * hx - 0.2f, 0.1f, 0.5f);
         } else if (spec == VehicleSpec.DRIFT) {
-            // A low, slim sports body with a small rear spoiler; the cabin sits further back than the car's.
-            block(pose, buffers, light, DRIFT_BODY, -hx, -hy, -hz, 2 * hx, 0.4f, 2 * hz);
-            block(pose, buffers, light, CABIN, -0.6f, -hy + 0.4f, -0.3f, 1.2f, 2 * hy - 0.4f, 1.3f);
-            block(pose, buffers, light, BED, -hx + 0.15f, hy - 0.08f, -hz + 0.1f, 2 * hx - 0.3f, 0.08f, 0.25f);
+            // MINECRAFT-188: richer silhouette than a single slab -- a lower, stepped nose ahead of the
+            // main tub, side skirts hinting at the wheel arches, a roof cap over the glass cabin, and a
+            // wide rear wing lifted on visible stands. Textured (custom livery) instead of flat concrete;
+            // the cabin footprint (x/z) is unchanged from before so it still sits over the DRIFT seats
+            // (VehicleSpec.DRIFT: driver x = 0, passenger x = -0.45, both z = -0.1).
+            float tubTop = -hy + 0.38f;
+            float noseZ = hz - 0.35f;
+            texturedBox(pose, buffers, light, DRIFT_BODY_TEXTURE, -hx, -hy, -hz, 2 * hx, 0.38f, 2 * hz - 0.35f);
+            texturedBox(pose, buffers, light, DRIFT_BODY_TEXTURE, -hx, -hy, noseZ, 2 * hx, 0.28f, 0.35f);
+            texturedBox(pose, buffers, light, DRIFT_TRIM_TEXTURE, -hx - 0.02f, -hy, -hz, 0.04f, 0.12f, 2 * hz);
+            texturedBox(pose, buffers, light, DRIFT_TRIM_TEXTURE, hx - 0.02f, -hy, -hz, 0.04f, 0.12f, 2 * hz);
+            block(pose, buffers, light, CABIN, -0.6f, tubTop, -0.3f, 1.2f, hy - 0.06f - tubTop, 1.3f);
+            texturedBox(pose, buffers, light, DRIFT_TRIM_TEXTURE, -0.62f, hy - 0.06f, -0.32f, 1.24f, 0.06f, 1.34f);
+            texturedBox(pose, buffers, light, DRIFT_TRIM_TEXTURE, -hx + 0.1f, tubTop, -1.35f, 0.08f, 0.38f, 0.15f);
+            texturedBox(pose, buffers, light, DRIFT_TRIM_TEXTURE, hx - 0.18f, tubTop, -1.35f, 0.08f, 0.38f, 0.15f);
+            texturedBox(pose, buffers, light, DRIFT_TRIM_TEXTURE, -0.85f, tubTop + 0.38f, -hz + 0.1f, 1.7f, 0.08f, 0.25f);
         } else if (spec == VehicleSpec.MUSCLE) {
             // A long-hooded, short-wheelbase muscle body with a racing stripe down the hood and a low cabin set well back.
             block(pose, buffers, light, MUSCLE_BODY, -hx, -hy, -hz, 2 * hx, 0.55f, 2 * hz);
@@ -153,6 +174,51 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
         pose.scale(sx, sy, sz);
         Minecraft.getInstance().getBlockRenderer().renderSingleBlock(state, pose, buffers, light, OverlayTexture.NO_OVERLAY);
         pose.popPose();
+    }
+
+    /**
+     * MINECRAFT-188: a textured cuboid for {@code DRIFT}'s custom livery, in the same body-frame
+     * coordinates {@link #block} uses (a corner at x,y,z, sized sx,sy,sz). Unlike {@link #block}, which
+     * renders a real {@code BlockState} (and so gets its texture, and vanilla's own block-face UV
+     * unwrapping, for free), this maps the WHOLE given texture onto EACH of the six faces -- the
+     * simplest UV scheme that still shows the custom PNG, chosen over hand-unwrapping a vanilla-style
+     * box texture (top/bottom/sides laid out in one strip) as lower risk given this renderer can't be
+     * exercised in CI (no Minecraft client there -- see the PR description for what was checked in-game
+     * instead). {@code RenderType.entityCutoutNoCull} so winding order can't hide a face.
+     */
+    private static void texturedBox(PoseStack pose, MultiBufferSource buffers, int light, ResourceLocation texture,
+            float x, float y, float z, float sx, float sy, float sz) {
+        VertexConsumer consumer = buffers.getBuffer(RenderType.entityCutoutNoCull(texture));
+        PoseStack.Pose last = pose.last();
+        float x1 = x + sx;
+        float y1 = y + sy;
+        float z1 = z + sz;
+        quad(consumer, last, light, x, y, z1, x, y, z, x, y1, z, x, y1, z1, -1, 0, 0);
+        quad(consumer, last, light, x1, y, z, x1, y, z1, x1, y1, z1, x1, y1, z, 1, 0, 0);
+        quad(consumer, last, light, x, y, z, x1, y, z, x1, y, z1, x, y, z1, 0, -1, 0);
+        quad(consumer, last, light, x, y1, z1, x1, y1, z1, x1, y1, z, x, y1, z, 0, 1, 0);
+        quad(consumer, last, light, x, y, z, x, y1, z, x1, y1, z, x1, y, z, 0, 0, -1);
+        quad(consumer, last, light, x1, y, z1, x1, y1, z1, x, y1, z1, x, y, z1, 0, 0, 1);
+    }
+
+    private static void quad(VertexConsumer consumer, PoseStack.Pose pose, int light,
+            float x0, float y0, float z0, float x1, float y1, float z1,
+            float x2, float y2, float z2, float x3, float y3, float z3,
+            float nx, float ny, float nz) {
+        vertex(consumer, pose, light, x0, y0, z0, 0, 1, nx, ny, nz);
+        vertex(consumer, pose, light, x1, y1, z1, 1, 1, nx, ny, nz);
+        vertex(consumer, pose, light, x2, y2, z2, 1, 0, nx, ny, nz);
+        vertex(consumer, pose, light, x3, y3, z3, 0, 0, nx, ny, nz);
+    }
+
+    private static void vertex(VertexConsumer consumer, PoseStack.Pose pose, int light,
+            float x, float y, float z, float u, float v, float nx, float ny, float nz) {
+        consumer.addVertex(pose.pose(), x, y, z)
+                .setColor(255, 255, 255, 255)
+                .setUv(u, v)
+                .setOverlay(OverlayTexture.NO_OVERLAY)
+                .setLight(light)
+                .setNormal(pose, nx, ny, nz);
     }
 
     @Override

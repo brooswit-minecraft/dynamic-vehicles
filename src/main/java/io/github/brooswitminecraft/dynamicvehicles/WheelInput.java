@@ -18,6 +18,7 @@ import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.client.event.MovementInputUpdateEvent;
 import net.neoforged.neoforge.client.event.RegisterClientCommandsEvent;
+import net.neoforged.neoforge.network.PacketDistributor;
 
 /**
  * Steering wheel and pedals (MINECRAFT-66). Reads a joystick-class device through GLFW, which Minecraft already
@@ -37,6 +38,11 @@ public final class WheelInput {
     private static int rescanCountdown;
     private static float[] axes = new float[0];
     private static boolean wasRiding;
+    // Paddle state last sent to the server (MINECRAFT-167), so a held paddle keeps working across every tick
+    // without flooding the network, but any actual change (including the wheel disconnecting) goes out at once.
+    private static boolean lastSentHonk;
+    private static boolean lastSentHandbrake;
+    private static boolean wasRidingCarForPaddles;
 
     private WheelInput() {}
 
@@ -92,13 +98,34 @@ public final class WheelInput {
 
     @SubscribeEvent
     public static void onMovementInput(MovementInputUpdateEvent event) {
-        if (device < 0 || !(event.getEntity().getVehicle() instanceof CarEntity) || !ClientConfig.WHEEL_ENABLED.get()) {
+        boolean ridingCar = event.getEntity().getVehicle() instanceof CarEntity;
+        if (!wasRidingCarForPaddles && ridingCar) {
+            // Fresh mount: the car on the other end starts its own paddle state at false/false, so force a
+            // resend even if our last-sent flags happen to already match (e.g. after a disconnect/rejoin).
+            lastSentHonk = false;
+            lastSentHandbrake = false;
+        }
+        wasRidingCarForPaddles = ridingCar;
+        if (!ridingCar) {
             return;
         }
-        WheelMapping.Output out = current();
-        var input = event.getInput();
-        input.leftImpulse = WheelMapping.merge(input.leftImpulse, out.steer());
-        input.forwardImpulse = WheelMapping.merge(input.forwardImpulse, out.forward());
+        boolean wheelActive = device >= 0 && ClientConfig.WHEEL_ENABLED.get();
+        if (wheelActive) {
+            WheelMapping.Output out = current();
+            var input = event.getInput();
+            input.leftImpulse = WheelMapping.merge(input.leftImpulse, out.steer());
+            input.forwardImpulse = WheelMapping.merge(input.forwardImpulse, out.forward());
+            // The wheel's shifter paddles drive honk/handbrake instead (MINECRAFT-167); jump must do nothing.
+            input.jumping = false;
+        }
+        WheelMapping.Paddles paddles = wheelActive
+                ? WheelMapping.paddles(readButtons(device), ClientConfig.WHEEL_HONK_BUTTON.get(), ClientConfig.WHEEL_HANDBRAKE_BUTTON.get())
+                : new WheelMapping.Paddles(false, false);
+        if (paddles.honk() != lastSentHonk || paddles.handbrake() != lastSentHandbrake) {
+            lastSentHonk = paddles.honk();
+            lastSentHandbrake = paddles.handbrake();
+            PacketDistributor.sendToServer(new WheelPaddlesPayload(paddles.honk(), paddles.handbrake()));
+        }
     }
 
     @SubscribeEvent
@@ -116,6 +143,10 @@ public final class WheelInput {
                 WheelMapping.Output out = current();
                 say(String.format(Locale.ROOT, "mapped: steer(+left)=%.2f throttle=%.2f brake=%.2f; buttons down: %s",
                         out.steer(), out.throttle(), out.brake(), pressedButtons(device)));
+                WheelMapping.Paddles paddles = WheelMapping.paddles(readButtons(device),
+                        ClientConfig.WHEEL_HONK_BUTTON.get(), ClientConfig.WHEEL_HANDBRAKE_BUTTON.get());
+                say(String.format(Locale.ROOT, "paddles: honk(button %d)=%s handbrake(button %d)=%s -- use the button list above to find the real indices",
+                        ClientConfig.WHEEL_HONK_BUTTON.get(), paddles.honk(), ClientConfig.WHEEL_HANDBRAKE_BUTTON.get(), paddles.handbrake()));
             }
             logDevices();
             return Command.SINGLE_SUCCESS;
@@ -186,6 +217,16 @@ public final class WheelInput {
             return new float[0];
         }
         float[] out = new float[buffer.remaining()];
+        buffer.get(buffer.position(), out);
+        return out;
+    }
+
+    private static byte[] readButtons(int jid) {
+        ByteBuffer buffer = GLFW.glfwGetJoystickButtons(jid);
+        if (buffer == null) {
+            return new byte[0];
+        }
+        byte[] out = new byte[buffer.remaining()];
         buffer.get(buffer.position(), out);
         return out;
     }

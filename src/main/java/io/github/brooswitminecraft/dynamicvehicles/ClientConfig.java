@@ -27,6 +27,8 @@ public final class ClientConfig {
     public static final ModConfigSpec.DoubleValue WHEEL_EFFECTIVE_DEGREES;
     public static final ModConfigSpec.DoubleValue WHEEL_STEER_CURVE;
     public static final ModConfigSpec.DoubleValue WHEEL_PEDAL_DEADZONE;
+    public static final ModConfigSpec.IntValue WHEEL_HANDBRAKE_BUTTON;
+    public static final ModConfigSpec.IntValue WHEEL_HONK_BUTTON;
 
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
@@ -84,6 +86,14 @@ public final class ClientConfig {
                 .defineInRange("steerCurve", 1.25, 1.0, 3.0);
         WHEEL_PEDAL_DEADZONE = builder.comment("Pedal travel (0-1) below this counts as released.")
                 .defineInRange("pedalDeadzone", 0.03, 0.0, 0.9);
+        WHEEL_HANDBRAKE_BUTTON = builder.comment("GLFW button index of the right shifter paddle (handbrake), or -1 to disable. "
+                        + "Default 5 is an UNVERIFIED guess (common right-paddle index on G29-class wheels in community mappings, not measured on real hardware) "
+                        + "-- confirm with /dvwheel's pressed-button list and correct if wrong.")
+                .defineInRange("handbrakeButton", 5, -1, 31);
+        WHEEL_HONK_BUTTON = builder.comment("GLFW button index of the left shifter paddle (honk), or -1 to disable. "
+                        + "Default 4 is an UNVERIFIED guess (common left-paddle index on G29-class wheels in community mappings, not measured on real hardware) "
+                        + "-- confirm with /dvwheel's pressed-button list and correct if wrong.")
+                .defineInRange("honkButton", 4, -1, 31);
         builder.pop();
         SPEC = builder.build();
     }

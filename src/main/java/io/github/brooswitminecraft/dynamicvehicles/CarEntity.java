@@ -71,6 +71,9 @@ public class CarEntity extends Entity {
     private double lastTickSpeed;
     private int impactCooldown;
     private boolean wasHonking;
+    /** Wheel shifter-paddle state (MINECRAFT-167), reported by {@link WheelPaddlesPayload}; independent of jump. */
+    private boolean wheelHonk;
+    private boolean wheelHandbrake;
     /** Server: unit horizontal direction of recent travel, and the headlamp light block this car holds. */
     private net.minecraft.world.phys.Vec3 heading;
     private net.minecraft.core.BlockPos lampBlock;
@@ -232,13 +235,24 @@ public class CarEntity extends Entity {
         }
     }
 
-    /** Server: honk once each time space goes down (space is also the handbrake). */
+    /** Server: honk once each time the honk signal goes down (jump when no wheel is active, else the honk paddle). */
     private void honkOnPress(boolean pressed) {
         if (pressed && !wasHonking) {
             level().playSound(null, getX(), getY() + 0.5, getZ(), ModSounds.HORN.get(),
                     net.minecraft.sounds.SoundSource.NEUTRAL, 1.0f, 1.0f);
         }
         wasHonking = pressed;
+    }
+
+    /**
+     * Server: the rider's wheel reported its shifter-paddle state (MINECRAFT-167). Honk and handbrake are
+     * independent signals here, same as they are in {@link #tick()} -- a wheel-active client already forces
+     * its own jump key to do nothing, so these two booleans are the only source of honk/handbrake while riding
+     * with a wheel.
+     */
+    void setWheelPaddles(boolean honk, boolean handbrake) {
+        wheelHonk = honk;
+        wheelHandbrake = handbrake;
     }
 
     /** Server: play an impact when the car has just lost a lot of speed at once. */
@@ -493,15 +507,24 @@ public class CarEntity extends Entity {
             lampBlock = HeadlampLight.update(lampLevel, this, lampBlock);
         }
         LivingEntity rider = getControllingPassenger();
+        if (rider == null) {
+            // No one is driving: a wheel paddle from a previous rider must never linger (MINECRAFT-167).
+            wheelHonk = false;
+            wheelHandbrake = false;
+        }
         if (level() instanceof net.minecraft.server.level.ServerLevel serverLevel && SableCompat.usable()) {
             tickSable(serverLevel, rider);
             return;
         }
         double throttle = rider == null ? 0.0 : Math.max(-1.0, Math.min(1.0, rider.zza));
         double steer = rider == null ? 0.0 : Math.max(-1.0, Math.min(1.0, rider.xxa));
-        // Sneak is vanilla's dismount key, so the handbrake is the jump key (space).
-        boolean handbrake = rider != null && rider.jumping;
-        honkOnPress(handbrake);
+        // Sneak is vanilla's dismount key, so without a wheel active the handbrake is the jump key (space).
+        // With a wheel active, the client forces jumping false and reports the paddles separately instead
+        // (MINECRAFT-167), so honk and handbrake are independent signals rather than both riding on jump.
+        boolean jumpPressed = rider != null && rider.jumping;
+        WheelMapping.Paddles paddles = WheelMapping.resolve(jumpPressed, new WheelMapping.Paddles(wheelHonk, wheelHandbrake));
+        boolean handbrake = paddles.handbrake();
+        honkOnPress(paddles.honk());
 
         // Minecraft yaw 0 faces +Z; the physics heading is the entity's yaw in radians.
         CarPhysics.Step step = CarPhysics.step(new CarPhysics.State(speed, Math.toRadians(getYRot())),
@@ -540,8 +563,10 @@ public class CarEntity extends Entity {
         }
         double throttle = rider == null ? 0.0 : Math.max(-1.0, Math.min(1.0, rider.zza));
         double steer = rider == null ? 0.0 : Math.max(-1.0, Math.min(1.0, rider.xxa));
-        boolean handbrake = rider != null && rider.jumping;
-        honkOnPress(handbrake);
+        boolean jumpPressed = rider != null && rider.jumping;
+        WheelMapping.Paddles paddles = WheelMapping.resolve(jumpPressed, new WheelMapping.Paddles(wheelHonk, wheelHandbrake));
+        boolean handbrake = paddles.handbrake();
+        honkOnPress(paddles.honk());
         if (forcedDriveTicks > 0) {
             forcedDriveTicks--;
             throttle = forcedThrottle;

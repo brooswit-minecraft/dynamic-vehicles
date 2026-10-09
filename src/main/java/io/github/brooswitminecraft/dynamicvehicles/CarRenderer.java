@@ -25,6 +25,7 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
     private static final BlockState BODY = Blocks.LIGHT_GRAY_CONCRETE.defaultBlockState();
     private static final BlockState TRUCK_BODY = Blocks.ORANGE_CONCRETE.defaultBlockState();
     private static final BlockState RACE_BODY = Blocks.RED_CONCRETE.defaultBlockState();
+    private static final BlockState DRIFT_BODY = Blocks.YELLOW_CONCRETE.defaultBlockState();
     private static final BlockState BED = Blocks.GRAY_CONCRETE.defaultBlockState();
     private static final BlockState CABIN = Blocks.GLASS.defaultBlockState();
     private static final BlockState WHEEL = Blocks.BLACK_CONCRETE.defaultBlockState();
@@ -54,6 +55,11 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
             block(pose, buffers, light, RACE_BODY, -hx, -hy, -hz, 2 * hx, 0.45f, 2 * hz);
             block(pose, buffers, light, CABIN, -0.6f, -hy + 0.45f, -0.2f, 1.2f, 2 * hy - 0.45f, 1.2f);
             block(pose, buffers, light, BED, -hx + 0.1f, hy - 0.1f, -hz, 2 * hx - 0.2f, 0.1f, 0.5f);
+        } else if (spec == VehicleSpec.DRIFT) {
+            // A low, slim sports body with a small rear spoiler; the cabin sits further back than the car's.
+            block(pose, buffers, light, DRIFT_BODY, -hx, -hy, -hz, 2 * hx, 0.4f, 2 * hz);
+            block(pose, buffers, light, CABIN, -0.6f, -hy + 0.4f, -0.3f, 1.2f, 2 * hy - 0.4f, 1.3f);
+            block(pose, buffers, light, BED, -hx + 0.15f, hy - 0.08f, -hz + 0.1f, 2 * hx - 0.3f, 0.08f, 0.25f);
         } else if (spec == VehicleSpec.TRUCK) {
             // Chassis and cab fill the physics box; an open bed behind the cab.
             block(pose, buffers, light, TRUCK_BODY, -hx, -hy, -hz, 2 * hx, 0.6f, 2 * hz);

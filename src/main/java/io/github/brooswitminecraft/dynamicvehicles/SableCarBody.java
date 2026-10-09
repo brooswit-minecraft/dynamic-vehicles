@@ -301,8 +301,18 @@ final class SableCarBody {
                 double gripMu = WheelMath.BASE_FRICTION * Math.min(1.0, surface.grip() * spec.looseGrip());
                 double rollingCoefficient = surface.rollingResistance() * spec.rollingScale();
                 double effectiveMass = spec.massKg() / 4.0;
-                WheelMath.Tire tire = WheelMath.tire(vLong, vLat, force, gripMu, rollingCoefficient, lateralScale,
-                        drive, brake, brakeGain, effectiveMass, subDt);
+                // isIdentity() is checked on the SPEC's own hard-wired tireTuning(), never on config, so
+                // CAR/TRUCK/TROPHY (always IDENTITY in code) can never be routed into DriftTireModel no
+                // matter what an operator sets in CarConfig's drift tire tuning. Only once a vehicle has
+                // already opted in does the actual tuning VALUES come from config (CarConfig.driftTireTuning(),
+                // live-reloadable) rather than the spec's own numbers, which exist only to mark the opt-in.
+                boolean driftTuned = !spec.tireTuning().isIdentity();
+                WheelMath.Tire tire = !driftTuned
+                        ? WheelMath.tire(vLong, vLat, force, gripMu, rollingCoefficient, lateralScale,
+                                drive, brake, brakeGain, effectiveMass, subDt)
+                        : DriftTireModel.tire(vLong, vLat, force, gripMu, rollingCoefficient, lateralScale,
+                                drive, brake, brakeGain, effectiveMass, subDt, CarConfig.driftTireTuning(),
+                                front, handbrake, steer);
                 impulseWorld.fma(tire.longitudinal() * subDt, forward).fma(tire.lateral() * subDt, lateral);
                 // Per-wheel spin state (MINECRAFT-73/MINECRAFT-118): advanced from how much of THIS SAME
                 // tire() call's own commandLongitudinal (its internal wantLong, unscaled) the friction

@@ -18,6 +18,12 @@ public final class CarConfig {
     public static final ModConfigSpec.BooleanValue TIRE_FORCE_AT_CONTACT;
     public static final ModConfigSpec.DoubleValue ANTI_ROLL;
     public static final ModConfigSpec.IntValue WHEEL_SUB_STEPS;
+    public static final ModConfigSpec.DoubleValue DRIFT_REAR_GRIP_SCALE;
+    public static final ModConfigSpec.DoubleValue DRIFT_SLIP_ANGLE_THRESHOLD;
+    public static final ModConfigSpec.DoubleValue DRIFT_GRIP_FALLOFF;
+    public static final ModConfigSpec.DoubleValue DRIFT_HANDBRAKE_REAR_GRIP_CUT;
+    public static final ModConfigSpec.DoubleValue DRIFT_THROTTLE_BITE;
+    public static final ModConfigSpec.DoubleValue DRIFT_COUNTER_STEER_ASSIST;
 
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
@@ -67,8 +73,43 @@ public final class CarConfig {
                         + "sub-step's impulses rather than before any wheel force, and the friction circle can still "
                         + "saturate differently than it did before sub-stepping existed (see SableCarBody.tick).")
                 .defineInRange("wheelSubSteps", 3, 1, 4);
+        // Drift tire tuning (MINECRAFT-144): only read for a vehicle whose VehicleSpec already opted into a
+        // non-identity TireTuning (currently DRIFT) - see DriftTireModel and VehicleSpec.TireTuning. CAR,
+        // TRUCK and TROPHY carry VehicleSpec.TireTuning.IDENTITY hard-wired in code, not from config, so
+        // these six values can never affect them regardless of what an operator sets here. Defaults mirror
+        // VehicleSpec.DRIFT's own tireTuning() numbers, so a fresh config changes nothing out of the box.
+        DRIFT_REAR_GRIP_SCALE = builder
+                .comment("A drift-tuned vehicle's rear tire grip (mu) as a fraction of its front's (1.0 = no front/rear split).")
+                .defineInRange("driftRearGripScale", 0.72, 0.0, 1.0);
+        DRIFT_SLIP_ANGLE_THRESHOLD = builder
+                .comment("Lateral slip speed (m/s) below which a drift-tuned tire grips at its full (scaled) mu; beyond it grip starts falling off toward driftGripFalloff. Lower = slides start sooner.")
+                .defineInRange("driftSlipAngleThreshold", 1.2, 0.01, 50.0);
+        DRIFT_GRIP_FALLOFF = builder
+                .comment("Fraction of grip a drift-tuned tire can lose once sliding well past driftSlipAngleThreshold (0 = no falloff curve at all, grip stays at the plain scaled mu regardless of slip).")
+                .defineInRange("driftGripFalloff", 0.45, 0.0, 1.0);
+        DRIFT_HANDBRAKE_REAR_GRIP_CUT = builder
+                .comment("Extra multiplier on a drift-tuned rear tire's handbrake lateral-grip cut, on top of the cut every vehicle already gets (1.0 = no extra cut).")
+                .defineInRange("driftHandbrakeRearGripCut", 0.5, 0.0, 1.0);
+        DRIFT_THROTTLE_BITE = builder
+                .comment("Fraction of a drift-tuned rear tire's grip given up to the drive force's own share of the friction circle (friction-circle style throttle-induced oversteer; 0 = no extra bite beyond the plain friction circle every vehicle already has).")
+                .defineInRange("driftThrottleBite", 0.5, 0.0, 1.0);
+        DRIFT_COUNTER_STEER_ASSIST = builder
+                .comment("Fraction of a drift-tuned tire's grip lost to driftGripFalloff restored when the driver steers into the slide, i.e. countersteers (0 = no recovery assist, 1 = a full countersteer fully restores grip).")
+                .defineInRange("driftCounterSteerAssist", 0.6, 0.0, 1.0);
         SPEC = builder.build();
     }
 
     private CarConfig() {}
+
+    /**
+     * The current config values for a drift-tuned vehicle's {@link DriftTireModel}, read live (so a
+     * config reload takes effect without a restart) - callers must only use this for a {@code VehicleSpec}
+     * whose own {@code tireTuning()} is already non-identity; see the drift tire tuning block above for why
+     * {@code CAR}/{@code TRUCK}/{@code TROPHY} never reach here.
+     */
+    public static VehicleSpec.TireTuning driftTireTuning() {
+        return new VehicleSpec.TireTuning(DRIFT_REAR_GRIP_SCALE.get(), DRIFT_SLIP_ANGLE_THRESHOLD.get(),
+                DRIFT_GRIP_FALLOFF.get(), DRIFT_HANDBRAKE_REAR_GRIP_CUT.get(), DRIFT_THROTTLE_BITE.get(),
+                DRIFT_COUNTER_STEER_ASSIST.get());
+    }
 }

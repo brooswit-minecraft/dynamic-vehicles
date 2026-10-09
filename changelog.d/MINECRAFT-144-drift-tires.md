@@ -1,0 +1,4 @@
+bump: minor
+
+### Added
+- **Drift-tuned tires for the drift car** (MINECRAFT-144): `VehicleSpec.DRIFT` now carries its own tire tuning (`VehicleSpec.TireTuning`), applied by a new pure-function `DriftTireModel` layered on top of the existing per-wheel friction-circle tire (`WheelMath`): lower rear grip than front, an early, forgiving slide onset with a tunable grip-falloff curve, a sharper handbrake-induced rear-grip cut, throttle-induced oversteer (drive force eats into rear lateral grip, friction-circle style), and countersteer recovery (steering into the slide restores grip). Every knob is per-vehicle, documented on `VehicleSpec.TireTuning`; the drift car's own values are documented on `VehicleSpec.DRIFT`. `CAR`, `TRUCK` and `TROPHY` all carry `TireTuning.IDENTITY`, under which `DriftTireModel` is never invoked and the existing `WheelMath.tire` path runs byte-for-byte unchanged.

@@ -45,6 +45,17 @@ class VehicleSeatingTest {
         assertEquals(-1, VehicleSeating.firstFreeSeat(new boolean[] {true, true}));
     }
 
+    /** MINECRAFT-211: an auto-boarding mob must never be offered seat 0, even when every seat is free. */
+    @Test
+    void firstFreeNonDriverSeatSkipsSeatZeroEvenWhenItIsFree() {
+        assertEquals(1, VehicleSeating.firstFreeNonDriverSeat(new boolean[] {false, false, false}));
+        assertEquals(2, VehicleSeating.firstFreeNonDriverSeat(new boolean[] {false, true, false}));
+        assertEquals(-1, VehicleSeating.firstFreeNonDriverSeat(new boolean[] {false, true, true}),
+                "every non-driver seat full -- the free driver seat must not be offered");
+        assertEquals(-1, VehicleSeating.firstFreeNonDriverSeat(new boolean[] {false}),
+                "a one-seat vehicle has no non-driver seat at all");
+    }
+
     @Test
     void eachSeatGetsItsOwnDismountOffsetClearOfTheBody() {
         double halfX = 0.9;

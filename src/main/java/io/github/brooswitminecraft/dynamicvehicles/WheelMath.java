@@ -24,6 +24,9 @@ public final class WheelMath {
     /** How much of the correction to a sliding tire is applied per tick; below 1 so it never overshoots. */
     public static final double RELAXATION = 0.6;
 
+    /** Rotational inertia of one wheel+tire about its axle, kg*m^2: a plain number for a ~0.35 m wheel, shared by every vehicle (not a per-spec tuning knob; MINECRAFT-75 owns tuning). */
+    public static final double WHEEL_INERTIA = 1.2;
+
     private WheelMath() {}
 
     /**
@@ -113,6 +116,51 @@ public final class WheelMath {
         }
         double force = springRate * compression + dampingRate * compressionRate;
         return Math.max(0.0, Math.min(maxForce, force));
+    }
+
+    /**
+     * Advances one wheel's own spin rate (rad/s) by one (sub-)step of real torque balance: the drive/brake
+     * force the driveline commands at the contact patch, independent of what the ground can actually give
+     * back, against the tire's own actual reaction force this step (what {@link #tire} delivered to the
+     * car, after its friction-circle clamp - the wheel's own vertical-load-scaled grip limit is already
+     * baked into that number, so a zero-load wheel, whose {@code reactionForce} is always exactly 0 per
+     * {@link #tire}'s own non-positive-force contract, spins up or down under the full, unopposed command
+     * every step: zero grip means zero resistance to the wheel's own rotation, not a floor under it).
+     * <p>
+     * Whatever the ground could not absorb of the command spins the wheel away from the ground (drive
+     * exceeding grip: wheelspin; brake exceeding grip: lock-up). Whatever it did fully absorb
+     * ({@code commandForce == reactionForce} exactly, which {@link #tire}'s own arithmetic guarantees
+     * whenever its friction-circle scale is exactly 1.0) leaves the wheel defined as turning in exact
+     * lockstep with the ground - so a wheel that is gripping right now is pulled to the ground speed
+     * rather than carrying forward a slip rate it no longer has any cause for, instead of being integrated
+     * from a zero net torque that would otherwise freeze it at whatever rate it last had.
+     *
+     * @param spin this wheel's spin rate coming into the step, rad/s
+     * @param wheelRadius metres
+     * @param groundSpeed the contact patch's own velocity along the wheel's rolling direction this step, m/s
+     * @param commandForce what the driveline is asking the contact patch for this step, N - the drive
+     *        force, or the signed brake force opposing the ground's own motion, or 0 while coasting;
+     *        independent of grip, unlike {@code reactionForce}
+     * @param reactionForce the tire's actual delivered longitudinal force this step, N ({@link Tire#longitudinal()})
+     * @param wheelInertia kg*m^2
+     * @param dt seconds this step covers
+     */
+    public static double spinRate(double spin, double wheelRadius, double groundSpeed, double commandForce,
+            double reactionForce, double wheelInertia, double dt) {
+        double excess = commandForce - reactionForce;
+        if (excess == 0.0) {
+            return groundSpeed / wheelRadius;
+        }
+        return spin + excess * wheelRadius / wheelInertia * dt;
+    }
+
+    /**
+     * The longitudinal slip speed this wheel's own tracked spin implies against the ground, m/s: positive
+     * while the wheel spins faster than the ground (wheelspin), negative while it spins slower (lock-up),
+     * exactly 0 whenever {@link #spinRate} last found the wheel gripping.
+     */
+    public static double slipFromSpin(double spin, double wheelRadius, double groundSpeed) {
+        return spin * wheelRadius - groundSpeed;
     }
 
     /**

@@ -36,6 +36,11 @@ final class SableCarBody {
     private final BoxPhysicsObject box;
     private final RigidBodyHandle body;
     private double lastSlipSpeed;
+    private double lastSpinSlip;
+    // One real spin rate per wheel (rad/s), persisted tick to tick and advanced sub-step to sub-step by
+    // WheelMath.spinRate - state, not a value re-derived from scratch each call. See spinRate's own
+    // javadoc for why a gripping wheel is pulled to ground speed rather than carrying forward a stale slip.
+    private final double[] wheelSpin;
 
     private SableCarBody(VehicleSpec spec, ServerLevel level, BoxPhysicsObject box, RigidBodyHandle body) {
         this.spec = spec;
@@ -43,6 +48,7 @@ final class SableCarBody {
         this.level = level;
         this.box = box;
         this.body = body;
+        this.wheelSpin = new double[spec.mounts().length];
     }
 
     /** Body orientation for a Minecraft yaw: the body's +Z axis points where the entity faces. */
@@ -90,6 +96,7 @@ final class SableCarBody {
         Vector3d carForward = orientation.transform(new Vector3d(0, 0, 1));
         boolean touching = false;
         double slipThisTick = 0.0;
+        double spinSlipThisTick = 0.0;
         java.util.List<Vector3d> hits = new java.util.ArrayList<>();
 
         // Pass 1 (once per tick, not per sub-step): one raycast per wheel, giving every wheel's distance
@@ -263,6 +270,20 @@ final class SableCarBody {
                 WheelMath.Tire tire = WheelMath.tire(vLong, vLat, force, gripMu, rollingCoefficient, lateralScale,
                         drive, brake, brakeGain, effectiveMass, subDt);
                 impulseWorld.fma(tire.longitudinal() * subDt, forward).fma(tire.lateral() * subDt, lateral);
+                // Per-wheel spin state (MINECRAFT-73/MINECRAFT-118): advanced from the driveline's own
+                // command (independent of grip) against the tire's actual delivered reaction (grip-limited,
+                // via tire.longitudinal() - already computed above, no extra WheelMath.tire call). The
+                // command is approximated from the already-in-scope drive/brake decision rather than the
+                // internal, unexposed relaxation target tire() uses for softness: the wheel's own torque
+                // balance cares about the real commanded force, not that software-only softening. See
+                // WheelMath.spinRate's javadoc for why a gripping wheel is pulled to ground speed rather
+                // than integrated from a frozen rate, and why a zero-load wheel (reactionForce always 0 via
+                // tire()'s own non-positive-force contract) spins freely under the unopposed command.
+                double wheelCommand = brake > 0 ? -Math.signum(vLong) * brake : drive;
+                wheelSpin[wheel] = WheelMath.spinRate(wheelSpin[wheel], spec.wheelRadius(), vLong, wheelCommand,
+                        tire.longitudinal(), WheelMath.WHEEL_INERTIA, subDt);
+                double spinSlip = WheelMath.slipFromSpin(wheelSpin[wheel], spec.wheelRadius(), vLong);
+                spinSlipThisTick = Math.max(spinSlipThisTick, Math.abs(spinSlip));
                 // Reported slip (feeds slipThisTick/lastSlipSpeed/wearSlip/SlipReporter) is evaluated at the
                 // TICK's own dt, not subDt, so it reads the same regardless of wheelSubSteps - see
                 // WheelSubStepper.subStepSlipSpeed's own comment for why. The force above, which this does
@@ -311,6 +332,7 @@ final class SableCarBody {
             body.applyImpulseAtPoint(new Vector3d(0, 0, 0), drag);
         }
         lastSlipSpeed = slipThisTick;
+        lastSpinSlip = spinSlipThisTick;
         if (CarDebug.enabled) {
             drawDebug(position, orientation, hits);
         }
@@ -393,6 +415,7 @@ final class SableCarBody {
         double pitch = Math.toDegrees(Math.asin(Math.max(-1, Math.min(1, fwd.y))));
         double roll = Math.toDegrees(Math.atan2(q.transform(new Vector3d(1, 0, 0)).y, up.y));
         Vector3d v = body.getLinearVelocity(new Vector3d());
-        return String.format("body y=%.3f pitch=%.2f roll=%.2f speed=%.2f", pose.position().y, pitch, roll, v.length());
+        return String.format("body y=%.3f pitch=%.2f roll=%.2f speed=%.2f spinSlip=%.2f",
+                pose.position().y, pitch, roll, v.length(), lastSpinSlip);
     }
 }

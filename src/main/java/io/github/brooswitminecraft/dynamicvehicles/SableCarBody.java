@@ -46,12 +46,17 @@ final class SableCarBody {
     // this state into it would re-entangle the tick-dt-evaluated reporting contract with a value that is
     // itself integrated sub-step by sub-step, which is exactly what that contract exists to avoid.
     private final double[] wheelSpin;
-    // Per-wheel values published to clients for rendering (MINECRAFT-122). suspensionTravel is
-    // replaced wholesale every tick from pass 1's own compressions[] (the single raycast per wheel) -
-    // never recomputed, just handed out. steerAngle is written alongside wheelSpin below the same
-    // force<=0 guard, so an airborne/zero-load/raycast-miss wheel freezes its last steer angle for the
-    // same reason wheelSpin freezes there: see that guard's own comment.
-    private double[] suspensionTravel;
+    // Per-wheel values published to clients for rendering (MINECRAFT-122). Airborne/zero-load/raycast-miss
+    // behaviour differs per value, each deliberate:
+    //  - suspensionTravel is replaced wholesale every tick from pass 1's own compressions[] (the single
+    //    raycast per wheel), never recomputed, just handed out (copied in, below) - a raycast-miss wheel
+    //    publishes 0.0 (fully extended) because compressions is a fresh zeroed array every tick.
+    //  - steerAngle is a pure function of front/steer/forwardSpeed/spec, with no dependence on ground
+    //    contact, so it is computed and published for EVERY wheel every sub-step, above the force<=0
+    //    guard: an airborne wheel's published angle tracks input exactly like a grounded one's.
+    //  - wheelSpin is written below the force<=0 guard and freezes at its last value for an
+    //    airborne/zero-load/raycast-miss wheel: deliberate, see that guard's own comment.
+    private final double[] suspensionTravel;
     private final double[] steerAngle;
 
     private SableCarBody(VehicleSpec spec, ServerLevel level, BoxPhysicsObject box, RigidBodyHandle body) {
@@ -142,8 +147,10 @@ final class SableCarBody {
             compressions[wheel] = spec.restLength() - distance;
             hits.add(new Vector3d(hit.getLocation().x, hit.getLocation().y, hit.getLocation().z));
         }
-        // Published to clients as-is: this IS the single per-wheel raycast result above, not a second one.
-        this.suspensionTravel = compressions;
+        // Published to clients as-is: this IS the single per-wheel raycast result above, not a second
+        // one. Copied into the final field (not reassigned to the local array itself) so a future write
+        // to this tick's own `compressions` local cannot alias and mutate already-published state.
+        System.arraycopy(compressions, 0, this.suspensionTravel, 0, wheelCount);
 
         // Sub-stepping: run the force step N times per tick instead of once, each at dt/N, so the tire's
         // relaxation term (demand = effectiveMass * v / dt * RELAXATION - dt is load-bearing there, not
@@ -216,6 +223,15 @@ final class SableCarBody {
 
             // Pass 2 of this sub-step: suspension and tire forces from this sub-step's forces[].
             for (int wheel = 0; wheel < wheelCount; wheel++) {
+                // Steer angle is a pure function of front/steer/forwardSpeed/spec - none of which depend
+                // on the raycast or the force guard below - so it is published for EVERY wheel, every
+                // sub-step, ahead of both guards. See the steerAngle field's own comment for the contract.
+                double[] mount = spec.mounts()[wheel];
+                boolean front = mount[2] > 0;
+                double wheelSteerAngle = front ? steer * WheelMath.maxSteerAngle(forwardSpeed, WheelMath.BASE_FRICTION,
+                        spec.wheelbase(), CarPhysics.MAX_STEER) : 0.0;
+                this.steerAngle[wheel] = wheelSteerAngle;
+
                 BlockHitResult hit = wheelHits[wheel];
                 if (hit.getType() == HitResult.Type.MISS) {
                     continue;
@@ -244,7 +260,6 @@ final class SableCarBody {
                     continue;
                 }
                 touching = true;
-                double[] mount = spec.mounts()[wheel];
                 Vector3d local = new Vector3d(mount[0], mount[1], mount[2]);
                 double distance = distances[wheel];
                 Vector3d pointVelocity = new Vector3d(subAngular).cross(wheelOffsets[wheel]).add(subLinear);
@@ -252,11 +267,7 @@ final class SableCarBody {
                 Vector3d impulseWorld = new Vector3d(up).mul(force * subDt);
 
                 // Tire: forward and lateral axes in the plane the tire rolls on, steered on the front axle.
-                boolean front = mount[2] > 0;
                 Vector3d forward = orientation.transform(new Vector3d(0, 0, 1));
-                double wheelSteerAngle = front ? steer * WheelMath.maxSteerAngle(forwardSpeed, WheelMath.BASE_FRICTION,
-                        spec.wheelbase(), CarPhysics.MAX_STEER) : 0.0;
-                this.steerAngle[wheel] = wheelSteerAngle;
                 forward.rotateAxis(wheelSteerAngle, up.x, up.y, up.z);
                 forward.fma(-forward.dot(up), up).normalize();
                 Vector3d lateral = new Vector3d(up).cross(forward).normalize();

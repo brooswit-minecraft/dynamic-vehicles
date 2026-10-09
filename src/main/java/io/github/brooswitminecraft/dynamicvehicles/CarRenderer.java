@@ -32,6 +32,8 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
     private static final BlockState CRAWLER_ROLL_CAGE = Blocks.IRON_BARS.defaultBlockState();
     private static final BlockState MONSTER_BODY = Blocks.PURPLE_CONCRETE.defaultBlockState();
     private static final BlockState MONSTER_ROLL_CAGE = Blocks.IRON_BARS.defaultBlockState();
+    private static final BlockState INDY_BODY = Blocks.LIME_CONCRETE.defaultBlockState();
+    private static final BlockState INDY_NOSE = Blocks.WHITE_CONCRETE.defaultBlockState();
     private static final BlockState BED = Blocks.GRAY_CONCRETE.defaultBlockState();
     private static final BlockState CABIN = Blocks.GLASS.defaultBlockState();
     private static final BlockState WHEEL = Blocks.BLACK_CONCRETE.defaultBlockState();
@@ -79,6 +81,12 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
             // A compact cab riding high above its huge wheels, with an open roll cage instead of a closed cabin.
             block(pose, buffers, light, MONSTER_BODY, -hx, -hy, -hz, 2 * hx, 0.65f, 2 * hz);
             block(pose, buffers, light, MONSTER_ROLL_CAGE, -hx + 0.15f, -hy + 0.65f, -0.6f, 2 * hx - 0.3f, 2 * hy - 0.65f, 1.2f);
+        } else if (spec == VehicleSpec.INDY) {
+            // Open-wheel look: a slim, low single-seater body that stays well inside halfX (its wheel
+            // mounts sit OUTSIDE halfX, see VehicleSpec.INDY's javadoc) so the wheels are never covered by
+            // the body, plus a narrow nose cone ahead of the cockpit.
+            block(pose, buffers, light, INDY_BODY, -hx * 0.6f, -hy, -hz, hx * 1.2f, 0.3f, 2 * hz);
+            block(pose, buffers, light, INDY_NOSE, -hx * 0.35f, -hy + 0.05f, hz - 0.5f, hx * 0.7f, 0.2f, 0.5f);
         } else if (spec == VehicleSpec.TRUCK) {
             // Chassis and cab fill the physics box; an open bed behind the cab.
             block(pose, buffers, light, TRUCK_BODY, -hx, -hy, -hz, 2 * hx, 0.6f, 2 * hz);

@@ -298,7 +298,11 @@ final class SableCarBody {
                 }
                 // What the tire feels comes from the block it is on (grip, rolling resistance), via Dynamic Terrain.
                 SurfaceProperties surface = Surfaces.at(level, hit.getBlockPos());
-                double gripMu = WheelMath.BASE_FRICTION * Math.min(1.0, surface.grip() * spec.looseGrip());
+                // Downforce (MINECRAFT-184): spec.downforceGripMultiplier() is exactly 1.0 for every vehicle
+                // whose downforceGripPerSpeed is 0.0 (every existing vehicle), so this multiply is a no-op
+                // for them - see VehicleSpec.INDY's own javadoc for the one vehicle that sets it nonzero.
+                double gripMu = WheelMath.BASE_FRICTION * Math.min(1.0, surface.grip() * spec.looseGrip())
+                        * spec.downforceGripMultiplier(forwardSpeed);
                 double rollingCoefficient = surface.rollingResistance() * spec.rollingScale();
                 double effectiveMass = spec.massKg() / 4.0;
                 // isIdentity() is checked on the SPEC's own hard-wired tireTuning(), never on config, so

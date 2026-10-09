@@ -25,6 +25,9 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
     private static final BlockState BODY = Blocks.LIGHT_GRAY_CONCRETE.defaultBlockState();
     private static final BlockState TRUCK_BODY = Blocks.ORANGE_CONCRETE.defaultBlockState();
     private static final BlockState RACE_BODY = Blocks.RED_CONCRETE.defaultBlockState();
+    private static final BlockState TROPHY_STRIPE = Blocks.WHITE_CONCRETE.defaultBlockState();
+    private static final BlockState TROPHY_LIGHTBAR = Blocks.SEA_LANTERN.defaultBlockState();
+    private static final BlockState TROPHY_STRUT = Blocks.BLACK_CONCRETE.defaultBlockState();
     private static final BlockState DRIFT_BODY = Blocks.YELLOW_CONCRETE.defaultBlockState();
     private static final BlockState MUSCLE_BODY = Blocks.BLACK_CONCRETE.defaultBlockState();
     private static final BlockState MUSCLE_STRIPE = Blocks.WHITE_CONCRETE.defaultBlockState();
@@ -57,10 +60,21 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
         float hy = (float) spec.halfY();
         float hz = (float) spec.halfZ();
         if (spec == VehicleSpec.TROPHY) {
-            // A low, wide race body with a small glass canopy and a rear wing.
-            block(pose, buffers, light, RACE_BODY, -hx, -hy, -hz, 2 * hx, 0.45f, 2 * hz);
-            block(pose, buffers, light, CABIN, -0.6f, -hy + 0.45f, -0.2f, 1.2f, 2 * hy - 0.45f, 1.2f);
-            block(pose, buffers, light, BED, -hx + 0.1f, hy - 0.1f, -hz, 2 * hx - 0.2f, 0.1f, 0.5f);
+            // A low, wide offroad racer: a full-width floor pan with flared fenders over each wheel
+            // arch, a livery stripe and hood scoop, a canopy wide enough to clear both seats, a roof
+            // light bar, and a strutted rear wing - all within the untouched hitbox/seat geometry.
+            block(pose, buffers, light, RACE_BODY, -hx, -hy, -hz, 2 * hx, 0.3f, 2 * hz);
+            block(pose, buffers, light, RACE_BODY, hx - 0.55f, -hy + 0.3f, 0.95f, 0.55f, 0.3f, 0.9f);
+            block(pose, buffers, light, RACE_BODY, -hx, -hy + 0.3f, 0.95f, 0.55f, 0.3f, 0.9f);
+            block(pose, buffers, light, RACE_BODY, hx - 0.55f, -hy + 0.3f, -1.85f, 0.55f, 0.3f, 0.9f);
+            block(pose, buffers, light, RACE_BODY, -hx, -hy + 0.3f, -1.85f, 0.55f, 0.3f, 0.9f);
+            block(pose, buffers, light, TROPHY_STRIPE, -0.18f, -hy + 0.3f, 0.3f, 0.36f, 0.02f, hz - 0.3f);
+            block(pose, buffers, light, RACE_BODY, -0.35f, -hy + 0.32f, hz - 0.75f, 0.7f, 0.18f, 0.6f);
+            block(pose, buffers, light, CABIN, -0.75f, -hy + 0.3f, -0.3f, 1.5f, 2 * hy - 0.3f, 1.1f);
+            block(pose, buffers, light, TROPHY_LIGHTBAR, -0.3f, hy - 0.06f, -0.1f, 0.6f, 0.06f, 0.3f);
+            block(pose, buffers, light, TROPHY_STRUT, -hx + 0.32f, hy - 0.35f, -hz + 0.15f, 0.12f, 0.3f, 0.12f);
+            block(pose, buffers, light, TROPHY_STRUT, hx - 0.44f, hy - 0.35f, -hz + 0.15f, 0.12f, 0.3f, 0.12f);
+            block(pose, buffers, light, BED, -hx, hy - 0.05f, -hz, 2 * hx, 0.05f, 0.45f);
         } else if (spec == VehicleSpec.DRIFT) {
             // A low, slim sports body with a small rear spoiler; the cabin sits further back than the car's.
             block(pose, buffers, light, DRIFT_BODY, -hx, -hy, -hz, 2 * hx, 0.4f, 2 * hz);

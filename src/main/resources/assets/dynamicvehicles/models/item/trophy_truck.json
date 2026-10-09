@@ -1,4 +1,4 @@
 {
   "parent": "minecraft:item/generated",
-  "textures": { "layer0": "minecraft:item/tnt_minecart" }
+  "textures": { "layer0": "dynamicvehicles:item/trophy_truck" }
 }

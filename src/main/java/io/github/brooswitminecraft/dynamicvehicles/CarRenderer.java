@@ -16,10 +16,9 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 
 /**
- * Placeholder look for the car, built from vanilla blocks in the body frame of
- * {@link CarGeometry}: a chassis and cabin that exactly fill the physics box and
- * four wheels that sit where the suspension rays end, so the wheels touch the
- * ground at rest.
+ * Renders every vehicle, built from vanilla blocks in the body frame of {@link VehicleSpec}: each
+ * vehicle type gets its own silhouette (see the branches below, MINECRAFT-174 for the car's), and every
+ * one shares four wheels that sit where the suspension rays end, so the wheels touch the ground at rest.
  */
 public class CarRenderer extends EntityRenderer<CarEntity> {
     private static final BlockState BODY = Blocks.LIGHT_GRAY_CONCRETE.defaultBlockState();
@@ -40,6 +39,11 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
     private static final BlockState BED = Blocks.GRAY_CONCRETE.defaultBlockState();
     private static final BlockState CABIN = Blocks.GLASS.defaultBlockState();
     private static final BlockState WHEEL = Blocks.BLACK_CONCRETE.defaultBlockState();
+    private static final BlockState CAR_ROOF = Blocks.LIGHT_GRAY_CONCRETE.defaultBlockState();
+    private static final BlockState CAR_FENDER = Blocks.GRAY_CONCRETE.defaultBlockState();
+    private static final BlockState CAR_GRILLE = Blocks.BLACKSTONE.defaultBlockState();
+    private static final BlockState CAR_BUMPER = Blocks.SMOOTH_QUARTZ.defaultBlockState();
+    private static final BlockState CAR_TAILLIGHT = Blocks.RED_STAINED_GLASS.defaultBlockState();
 
     public CarRenderer(EntityRendererProvider.Context context) {
         super(context);
@@ -61,7 +65,26 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
         float hx = (float) spec.halfX();
         float hy = (float) spec.halfY();
         float hz = (float) spec.halfZ();
-        if (spec == VehicleSpec.TROPHY) {
+        float r = (float) spec.wheelRadius();
+        float w = (float) spec.wheelWidth();
+        float cy = (float) spec.wheelCentreY();
+        if (spec == VehicleSpec.CAR) {
+            // A proper sedan silhouette, still exactly filling the fixed CAR body box (1.9 x 1.0 x 3.0,
+            // unchanged from CarGeometry/VehicleSpec): a lower chassis, a glazed cabin capped by a
+            // body-colored roofline, a dark front grille between chrome bumpers, taillights at the rear
+            // corners, and dark fender flares over each wheel so the 4-seat cabin (MINECRAFT-170/182's
+            // seats, untouched here) reads as a real car instead of a block and a glass box.
+            block(pose, buffers, light, BODY, -hx, -hy, -hz, 2 * hx, 0.5f, 2 * hz);
+            block(pose, buffers, light, CABIN, -0.75f, -hy + 0.5f, -0.6f, 1.5f, 2 * hy - 0.55f, 1.5f);
+            block(pose, buffers, light, CAR_ROOF, -0.8f, hy - 0.05f, -0.65f, 1.6f, 0.05f, 1.6f);
+            block(pose, buffers, light, CAR_BUMPER, -hx + 0.05f, -hy, hz - 0.08f, 2 * hx - 0.1f, 0.15f, 0.08f);
+            block(pose, buffers, light, CAR_BUMPER, -hx + 0.05f, -hy, -hz, 2 * hx - 0.1f, 0.15f, 0.08f);
+            block(pose, buffers, light, CAR_GRILLE, -0.45f, -hy + 0.15f, hz - 0.04f, 0.9f, 0.27f, 0.04f);
+            block(pose, buffers, light, CAR_TAILLIGHT, hx - 0.3f, -hy + 0.15f, -hz, 0.2f, 0.2f, 0.04f);
+            block(pose, buffers, light, CAR_TAILLIGHT, -hx + 0.1f, -hy + 0.15f, -hz, 0.2f, 0.2f, 0.04f);
+            block(pose, buffers, light, CAR_FENDER, -hx - 0.03f, cy - r - 0.05f, -hz, 0.03f, 2 * r + 0.1f, 2 * hz);
+            block(pose, buffers, light, CAR_FENDER, hx, cy - r - 0.05f, -hz, 0.03f, 2 * r + 0.1f, 2 * hz);
+        } else if (spec == VehicleSpec.TROPHY) {
             // A low, wide offroad racer: a full-width floor pan with flared fenders over each wheel
             // arch, a livery stripe and hood scoop, a canopy wide enough to clear both seats, a roof
             // light bar, and a strutted rear wing - all within the untouched hitbox/seat geometry.
@@ -108,13 +131,11 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
             block(pose, buffers, light, CABIN, -hx + 0.2f, -hy + 0.8f, 1.2f, 2 * hx - 0.4f, 0.4f, 0.6f);
             block(pose, buffers, light, BED, -hx, -hy + 0.6f, -hz, 2 * hx, 0.3f, 2 * hz - 2.3f);
         } else {
-            // Chassis and cabin together fill the physics box exactly (1.9 x 1.0 x 3.0).
+            // Fallback for any future spec not yet given its own look above: chassis and cabin
+            // together fill the physics box exactly, matching the old placeholder car look.
             block(pose, buffers, light, BODY, -hx, -hy, -hz, 2 * hx, 0.55f, 2 * hz);
             block(pose, buffers, light, CABIN, -0.75f, -hy + 0.55f, -0.6f, 1.5f, 2 * hy - 0.55f, 1.5f);
         }
-        float r = (float) spec.wheelRadius();
-        float w = (float) spec.wheelWidth();
-        float cy = (float) spec.wheelCentreY();
         for (double[] mount : spec.mounts()) {
             block(pose, buffers, light, WHEEL, (float) mount[0] - w / 2, cy - r, (float) mount[2] - r, w, 2 * r, 2 * r);
         }

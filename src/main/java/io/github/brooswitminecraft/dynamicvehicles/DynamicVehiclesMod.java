@@ -33,7 +33,6 @@ import net.neoforged.neoforge.registries.DeferredRegister;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.ContractTickHandler;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.DeliveryHudPayload;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherBlocks;
-import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherGameTests;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherInteractionHandler;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherOfferAcceptPayload;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherOfferMenus;
@@ -117,7 +116,6 @@ public class DynamicVehiclesMod {
         modEventBus.addListener(this::commonSetup);
         modEventBus.addListener(this::addCreative);
         modEventBus.addListener(this::registerPayloads);
-        modEventBus.addListener((net.neoforged.neoforge.event.RegisterGameTestsEvent event) -> event.register(DispatcherGameTests.class));
         NeoForge.EVENT_BUS.addListener(this::registerCommands);
         NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.server.ServerStartedEvent e) -> LightLedger.sweep(e.getServer()));
         NeoForge.EVENT_BUS.addListener(DispatcherInteractionHandler::onEntityInteract);

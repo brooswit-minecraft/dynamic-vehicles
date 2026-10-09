@@ -18,8 +18,8 @@ import org.junit.jupiter.api.Test;
  * Minecraft/NeoForge classes, so {@link DispatcherBlocks}/{@link DispatcherPoiTypes}'s actual
  * registration (the new block's PoiType claiming its own states, the profession recognizing only
  * that POI) is NOT exercised here &mdash; that needs a running client/dev environment, covered
- * instead by {@link DispatcherGameTests} (see that class's own javadoc for why it does not run in
- * this repo's CI either) and by the PR's in-game verification checklist.
+ * instead by {@link DispatcherGameTests} (run in CI via the {@code gameTestServer} task; see that
+ * class's javadoc) and by the PR's in-game verification checklist.
  *
  * <p>What IS checked here, without any Minecraft/NeoForge dependency: the static data/asset
  * files the new block needs are present and internally consistent &mdash; the kind of typo

@@ -17,12 +17,12 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
  * takes the {@code dispatcher} profession, and right-clicking that villager opens the offers UI.
  *
  * <p>Both tests run against {@code data/dynamicvehicles/structure/dispatch_profession.nbt}, a
- * flat 5x4x5 grass platform. <b>Neither test currently runs in this repo's CI</b> &mdash;
- * {@code ci.yml} only invokes {@code ./gradlew build}, which runs the {@code test} task
- * (unit tests) but not the {@code gameTestServer} run NeoForge wires these methods into. Running
- * them requires a human (or a future CI job) to invoke {@code ./gradlew runGameTestServer}
- * explicitly; see the PR description for the in-game verification checklist covering the same
- * behavior by hand in the meantime.
+ * flat 5x4x5 grass platform. {@code ci.yml}'s "Run GameTests" step runs
+ * {@code ./gradlew runGameTestServer}, which registers this class via the
+ * {@code @GameTestHolder} annotation below (NeoForge's ASM mod-file scan finds it; there is no
+ * separate manual {@code RegisterGameTestsEvent} listener in {@code DynamicVehiclesMod}, which
+ * would only add the same methods a second time) and exits non-zero on any required test
+ * failure (see {@code GameTestServer#onServerExit}), so a regression here fails the build.
  */
 @GameTestHolder(io.github.brooswitminecraft.dynamicvehicles.DynamicVehiclesMod.MODID)
 @PrefixGameTestTemplate(false)

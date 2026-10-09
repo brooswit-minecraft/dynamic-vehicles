@@ -33,6 +33,9 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
     private static final BlockState BODY = Blocks.LIGHT_GRAY_CONCRETE.defaultBlockState();
     private static final BlockState TRUCK_BODY = Blocks.ORANGE_CONCRETE.defaultBlockState();
     private static final BlockState RACE_BODY = Blocks.RED_CONCRETE.defaultBlockState();
+    private static final BlockState TROPHY_STRIPE = Blocks.WHITE_CONCRETE.defaultBlockState();
+    private static final BlockState TROPHY_LIGHTBAR = Blocks.SEA_LANTERN.defaultBlockState();
+    private static final BlockState TROPHY_STRUT = Blocks.BLACK_CONCRETE.defaultBlockState();
     private static final BlockState MUSCLE_BODY = Blocks.BLACK_CONCRETE.defaultBlockState();
     private static final BlockState MUSCLE_STRIPE = Blocks.WHITE_CONCRETE.defaultBlockState();
     private static final BlockState CRAWLER_BODY = Blocks.GREEN_CONCRETE.defaultBlockState();
@@ -41,9 +44,13 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
     private static final BlockState MONSTER_ROLL_CAGE = Blocks.IRON_BARS.defaultBlockState();
     private static final BlockState INDY_BODY = Blocks.LIME_CONCRETE.defaultBlockState();
     private static final BlockState INDY_NOSE = Blocks.WHITE_CONCRETE.defaultBlockState();
+    private static final BlockState BUS_BODY = Blocks.BLUE_CONCRETE.defaultBlockState();
+    private static final BlockState BUS_WINDOWS = Blocks.GLASS.defaultBlockState();
     private static final BlockState BED = Blocks.GRAY_CONCRETE.defaultBlockState();
     private static final BlockState CABIN = Blocks.GLASS.defaultBlockState();
     private static final BlockState WHEEL = Blocks.BLACK_CONCRETE.defaultBlockState();
+    /** Truck-only contrasting trim: frame rail, fenders, bumper and roof cap against the orange body. */
+    private static final BlockState TRUCK_TRIM = Blocks.WHITE_CONCRETE.defaultBlockState();
     private static final BlockState CAR_ROOF = Blocks.LIGHT_GRAY_CONCRETE.defaultBlockState();
     private static final BlockState CAR_FENDER = Blocks.GRAY_CONCRETE.defaultBlockState();
     private static final BlockState CAR_GRILLE = Blocks.BLACKSTONE.defaultBlockState();
@@ -90,10 +97,21 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
             block(pose, buffers, light, CAR_FENDER, -hx - 0.03f, cy - r - 0.05f, -hz, 0.03f, 2 * r + 0.1f, 2 * hz);
             block(pose, buffers, light, CAR_FENDER, hx, cy - r - 0.05f, -hz, 0.03f, 2 * r + 0.1f, 2 * hz);
         } else if (spec == VehicleSpec.TROPHY) {
-            // A low, wide race body with a small glass canopy and a rear wing.
-            block(pose, buffers, light, RACE_BODY, -hx, -hy, -hz, 2 * hx, 0.45f, 2 * hz);
-            block(pose, buffers, light, CABIN, -0.6f, -hy + 0.45f, -0.2f, 1.2f, 2 * hy - 0.45f, 1.2f);
-            block(pose, buffers, light, BED, -hx + 0.1f, hy - 0.1f, -hz, 2 * hx - 0.2f, 0.1f, 0.5f);
+            // A low, wide offroad racer: a full-width floor pan with flared fenders over each wheel
+            // arch, a livery stripe and hood scoop, a canopy wide enough to clear both seats, a roof
+            // light bar, and a strutted rear wing - all within the untouched hitbox/seat geometry.
+            block(pose, buffers, light, RACE_BODY, -hx, -hy, -hz, 2 * hx, 0.3f, 2 * hz);
+            block(pose, buffers, light, RACE_BODY, hx - 0.55f, -hy + 0.3f, 0.95f, 0.55f, 0.3f, 0.9f);
+            block(pose, buffers, light, RACE_BODY, -hx, -hy + 0.3f, 0.95f, 0.55f, 0.3f, 0.9f);
+            block(pose, buffers, light, RACE_BODY, hx - 0.55f, -hy + 0.3f, -1.85f, 0.55f, 0.3f, 0.9f);
+            block(pose, buffers, light, RACE_BODY, -hx, -hy + 0.3f, -1.85f, 0.55f, 0.3f, 0.9f);
+            block(pose, buffers, light, TROPHY_STRIPE, -0.18f, -hy + 0.3f, 0.3f, 0.36f, 0.02f, hz - 0.3f);
+            block(pose, buffers, light, RACE_BODY, -0.35f, -hy + 0.32f, hz - 0.75f, 0.7f, 0.18f, 0.6f);
+            block(pose, buffers, light, CABIN, -0.75f, -hy + 0.3f, -0.3f, 1.5f, 2 * hy - 0.3f, 1.1f);
+            block(pose, buffers, light, TROPHY_LIGHTBAR, -0.3f, hy - 0.06f, -0.1f, 0.6f, 0.06f, 0.3f);
+            block(pose, buffers, light, TROPHY_STRUT, -hx + 0.32f, hy - 0.35f, -hz + 0.15f, 0.12f, 0.3f, 0.12f);
+            block(pose, buffers, light, TROPHY_STRUT, hx - 0.44f, hy - 0.35f, -hz + 0.15f, 0.12f, 0.3f, 0.12f);
+            block(pose, buffers, light, BED, -hx, hy - 0.05f, -hz, 2 * hx, 0.05f, 0.45f);
         } else if (spec == VehicleSpec.DRIFT) {
             // MINECRAFT-188: richer silhouette than a single slab -- a lower, stepped nose ahead of the
             // main tub, side skirts hinting at the wheel arches, a roof cap over the glass cabin, and a
@@ -130,12 +148,12 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
             // the body, plus a narrow nose cone ahead of the cockpit.
             block(pose, buffers, light, INDY_BODY, -hx * 0.6f, -hy, -hz, hx * 1.2f, 0.3f, 2 * hz);
             block(pose, buffers, light, INDY_NOSE, -hx * 0.35f, -hy + 0.05f, hz - 0.5f, hx * 0.7f, 0.2f, 0.5f);
+        } else if (spec == VehicleSpec.BUS) {
+            // A long, boxy body filling the physics box, with a window band running most of its length.
+            block(pose, buffers, light, BUS_BODY, -hx, -hy, -hz, 2 * hx, 2 * hy, 2 * hz);
+            block(pose, buffers, light, BUS_WINDOWS, -hx + 0.05f, 0.0f, -hz + 0.3f, 2 * hx - 0.1f, hy - 0.1f, 2 * hz - 0.6f);
         } else if (spec == VehicleSpec.TRUCK) {
-            // Chassis and cab fill the physics box; an open bed behind the cab.
-            block(pose, buffers, light, TRUCK_BODY, -hx, -hy, -hz, 2 * hx, 0.6f, 2 * hz);
-            block(pose, buffers, light, TRUCK_BODY, -hx + 0.1f, -hy + 0.6f, 0.3f, 2 * hx - 0.2f, 2 * hy - 0.6f, hz - 0.3f);
-            block(pose, buffers, light, CABIN, -hx + 0.2f, -hy + 0.8f, 1.2f, 2 * hx - 0.4f, 0.4f, 0.6f);
-            block(pose, buffers, light, BED, -hx, -hy + 0.6f, -hz, 2 * hx, 0.3f, 2 * hz - 2.3f);
+            renderTruck(pose, buffers, light, hx, hy, hz, spec.mounts());
         } else {
             // Fallback for any future spec not yet given its own look above: chassis and cabin
             // together fill the physics box exactly, matching the old placeholder car look.
@@ -188,6 +206,64 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
                 beamVertex(beam, m, near[j][0], near[j][1], z0, 50);
                 beamVertex(beam, m, near[i][0], near[i][1], z0, 50);
             }
+        }
+    }
+
+    /**
+     * A recognizable pickup silhouette, built entirely inside the TRUCK physics box
+     * ({@code -hx..hx, -hy..hy, -hz..hz} in the body frame, +z toward the nose/headlights): a full-length
+     * frame rail, a low hood up front, a glass-windowed cab in the middle sized to hold all four
+     * {@code VehicleSpec.TRUCK} seats (x &#177;0.55, z 0.3/-0.7), and an open-walled cargo bed with a
+     * tailgate behind the cab. Body panels are {@link #TRUCK_BODY} (orange); the frame, fenders, bumper
+     * and roof cap are {@link #TRUCK_TRIM} (white) for a 2-tone paint scheme. Wheel arches flare out from
+     * the frame at each of the spec's own wheel mounts, so they track the mounts rather than a hardcoded
+     * wheelbase.
+     */
+    private static void renderTruck(PoseStack pose, MultiBufferSource buffers, int light, float hx, float hy, float hz, double[][] mounts) {
+        // Beltline: top of the frame rail / bottom of the hood, cab doors and bed walls.
+        float beltline = -hy + 0.2f;
+        // Top of the cab's door panel / bottom of its glass.
+        float cabDoorTop = beltline + 0.35f;
+        // Top of the cab glass, leaving a thin roof cap below hy.
+        float cabRoofGlassTop = hy - 0.05f;
+        // Cab spans the four seats (x +-0.55, z 0.3/-0.7) with margin on every side.
+        float cabHalfWidth = 0.75f;
+        float cabFrontZ = 0.9f;
+        float cabRearZ = -1.1f;
+        float wallThickness = 0.12f;
+        float bedFloorTop = beltline + 0.12f;
+
+        // Frame rail: full length, bottom of the box.
+        block(pose, buffers, light, TRUCK_TRIM, -hx, -hy, -hz, 2 * hx, 0.2f, 2 * hz);
+
+        // Hood: lower than the cab, from the cab's windshield forward to the nose.
+        block(pose, buffers, light, TRUCK_BODY, -hx + 0.05f, beltline, cabFrontZ, 2 * hx - 0.1f, cabDoorTop - beltline, hz - cabFrontZ);
+        // Front bumper, flush with the nose, under the headlights.
+        block(pose, buffers, light, TRUCK_TRIM, -hx + 0.1f, beltline, hz - 0.08f, 2 * hx - 0.2f, 0.3f, 0.08f);
+
+        // Cab doors (body colour) with glass above, narrower than the body so the pillars show.
+        block(pose, buffers, light, TRUCK_BODY, -hx, beltline, cabRearZ, 2 * hx, cabDoorTop - beltline, cabFrontZ - cabRearZ);
+        block(pose, buffers, light, CABIN, -cabHalfWidth, cabDoorTop, cabRearZ + 0.08f,
+                2 * cabHalfWidth, cabRoofGlassTop - cabDoorTop, cabFrontZ - cabRearZ - 0.16f);
+        // Roof cap above the glass.
+        block(pose, buffers, light, TRUCK_TRIM, -hx + 0.05f, cabRoofGlassTop, cabRearZ, 2 * hx - 0.1f, hy - cabRoofGlassTop, cabFrontZ - cabRearZ);
+
+        // Open cargo bed behind the cab: floor, two side walls and a tailgate.
+        float bedLength = cabRearZ - (-hz);
+        float bedWallHeight = cabDoorTop - bedFloorTop;
+        block(pose, buffers, light, BED, -hx, beltline, -hz, 2 * hx, 0.12f, bedLength);
+        block(pose, buffers, light, BED, -hx, bedFloorTop, -hz, wallThickness, bedWallHeight, bedLength);
+        block(pose, buffers, light, BED, hx - wallThickness, bedFloorTop, -hz, wallThickness, bedWallHeight, bedLength);
+        block(pose, buffers, light, BED, -hx, bedFloorTop, -hz, 2 * hx, bedWallHeight, wallThickness);
+
+        // Fender flares, one per wheel mount, so they track the spec's own mounts rather than a hardcoded wheelbase.
+        float fenderWidth = 0.15f;
+        float fenderLength = 0.7f;
+        for (double[] mount : mounts) {
+            float mx = (float) mount[0];
+            float mz = (float) mount[2];
+            float fx = mx > 0 ? hx : -hx - fenderWidth;
+            block(pose, buffers, light, TRUCK_TRIM, fx, beltline, mz - fenderLength / 2, fenderWidth, 0.15f, fenderLength);
         }
     }
 

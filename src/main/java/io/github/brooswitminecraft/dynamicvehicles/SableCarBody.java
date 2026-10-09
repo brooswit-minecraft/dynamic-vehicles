@@ -212,11 +212,17 @@ final class SableCarBody {
                 double force = forces[wheel];
                 // A wheel whose anti-roll transfer leaves it at exactly 0 (or, if its partner's transfer
                 // pushed it slightly past spec.maxSpringForce(), the skip test below does not catch that -
-                // see the maxForce note on antiRollTransfer()) is skipped here. That is behaviour-equivalent
-                // to letting it through: WheelMath.tire() itself returns Tire(0, 0, 0) whenever the force
-                // passed in is not positive, so a wheel this guard let past with force <= 0 would contribute
-                // no drive/brake/lateral impulse and no slip either way - skipping it early just avoids the
-                // raycast-adjacent bookkeeping (touching, wakeUp) for a wheel that could not have mattered.
+                // see the maxForce note on antiRollTransfer()) is skipped here. For impulses and reported
+                // slip that is still behaviour-equivalent to letting it through: WheelMath.tire() itself
+                // returns Tire(0, 0, 0, 0) whenever the force passed in is not positive, so a wheel this
+                // guard let past with force <= 0 would contribute no drive/brake/lateral impulse and no
+                // slip either way. It is NOT equivalent for wheelSpin[wheel], which is written below this
+                // guard: skipping here deliberately freezes wheelSpin[wheel] at its last value, while
+                // letting the wheel through would snap it to groundSpeed/wheelRadius via spinRate(). That
+                // freeze is intentional - an airborne / zero-load / raycast-miss wheel keeps rotating with
+                // no driveline torque applied to it, so it should neither snap to ground speed nor free-spin.
+                // Skipping it early also avoids the raycast-adjacent bookkeeping (touching, wakeUp) for a
+                // wheel that could not have mattered to this sub-step's impulses.
                 // (maxSpringForce overshoot across sub-steps: each sub-step independently recomputes forces[]
                 // from the live velocity, so a receiver that overshoots to ~2x maxSpringForce in one sub-step
                 // is not compounding on top of a PRIOR sub-step's overshoot - it is the same already-accepted

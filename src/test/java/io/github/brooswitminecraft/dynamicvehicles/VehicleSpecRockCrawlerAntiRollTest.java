@@ -122,10 +122,12 @@ class VehicleSpecRockCrawlerAntiRollTest {
     @Test
     void everyOtherVehicleKeepsAntiRollScaleAtTheIdentityDefault() {
         // The regression guarantee this story's shared-code change (VehicleSpec.antiRollScale +
-        // SableCarBody.tick's barRate multiply) depends on: every vehicle that predates MINECRAFT-212/214
-        // must carry exactly 1.0 here, so the antiRollScale multiply in SableCarBody.tick's barRate is a
-        // mathematical no-op and every other vehicle's anti-roll path stays byte-for-byte unchanged.
-        VehicleSpec[] everyOtherVehicle = {VehicleSpec.CAR, VehicleSpec.TRUCK, VehicleSpec.TROPHY, VehicleSpec.DRIFT,
+        // SableCarBody.tick's barRate multiply) depends on: every vehicle that has not opted into its own
+        // per-vehicle anti-roll tuning (i.e. every vehicle but ROCK_CRAWLER and, since MINECRAFT-223,
+        // TROPHY -- see VehicleSpecTrophyAntiRollTest's own leak-check for that vehicle) must carry exactly
+        // 1.0 here, so the antiRollScale multiply in SableCarBody.tick's barRate is a mathematical no-op and
+        // every other vehicle's anti-roll path stays byte-for-byte unchanged.
+        VehicleSpec[] everyOtherVehicle = {VehicleSpec.CAR, VehicleSpec.TRUCK, VehicleSpec.DRIFT,
                 VehicleSpec.MUSCLE, VehicleSpec.MONSTER_TRUCK, VehicleSpec.INDY, VehicleSpec.BUS, VehicleSpec.CARGO_TRUCK};
         for (VehicleSpec spec : everyOtherVehicle) {
             assertEquals(1.0, spec.antiRollScale(), 1e-12, "pre-existing vehicle must carry the identity anti-roll scale");

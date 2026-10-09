@@ -38,7 +38,8 @@ public record VehicleSpec(
          * computes {@code barRate = springRate() * CarConfig.ANTI_ROLL.get() * antiRollScale()}, so a
          * vehicle can get a stiffer anti-roll bar without changing {@code CarConfig.ANTI_ROLL}, which is
          * one global value shared by every vehicle. {@code 1.0} (identity, no extra scale) for every
-         * vehicle that has not opted in &mdash; only {@link #ROCK_CRAWLER} sets this above {@code 1.0}. */
+         * vehicle that has not opted in &mdash; only {@link #ROCK_CRAWLER} and {@link #TROPHY} set this
+         * above {@code 1.0}. */
         double antiRollScale,
         /**
          * Every seat this vehicle has, in boarding order; seat 0 is always the driver (MINECRAFT-172).
@@ -220,13 +221,23 @@ public record VehicleSpec(
      * the same {@code seatZ}, on the opposite side (x &lt; 0) so the passenger's dismount point (left) never
      * collides with the driver's default one (right, see {@link VehicleSeating#dismountOffset}). The 0.65 m
      * offset sits well inside {@code halfX} (1.3 m).
+     *
+     * <p>MINECRAFT-208/223: unlike {@link #ROCK_CRAWLER}, this vehicle's geometry is not the problem (track
+     * 2.5 m over a 1.6 m ride height, static stability factor &asymp;0.78, comfortably above the crawler's
+     * &asymp;0.50) &mdash; this is a stability/feel TUNING change for landings and rough terrain, not a
+     * rollover-defect fix. Its {@code springRate} (12,260) is weaker in absolute N/m than the car's
+     * (26,980-scale) or the crawler's (31,065), so its sway-bar-style anti-roll coupling is softer too.
+     * {@code antiRollScale} 1.5 (half again the roster's shared 1.0 identity default, more modest than the
+     * crawler's 2.0 since this vehicle's geometry needed far less help to begin with) stiffens that coupling
+     * without touching geometry or springRate &mdash; see {@code VehicleSpecTrophyAntiRollTest} for the
+     * roll-stability-margin test this value is tuned against.
      */
     public static final VehicleSpec TROPHY = new VehicleSpec(
             1.3, 0.5, 1.9,
             new double[][] {{-1.25, -0.3, 1.4}, {1.25, -0.3, 1.4}, {-1.25, -0.3, -1.4}, {1.25, -0.3, -1.4}},
             0.6, 0.5, 1.6,
             1.6, 1500.0, 12_260.0, 2_570.0, 50_000.0,
-            2.8, 40.0, 1.8, 1.25, 0.5, 0.1, 1.35, 0.6, TireTuning.IDENTITY, 0.0, 1.0,
+            2.8, 40.0, 1.8, 1.25, 0.5, 0.1, 1.35, 0.6, TireTuning.IDENTITY, 0.0, 1.5,
             List.of(
                     new Seat(0.0, 0.5, 0.1),
                     new Seat(-0.65, 0.5, 0.1)));

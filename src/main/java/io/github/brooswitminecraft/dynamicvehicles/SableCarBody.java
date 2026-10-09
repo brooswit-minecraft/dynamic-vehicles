@@ -301,8 +301,12 @@ final class SableCarBody {
                 double gripMu = WheelMath.BASE_FRICTION * Math.min(1.0, surface.grip() * spec.looseGrip());
                 double rollingCoefficient = surface.rollingResistance() * spec.rollingScale();
                 double effectiveMass = spec.massKg() / 4.0;
-                WheelMath.Tire tire = WheelMath.tire(vLong, vLat, force, gripMu, rollingCoefficient, lateralScale,
-                        drive, brake, brakeGain, effectiveMass, subDt);
+                VehicleSpec.TireTuning tuning = spec.tireTuning();
+                WheelMath.Tire tire = tuning.isIdentity()
+                        ? WheelMath.tire(vLong, vLat, force, gripMu, rollingCoefficient, lateralScale,
+                                drive, brake, brakeGain, effectiveMass, subDt)
+                        : DriftTireModel.tire(vLong, vLat, force, gripMu, rollingCoefficient, lateralScale,
+                                drive, brake, brakeGain, effectiveMass, subDt, tuning, front, handbrake, steer);
                 impulseWorld.fma(tire.longitudinal() * subDt, forward).fma(tire.lateral() * subDt, lateral);
                 // Per-wheel spin state (MINECRAFT-73/MINECRAFT-118): advanced from how much of THIS SAME
                 // tire() call's own commandLongitudinal (its internal wantLong, unscaled) the friction

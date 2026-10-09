@@ -438,9 +438,10 @@ public class CarEntity extends Entity {
 
     @Override
     protected void readAdditionalSaveData(CompoundTag tag) {
-        if (tag.contains("OrientationW")) {
-            savedOrientation = new org.joml.Quaternionf(tag.getFloat("OrientationX"), tag.getFloat("OrientationY"),
-                    tag.getFloat("OrientationZ"), tag.getFloat("OrientationW"));
+        OrientationNbt.Orientation orientation = OrientationNbt.read(tag.contains("OrientationW"),
+                tag.getFloat("OrientationX"), tag.getFloat("OrientationY"), tag.getFloat("OrientationZ"), tag.getFloat("OrientationW"));
+        if (orientation != null) {
+            savedOrientation = new org.joml.Quaternionf(orientation.x(), orientation.y(), orientation.z(), orientation.w());
         }
     }
 

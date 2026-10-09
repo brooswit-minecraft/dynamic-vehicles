@@ -47,26 +47,26 @@ public class DynamicVehiclesMod {
     public static final DeferredRegister<EntityType<?>> ENTITIES = DeferredRegister.create(Registries.ENTITY_TYPE, MODID);
     public static final DeferredRegister.Items ITEMS = DeferredRegister.createItems(MODID);
 
-    public static final DeferredHolder<EntityType<?>, EntityType<CarEntity>> CAR = ENTITIES.register("car",
+    public static final DeferredHolder<EntityType<?>, EntityType<CarEntity>> CAR = ENTITIES.register(VehicleIds.CAR,
             () -> EntityType.Builder.<CarEntity>of(CarEntity::new, MobCategory.MISC)
                     .sized(1.9f, 1.0f).clientTrackingRange(10).updateInterval(1)
-                    .build(ResourceLocation.fromNamespaceAndPath(MODID, "car").toString()));
-    public static final DeferredHolder<EntityType<?>, EntityType<CarEntity>> TRUCK = ENTITIES.register("truck",
+                    .build(ResourceLocation.fromNamespaceAndPath(MODID, VehicleIds.CAR).toString()));
+    public static final DeferredHolder<EntityType<?>, EntityType<CarEntity>> TRUCK = ENTITIES.register(VehicleIds.TRUCK,
             () -> EntityType.Builder.<CarEntity>of(CarEntity::new, MobCategory.MISC)
                     .sized(VehicleSpec.TRUCK.width(), VehicleSpec.TRUCK.height()).clientTrackingRange(10).updateInterval(1)
-                    .build(ResourceLocation.fromNamespaceAndPath(MODID, "truck").toString()));
-    public static final DeferredItem<CarItem> TRUCK_ITEM = ITEMS.register("truck", () -> new CarItem(new Item.Properties().stacksTo(1), TRUCK, 0.5));
-    public static final DeferredHolder<EntityType<?>, EntityType<CarEntity>> TROPHY = ENTITIES.register("trophy_truck",
+                    .build(ResourceLocation.fromNamespaceAndPath(MODID, VehicleIds.TRUCK).toString()));
+    public static final DeferredItem<CarItem> TRUCK_ITEM = ITEMS.register(VehicleIds.TRUCK, () -> new CarItem(new Item.Properties().stacksTo(1), TRUCK, 0.5));
+    public static final DeferredHolder<EntityType<?>, EntityType<CarEntity>> TROPHY = ENTITIES.register(VehicleIds.TROPHY_TRUCK,
             () -> EntityType.Builder.<CarEntity>of(CarEntity::new, MobCategory.MISC)
                     .sized(VehicleSpec.TROPHY.width(), VehicleSpec.TROPHY.height()).clientTrackingRange(10).updateInterval(1)
-                    .build(ResourceLocation.fromNamespaceAndPath(MODID, "trophy_truck").toString()));
-    public static final DeferredItem<CarItem> TROPHY_ITEM = ITEMS.register("trophy_truck", () -> new CarItem(new Item.Properties().stacksTo(1), TROPHY, 0.9));
-    public static final DeferredItem<CarItem> CAR_ITEM = ITEMS.register("car", () -> new CarItem(new Item.Properties().stacksTo(1), CAR, 0.0));
-    public static final DeferredHolder<EntityType<?>, EntityType<CarEntity>> DRIFT = ENTITIES.register("drift_car",
+                    .build(ResourceLocation.fromNamespaceAndPath(MODID, VehicleIds.TROPHY_TRUCK).toString()));
+    public static final DeferredItem<CarItem> TROPHY_ITEM = ITEMS.register(VehicleIds.TROPHY_TRUCK, () -> new CarItem(new Item.Properties().stacksTo(1), TROPHY, 0.9));
+    public static final DeferredItem<CarItem> CAR_ITEM = ITEMS.register(VehicleIds.CAR, () -> new CarItem(new Item.Properties().stacksTo(1), CAR, 0.0));
+    public static final DeferredHolder<EntityType<?>, EntityType<CarEntity>> DRIFT = ENTITIES.register(VehicleIds.DRIFT_CAR,
             () -> EntityType.Builder.<CarEntity>of(CarEntity::new, MobCategory.MISC)
                     .sized(VehicleSpec.DRIFT.width(), VehicleSpec.DRIFT.height()).clientTrackingRange(10).updateInterval(1)
-                    .build(ResourceLocation.fromNamespaceAndPath(MODID, "drift_car").toString()));
-    public static final DeferredItem<CarItem> DRIFT_ITEM = ITEMS.register("drift_car", () -> new CarItem(new Item.Properties().stacksTo(1), DRIFT, 0.0));
+                    .build(ResourceLocation.fromNamespaceAndPath(MODID, VehicleIds.DRIFT_CAR).toString()));
+    public static final DeferredItem<CarItem> DRIFT_ITEM = ITEMS.register(VehicleIds.DRIFT_CAR, () -> new CarItem(new Item.Properties().stacksTo(1), DRIFT, 0.0));
     public static final DeferredHolder<EntityType<?>, EntityType<CarEntity>> MUSCLE = ENTITIES.register("muscle_car",
             () -> EntityType.Builder.<CarEntity>of(CarEntity::new, MobCategory.MISC)
                     .sized(VehicleSpec.MUSCLE.width(), VehicleSpec.MUSCLE.height()).clientTrackingRange(10).updateInterval(1)

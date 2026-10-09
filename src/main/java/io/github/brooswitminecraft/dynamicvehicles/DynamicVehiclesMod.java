@@ -59,6 +59,9 @@ public class DynamicVehiclesMod {
 
     public DynamicVehiclesMod(IEventBus modEventBus, ModContainer modContainer) {
         modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.SERVER, CarConfig.SPEC);
+        // Explicit file name: the default ("dynamicvehicles-server.toml") is already claimed by
+        // CarConfig.SPEC above, and ConfigTracker throws on a second SERVER config reusing it.
+        modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.SERVER, DispatcherOfferConfig.SPEC, "dynamicvehicles-dispatcher-server.toml");
         modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.CLIENT, ClientConfig.SPEC);
         ModSounds.SOUNDS.register(modEventBus);
         ENTITIES.register(modEventBus);

@@ -45,8 +45,14 @@ public final class WheelMath {
      * @param longitudinal force along the wheel's rolling direction, N
      * @param lateral force across it, N
      * @param slipSpeed metres per second of sliding the tire could not correct this tick (0 while gripping)
+     * @param commandLongitudinal the longitudinal force the driveline/brake/rolling-resistance math wanted
+     *        along the rolling direction BEFORE the friction-circle clamp, N - identical to
+     *        {@code longitudinal} whenever the circle did not have to scale anything down (gripping), and
+     *        the honest basis for {@link #spinRate}'s own torque balance (not a value a caller should
+     *        try to approximate itself: it already folds in rolling resistance and the brake's own
+     *        relaxation clamp, both of which a drive/brake-force-only approximation misses).
      */
-    public record Tire(double longitudinal, double lateral, double slipSpeed) {}
+    public record Tire(double longitudinal, double lateral, double slipSpeed, double commandLongitudinal) {}
 
     /**
      * A friction-circle tire: it wants to cancel sideways sliding and to deliver the drive or brake force,
@@ -82,7 +88,7 @@ public final class WheelMath {
     public static Tire tire(double vLong, double vLat, double normalForce, double mu, double rollingCoefficient,
             double lateralScale, double driveForce, double brakeForce, double brakeGain, double effectiveMass, double dt) {
         if (!(normalForce > 0) || !(mu > 0)) {
-            return new Tire(0.0, 0.0, 0.0);
+            return new Tire(0.0, 0.0, 0.0, 0.0);
         }
         double limit = mu * normalForce;
         double wantLat = -effectiveMass * vLat / dt * RELAXATION * lateralScale;
@@ -97,7 +103,7 @@ public final class WheelMath {
         double demand = Math.hypot(wantLong, wantLat);
         double scale = demand > limit ? limit / demand : 1.0;
         double slip = demand > limit ? (demand - limit) * dt / effectiveMass : 0.0;
-        return new Tire(wantLong * scale, wantLat * scale, slip);
+        return new Tire(wantLong * scale, wantLat * scale, slip, wantLong);
     }
 
     /**
@@ -119,39 +125,39 @@ public final class WheelMath {
     }
 
     /**
-     * Advances one wheel's own spin rate (rad/s) by one (sub-)step of real torque balance: the drive/brake
-     * force the driveline commands at the contact patch, independent of what the ground can actually give
-     * back, against the tire's own actual reaction force this step (what {@link #tire} delivered to the
-     * car, after its friction-circle clamp - the wheel's own vertical-load-scaled grip limit is already
-     * baked into that number, so a zero-load wheel, whose {@code reactionForce} is always exactly 0 per
-     * {@link #tire}'s own non-positive-force contract, spins up or down under the full, unopposed command
-     * every step: zero grip means zero resistance to the wheel's own rotation, not a floor under it).
+     * Advances one wheel's own spin rate (rad/s) by one (sub-)step of real torque balance: how much of the
+     * driveline's own commanded longitudinal force the ground could not absorb this step -
+     * {@code excessForce}, meant to be {@link Tire#commandLongitudinal()} minus {@link Tire#longitudinal()}
+     * from the SAME {@link #tire} call that produced this step's applied force (reusing both values; no
+     * extra {@code tire()} call). Both of those numbers come out of {@code tire()}'s own single internal
+     * {@code wantLong}: {@code commandLongitudinal} is it unscaled, {@code longitudinal} is it multiplied
+     * by the friction-circle's {@code scale}. Whenever {@code scale} is exactly 1.0 (gripping - the
+     * circle did not have to reduce anything, including every case where the wheel was never asking for
+     * more than rolling resistance or a relaxed brake target in the first place), that multiplication by
+     * the literal {@code double} {@code 1.0} leaves {@code longitudinal} bit-identical to
+     * {@code commandLongitudinal}, so {@code excessForce} is exactly 0.0 - not approximately, and not only
+     * for a caller who happens to be asking for the full drive/brake force with nothing else going on.
      * <p>
-     * Whatever the ground could not absorb of the command spins the wheel away from the ground (drive
-     * exceeding grip: wheelspin; brake exceeding grip: lock-up). Whatever it did fully absorb
-     * ({@code commandForce == reactionForce} exactly, which {@link #tire}'s own arithmetic guarantees
-     * whenever its friction-circle scale is exactly 1.0) leaves the wheel defined as turning in exact
-     * lockstep with the ground - so a wheel that is gripping right now is pulled to the ground speed
-     * rather than carrying forward a slip rate it no longer has any cause for, instead of being integrated
-     * from a zero net torque that would otherwise freeze it at whatever rate it last had.
+     * An {@code excessForce} of exactly 0 means the wheel is gripping right now, so it is pulled to ground
+     * speed rather than carrying forward a slip rate it no longer has any cause for. A nonzero
+     * {@code excessForce} integrates into spin away from the ground (positive: wheelspin, the drive
+     * command outran what the ground gave back; negative: lock-up, the brake command did) - the wheel's
+     * own vertical-load-scaled grip limit is already baked into {@code longitudinal} by {@code tire()},
+     * so nothing further about load needs to appear here.
      *
      * @param spin this wheel's spin rate coming into the step, rad/s
      * @param wheelRadius metres
      * @param groundSpeed the contact patch's own velocity along the wheel's rolling direction this step, m/s
-     * @param commandForce what the driveline is asking the contact patch for this step, N - the drive
-     *        force, or the signed brake force opposing the ground's own motion, or 0 while coasting;
-     *        independent of grip, unlike {@code reactionForce}
-     * @param reactionForce the tire's actual delivered longitudinal force this step, N ({@link Tire#longitudinal()})
+     * @param excessForce {@code commandLongitudinal - longitudinal} from this step's own {@code tire()} call, N
      * @param wheelInertia kg*m^2
      * @param dt seconds this step covers
      */
-    public static double spinRate(double spin, double wheelRadius, double groundSpeed, double commandForce,
-            double reactionForce, double wheelInertia, double dt) {
-        double excess = commandForce - reactionForce;
-        if (excess == 0.0) {
+    public static double spinRate(double spin, double wheelRadius, double groundSpeed, double excessForce,
+            double wheelInertia, double dt) {
+        if (excessForce == 0.0) {
             return groundSpeed / wheelRadius;
         }
-        return spin + excess * wheelRadius / wheelInertia * dt;
+        return spin + excessForce * wheelRadius / wheelInertia * dt;
     }
 
     /**

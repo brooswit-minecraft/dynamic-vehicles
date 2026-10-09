@@ -40,6 +40,11 @@ final class SableCarBody {
     // One real spin rate per wheel (rad/s), persisted tick to tick and advanced sub-step to sub-step by
     // WheelMath.spinRate - state, not a value re-derived from scratch each call. See spinRate's own
     // javadoc for why a gripping wheel is pulled to ground speed rather than carrying forward a stale slip.
+    // Scope note (MINECRAFT-118): lastSpinSlip currently feeds only the debug describe() string below,
+    // deliberately - the OFFICIAL reported slip (slipThisTick/lastSlipSpeed/wearSlip/SlipReporter) must
+    // keep coming from WheelSubStepper.subStepSlipSpeed alone (see that call site's own comment); folding
+    // this state into it would re-entangle the tick-dt-evaluated reporting contract with a value that is
+    // itself integrated sub-step by sub-step, which is exactly what that contract exists to avoid.
     private final double[] wheelSpin;
 
     private SableCarBody(VehicleSpec spec, ServerLevel level, BoxPhysicsObject box, RigidBodyHandle body) {
@@ -270,18 +275,17 @@ final class SableCarBody {
                 WheelMath.Tire tire = WheelMath.tire(vLong, vLat, force, gripMu, rollingCoefficient, lateralScale,
                         drive, brake, brakeGain, effectiveMass, subDt);
                 impulseWorld.fma(tire.longitudinal() * subDt, forward).fma(tire.lateral() * subDt, lateral);
-                // Per-wheel spin state (MINECRAFT-73/MINECRAFT-118): advanced from the driveline's own
-                // command (independent of grip) against the tire's actual delivered reaction (grip-limited,
-                // via tire.longitudinal() - already computed above, no extra WheelMath.tire call). The
-                // command is approximated from the already-in-scope drive/brake decision rather than the
-                // internal, unexposed relaxation target tire() uses for softness: the wheel's own torque
-                // balance cares about the real commanded force, not that software-only softening. See
-                // WheelMath.spinRate's javadoc for why a gripping wheel is pulled to ground speed rather
-                // than integrated from a frozen rate, and why a zero-load wheel (reactionForce always 0 via
-                // tire()'s own non-positive-force contract) spins freely under the unopposed command.
-                double wheelCommand = brake > 0 ? -Math.signum(vLong) * brake : drive;
-                wheelSpin[wheel] = WheelMath.spinRate(wheelSpin[wheel], spec.wheelRadius(), vLong, wheelCommand,
-                        tire.longitudinal(), WheelMath.WHEEL_INERTIA, subDt);
+                // Per-wheel spin state (MINECRAFT-73/MINECRAFT-118): advanced from how much of THIS SAME
+                // tire() call's own commandLongitudinal (its internal wantLong, unscaled) the friction
+                // circle could not deliver as longitudinal (that same wantLong, scaled) - both already
+                // computed above, no extra WheelMath.tire call. Using tire()'s own commandLongitudinal
+                // rather than reconstructing a command externally from drive/brake is deliberate: an
+                // external reconstruction missing rolling resistance or the brake's relaxation target would
+                // make excessForce nonzero even while gripping, so a gripping wheel would never stop
+                // "spinning" rather than snapping to ground speed - see WheelMath.spinRate's javadoc.
+                double excessForce = tire.commandLongitudinal() - tire.longitudinal();
+                wheelSpin[wheel] = WheelMath.spinRate(wheelSpin[wheel], spec.wheelRadius(), vLong, excessForce,
+                        WheelMath.WHEEL_INERTIA, subDt);
                 double spinSlip = WheelMath.slipFromSpin(wheelSpin[wheel], spec.wheelRadius(), vLong);
                 spinSlipThisTick = Math.max(spinSlipThisTick, Math.abs(spinSlip));
                 // Reported slip (feeds slipThisTick/lastSlipSpeed/wearSlip/SlipReporter) is evaluated at the

@@ -101,15 +101,6 @@ neoForge {
             sourceSet(sourceSets.main)
         }
     }
-
-    // Gives the "test" task a bootstrapped NeoForge/Minecraft game environment
-    // (registries included) instead of plain JUnit's bare JVM, so tests can
-    // exercise real registry entries (e.g. DispatcherProfessionTest's POI
-    // association checks) without a client.
-    unitTest {
-        enable()
-        testedMod = mods.getByName(mod_id)
-    }
 }
 
 // Sable (PolyForm Shield 1.0.0) is compiled against only; the pack provides it at runtime.

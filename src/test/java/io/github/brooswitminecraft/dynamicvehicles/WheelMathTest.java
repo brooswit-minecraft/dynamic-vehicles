@@ -55,6 +55,7 @@ class WheelMathTest {
         assertEquals(0.0, tire.longitudinal(), 0);
         assertEquals(0.0, tire.lateral(), 0);
         assertEquals(0.0, tire.slipSpeed(), 0);
+        assertEquals(0.0, tire.commandLongitudinal(), 0);
     }
 
     @Test
@@ -76,6 +77,43 @@ class WheelMathTest {
         WheelMath.Tire tire = WheelMath.tire(0, 0, N, 1.1, 1, 6000, 0, DT);
         assertEquals(1.1 * N, Math.hypot(tire.longitudinal(), tire.lateral()), 1e-6);
         assertTrue(tire.slipSpeed() > 0);
+    }
+
+    @Test
+    void gripLimitScalesLinearlyWithVerticalLoad() {
+        // MUST-HAVE: grip (the friction limit mu*normalForce) scales with the wheel's own vertical load.
+        // Demand (6000 N) must overflow the friction circle at every load compared here (mu*load < 6000,
+        // i.e. load < ~5454 N for mu=1.1) or the wheel would simply grip and deliver the full demand
+        // instead, which would hide whether grip itself is tracking load. quarterLoad/halfLoad/fullLoad are
+        // all well under that ceiling.
+        double quarterLoad = WheelMath.tire(0, 0, N / 4, 1.1, 1, 6000, 0, DT).longitudinal();
+        double halfLoad = WheelMath.tire(0, 0, N / 2, 1.1, 1, 6000, 0, DT).longitudinal();
+        double fullLoad = WheelMath.tire(0, 0, N, 1.1, 1, 6000, 0, DT).longitudinal();
+        assertEquals(1.1 * N / 4, quarterLoad, 1e-9);
+        assertEquals(1.1 * N / 2, halfLoad, 1e-9);
+        assertEquals(1.1 * N, fullLoad, 1e-9);
+        assertEquals(2.0, halfLoad / quarterLoad, 1e-9, "doubling load must double the grip limit, not clamp it");
+        assertEquals(2.0, fullLoad / halfLoad, 1e-9, "doubling load must double the grip limit, not clamp it");
+    }
+
+    @Test
+    void gripFallsContinuouslyToZeroAsLoadApproachesZeroWithNoClampingAroundIt() {
+        // The MINECRAFT-71 lesson, applied to tire() itself rather than anti-roll transfer: a lightly
+        // loaded wheel's grip must shrink smoothly to 0, never hold at some non-zero floor and never jump
+        // discontinuously - it is demand (6000 N) overflowing a shrinking friction circle the whole way.
+        double[] loads = {N, N / 10, N / 100, N / 1000};
+        double previous = Double.POSITIVE_INFINITY;
+        for (double load : loads) {
+            double delivered = WheelMath.tire(0, 0, load, 1.1, 1, 6000, 0, DT).longitudinal();
+            assertEquals(1.1 * load, delivered, 1e-9);
+            assertTrue(delivered < previous, "grip must keep shrinking as load shrinks");
+            previous = delivered;
+        }
+        // A vanishingly small load gives a vanishingly small grip (still mu*load, no floor)...
+        assertEquals(1.1 * N / 1000, previous, 1e-9);
+        // ...and at (and below) exactly zero load, the all-zero contract takes over discontinuously only at
+        // the single point load == 0, not before it.
+        assertEquals(0.0, WheelMath.tire(0, 0, 0, 1.1, 1, 6000, 0, DT).longitudinal(), 0);
     }
 
     @Test
@@ -182,5 +220,104 @@ class WheelMathTest {
         // transferred away from a wheel that already carries no load.
         double transfer = WheelMath.antiRollTransfer(2_000.0, 0.2, 0.0, 0.0, 19_620.0);
         assertEquals(0.0, transfer, 1e-9);
+    }
+
+    // --- Per-wheel spin state (WheelMath.spinRate / slipFromSpin) ---
+
+    private static final double RADIUS = 0.35;
+
+    /** excessForce as SableCarBody.tick computes it: THIS SAME tire() call's own commandLongitudinal minus longitudinal. */
+    private static double excessOf(WheelMath.Tire tire) {
+        return tire.commandLongitudinal() - tire.longitudinal();
+    }
+
+    @Test
+    void aGrippingWheelsSpinIsPulledExactlyToGroundSpeedNotIntegratedFromWhateverItLastWas() {
+        // excessForce == 0 (no friction-circle overflow) means the wheel is gripping right now, regardless
+        // of what spin it carried in from a past slip event - it must snap to ground speed, not drift.
+        double spin = WheelMath.spinRate(999.0, RADIUS, 10.0, 0.0, WheelMath.WHEEL_INERTIA, DT);
+        assertEquals(10.0 / RADIUS, spin, 1e-9);
+        assertEquals(0.0, WheelMath.slipFromSpin(spin, RADIUS, 10.0), 1e-9);
+    }
+
+    @Test
+    void driveExceedingGripSpinsTheWheelFasterThanTheGroundWheelspin() {
+        // A real tire() call that overflows the friction circle while driving: demand (6000 N) exceeds
+        // the grip limit (mu*N = 1.1*2943 = 3237.3 N), so commandLongitudinal (6000) and longitudinal
+        // (clamped to the limit) differ - the excess spins the wheel up, away from ground speed.
+        WheelMath.Tire tire = WheelMath.tire(10, 0, N, 1.1, 1, 6000, 0, DT);
+        double excessForce = excessOf(tire);
+        assertTrue(excessForce > 0.0, "driving demand must exceed what the friction circle delivered");
+        double spin = WheelMath.spinRate(10.0 / RADIUS, RADIUS, 10.0, excessForce, WheelMath.WHEEL_INERTIA, DT);
+        assertTrue(WheelMath.slipFromSpin(spin, RADIUS, 10.0) > 0.0,
+                "wheelspin: the wheel's own surface speed outruns the ground");
+    }
+
+    @Test
+    void brakeExceedingGripLocksTheWheelSlowerThanTheGroundLockUp() {
+        // A real tire() call that overflows the friction circle while braking: a brake force (5000 N) that
+        // the low-grip surface (mu=0.3) cannot fully deliver is the lock-up case.
+        WheelMath.Tire tire = WheelMath.tire(15, 0, N, 0.3, 1, 0, 5000, DT);
+        double excessForce = excessOf(tire);
+        assertTrue(excessForce < 0.0, "braking demand must exceed what the friction circle delivered");
+        double spin = WheelMath.spinRate(15.0 / RADIUS, RADIUS, 15.0, excessForce, WheelMath.WHEEL_INERTIA, DT);
+        assertTrue(WheelMath.slipFromSpin(spin, RADIUS, 15.0) < 0.0,
+                "lock-up: the wheel's own surface speed falls behind the ground");
+    }
+
+    /**
+     * Pins the bug the first review round caught: approximating the driveline's command from drive/brake
+     * alone (ignoring rolling resistance and the brake's own relaxation target) makes excessForce nonzero
+     * even on a genuinely gripping wheel, so spin (and slipFromSpin) drifts away from 0 every step instead
+     * of staying there. Using tire()'s own commandLongitudinal (this test's excessOf helper) must NOT drift,
+     * across many repeated steps, for a gripping wheel in each of the three cases tire() distinguishes
+     * internally: coasting, braking below saturation, and driving - all well under the grip limit (N=2943,
+     * mu=1.1, limit=3237.3 N) so none of them ever hits the friction circle.
+     */
+    private static void assertGrippingWheelNeverDrifts(double vLong, double drive, double brake) {
+        double spin = 999.0; // deliberately not matching ground speed, to also prove the snap-to-grip behaviour
+        for (int step = 0; step < 50; step++) {
+            WheelMath.Tire tire = WheelMath.tire(vLong, 0, N, 1.1, WheelMath.ROLLING_RESISTANCE, 1, drive, brake, DT);
+            assertEquals(0.0, tire.slipSpeed(), 1e-9, "this scenario must stay under the friction circle");
+            double excessForce = excessOf(tire);
+            assertEquals(0.0, excessForce, 1e-9, "a gripping wheel's own commandLongitudinal must match longitudinal exactly");
+            spin = WheelMath.spinRate(spin, RADIUS, vLong, excessForce, WheelMath.WHEEL_INERTIA, DT);
+            assertEquals(0.0, WheelMath.slipFromSpin(spin, RADIUS, vLong), 1e-9,
+                    "step " + step + ": a gripping wheel must report exactly 0 slip, not drift");
+        }
+    }
+
+    @Test
+    void aGrippingCoastingWheelNeverDriftsOverManySteps() {
+        assertGrippingWheelNeverDrifts(5.0, 0.0, 0.0);
+    }
+
+    @Test
+    void aGrippingBrakingWheelBelowSaturationNeverDriftsOverManySteps() {
+        assertGrippingWheelNeverDrifts(5.0, 0.0, 1000.0);
+    }
+
+    @Test
+    void aGrippingDrivingWheelNeverDriftsOverManySteps() {
+        assertGrippingWheelNeverDrifts(5.0, 500.0, 0.0);
+    }
+
+    @Test
+    void repeatedSubStepsAtTheSameTotalDtIntegrateToTheSameSpinRegardlessOfSubStepCount() {
+        // The same net torque summed over N sub-steps at dt/N each must integrate to (exactly, for a
+        // constant excessForce) the same total change as one step at dt, exactly like the body's own
+        // velocity integration elsewhere in this file - nothing here divides by N.
+        double groundSpeed = 10.0;
+        double excessForce = 4900.0;
+        double oneStep = WheelMath.spinRate(groundSpeed / RADIUS, RADIUS, groundSpeed, excessForce,
+                WheelMath.WHEEL_INERTIA, DT);
+        for (int n = 2; n <= 4; n++) {
+            double subDt = DT / n;
+            double spin = groundSpeed / RADIUS;
+            for (int sub = 0; sub < n; sub++) {
+                spin = WheelMath.spinRate(spin, RADIUS, groundSpeed, excessForce, WheelMath.WHEEL_INERTIA, subDt);
+            }
+            assertEquals(oneStep, spin, 1e-9, "N=" + n + " must match the N=1 integration of the same net torque");
+        }
     }
 }

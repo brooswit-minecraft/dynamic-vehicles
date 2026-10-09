@@ -1,0 +1,4 @@
+bump: minor
+
+### Added
+- **Indy car.** An eighth vehicle built for pure speed: the roster's lowest (0.35 m body half-height, 0.5 m ride height), lightest (650 kg) and fastest (48 m/s top speed) vehicle, with an open-wheel look - its wheel mounts sit outside the body's own half-width, so they're never covered by it. New downforce-like grip: tire grip now grows with forward speed for this vehicle only (`VehicleSpec.downforceGripPerSpeed`, a roster-wide field that defaults to 0.0, so every pre-existing vehicle's grip is mathematically unchanged - about a 58% grip bonus at the indy car's own top speed, tapering to none at a stop). Carries no drift tire tuning, so cornering still grips through the plain per-wheel physics rather than sliding. Registered and obtainable the same way the other cars are (own entity, spawn item in the Tools & Utilities tab). Existing car, truck, trophy truck, drift car, muscle car, rock crawler and monster truck are unchanged.

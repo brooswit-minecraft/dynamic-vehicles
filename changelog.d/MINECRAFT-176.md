@@ -1,0 +1,4 @@
+bump: minor
+
+### Added
+- **Rock crawler.** A sixth vehicle built for climbing: the roster's tallest ride height (1.9 m) on its longest suspension travel (2.0 m rest length) for maximum wheel articulation over broken ground, a short 2.2 m wheelbase for tight turning, big wide tires, and the roster's highest loose-ground grip (`looseGrip` 1.6). 1900 kg with strong low-speed drive (`forceScale` 2.0) but a low 18 m/s top speed - torque over speed, not a racer. Own green body with an open roll cage, registered and obtainable the same way the other cars are (own entity, spawn item in the Tools & Utilities tab) and drives on the same per-wheel contact-point physics; carries no drift tire tuning, so it grips rather than slides. Existing car, truck, trophy truck, drift car and muscle car are unchanged.

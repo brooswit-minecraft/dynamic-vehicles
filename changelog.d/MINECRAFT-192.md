@@ -1,0 +1,8 @@
+bump: minor
+
+### Added
+- **Cargo truck.** A tenth vehicle: a heavy hauler - the roster's heaviest (4800 kg, above the bus's 4200 kg) and weakest power-to-weight (below the bus's own previous-lowest), delivered through the roster's lowest top speed (16 m/s). A long 4.0 m wheelbase (behind only the bus's 4.6 m) widens its turning circle the same way the bus's does, with the shared mechanical steer limit and every other vehicle's own wheelbase untouched - slow, sluggish-steering and hard-braking by the numbers alone, no new mechanism. Spring and damper keep the car's own critically-damped ratio (not the monster truck's bounce) for a stable ride. 2 seats (driver + one passenger) in a forward cab, registered and obtainable the same way the other vehicles are (own entity, spawn item in the Tools & Utilities tab).
+
+  **Chassis only, no functional cargo area:** the base vehicle class (`CarEntity`) implements no item-storage capability at all (no `Container`/menu) - every existing vehicle's "cargo bed" (the truck's, the trophy truck's) is a visual flourish only, not a real container. Per this ticket's own LOAD AREA RULE, this vertical slice does not change that base class silently; it ships a big visual cargo bed in `CarRenderer` (tall side rails, open floor) with no item storage, and the limitation is commented on MINECRAFT-163 and the epic MINECRAFT-156. A functional load area would need new shared `CarEntity` container/menu support, not just a new spec plus tuning - a candidate for a future ticket if wanted.
+
+  Existing car, truck, trophy truck, drift car, muscle car, rock crawler, monster truck, indy car and bus are unchanged.

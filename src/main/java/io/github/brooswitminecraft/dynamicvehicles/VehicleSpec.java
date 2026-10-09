@@ -393,6 +393,52 @@ public record VehicleSpec(
                     new Seat(0.6, 0.95, -1.8),
                     new Seat(-0.6, 0.95, -1.8)));
 
+    /**
+     * A cargo truck (MINECRAFT-163/192): the roster's heaviest vehicle (4800 kg, above {@code BUS}'s
+     * 4200 kg) and weakest power-to-weight ({@code forceScale}/{@code massKg} 2.8/4800 &asymp; 0.000583,
+     * below {@code BUS}'s previous-lowest 3.0/4200 &asymp; 0.000714) delivered through the roster's
+     * lowest top speed (16 m/s, below {@code ROCK_CRAWLER}'s climbing-tuned 18) &mdash; slow to get
+     * moving and slow at the top end, the "heavy hauler" brief. A long 4.0 m wheelbase (behind only
+     * {@code BUS}'s 4.6 m) widens its turning circle the same way {@code BUS}'s does (see that spec's
+     * own javadoc for the mechanism: {@link WheelMath#maxSteerAngle} takes {@code wheelbase} directly,
+     * with the shared mechanical steer limit and every other vehicle's own wheelbase untouched) for the
+     * brief's "sluggish steering". Spring, damper and the spring force cap are the car's scaled to this
+     * mass at the <em>same</em> damping ratio as {@code CAR} (the norm every vehicle but {@code
+     * MONSTER_TRUCK} follows) &mdash; critically damped, not bouncy, for the brief's "stable". A wide
+     * 1.15 m half-width (matching {@code BUS}'s own) and a moderate 1.1 m ride height keep the centre of
+     * mass low and the stance wide relative to the body's own height, rather than top-heavy. A deep 0.45
+     * {@code enginePitch}, between {@code MONSTER_TRUCK}'s 0.5 and {@code BUS}'s 0.6. {@code looseGrip}
+     * (1.0) and {@code rollingScale} (0.7) sit close to the car's, a street/yard hauler rather than an
+     * off-roader. Carries no drift tuning and no downforce: {@code tireTuning()} stays {@link
+     * TireTuning#IDENTITY} and {@code downforceGripPerSpeed} stays {@code 0.0}, so this vehicle's
+     * cornering grip routes through the plain {@code WheelMath} tire path exactly like the rest of the
+     * roster, and {@code SableCarBody.tick}'s downforce multiplier is exactly 1.0 for it too.
+     *
+     * <p>LOAD AREA: the base vehicle class ({@code CarEntity}) implements no item-storage capability at
+     * all (no {@code Container}/menu, unlike, say, a vanilla chest minecart) &mdash; every existing
+     * vehicle, including {@code TRUCK}'s and {@code TROPHY}'s own "cargo bed", is purely a rigid-body box
+     * plus wheels and seats, with the bed rendered in {@code CarRenderer} as a visual flourish only. Per
+     * the ticket's own LOAD AREA RULE, this vertical slice does NOT change that base class silently
+     * (comment posted on MINECRAFT-163 and MINECRAFT-156 first); the cargo truck ships chassis-only, with
+     * a big visual cargo bed in {@code CarRenderer} (no functional storage) &mdash; see this ticket's PR
+     * description and changelog entry for the documented limitation.
+     *
+     * <p>2 seats: the driver (seat 0, unmoved at x = 0) and one passenger beside it at the same {@code
+     * seatZ}, on the opposite side (x &lt; 0) so the two seats' dismount points never collide (see
+     * {@link VehicleSeating#dismountOffset}). Both seats sit well forward (z = 1.3) over the front axle,
+     * in the cab ahead of the load bed; {@code |x|} (0 or 0.65 m) sits well inside {@code halfX}
+     * (1.15 m), and {@code z} (1.3 m) well inside {@code halfZ} (2.6 m).
+     */
+    public static final VehicleSpec CARGO_TRUCK = new VehicleSpec(
+            1.15, 0.75, 2.6,
+            new double[][] {{-1.0, -0.55, 2.0}, {1.0, -0.55, 2.0}, {-1.0, -0.55, -2.0}, {1.0, -0.55, -2.0}},
+            0.55, 0.45, 1.1,
+            1.2, 4800.0, 78_480.0, 13_600.0, 160_000.0,
+            4.0, 16.0, 2.8, 0.45, 0.95, 1.3, 1.0, 0.7, TireTuning.IDENTITY, 0.0,
+            List.of(
+                    new Seat(0.0, 0.95, 1.3),
+                    new Seat(-0.65, 0.95, 1.3)));
+
     /** The gripMu multiplier {@link SableCarBody#tick} applies for this vehicle's own {@code
      * downforceGripPerSpeed} at this forward speed (m/s, either direction): 1.0 (no change) for every
      * vehicle whose {@code downforceGripPerSpeed} is 0.0 &mdash; see the field's own javadoc. */

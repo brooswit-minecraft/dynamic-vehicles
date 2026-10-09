@@ -68,6 +68,9 @@ public class CarEntity extends Entity {
     private float[] currentWheels = new float[0];
     /** Client: horizontal speed in m/s from the movement actually shown, and the sound loops for this car. */
     private double clientSpeed;
+    /** Client: smoothed 0..1 "rev" that chases throttle input (see {@link CarSoundMath#nextRev}), so the
+     * engine sound reads throttle immediately instead of waiting on speed to catch up. */
+    private double clientRev;
     private Object clientSounds;
     private double lastTickSpeed;
     private int impactCooldown;
@@ -174,6 +177,10 @@ public class CarEntity extends Entity {
 
     public double clientSpeed() {
         return clientSpeed;
+    }
+
+    public double clientRev() {
+        return clientRev;
     }
 
     public double clientThrottle() {
@@ -601,6 +608,7 @@ public class CarEntity extends Entity {
         if (level().isClientSide()) {
             consumeClientStates();
             clientSpeed = Math.hypot(getX() - xo, getZ() - zo) * 20.0;
+            clientRev = CarSoundMath.nextRev(clientRev, clientThrottle(), DT);
             if (clientSounds == null) {
                 clientSounds = CarSoundsClient.start(this);
             }

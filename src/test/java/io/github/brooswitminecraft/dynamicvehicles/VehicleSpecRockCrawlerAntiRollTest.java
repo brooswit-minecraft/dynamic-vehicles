@@ -40,8 +40,10 @@ class VehicleSpecRockCrawlerAntiRollTest {
     /** The roll-stability margin (tip-over angle minus the sprung mass's effective lean) the tuned rock
      * crawler must clear on {@link #SIDE_SLOPE_DEGREES}, in degrees. Chosen so the UNTUNED crawler
      * (antiRollScale 1.0, i.e. no scale beyond the shared global default) fails it -- see
-     * {@link #untunedAntiRollScaleWouldFailTheMargin} -- while the tuned value (2.0) clears it with a
-     * couple of degrees of headroom, not by a hair.
+     * {@link #untunedAntiRollScaleWouldFailTheMargin} -- while the tuned value (2.0) clears it, but only
+     * by about 0.4-0.5 degrees of headroom, by a hair, not a couple of degrees. The real engine's
+     * antiRollTransfer cap (transfer capped at the compressed wheel's own spring force, not modelled
+     * here) can only make the real margin thinner still.
      */
     private static final double MARGIN_THRESHOLD_DEGREES = 2.0;
 

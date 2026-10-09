@@ -117,11 +117,24 @@ public record VehicleSpec(
         }
     }
 
+    /**
+     * MINECRAFT-182: 2+2 seating &mdash; the driver (seat 0, unmoved at x = 0) and a front passenger beside
+     * it, each at {@code seatZ}; two rear passengers side by side 0.9 m further back. Every x offset (0.5 m)
+     * sits well inside {@code halfX} (0.95 m), and the rear row (z = -1.0) well inside {@code halfZ} (1.5 m).
+     * The front passenger sits on the opposite side (x &lt; 0) from the driver's default dismount (x &gt;= 0
+     * dismounts right, see {@link VehicleSeating#dismountOffset}) so the two front seats never share a
+     * dismount point; the rear row's own z keeps its dismount points distinct from the front row's.
+     */
     public static final VehicleSpec CAR = new VehicleSpec(
             CarGeometry.HALF_X, CarGeometry.HALF_Y, CarGeometry.HALF_Z,
             CarGeometry.MOUNTS, CarGeometry.WHEEL_RADIUS, CarGeometry.WHEEL_WIDTH, CarGeometry.RIDE_HEIGHT,
             WheelMath.REST_LENGTH, 1200.0, WheelMath.SPRING_RATE, WheelMath.DAMPING_RATE, WheelMath.MAX_FORCE,
-            CarPhysics.WHEELBASE, 32.0, 1.0, 1.0, 0.55, -0.1, 1.0, 1.0, TireTuning.IDENTITY);
+            CarPhysics.WHEELBASE, 32.0, 1.0, 1.0, 0.55, -0.1, 1.0, 1.0, TireTuning.IDENTITY,
+            List.of(
+                    new Seat(0.0, 0.55, -0.1),
+                    new Seat(-0.5, 0.55, -0.1),
+                    new Seat(-0.5, 0.55, -1.0),
+                    new Seat(0.5, 0.55, -1.0)));
 
     /**
      * Slightly wider, taller and longer than the car, 2200 kg. The body box bottom rides 0.65 m off the
@@ -129,25 +142,44 @@ public record VehicleSpec(
      * springs have 1.0 m of rest length for the extra travel. Spring and damper are the car's scaled to a
      * quarter of the truck's mass, so it sags the same 0.2 m.
      */
+    /**
+     * MINECRAFT-182: same 2+2 layout as {@link #CAR} (driver seat 0 unmoved at x = 0, a front passenger
+     * beside it on the opposite side, two rear passengers 1.0 m back), scaled to this truck's roomier
+     * {@code halfX} (1.1 m) and {@code halfZ} (2.0 m) &mdash; see {@code #CAR}'s own javadoc for why the
+     * front passenger sits opposite the driver and the rear row has its own z.
+     */
     public static final VehicleSpec TRUCK = new VehicleSpec(
             1.1, 0.65, 2.0,
             new double[][] {{-0.95, -0.5, 1.5}, {0.95, -0.5, 1.5}, {-0.95, -0.5, -1.5}, {0.95, -0.5, -1.5}},
             0.5, 0.4, 1.3,
             1.0, 2200.0, 26_980.0, 5_390.0, 73_000.0,
-            3.0, 26.0, 2200.0 / 1200.0, 0.75, 0.75, 0.3, 1.0, 1.0, TireTuning.IDENTITY);
+            3.0, 26.0, 2200.0 / 1200.0, 0.75, 0.75, 0.3, 1.0, 1.0, TireTuning.IDENTITY,
+            List.of(
+                    new Seat(0.0, 0.75, 0.3),
+                    new Seat(-0.55, 0.75, 0.3),
+                    new Seat(-0.55, 0.75, -0.7),
+                    new Seat(0.55, 0.75, -0.7)));
 
     /**
      * An offroad racer: 2.6 m wide (a wide track keeps it from rolling), a low 1.0 m body riding 1.1 m off
      * the ground on long, soft suspension (1.6 m rest length, sagging 0.3 m), 1500 kg with strong drive for
      * its weight, and tires that keep more grip and roll easier on loose ground. The body's bottom clears a
      * full block.
+     *
+     * <p>MINECRAFT-182: 2 seats &mdash; the driver (seat 0, unmoved at x = 0) and one passenger beside it at
+     * the same {@code seatZ}, on the opposite side (x &lt; 0) so the passenger's dismount point (left) never
+     * collides with the driver's default one (right, see {@link VehicleSeating#dismountOffset}). The 0.65 m
+     * offset sits well inside {@code halfX} (1.3 m).
      */
     public static final VehicleSpec TROPHY = new VehicleSpec(
             1.3, 0.5, 1.9,
             new double[][] {{-1.25, -0.3, 1.4}, {1.25, -0.3, 1.4}, {-1.25, -0.3, -1.4}, {1.25, -0.3, -1.4}},
             0.6, 0.5, 1.6,
             1.6, 1500.0, 12_260.0, 2_570.0, 50_000.0,
-            2.8, 40.0, 1.8, 1.25, 0.5, 0.1, 1.35, 0.6, TireTuning.IDENTITY);
+            2.8, 40.0, 1.8, 1.25, 0.5, 0.1, 1.35, 0.6, TireTuning.IDENTITY,
+            List.of(
+                    new Seat(0.0, 0.5, 0.1),
+                    new Seat(-0.65, 0.5, 0.1)));
 
     /**
      * DRIFT's own opt-in marker (see {@link TireTuning#isIdentity()}): these exact numbers are never read
@@ -167,13 +199,20 @@ public record VehicleSpec(
      * {@code tireTuning}, applied by {@link DriftTireModel} on top of the shared per-wheel physics: lower
      * rear grip than front, an early, forgiving slide onset, a sharper handbrake-induced rear-grip cut,
      * throttle-induced oversteer, and countersteer recovery.
+     *
+     * <p>MINECRAFT-182: 2 seats, same shape as {@link #TROPHY}'s &mdash; driver (seat 0, unmoved at x = 0)
+     * and one passenger beside it at the same {@code seatZ}, on the opposite side so the two seats' dismount
+     * points never collide. The 0.45 m offset sits well inside {@code halfX} (0.9 m).
      */
     public static final VehicleSpec DRIFT = new VehicleSpec(
             0.9, 0.42, 1.5,
             new double[][] {{-0.75, -0.35, 1.2}, {0.75, -0.35, 1.2}, {-0.75, -0.35, -1.2}, {0.75, -0.35, -1.2}},
             0.35, 0.3, 0.75,
             0.6, 1100.0, 17_985.0, 3_117.0, 36_667.0,
-            2.4, 32.0, 1.0, 1.0, 0.5, -0.1, 1.0, 1.0, TIRE_TUNING);
+            2.4, 32.0, 1.0, 1.0, 0.5, -0.1, 1.0, 1.0, TIRE_TUNING,
+            List.of(
+                    new Seat(0.0, 0.5, -0.1),
+                    new Seat(-0.45, 0.5, -0.1)));
 
     /**
      * A heavy, rear-biased-feeling muscle car (MINECRAFT-165): 1700 kg, a 2.3 m wheelbase shorter than the

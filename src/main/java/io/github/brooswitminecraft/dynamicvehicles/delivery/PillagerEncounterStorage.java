@@ -9,14 +9,18 @@ import net.minecraft.world.level.saveddata.SavedData;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
  * Server-wide persistence (MINECRAFT-130 AC4) for the set of {@link EncounterRecord}s
- * this slice uses to mark ambush mobs as encounter-scoped: a durable,
- * persisted id set rather than a per-entity NBT tag, so the cleanup sweep in
+ * this slice uses to mark ambush mobs as encounter-scoped: the PRIMARY
+ * durable marking, a persisted id set, so the sweep in
  * {@code PillagerAmbushHandler} looks mobs up by id instead of scanning
- * every loaded entity. Mirrors {@link DeliveryContractStorage}'s own
+ * every loaded entity. (A secondary, per-entity NBT tag also exists - see
+ * {@code PillagerAmbushHandler}'s {@code AMBUSH_TAG} - purely as a backstop
+ * for a record lost by some other means; this id set is what the sweep
+ * actually resolves against.) Mirrors {@link DeliveryContractStorage}'s own
  * attach-to-the-overworld pattern - a distinct {@code SavedData}, never a
  * second contract store, since it tracks mobs, not contracts.
  *
@@ -37,6 +41,11 @@ public final class PillagerEncounterStorage extends SavedData {
     /** A live, mutation-safe snapshot: iterate this, not {@link #records}, while deciding removals. */
     public List<EncounterRecord> snapshot() {
         return List.copyOf(records);
+    }
+
+    /** Used by the join-level orphan check (MINECRAFT-130 review): is this tagged mob still a live, tracked encounter? */
+    public Optional<EncounterRecord> find(UUID mobId) {
+        return records.stream().filter(record -> record.mobId().equals(mobId)).findFirst();
     }
 
     public void add(EncounterRecord record) {

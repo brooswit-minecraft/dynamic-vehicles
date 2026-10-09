@@ -32,6 +32,20 @@ public final class VehicleSeating {
     }
 
     /**
+     * Index of the lowest-numbered unoccupied seat, EXCLUDING seat 0 (MINECRAFT-211): for an auto-boarding
+     * mob, which must never take the driver's seat even when it is empty. Returns -1 if every non-driver
+     * seat is in use, or if {@code occupied} has no non-driver seats at all (a one-seat vehicle).
+     */
+    public static int firstFreeNonDriverSeat(boolean[] occupied) {
+        for (int i = 1; i < occupied.length; i++) {
+            if (!occupied[i]) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
      * Whether a new rider may board right now. {@code occupied.length} is the vehicle's seat count: at most
      * one entry for a one-seat vehicle, which is never speed-gated (today's behavior, unchanged). A
      * multi-seat vehicle additionally refuses while {@code horizontalSpeedBlocksPerTick} exceeds

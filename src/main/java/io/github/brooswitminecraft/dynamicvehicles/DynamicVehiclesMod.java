@@ -77,6 +77,11 @@ public class DynamicVehiclesMod {
                     .sized(VehicleSpec.ROCK_CRAWLER.width(), VehicleSpec.ROCK_CRAWLER.height()).clientTrackingRange(10).updateInterval(1)
                     .build(ResourceLocation.fromNamespaceAndPath(MODID, "rock_crawler").toString()));
     public static final DeferredItem<CarItem> ROCK_CRAWLER_ITEM = ITEMS.register("rock_crawler", () -> new CarItem(new Item.Properties().stacksTo(1), ROCK_CRAWLER, 1.0));
+    public static final DeferredHolder<EntityType<?>, EntityType<CarEntity>> MONSTER_TRUCK = ENTITIES.register("monster_truck",
+            () -> EntityType.Builder.<CarEntity>of(CarEntity::new, MobCategory.MISC)
+                    .sized(VehicleSpec.MONSTER_TRUCK.width(), VehicleSpec.MONSTER_TRUCK.height()).clientTrackingRange(10).updateInterval(1)
+                    .build(ResourceLocation.fromNamespaceAndPath(MODID, "monster_truck").toString()));
+    public static final DeferredItem<CarItem> MONSTER_TRUCK_ITEM = ITEMS.register("monster_truck", () -> new CarItem(new Item.Properties().stacksTo(1), MONSTER_TRUCK, 1.2));
 
     public DynamicVehiclesMod(IEventBus modEventBus, ModContainer modContainer) {
         modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.SERVER, CarConfig.SPEC);
@@ -170,6 +175,7 @@ public class DynamicVehiclesMod {
             event.accept(DRIFT_ITEM);
             event.accept(MUSCLE_ITEM);
             event.accept(ROCK_CRAWLER_ITEM);
+            event.accept(MONSTER_TRUCK_ITEM);
         }
     }
 
@@ -185,6 +191,7 @@ public class DynamicVehiclesMod {
             event.registerEntityRenderer(DRIFT.get(), CarRenderer::new);
             event.registerEntityRenderer(MUSCLE.get(), CarRenderer::new);
             event.registerEntityRenderer(ROCK_CRAWLER.get(), CarRenderer::new);
+            event.registerEntityRenderer(MONSTER_TRUCK.get(), CarRenderer::new);
         }
 
         @SubscribeEvent

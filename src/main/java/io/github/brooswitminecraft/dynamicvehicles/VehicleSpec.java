@@ -161,6 +161,42 @@ public record VehicleSpec(
             2.0, 1900.0, 31_065.0, 5_383.33, 63_333.33,
             2.2, 18.0, 2.0, 0.6, 0.6, -0.2, 1.6, 0.5, TireTuning.IDENTITY);
 
+    /**
+     * A monster truck (MINECRAFT-180, story MINECRAFT-160): the roster's biggest wheels (0.9 m radius,
+     * 0.75 m wide, above {@code ROCK_CRAWLER}'s 0.65 m) under its tallest ride height (2.3 m, above
+     * {@code ROCK_CRAWLER}'s 1.9 m) and longest suspension travel ({@code restLength} 2.3 m, above
+     * {@code ROCK_CRAWLER}'s 2.0 m). 2600 kg, the roster's heaviest, with a {@code forceScale} of 2.4 -
+     * the roster's strongest - for shoving through smaller obstacles. Unlike every other vehicle, whose
+     * spring and damper are the car's scaled to mass at the <em>same</em> damping ratio (so each sags the
+     * same fraction of its own travel and settles the same way), this one keeps the mass-scaled spring
+     * rate ({@code springRate} 42,510, i.e. {@code WheelMath.SPRING_RATE * 2600 / 1200}) but deliberately
+     * under-damps it ({@code dampingRate} 4,500 instead of the mass-scaled 7,366.67 the car's ratio would
+     * give it) - the "bouncy suspension" character knob: it settles more slowly and overshoots on its way
+     * there instead of critically-damped-feeling like the rest of the roster. {@code maxSpringForce}
+     * (86,666.67) stays mass-scaled like every other vehicle, so the softer damping can still ride out its
+     * full travel without instantly clipping. A middling 24 m/s top speed (faster than {@code
+     * ROCK_CRAWLER}'s climbing-tuned 18, far short of a racer) and a deep 0.5 {@code enginePitch}, the
+     * roster's lowest. Carries no drift tire tuning: like {@code MUSCLE}/{@code ROCK_CRAWLER}, the
+     * character here comes from the base spec's own suspension, mass and drive fields, not from {@link
+     * DriftTireModel}, so {@code tireTuning()} stays {@link TireTuning#IDENTITY} and this vehicle routes
+     * through the plain {@code WheelMath} tire path exactly like the rest of the roster.
+     *
+     * <p>"Crushes smaller obstacles/vehicles" is this vertical slice's deferred half of the ticket's
+     * character brief: driving over short obstacles already falls out of the huge ride height/wheel
+     * radius here (the same mechanism {@code TRUCK}/{@code ROCK_CRAWLER} already rely on to clear a slab),
+     * and the existing speed-gated block-breaking ({@code CarConfig.COLLISION_BREAKING}) already applies
+     * to every vehicle with no spec change needed. A genuine damage-dealing crush-on-contact mechanic
+     * against other entities does not exist for any vehicle today and would mean new shared {@code
+     * CarEntity} collision-handling, not just a new spec plus tuning - see the MINECRAFT-156 comment this
+     * ticket posted before touching anything beyond that.
+     */
+    public static final VehicleSpec MONSTER_TRUCK = new VehicleSpec(
+            1.2, 0.75, 2.1,
+            new double[][] {{-1.05, -0.6, 1.3}, {1.05, -0.6, 1.3}, {-1.05, -0.6, -1.3}, {1.05, -0.6, -1.3}},
+            0.9, 0.75, 2.3,
+            2.3, 2600.0, 42_510.0, 4_500.0, 86_666.67,
+            2.6, 24.0, 2.4, 0.5, 0.85, -0.2, 1.3, 0.55, TireTuning.IDENTITY);
+
     public double wheelCentreY() {
         return -rideHeight + wheelRadius;
     }

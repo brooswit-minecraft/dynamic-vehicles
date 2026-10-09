@@ -10,6 +10,8 @@ import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 
+import io.github.brooswitminecraft.dynamicvehicles.DispatcherOfferConfig;
+
 /**
  * MINECRAFT-110 AC5, AC7: the coarse server timer that evaluates each
  * online player's active contract against {@link ArrivalPredicate} and the
@@ -83,7 +85,7 @@ public final class ContractTickHandler {
 
     private static void onCompleted(ServerPlayer player, DeliveryContract contract, DeliveryContractStorage storage) {
         storage.setDirty();
-        int rewardCount = (int) Math.max(1, Math.round(contract.reward()));
+        int rewardCount = OfferGenerator.payoutAmount(contract.reward(), DispatcherOfferConfig.REWARD_PAYOUT_FLOOR.get());
         player.getInventory().placeItemBackInInventory(new ItemStack(Items.EMERALD, rewardCount));
         player.sendSystemMessage(Component.translatable("message.dynamicvehicles.dispatcher.completed", rewardCount));
         DeliveryContracts.clearHud(player);

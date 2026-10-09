@@ -28,9 +28,15 @@ public final class MobBoardingRules {
 
     private MobBoardingRules() {}
 
-    /** Whether {@code mob} may automatically board a vehicle built from {@code spec} right now. */
-    public static boolean canAutoBoard(Mob mob, VehicleSpec spec) {
+    /**
+     * Whether {@code mob} may automatically board a vehicle built from {@code spec} right now.
+     * {@code vehicleStoppedPastThreshold} is that specific vehicle instance's own
+     * {@link StoppedTimer#isLatched()} -- not a function of {@code spec} -- so it is passed in rather
+     * than looked up here.
+     */
+    public static boolean canAutoBoard(Mob mob, VehicleSpec spec, boolean vehicleStoppedPastThreshold) {
         return MobBoardingEligibility.isEligible(AUTO_BOARDING_MOB_TYPES.contains(mob.getType()),
-                AUTO_BOARDING_VEHICLES.contains(spec), mob.isBaby(), mob.isLeashed(), mob instanceof Enemy);
+                AUTO_BOARDING_VEHICLES.contains(spec), mob.isBaby(), mob.isLeashed(), mob instanceof Enemy,
+                vehicleStoppedPastThreshold);
     }
 }

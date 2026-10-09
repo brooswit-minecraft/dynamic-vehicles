@@ -506,7 +506,8 @@ public class CarEntity extends Entity {
     @Override
     public void push(Entity entity) {
         super.push(entity);
-        if (!level().isClientSide() && entity instanceof Mob mob && MobBoardingRules.canAutoBoard(mob, spec)) {
+        if (!level().isClientSide() && entity instanceof Mob mob
+                && MobBoardingRules.canAutoBoard(mob, spec, stoppedTimer.isLatched())) {
             mob.startRiding(this);
         }
     }
@@ -520,11 +521,15 @@ public class CarEntity extends Entity {
      * first free NON-driver seat -- rather than {@link VehicleSeating#canBoard}'s speed limit, since the
      * whole point of contact-triggered boarding is a moving bus driving into a mob; that speed gate exists
      * only to stop a player hopping onto a moving vehicle, and must keep doing only that.
+     * {@code MobBoardingRules.canAutoBoard} also refuses while {@link #stoppedTimer} is latched, so a mob
+     * that just auto-dismounted (or any mob touching an already-long-stopped bus) cannot immediately
+     * re-board.
      */
     @Override
     protected boolean canAddPassenger(Entity passenger) {
         if (passenger instanceof Mob mob) {
-            return MobBoardingRules.canAutoBoard(mob, spec) && VehicleSeating.firstFreeNonDriverSeat(seats.occupied()) >= 0;
+            return MobBoardingRules.canAutoBoard(mob, spec, stoppedTimer.isLatched())
+                    && VehicleSeating.firstFreeNonDriverSeat(seats.occupied()) >= 0;
         }
         double horizontalSpeed = Math.hypot(getDeltaMovement().x, getDeltaMovement().z);
         return VehicleSeating.canBoard(seats.occupied(), horizontalSpeed);
@@ -660,7 +665,10 @@ public class CarEntity extends Entity {
 
     /**
      * MINECRAFT-211: once this vehicle has been stopped (see {@link StoppedTimer}) long enough, any
-     * auto-boarded mob passenger dismounts on its own. A player is never affected -- a player always exits
+     * auto-boarded mob passenger dismounts on its own -- {@link StoppedTimer#tick} fires {@code true}
+     * only once per stop, so this loop runs once, not every tick a mob remains dismounted and touching
+     * the vehicle; {@link #canAddPassenger}/{@link #push} independently refuse to re-board it anyway
+     * while {@link StoppedTimer#isLatched} stays set. A player is never affected -- a player always exits
      * through the vanilla sneak key regardless of speed, exactly as before this ticket.
      */
     private void checkAutoDismount() {

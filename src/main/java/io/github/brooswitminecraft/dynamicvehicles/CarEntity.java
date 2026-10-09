@@ -11,6 +11,7 @@ import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.MoverType;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
@@ -95,6 +96,8 @@ public class CarEntity extends Entity {
      * {@link #getDismountLocationForPassenger} lookup that follows it moments later (see that method's
      * javadoc) -- entries are consumed (removed) as soon as that lookup reads them. */
     private final java.util.Map<Entity, Vec3> pendingDismounts = new java.util.HashMap<>();
+    /** How long this vehicle has been stopped, for auto-dismounting a boarded mob (MINECRAFT-211). */
+    private final StoppedTimer stoppedTimer = new StoppedTimer();
 
     public CarEntity(EntityType<? extends CarEntity> type, Level level) {
         super(type, level);
@@ -322,7 +325,9 @@ public class CarEntity extends Entity {
         // Assign the seat before super's own call, so any attachment-point lookup from this point on
         // (positionRider runs on the very next tick) sees this passenger's own seat, never seat 0's default.
         pendingDismounts.remove(passenger);
-        seats.add(passenger);
+        // MINECRAFT-211: a non-player (an auto-boarding mob) never takes seat 0, the driver's, even if it
+        // is empty -- only a player may ever drive.
+        seats.add(passenger, !(passenger instanceof Player));
         super.addPassenger(passenger);
         if (!level().isClientSide() && getPassengers().size() == 1) {
             level().playSound(null, getX(), getY() + 0.5, getZ(), ModSounds.ENGINE_START.get(),
@@ -492,12 +497,35 @@ public class CarEntity extends Entity {
     }
 
     /**
+     * MINECRAFT-211: on contact with an eligible mob (an adult, non-leashed, non-hostile cow, today),
+     * board it into this car -- piggybacking on vanilla's own per-tick entity-collision push, which already
+     * calls this for every nearby entity, rather than scanning loaded mobs ourselves. {@code startRiding}
+     * re-checks {@link #canAddPassenger}, which is the actual seat/eligibility gate; the
+     * {@link MobBoardingRules} check here is just to avoid calling it for mobs that can never board.
+     */
+    @Override
+    public void push(Entity entity) {
+        super.push(entity);
+        if (!level().isClientSide() && entity instanceof Mob mob && MobBoardingRules.canAutoBoard(mob, spec)) {
+            mob.startRiding(this);
+        }
+    }
+
+    /**
      * MINECRAFT-172: capacity- and (for multi-seat specs only) speed-gated. A one-seat spec takes the exact
      * same path it always has ({@code seats.occupied()} has one slot, and {@link VehicleSeating#canBoard}
      * never speed-gates a single-slot array), so today's behavior is unchanged byte-for-byte.
+     *
+     * MINECRAFT-211: a {@link Mob} passenger is gated separately -- by {@link MobBoardingRules} and the
+     * first free NON-driver seat -- rather than {@link VehicleSeating#canBoard}'s speed limit, since the
+     * whole point of contact-triggered boarding is a moving bus driving into a mob; that speed gate exists
+     * only to stop a player hopping onto a moving vehicle, and must keep doing only that.
      */
     @Override
     protected boolean canAddPassenger(Entity passenger) {
+        if (passenger instanceof Mob mob) {
+            return MobBoardingRules.canAutoBoard(mob, spec) && VehicleSeating.firstFreeNonDriverSeat(seats.occupied()) >= 0;
+        }
         double horizontalSpeed = Math.hypot(getDeltaMovement().x, getDeltaMovement().z);
         return VehicleSeating.canBoard(seats.occupied(), horizontalSpeed);
     }
@@ -588,6 +616,7 @@ public class CarEntity extends Entity {
         }
         if (level() instanceof net.minecraft.server.level.ServerLevel serverLevel && SableCompat.usable()) {
             tickSable(serverLevel, rider);
+            checkAutoDismount();
             return;
         }
         double throttle = rider == null ? 0.0 : Math.max(-1.0, Math.min(1.0, rider.zza));
@@ -626,6 +655,24 @@ public class CarEntity extends Entity {
         publishSoundState(Math.abs(throttle), slip);
         emitEffects(throttle, speed, slip);
         checkImpact(Math.abs(speed));
+        checkAutoDismount();
+    }
+
+    /**
+     * MINECRAFT-211: once this vehicle has been stopped (see {@link StoppedTimer}) long enough, any
+     * auto-boarded mob passenger dismounts on its own. A player is never affected -- a player always exits
+     * through the vanilla sneak key regardless of speed, exactly as before this ticket.
+     */
+    private void checkAutoDismount() {
+        double horizontalSpeed = Math.hypot(getDeltaMovement().x, getDeltaMovement().z);
+        if (!stoppedTimer.tick(horizontalSpeed)) {
+            return;
+        }
+        for (Entity passenger : java.util.List.copyOf(getPassengers())) {
+            if (passenger instanceof Mob mob) {
+                mob.stopRiding();
+            }
+        }
     }
 
     private void tickSable(net.minecraft.server.level.ServerLevel serverLevel, LivingEntity rider) {

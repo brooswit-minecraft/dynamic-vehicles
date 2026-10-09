@@ -27,7 +27,18 @@ public final class SeatAssignment<T> {
 
     /** Seats the rider into the lowest-numbered free seat and returns its index, or -1 if every seat is full. */
     public int add(T rider) {
-        int index = VehicleSeating.firstFreeSeat(occupied());
+        return add(rider, false);
+    }
+
+    /**
+     * Seats the rider into the lowest-numbered free seat and returns its index, or -1 if no eligible seat
+     * is free. When {@code excludeDriverSeat} is true, seat 0 is never considered even if it is empty
+     * (MINECRAFT-211: an auto-boarded mob must never take the driver's seat).
+     */
+    public int add(T rider, boolean excludeDriverSeat) {
+        int index = excludeDriverSeat
+                ? VehicleSeating.firstFreeNonDriverSeat(occupied())
+                : VehicleSeating.firstFreeSeat(occupied());
         if (index < 0) {
             return -1;
         }

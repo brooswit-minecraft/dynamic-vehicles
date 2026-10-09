@@ -43,6 +43,24 @@ class SeatAssignmentTest {
         assertEquals(1, seats.indexOf("bob"));
     }
 
+    /** MINECRAFT-211: an auto-boarding mob (excludeDriverSeat = true) never takes seat 0, even empty. */
+    @Test
+    void excludingTheDriverSeatSkipsSeatZeroEvenWhenEveryoneIsAbsent() {
+        SeatAssignment<String> seats = new SeatAssignment<>(3);
+        assertEquals(1, seats.add("cow", true));
+        assertEquals(2, seats.add("secondCow", true));
+        assertEquals(-1, seats.add("thirdCow", true), "no free non-driver seat left");
+        assertNull(seats.driver(), "seat 0 must stay empty: it was never offered to an excluded rider");
+    }
+
+    /** A rider not excluded from the driver seat (a player) still boards seat 0 first, as before. */
+    @Test
+    void notExcludingTheDriverSeatStillFillsSeatZeroFirst() {
+        SeatAssignment<String> seats = new SeatAssignment<>(2);
+        assertEquals(0, seats.add("alice", false));
+        assertEquals("alice", seats.driver());
+    }
+
     @Test
     void anEightSeatRosterBoardsAllEightAndThenRefuses() {
         SeatAssignment<String> seats = new SeatAssignment<>(8);

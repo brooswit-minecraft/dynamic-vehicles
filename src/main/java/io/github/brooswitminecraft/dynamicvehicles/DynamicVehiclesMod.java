@@ -30,6 +30,10 @@ import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredItem;
 import net.neoforged.neoforge.registries.DeferredRegister;
 
+import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherInteractionHandler;
+import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherOfferAcceptPayload;
+import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherOfferMenus;
+import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherOfferScreen;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherProfession;
 
 /** Entry point and registry for the first vehicle, a 4-wheel car (MINECRAFT-63). */
@@ -67,15 +71,19 @@ public class DynamicVehiclesMod {
         ENTITIES.register(modEventBus);
         ITEMS.register(modEventBus);
         DispatcherProfession.PROFESSIONS.register(modEventBus);
+        DispatcherOfferMenus.MENUS.register(modEventBus);
         modEventBus.addListener(this::commonSetup);
         modEventBus.addListener(this::addCreative);
         modEventBus.addListener(this::registerPayloads);
         NeoForge.EVENT_BUS.addListener(this::registerCommands);
         NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.server.ServerStartedEvent e) -> LightLedger.sweep(e.getServer()));
+        NeoForge.EVENT_BUS.addListener(DispatcherInteractionHandler::onEntityInteract);
     }
 
     private void registerPayloads(net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent event) {
-        event.registrar("1").playToServer(LightsTogglePayload.TYPE, LightsTogglePayload.STREAM_CODEC, LightsTogglePayload::handle);
+        var registrar = event.registrar("1");
+        registrar.playToServer(LightsTogglePayload.TYPE, LightsTogglePayload.STREAM_CODEC, LightsTogglePayload::handle);
+        registrar.playToServer(DispatcherOfferAcceptPayload.TYPE, DispatcherOfferAcceptPayload.STREAM_CODEC, DispatcherOfferAcceptPayload::handle);
     }
 
     private void commonSetup(FMLCommonSetupEvent event) {
@@ -147,6 +155,11 @@ public class DynamicVehiclesMod {
             event.registerEntityRenderer(CAR.get(), CarRenderer::new);
             event.registerEntityRenderer(TRUCK.get(), CarRenderer::new);
             event.registerEntityRenderer(TROPHY.get(), CarRenderer::new);
+        }
+
+        @SubscribeEvent
+        public static void registerScreens(net.neoforged.neoforge.client.event.RegisterMenuScreensEvent event) {
+            event.register(DispatcherOfferMenus.DISPATCHER_OFFER.get(), DispatcherOfferScreen::new);
         }
     }
 }

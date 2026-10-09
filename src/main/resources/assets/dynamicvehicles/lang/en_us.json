@@ -7,5 +7,6 @@
   "entity.dynamicvehicles.trophy_truck": "Trophy Truck",
   "key.dynamicvehicles.headlights": "Cycle headlights (auto, on, off)",
   "key.categories.dynamicvehicles": "Dynamic Vehicles",
-  "entity.dynamicvehicles.villager.dispatcher": "Dispatcher"
+  "entity.dynamicvehicles.villager.dispatcher": "Dispatcher",
+  "gui.dynamicvehicles.dispatcher.no_offers": "No destinations available right now."
 }

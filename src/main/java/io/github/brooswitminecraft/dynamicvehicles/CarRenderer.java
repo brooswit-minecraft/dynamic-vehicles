@@ -38,6 +38,8 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
     private static final BlockState INDY_NOSE = Blocks.WHITE_CONCRETE.defaultBlockState();
     private static final BlockState BUS_BODY = Blocks.BLUE_CONCRETE.defaultBlockState();
     private static final BlockState BUS_WINDOWS = Blocks.GLASS.defaultBlockState();
+    private static final BlockState CARGO_BODY = Blocks.CYAN_CONCRETE.defaultBlockState();
+    private static final BlockState CARGO_BED_RAIL = Blocks.GRAY_CONCRETE.defaultBlockState();
     private static final BlockState BED = Blocks.GRAY_CONCRETE.defaultBlockState();
     private static final BlockState CABIN = Blocks.GLASS.defaultBlockState();
     private static final BlockState WHEEL = Blocks.BLACK_CONCRETE.defaultBlockState();
@@ -132,6 +134,8 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
             // A long, boxy body filling the physics box, with a window band running most of its length.
             block(pose, buffers, light, BUS_BODY, -hx, -hy, -hz, 2 * hx, 2 * hy, 2 * hz);
             block(pose, buffers, light, BUS_WINDOWS, -hx + 0.05f, 0.0f, -hz + 0.3f, 2 * hx - 0.1f, hy - 0.1f, 2 * hz - 0.6f);
+        } else if (spec == VehicleSpec.CARGO_TRUCK) {
+            renderCargoTruck(pose, buffers, light, hx, hy, hz);
         } else if (spec == VehicleSpec.TRUCK) {
             renderTruck(pose, buffers, light, hx, hy, hz, spec.mounts());
         } else {
@@ -199,6 +203,37 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
      * the frame at each of the spec's own wheel mounts, so they track the mounts rather than a hardcoded
      * wheelbase.
      */
+    /**
+     * A heavy hauler: a compact cab over the front axle (seats at z = 1.3, see {@code
+     * VehicleSpec#CARGO_TRUCK}'s own javadoc) and a big open cargo bed filling the rest of the body
+     * behind it, with tall side rails &mdash; visual only; the bed holds no items (see that spec's own
+     * LOAD AREA javadoc for why).
+     */
+    private static void renderCargoTruck(PoseStack pose, MultiBufferSource buffers, int light, float hx, float hy, float hz) {
+        float frameTop = -hy + 0.2f;
+        float cabFrontZ = hz - 0.1f;
+        float cabRearZ = 0.9f;
+        float cabRoofTop = hy - 0.05f;
+        float bedRearZ = -hz;
+        float bedWallHeight = 0.55f;
+        float wallThickness = 0.12f;
+
+        // Frame rail: full length, bottom of the box.
+        block(pose, buffers, light, CARGO_BED_RAIL, -hx, -hy, bedRearZ, 2 * hx, 0.2f, cabFrontZ - bedRearZ);
+        // Cab: body-colour below the beltline, glazed above, roof cap under hy.
+        block(pose, buffers, light, CARGO_BODY, -hx, frameTop, cabRearZ, 2 * hx, 0.35f, cabFrontZ - cabRearZ);
+        block(pose, buffers, light, CABIN, -hx + 0.15f, frameTop + 0.35f, cabRearZ + 0.1f, 2 * hx - 0.3f, cabRoofTop - (frameTop + 0.35f), cabFrontZ - cabRearZ - 0.15f);
+        block(pose, buffers, light, CARGO_BODY, -hx, cabRoofTop, cabRearZ, 2 * hx, hy - cabRoofTop, cabFrontZ - cabRearZ);
+
+        // Big open cargo bed behind the cab: floor and tall side/front/rear rails.
+        float bedLength = cabRearZ - bedRearZ;
+        block(pose, buffers, light, CARGO_BED_RAIL, -hx, frameTop, bedRearZ, 2 * hx, 0.12f, bedLength);
+        block(pose, buffers, light, CARGO_BED_RAIL, -hx, frameTop, bedRearZ, wallThickness, bedWallHeight, bedLength);
+        block(pose, buffers, light, CARGO_BED_RAIL, hx - wallThickness, frameTop, bedRearZ, wallThickness, bedWallHeight, bedLength);
+        block(pose, buffers, light, CARGO_BED_RAIL, -hx, frameTop, bedRearZ, 2 * hx, bedWallHeight, wallThickness);
+        block(pose, buffers, light, CARGO_BED_RAIL, -hx, frameTop, cabRearZ - wallThickness, 2 * hx, bedWallHeight, wallThickness);
+    }
+
     private static void renderTruck(PoseStack pose, MultiBufferSource buffers, int light, float hx, float hy, float hz, double[][] mounts) {
         // Beltline: top of the frame rail / bottom of the hood, cab doors and bed walls.
         float beltline = -hy + 0.2f;

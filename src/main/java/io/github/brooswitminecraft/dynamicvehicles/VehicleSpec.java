@@ -226,7 +226,8 @@ public record VehicleSpec(
      * 2.5 m over a 1.6 m ride height, static stability factor &asymp;0.78, comfortably above the crawler's
      * &asymp;0.50) &mdash; this is a stability/feel TUNING change for landings and rough terrain, not a
      * rollover-defect fix. Its {@code springRate} (12,260) is weaker in absolute N/m than the car's
-     * (26,980-scale) or the crawler's (31,065), so its sway-bar-style anti-roll coupling is softer too.
+     * ({@link WheelMath#SPRING_RATE}, 19,620) or the crawler's (31,065), so its sway-bar-style anti-roll
+     * coupling is softer too.
      * {@code antiRollScale} 1.5 (half again the roster's shared 1.0 identity default, more modest than the
      * crawler's 2.0 since this vehicle's geometry needed far less help to begin with) stiffens that coupling
      * without touching geometry or springRate &mdash; see {@code VehicleSpecTrophyAntiRollTest} for the

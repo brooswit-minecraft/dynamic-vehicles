@@ -29,6 +29,11 @@ public record VehicleSpec(
         double looseGrip, double rollingScale,
         /** This vehicle's tire model tuning; {@link TireTuning#IDENTITY} for every vehicle that has not opted in. */
         TireTuning tireTuning,
+        /** Downforce (MINECRAFT-184): extra tire grip per m/s of forward speed, applied as a multiplier on
+         * {@code gripMu} in {@link SableCarBody#tick} ({@code 1.0 + downforceGripPerSpeed * |forwardSpeed|}).
+         * {@code 0.0} for every vehicle that has not opted in &mdash; the multiplier is then exactly 1.0, so
+         * {@code SableCarBody.tick} is unchanged for them. Only the Indy Car sets this nonzero. */
+        double downforceGripPerSpeed,
         /**
          * Every seat this vehicle has, in boarding order; seat 0 is always the driver (MINECRAFT-172).
          * Supports any number of seats (an 8-seat bus included) &mdash; {@code CAR}, {@code TRUCK},
@@ -57,8 +62,25 @@ public record VehicleSpec(
             TireTuning tireTuning) {
         this(halfX, halfY, halfZ, mounts, wheelRadius, wheelWidth, rideHeight, restLength,
                 massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
+                forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning, 0.0);
+    }
+
+    /** As the legacy constructor above, plus an explicit {@link #downforceGripPerSpeed} (MINECRAFT-184) for
+     * a single-seat vehicle that opts into speed-dependent grip, deriving its one-seat {@link #seats} list
+     * from {@code seatY}/{@code seatZ} exactly as the legacy constructor does. */
+    public VehicleSpec(double halfX, double halfY, double halfZ,
+            double[][] mounts, double wheelRadius, double wheelWidth,
+            double rideHeight, double restLength,
+            double massKg, double springRate, double dampingRate, double maxSpringForce,
+            double wheelbase, double maxSpeed,
+            double forceScale, double enginePitch,
+            double seatY, double seatZ,
+            double looseGrip, double rollingScale,
+            TireTuning tireTuning, double downforceGripPerSpeed) {
+        this(halfX, halfY, halfZ, mounts, wheelRadius, wheelWidth, rideHeight, restLength,
+                massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
                 forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
-                List.of(new Seat(0.0, seatY, seatZ)));
+                downforceGripPerSpeed, List.of(new Seat(0.0, seatY, seatZ)));
     }
 
     /**
@@ -129,7 +151,7 @@ public record VehicleSpec(
             CarGeometry.HALF_X, CarGeometry.HALF_Y, CarGeometry.HALF_Z,
             CarGeometry.MOUNTS, CarGeometry.WHEEL_RADIUS, CarGeometry.WHEEL_WIDTH, CarGeometry.RIDE_HEIGHT,
             WheelMath.REST_LENGTH, 1200.0, WheelMath.SPRING_RATE, WheelMath.DAMPING_RATE, WheelMath.MAX_FORCE,
-            CarPhysics.WHEELBASE, 32.0, 1.0, 1.0, 0.55, -0.1, 1.0, 1.0, TireTuning.IDENTITY,
+            CarPhysics.WHEELBASE, 32.0, 1.0, 1.0, 0.55, -0.1, 1.0, 1.0, TireTuning.IDENTITY, 0.0,
             List.of(
                     new Seat(0.0, 0.55, -0.1),
                     new Seat(-0.5, 0.55, -0.1),
@@ -153,7 +175,7 @@ public record VehicleSpec(
             new double[][] {{-0.95, -0.5, 1.5}, {0.95, -0.5, 1.5}, {-0.95, -0.5, -1.5}, {0.95, -0.5, -1.5}},
             0.5, 0.4, 1.3,
             1.0, 2200.0, 26_980.0, 5_390.0, 73_000.0,
-            3.0, 26.0, 2200.0 / 1200.0, 0.75, 0.75, 0.3, 1.0, 1.0, TireTuning.IDENTITY,
+            3.0, 26.0, 2200.0 / 1200.0, 0.75, 0.75, 0.3, 1.0, 1.0, TireTuning.IDENTITY, 0.0,
             List.of(
                     new Seat(0.0, 0.75, 0.3),
                     new Seat(-0.55, 0.75, 0.3),
@@ -176,7 +198,7 @@ public record VehicleSpec(
             new double[][] {{-1.25, -0.3, 1.4}, {1.25, -0.3, 1.4}, {-1.25, -0.3, -1.4}, {1.25, -0.3, -1.4}},
             0.6, 0.5, 1.6,
             1.6, 1500.0, 12_260.0, 2_570.0, 50_000.0,
-            2.8, 40.0, 1.8, 1.25, 0.5, 0.1, 1.35, 0.6, TireTuning.IDENTITY,
+            2.8, 40.0, 1.8, 1.25, 0.5, 0.1, 1.35, 0.6, TireTuning.IDENTITY, 0.0,
             List.of(
                     new Seat(0.0, 0.5, 0.1),
                     new Seat(-0.65, 0.5, 0.1)));
@@ -209,7 +231,7 @@ public record VehicleSpec(
             new double[][] {{-0.75, -0.35, 1.2}, {0.75, -0.35, 1.2}, {-0.75, -0.35, -1.2}, {0.75, -0.35, -1.2}},
             0.35, 0.3, 0.75,
             0.6, 1100.0, 17_985.0, 3_117.0, 36_667.0,
-            2.4, 32.0, 1.0, 1.0, 0.5, -0.1, 1.0, 1.0, TIRE_TUNING,
+            2.4, 32.0, 1.0, 1.0, 0.5, -0.1, 1.0, 1.0, TIRE_TUNING, 0.0,
             List.of(
                     new Seat(0.0, 0.5, -0.1),
                     new Seat(-0.45, 0.5, -0.1)));
@@ -292,6 +314,43 @@ public record VehicleSpec(
             0.9, 0.75, 2.3,
             2.3, 2600.0, 42_510.0, 4_500.0, 86_666.67,
             2.6, 24.0, 2.4, 0.5, 0.85, -0.2, 1.3, 0.55, TireTuning.IDENTITY);
+
+    /**
+     * An Indy car (MINECRAFT-161/184): the roster's lowest, lightest and fastest vehicle, open-wheel look.
+     * Lowest body on the roster (0.35 m half-height, below {@code DRIFT}'s 0.42) riding the lowest at
+     * 0.5 m (below {@code DRIFT}'s 0.75) on a short, stiff 0.35 m suspension travel. Lightest on the
+     * roster at 650 kg (below {@code DRIFT}'s 1100), with the roster's best power-to-weight
+     * ({@code forceScale}/{@code massKg} 1.3/650 &asymp; 0.002, above every other vehicle's) delivered
+     * through the roster's highest top speed (48 m/s, above {@code TROPHY}'s 40) &mdash; a long 2.7 m
+     * wheelbase (above every existing vehicle's) for stability at that speed. Open-wheel look: the wheel
+     * mounts sit outside {@code halfX} (0.95 m against the body's own 0.75 m half-width), so the wheels
+     * protrude past the body in {@code CarRenderer} instead of tucking under it like every other vehicle's.
+     * Low {@code looseGrip} (0.6, below the car's 1.0) &mdash; a pavement racer, not an off-roader.
+     *
+     * <p>Downforce (the brief's own "downforce-like grip at speed"): {@code downforceGripPerSpeed} is
+     * 0.012, the roster's only nonzero value &mdash; see {@link #downforceGripMultiplier} and the gripMu
+     * multiplier it feeds in {@link SableCarBody#tick}. At this car's own top speed that is a &asymp;58%
+     * grip bonus (1.0 + 0.012 * 48 &asymp; 1.58), tapering to none at a stop; every other existing vehicle
+     * carries {@code 0.0} here, so the multiplier stays exactly 1.0 for them and {@code SableCarBody.tick}
+     * is unchanged for the rest of the roster. Carries no drift tuning of its own: the speed-grip character
+     * is this new, separate mechanism, not {@link DriftTireModel}'s cornering-slip one, so
+     * {@code tireTuning()} stays {@link TireTuning#IDENTITY} and this vehicle's cornering grip still routes
+     * through the plain {@code WheelMath} tire path, exactly like {@code CAR}/{@code TRUCK}/{@code
+     * TROPHY}/{@code MUSCLE}/{@code ROCK_CRAWLER}/{@code MONSTER_TRUCK}.
+     */
+    public static final VehicleSpec INDY = new VehicleSpec(
+            0.75, 0.35, 1.8,
+            new double[][] {{-0.95, -0.28, 1.5}, {0.95, -0.28, 1.5}, {-0.95, -0.28, -1.5}, {0.95, -0.28, -1.5}},
+            0.3, 0.25, 0.5,
+            0.35, 650.0, 10_627.5, 1_841.67, 21_666.67,
+            2.7, 48.0, 1.3, 1.3, 0.4, 0.0, 0.6, 1.0, TireTuning.IDENTITY, 0.012);
+
+    /** The gripMu multiplier {@link SableCarBody#tick} applies for this vehicle's own {@code
+     * downforceGripPerSpeed} at this forward speed (m/s, either direction): 1.0 (no change) for every
+     * vehicle whose {@code downforceGripPerSpeed} is 0.0 &mdash; see the field's own javadoc. */
+    public double downforceGripMultiplier(double forwardSpeed) {
+        return 1.0 + downforceGripPerSpeed * Math.abs(forwardSpeed);
+    }
 
     public double wheelCentreY() {
         return -rideHeight + wheelRadius;

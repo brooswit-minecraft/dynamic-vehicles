@@ -14,6 +14,16 @@ public final class DangerGauge {
         SAFE, LOW, MODERATE, HIGH, EXTREME
     }
 
+    /**
+     * The {@code en_us.json} translation key for a danger category (MINECRAFT-110:
+     * {@link Category} previously rendered as its raw enum name, untranslated).
+     * Returns a plain String, not a {@code Component}, so this stays Minecraft-free;
+     * callers (the offer screen, the contract HUD) wrap it in {@code Component.translatable}.
+     */
+    public static String translationKey(Category category) {
+        return "gauge.dynamicvehicles.danger." + category.name().toLowerCase(java.util.Locale.ROOT);
+    }
+
     private DangerGauge() {
     }
 

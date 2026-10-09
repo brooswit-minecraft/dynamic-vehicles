@@ -8,5 +8,15 @@
   "key.dynamicvehicles.headlights": "Cycle headlights (auto, on, off)",
   "key.categories.dynamicvehicles": "Dynamic Vehicles",
   "entity.dynamicvehicles.villager.dispatcher": "Dispatcher",
-  "gui.dynamicvehicles.dispatcher.no_offers": "No destinations available right now."
+  "gui.dynamicvehicles.dispatcher.no_offers": "No destinations available right now.",
+  "gauge.dynamicvehicles.danger.safe": "Safe",
+  "gauge.dynamicvehicles.danger.low": "Low",
+  "gauge.dynamicvehicles.danger.moderate": "Moderate",
+  "gauge.dynamicvehicles.danger.high": "High",
+  "gauge.dynamicvehicles.danger.extreme": "Extreme",
+  "message.dynamicvehicles.dispatcher.already_active": "You already have an active delivery contract. Finish or wait for it to expire before accepting another.",
+  "message.dynamicvehicles.dispatcher.no_longer_valid": "This Dispatcher is no longer available.",
+  "message.dynamicvehicles.dispatcher.accepted": "Contract accepted. Check your HUD for the destination.",
+  "message.dynamicvehicles.dispatcher.completed": "Delivery complete! You earned %s emerald(s).",
+  "message.dynamicvehicles.dispatcher.expired": "Your delivery contract expired."
 }

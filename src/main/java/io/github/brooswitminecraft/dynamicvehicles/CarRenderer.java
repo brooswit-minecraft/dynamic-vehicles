@@ -30,6 +30,8 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
     private static final BlockState MUSCLE_STRIPE = Blocks.WHITE_CONCRETE.defaultBlockState();
     private static final BlockState CRAWLER_BODY = Blocks.GREEN_CONCRETE.defaultBlockState();
     private static final BlockState CRAWLER_ROLL_CAGE = Blocks.IRON_BARS.defaultBlockState();
+    private static final BlockState MONSTER_BODY = Blocks.PURPLE_CONCRETE.defaultBlockState();
+    private static final BlockState MONSTER_ROLL_CAGE = Blocks.IRON_BARS.defaultBlockState();
     private static final BlockState BED = Blocks.GRAY_CONCRETE.defaultBlockState();
     private static final BlockState CABIN = Blocks.GLASS.defaultBlockState();
     private static final BlockState WHEEL = Blocks.BLACK_CONCRETE.defaultBlockState();
@@ -73,6 +75,10 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
             // A short, boxy body riding high above its wheels, with an open roll cage instead of a closed cabin.
             block(pose, buffers, light, CRAWLER_BODY, -hx, -hy, -hz, 2 * hx, 0.6f, 2 * hz);
             block(pose, buffers, light, CRAWLER_ROLL_CAGE, -hx + 0.1f, -hy + 0.6f, -0.5f, 2 * hx - 0.2f, 2 * hy - 0.6f, 1.0f);
+        } else if (spec == VehicleSpec.MONSTER_TRUCK) {
+            // A compact cab riding high above its huge wheels, with an open roll cage instead of a closed cabin.
+            block(pose, buffers, light, MONSTER_BODY, -hx, -hy, -hz, 2 * hx, 0.65f, 2 * hz);
+            block(pose, buffers, light, MONSTER_ROLL_CAGE, -hx + 0.15f, -hy + 0.65f, -0.6f, 2 * hx - 0.3f, 2 * hy - 0.65f, 1.2f);
         } else if (spec == VehicleSpec.TRUCK) {
             // Chassis and cab fill the physics box; an open bed behind the cab.
             block(pose, buffers, light, TRUCK_BODY, -hx, -hy, -hz, 2 * hx, 0.6f, 2 * hz);

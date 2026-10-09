@@ -2,6 +2,7 @@ package io.github.brooswitminecraft.dynamicvehicles;
 
 import net.neoforged.neoforge.common.ModConfigSpec;
 
+import io.github.brooswitminecraft.dynamicvehicles.delivery.AmbushConfig;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.OfferConfig;
 
 /**
@@ -33,6 +34,18 @@ public final class DispatcherOfferConfig {
     public static final ModConfigSpec.DoubleValue MAX_REWARD_DANGER_MULTIPLIER;
     public static final ModConfigSpec.IntValue TIME_ALLOWANCE_BASE_TICKS;
     public static final ModConfigSpec.DoubleValue TIME_ALLOWANCE_TICKS_PER_BLOCK;
+
+    // MINECRAFT-130: periodic pillager ambush roll knobs. Defaults are starting points (MINECRAFT-113 tunes them).
+    public static final ModConfigSpec.IntValue AMBUSH_ROLL_INTERVAL_TICKS;
+    public static final ModConfigSpec.DoubleValue AMBUSH_MIN_ROLL_CHANCE;
+    public static final ModConfigSpec.DoubleValue AMBUSH_MAX_ROLL_CHANCE;
+    public static final ModConfigSpec.IntValue AMBUSH_MIN_ENCOUNTER_SIZE;
+    public static final ModConfigSpec.IntValue AMBUSH_MAX_ENCOUNTER_SIZE;
+    public static final ModConfigSpec.DoubleValue AMBUSH_SPAWN_MIN_DISTANCE;
+    public static final ModConfigSpec.DoubleValue AMBUSH_SPAWN_MAX_DISTANCE;
+    public static final ModConfigSpec.DoubleValue AMBUSH_SPAWN_ARC_DEGREES;
+    public static final ModConfigSpec.IntValue AMBUSH_MAX_ENCOUNTER_LIFETIME_TICKS;
+    public static final ModConfigSpec.DoubleValue AMBUSH_NEARBY_PLAYER_RADIUS;
 
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
@@ -95,6 +108,42 @@ public final class DispatcherOfferConfig {
                 .comment("Additional deadline ticks granted per block of approximate distance.")
                 .defineInRange("timeAllowanceTicksPerBlock", 4.0, 0.0, 1000.0);
 
+        AMBUSH_ROLL_INTERVAL_TICKS = builder
+                .comment("How often (game ticks; 20 ticks = 1 second) an active contract gets one pillager ambush "
+                        + "roll attempt. Spec's initial tuning suggestion is ~30 seconds (600 ticks).")
+                .defineInRange("ambushRollIntervalTicks", 600, 20, Integer.MAX_VALUE);
+        AMBUSH_MIN_ROLL_CHANCE = builder
+                .comment("Ambush roll success probability when a contract's danger == dangerMin.")
+                .defineInRange("ambushMinRollChance", 0.05, 0.0, 1.0);
+        AMBUSH_MAX_ROLL_CHANCE = builder
+                .comment("Ambush roll success probability when a contract's danger == dangerMax. Must be >= ambushMinRollChance.")
+                .defineInRange("ambushMaxRollChance", 0.6, 0.0, 1.0);
+        AMBUSH_MIN_ENCOUNTER_SIZE = builder
+                .comment("Pillager count on a successful ambush roll when danger == dangerMin.")
+                .defineInRange("ambushMinEncounterSize", 1, 1, 50);
+        AMBUSH_MAX_ENCOUNTER_SIZE = builder
+                .comment("Pillager count on a successful ambush roll when danger == dangerMax. Must be >= ambushMinEncounterSize.")
+                .defineInRange("ambushMaxEncounterSize", 4, 1, 50);
+        AMBUSH_SPAWN_MIN_DISTANCE = builder
+                .comment("Nearest an ambush spawn offset may land from the traveling player/vehicle, in blocks.")
+                .defineInRange("ambushSpawnMinDistance", 10.0, 1.0, 1000.0);
+        AMBUSH_SPAWN_MAX_DISTANCE = builder
+                .comment("Farthest an ambush spawn offset may land. Must be > ambushSpawnMinDistance.")
+                .defineInRange("ambushSpawnMaxDistance", 20.0, 1.0, 1000.0);
+        AMBUSH_SPAWN_ARC_DEGREES = builder
+                .comment("Total angular spread (degrees), centered on the player's/vehicle's heading, that an "
+                        + "ambush spawn offset may land within - the player's AC2 \"ahead matters\" cone.")
+                .defineInRange("ambushSpawnArcDegrees", 120.0, 1.0, 360.0);
+        AMBUSH_MAX_ENCOUNTER_LIFETIME_TICKS = builder
+                .comment("Hard backstop (game ticks): an ambush mob despawns after this long regardless of other "
+                        + "state, so a mob that wandered off or whose owner never reconnects cannot accumulate "
+                        + "indefinitely (AC4).")
+                .defineInRange("ambushMaxEncounterLifetimeTicks", 6000, 20, Integer.MAX_VALUE);
+        AMBUSH_NEARBY_PLAYER_RADIUS = builder
+                .comment("A non-owner player within this many blocks of an ambush mob blocks its despawn (AC5), "
+                        + "so cleanup never pulls a mob out from under someone fighting it.")
+                .defineInRange("ambushNearbyPlayerRadius", 24.0, 0.0, 1000.0);
+
         SPEC = builder.build();
     }
 
@@ -112,5 +161,22 @@ public final class DispatcherOfferConfig {
                 MAX_REWARD_DANGER_MULTIPLIER.get(),
                 TIME_ALLOWANCE_BASE_TICKS.get(),
                 TIME_ALLOWANCE_TICKS_PER_BLOCK.get());
+    }
+
+    /** Snapshots the current ambush-roll config values into a plain, Minecraft-free {@link AmbushConfig} (MINECRAFT-130). */
+    public static AmbushConfig toAmbushConfig() {
+        return new AmbushConfig(
+                AMBUSH_ROLL_INTERVAL_TICKS.get(),
+                AMBUSH_MIN_ROLL_CHANCE.get(),
+                AMBUSH_MAX_ROLL_CHANCE.get(),
+                AMBUSH_MIN_ENCOUNTER_SIZE.get(),
+                AMBUSH_MAX_ENCOUNTER_SIZE.get(),
+                AMBUSH_SPAWN_MIN_DISTANCE.get(),
+                AMBUSH_SPAWN_MAX_DISTANCE.get(),
+                Math.toRadians(AMBUSH_SPAWN_ARC_DEGREES.get()),
+                AMBUSH_MAX_ENCOUNTER_LIFETIME_TICKS.get(),
+                AMBUSH_NEARBY_PLAYER_RADIUS.get(),
+                DANGER_MIN.get(),
+                DANGER_MAX.get());
     }
 }

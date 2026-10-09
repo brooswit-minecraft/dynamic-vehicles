@@ -21,11 +21,15 @@ import net.neoforged.neoforge.event.tick.ServerTickEvent;
  * ticks per player, not every tick, and skips players with no active
  * contract via {@link ContractBook#evaluate} without touching the book's
  * map otherwise.
+ *
+ * <p>MINECRAFT-130 hooks its periodic ambush roll into this same sweep's
+ * {@code STILL_ACTIVE} case, and its encounter cleanup sweep into this same
+ * tick, rather than adding a second timer or player sweep.
  */
 public final class ContractTickHandler {
 
     /** 20 ticks = 1 second: coarse enough to never evaluate every contract every tick, tight enough to read as "immediate" arrival/expiry. */
-    private static final int EVALUATE_INTERVAL_TICKS = 20;
+    static final int EVALUATE_INTERVAL_TICKS = 20;
 
     private ContractTickHandler() {
     }
@@ -45,12 +49,26 @@ public final class ContractTickHandler {
             switch (evaluation.outcome()) {
                 case COMPLETED -> onCompleted(player, evaluation.contract(), storage);
                 case EXPIRED -> onExpired(player, storage);
-                case STILL_ACTIVE, NO_ACTIVE_CONTRACT -> {
-                    // Nothing to do: still active contracts keep their already-sent HUD state (AC8); the
-                    // client re-derives remaining time itself from the deadline tick it already has.
+                case STILL_ACTIVE -> PillagerAmbushHandler.attemptRoll(player, evaluation.contract(), now);
+                case NO_ACTIVE_CONTRACT -> {
+                    // Nothing to do.
                 }
             }
         }
+        // MINECRAFT-130 AC4: resolves every tracked ambush mob against the cleanup predicate once per
+        // sweep, not per player - bounded by the (small) number of outstanding encounters, not by player count.
+        PillagerAmbushHandler.sweep(server, storage, now);
+    }
+
+    /** MINECRAFT-130 AC4's logout case: cleans up that player's own encounter mobs immediately, rather than waiting up to one sweep. */
+    @SubscribeEvent
+    public static void onPlayerLoggedOut(PlayerEvent.PlayerLoggedOutEvent event) {
+        if (!(event.getEntity() instanceof ServerPlayer player)) {
+            return;
+        }
+        MinecraftServer server = player.server;
+        DeliveryContractStorage storage = DeliveryContractStorage.of(server);
+        PillagerAmbushHandler.cleanupForOwner(server, storage, player.getUUID(), server.overworld().getGameTime());
     }
 
     /** Resyncs the HUD for a player who already has a persisted active contract (AC3: survives logout/relog). */

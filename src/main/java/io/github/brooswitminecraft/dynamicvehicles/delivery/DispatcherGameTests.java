@@ -3,6 +3,7 @@ package io.github.brooswitminecraft.dynamicvehicles.delivery;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.EntityType;
@@ -11,6 +12,7 @@ import net.minecraft.world.entity.npc.VillagerProfession;
 import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
+import net.neoforged.neoforge.network.registration.ChannelAttributes;
 
 /**
  * MINECRAFT-196 AC: a jobless villager next to the new {@link DispatcherBlocks#DISPATCH_BOARD}
@@ -47,6 +49,17 @@ public final class DispatcherGameTests {
         villager.setVillagerData(villager.getVillagerData().setProfession(DispatcherProfession.DISPATCHER.get()));
         ServerPlayer player = helper.makeMockServerPlayerInLevel();
         player.moveTo(helper.absolutePos(new BlockPos(2, 1, 3)).getCenter());
+
+        // makeMockServerPlayerInLevel()'s connection never ran the real client's mod-channel
+        // negotiation handshake, so NeoForge's NetworkRegistry#checkPacket would otherwise
+        // refuse to send the "advanced_open_screen" payload player.openMenu(...) needs for a
+        // menu with extra client data (see createMenu's extraDataWriter) — it only lets through
+        // vanilla payloads and payloads the connection has declared support for. Declaring this
+        // one as an ad-hoc channel (the same fallback NetworkRegistry itself documents for
+        // "additional channels through c:register") is the test-only equivalent of that
+        // negotiation actually having happened.
+        ChannelAttributes.getOrCreateAdHocChannels(player.connection.getConnection())
+                .add(ResourceLocation.fromNamespaceAndPath("neoforge", "advanced_open_screen"));
 
         var event = new PlayerInteractEvent.EntityInteract(player, InteractionHand.MAIN_HAND, villager);
         DispatcherInteractionHandler.onEntityInteract(event);

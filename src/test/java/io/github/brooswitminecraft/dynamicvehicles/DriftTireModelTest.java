@@ -238,16 +238,12 @@ class DriftTireModelTest {
                 "new counterSteerAssist must stay within CarConfig's allowed range");
     }
 
-    @Test
-    void carConfigDriftDefaultsMatchVehicleSpecDriftTuning() {
-        VehicleSpec.TireTuning configDefaults = CarConfig.driftTireTuning();
-        assertEquals(DRIFT_TUNING.rearGripScale(), configDefaults.rearGripScale(), 1e-9);
-        assertEquals(DRIFT_TUNING.slipAngleThreshold(), configDefaults.slipAngleThreshold(), 1e-9);
-        assertEquals(DRIFT_TUNING.gripFalloff(), configDefaults.gripFalloff(), 1e-9);
-        assertEquals(DRIFT_TUNING.handbrakeRearGripCut(), configDefaults.handbrakeRearGripCut(), 1e-9);
-        assertEquals(DRIFT_TUNING.throttleBite(), configDefaults.throttleBite(), 1e-9);
-        assertEquals(DRIFT_TUNING.counterSteerAssist(), configDefaults.counterSteerAssist(), 1e-9);
-    }
+    // NOTE: a CarConfig.driftTireTuning()-vs-VehicleSpec.DRIFT.tireTuning() equality test was attempted
+    // here but dropped - CarConfig's static initializer (ModConfigSpec.Builder) throws
+    // NoClassDefFoundError/ClassNotFoundException in a plain JVM unit test with no Minecraft runtime on
+    // the classpath (confirmed by CI on this PR), so it is not feasible without one. The six values are
+    // kept mirrored by hand between VehicleSpec.DRIFT.TIRE_TUNING and CarConfig's defineInRange defaults;
+    // see docs/car-tire-tuning.md for both.
 
     @Test
     void identityTuningMakesDriftTireModelExactlyWheelMathTireForASpreadOfInputs() {

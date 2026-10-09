@@ -62,7 +62,10 @@ public final class CarConfig {
                 .comment("Run the wheel force step this many times per tick (same raycasts, re-read velocity each time) "
                         + "so the tire's relaxation term and the suspension's damping stay stable at 20 Hz instead of "
                         + "overshooting between big, infrequent impulses. 3 is a reasonable middle: close to the "
-                        + "stability of 4 at a lower cost, and clearly steadier than 2 under hard cornering/braking.")
+                        + "stability of 4 at a lower cost, and clearly steadier than 2 under hard cornering/braking. "
+                        + "1 is not a behaviour-identical \"off\": air drag is still applied after the (single) "
+                        + "sub-step's impulses rather than before any wheel force, and the friction circle can still "
+                        + "saturate differently than it did before sub-stepping existed (see SableCarBody.tick).")
                 .defineInRange("wheelSubSteps", 3, 1, 4);
         SPEC = builder.build();
     }

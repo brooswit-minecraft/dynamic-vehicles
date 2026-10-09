@@ -34,4 +34,44 @@ public final class WheelSubStepper {
         }
         return result;
     }
+
+    /**
+     * What one wheel's tire would report as slip for THIS sub-step, made comparable across every value of
+     * {@code wheelSubSteps} by evaluating {@link WheelMath#tire} at the TICK's own {@code tickDt} - never
+     * the sub-step's {@code subDt} - while the force actually applied to the body still comes from the
+     * caller's own, separate {@code WheelMath.tire(..., subDt)} call and is untouched by this method.
+     *
+     * <p>Why: {@code WheelMath.tire}'s slip is {@code (demand - limit) * dt / effectiveMass}, and
+     * {@code dt} appears in two different roles inside {@code demand} - which, called with {@code subDt}
+     * the way SableCarBody.tick must for the force it actually applies, makes the reported number carry N
+     * (the sub-step count) in two opposite directions:
+     * <ul>
+     * <li>For a demand that does NOT itself scale with dt (wheelspin pinned at {@code driveForce}; braking
+     * clamped to {@code brakeForce}), {@code demand - limit} is the same at every N, so the lone remaining
+     * {@code subDt} factor divides the reported slip by N - a gripping/slipping wheel would silently fall
+     * through the {@code > 0.3} gate SlipReporter/wearSlip use merely because {@code wheelSubSteps} went
+     * up, not because the tire gripped any better.
+     * <li>For a demand built from the relaxation target ({@code effectiveMass * v / dt * RELAXATION}, used
+     * for cornering and for braking before it clamps), that target itself grows as {@code 1/subDt}, so a
+     * wheel that was genuinely gripping at N=1 (demand under the friction circle) can be reported as
+     * slipping at higher N purely because asking the relaxation to close the same fraction of slip in a
+     * shorter sub-step takes more force - a real difference in the force the relaxation target WANTS, but
+     * not the kind of sliding SlipReporter/wearSlip/screech/dust exist to catch.
+     * </ul>
+     * Re-running the identical, untouched {@code tire()} formula at {@code tickDt} - the same dt a
+     * single, un-sub-stepped tick would have used - at the velocity as it stands this sub-step reports
+     * exactly what that one un-sub-stepped tick would have reported from that velocity, regardless of how
+     * many sub-steps the real tick actually takes to get there: N=1 is unaffected (there {@code subDt ==
+     * tickDt} already), and every other N reads off the same scale. This trades away one thing: at N>1 the
+     * relaxation term genuinely does pursue a bigger correction per sub-step (see SableCarBody.tick's
+     * sub-stepping note and the PR body's grip-change note) and this method's slip does not reflect that
+     * growing aggressiveness mid-tick - only the gate-worthy, tick-comparable amount the tire could not
+     * correct, which is what SlipReporter/wearSlip/lastSlipSpeed actually need.
+     */
+    public static double subStepSlipSpeed(double vLong, double vLat, double normalForce, double mu,
+            double rollingCoefficient, double lateralScale, double driveForce, double brakeForce,
+            double brakeGain, double effectiveMass, double tickDt) {
+        return WheelMath.tire(vLong, vLat, normalForce, mu, rollingCoefficient, lateralScale, driveForce,
+                brakeForce, brakeGain, effectiveMass, tickDt).slipSpeed();
+    }
 }

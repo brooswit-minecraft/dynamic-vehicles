@@ -17,6 +17,7 @@ public final class CarConfig {
     public static final ModConfigSpec.BooleanValue HEADLAMP_LIGHT;
     public static final ModConfigSpec.BooleanValue TIRE_FORCE_AT_CONTACT;
     public static final ModConfigSpec.DoubleValue ANTI_ROLL;
+    public static final ModConfigSpec.IntValue WHEEL_SUB_STEPS;
 
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
@@ -57,6 +58,15 @@ public final class CarConfig {
         ANTI_ROLL = builder
                 .comment("Anti-roll bar stiffness as a multiple of the wheel spring rate (0 = none).")
                 .defineInRange("antiRollRatio", 1.0, 0.0, 10.0);
+        WHEEL_SUB_STEPS = builder
+                .comment("Run the wheel force step this many times per tick (same raycasts, re-read velocity each time) "
+                        + "so the tire's relaxation term and the suspension's damping stay stable at 20 Hz instead of "
+                        + "overshooting between big, infrequent impulses. 3 is a reasonable middle: close to the "
+                        + "stability of 4 at a lower cost, and clearly steadier than 2 under hard cornering/braking. "
+                        + "1 is not a behaviour-identical \"off\": air drag is still applied after the (single) "
+                        + "sub-step's impulses rather than before any wheel force, and the friction circle can still "
+                        + "saturate differently than it did before sub-stepping existed (see SableCarBody.tick).")
+                .defineInRange("wheelSubSteps", 3, 1, 4);
         SPEC = builder.build();
     }
 

@@ -15,6 +15,8 @@
   "entity.dynamicvehicles.monster_truck": "Monster Truck",
   "item.dynamicvehicles.indy_car": "Indy Car",
   "entity.dynamicvehicles.indy_car": "Indy Car",
+  "item.dynamicvehicles.bus": "Bus",
+  "entity.dynamicvehicles.bus": "Bus",
   "key.dynamicvehicles.headlights": "Cycle headlights (auto, on, off)",
   "key.categories.dynamicvehicles": "Dynamic Vehicles",
   "entity.dynamicvehicles.villager.dispatcher": "Dispatcher",

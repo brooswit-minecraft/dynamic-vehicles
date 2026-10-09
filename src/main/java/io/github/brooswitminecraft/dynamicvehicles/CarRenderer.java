@@ -34,6 +34,8 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
     private static final BlockState MONSTER_ROLL_CAGE = Blocks.IRON_BARS.defaultBlockState();
     private static final BlockState INDY_BODY = Blocks.LIME_CONCRETE.defaultBlockState();
     private static final BlockState INDY_NOSE = Blocks.WHITE_CONCRETE.defaultBlockState();
+    private static final BlockState BUS_BODY = Blocks.BLUE_CONCRETE.defaultBlockState();
+    private static final BlockState BUS_WINDOWS = Blocks.GLASS.defaultBlockState();
     private static final BlockState BED = Blocks.GRAY_CONCRETE.defaultBlockState();
     private static final BlockState CABIN = Blocks.GLASS.defaultBlockState();
     private static final BlockState WHEEL = Blocks.BLACK_CONCRETE.defaultBlockState();
@@ -87,6 +89,10 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
             // the body, plus a narrow nose cone ahead of the cockpit.
             block(pose, buffers, light, INDY_BODY, -hx * 0.6f, -hy, -hz, hx * 1.2f, 0.3f, 2 * hz);
             block(pose, buffers, light, INDY_NOSE, -hx * 0.35f, -hy + 0.05f, hz - 0.5f, hx * 0.7f, 0.2f, 0.5f);
+        } else if (spec == VehicleSpec.BUS) {
+            // A long, boxy body filling the physics box, with a window band running most of its length.
+            block(pose, buffers, light, BUS_BODY, -hx, -hy, -hz, 2 * hx, 2 * hy, 2 * hz);
+            block(pose, buffers, light, BUS_WINDOWS, -hx + 0.05f, 0.0f, -hz + 0.3f, 2 * hx - 0.1f, hy - 0.1f, 2 * hz - 0.6f);
         } else if (spec == VehicleSpec.TRUCK) {
             // Chassis and cab fill the physics box; an open bed behind the cab.
             block(pose, buffers, light, TRUCK_BODY, -hx, -hy, -hz, 2 * hx, 0.6f, 2 * hz);

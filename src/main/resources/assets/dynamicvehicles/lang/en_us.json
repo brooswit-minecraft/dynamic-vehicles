@@ -17,6 +17,8 @@
   "entity.dynamicvehicles.indy_car": "Indy Car",
   "item.dynamicvehicles.bus": "Bus",
   "entity.dynamicvehicles.bus": "Bus",
+  "item.dynamicvehicles.cargo_truck": "Cargo Truck",
+  "entity.dynamicvehicles.cargo_truck": "Cargo Truck",
   "key.dynamicvehicles.headlights": "Cycle headlights (auto, on, off)",
   "key.categories.dynamicvehicles": "Dynamic Vehicles",
   "entity.dynamicvehicles.villager.dispatcher": "Dispatcher",

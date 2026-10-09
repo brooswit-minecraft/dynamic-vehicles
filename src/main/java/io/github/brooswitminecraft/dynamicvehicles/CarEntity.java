@@ -105,7 +105,8 @@ public class CarEntity extends Entity {
                 : DynamicVehiclesMod.ROCK_CRAWLER.isBound() && type == DynamicVehiclesMod.ROCK_CRAWLER.get() ? VehicleSpec.ROCK_CRAWLER
                 : DynamicVehiclesMod.MONSTER_TRUCK.isBound() && type == DynamicVehiclesMod.MONSTER_TRUCK.get() ? VehicleSpec.MONSTER_TRUCK
                 : DynamicVehiclesMod.INDY.isBound() && type == DynamicVehiclesMod.INDY.get() ? VehicleSpec.INDY
-                : DynamicVehiclesMod.BUS.isBound() && type == DynamicVehiclesMod.BUS.get() ? VehicleSpec.BUS : VehicleSpec.CAR;
+                : DynamicVehiclesMod.BUS.isBound() && type == DynamicVehiclesMod.BUS.get() ? VehicleSpec.BUS
+                : DynamicVehiclesMod.CARGO_TRUCK.isBound() && type == DynamicVehiclesMod.CARGO_TRUCK.get() ? VehicleSpec.CARGO_TRUCK : VehicleSpec.CAR;
         this.seats = new SeatAssignment<>(spec.seatCount());
     }
 

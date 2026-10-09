@@ -127,14 +127,15 @@ class WheelSubStepperTest {
     }
 
     @Test
-    void reportedHardBrakingSlipIsNInvariantAndStillClearsTheGate() {
+    void reportedHardBrakingSlipIsNInvariant() {
         // demand is clamped to brakeForce (the car is far too fast for the relaxation target to matter)
         // and stays clamped at every sub-step for every N tested, so it does not scale with dt either.
+        // This case (the epic's own 0.2833 at N=1) never clears the 0.3 gate even at N=1 - unlike
+        // wheelspin above, it is included here for N-invariance, not a gate-crossing claim.
         double expected = (5000.0 - MU * LOAD) * DT / EFFECTIVE_MASS; // 0.28333...
         for (int n = 1; n <= 4; n++) {
             double slip = simulateMaxReportedSlip(15.0, 0.0, 0.0, 5000.0, n);
             assertEquals(expected, slip, 1e-9, "hard-braking reported slip must match N=1 at N=" + n);
-            assertTrue(slip > 0.3, "hard braking must still clear the SlipReporter/wearSlip > 0.3 gate at N=" + n);
         }
     }
 

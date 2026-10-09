@@ -44,6 +44,19 @@ final class SableCompat {
         return ((SableCarBody) body).speed();
     }
 
+    /** Each wheel's suspension travel (m), steer angle (rad) and spin rate (rad/s), for client sync. */
+    static double[] wheelTravel(Object body) {
+        return ((SableCarBody) body).suspensionTravel();
+    }
+
+    static double[] wheelSteerAngles(Object body) {
+        return ((SableCarBody) body).steerAngles();
+    }
+
+    static double[] wheelSpinRates(Object body) {
+        return ((SableCarBody) body).wheelSpinRates();
+    }
+
     static void remove(Object body) {
         ((SableCarBody) body).remove();
     }

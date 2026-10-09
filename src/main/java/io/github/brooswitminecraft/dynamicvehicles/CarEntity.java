@@ -2,6 +2,9 @@ package io.github.brooswitminecraft.dynamicvehicles;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.FloatTag;
+import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.Tag;
 import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
@@ -54,6 +57,14 @@ public class CarEntity extends Entity {
             net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
     private static final net.minecraft.network.syncher.EntityDataAccessor<Float> DATA_SLIP =
             net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
+    /** Per-wheel suspension travel, steer angle and spin rate (MINECRAFT-122), packed by {@link WheelSync}. */
+    private static final net.minecraft.network.syncher.EntityDataAccessor<CompoundTag> DATA_WHEELS =
+            net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.COMPOUND_TAG);
+    // Client side: the last two received per-wheel frames, for renderOrientation-style interpolation.
+    // Zero-length default (no wheels known yet) rather than a guessed wheel count, so an empty tag
+    // decodes to a frame the renderer can tell apart from "not synced yet" if it ever needs to.
+    private float[] previousWheels = new float[0];
+    private float[] currentWheels = new float[0];
     /** Client: horizontal speed in m/s from the movement actually shown, and the sound loops for this car. */
     private double clientSpeed;
     private Object clientSounds;
@@ -94,6 +105,7 @@ public class CarEntity extends Entity {
         builder.define(DATA_THROTTLE, 0.0f);
         builder.define(DATA_LIGHTS, (byte) 0);
         builder.define(DATA_SLIP, 0.0f);
+        builder.define(DATA_WHEELS, new CompoundTag());
     }
 
     @Override
@@ -104,6 +116,10 @@ public class CarEntity extends Entity {
             while (orientationQueue.size() > 6) {
                 orientationQueue.poll();
             }
+        }
+        if (DATA_WHEELS.equals(key) && level().isClientSide()) {
+            previousWheels = currentWheels;
+            currentWheels = unpackWheels(entityData.get(DATA_WHEELS));
         }
     }
 
@@ -146,6 +162,60 @@ public class CarEntity extends Entity {
 
     public double clientSlip() {
         return entityData.get(DATA_SLIP);
+    }
+
+    /** Server: publish every wheel's suspension travel (m), steer angle (rad) and spin rate (rad/s). */
+    void publishWheelState(double[] travel, double[] steerAngle, double[] spin) {
+        entityData.set(DATA_WHEELS, packWheels(WheelSync.encode(travel, steerAngle, spin)));
+    }
+
+    private static CompoundTag packWheels(float[] packed) {
+        CompoundTag tag = new CompoundTag();
+        ListTag list = new ListTag();
+        for (float value : packed) {
+            list.add(FloatTag.valueOf(value));
+        }
+        tag.put("wheels", list);
+        return tag;
+    }
+
+    private static float[] unpackWheels(CompoundTag tag) {
+        ListTag list = tag.getList("wheels", Tag.TAG_FLOAT);
+        float[] out = new float[list.size()];
+        for (int i = 0; i < list.size(); i++) {
+            out[i] = ((FloatTag) list.get(i)).getAsFloat();
+        }
+        return out;
+    }
+
+    /** Client: this wheel's travel (m), steer angle (rad) and spin rate (rad/s), interpolated for rendering. */
+    public float wheelTravel(int wheel, float partialTick) {
+        return wheelField(wheel, partialTick, 0);
+    }
+
+    public float wheelSteerAngle(int wheel, float partialTick) {
+        return wheelField(wheel, partialTick, 1);
+    }
+
+    public float wheelSpin(int wheel, float partialTick) {
+        return wheelField(wheel, partialTick, 2);
+    }
+
+    /** Client: how many wheels the last received frame carries, or 0 before the first sync. */
+    public int syncedWheelCount() {
+        return WheelSync.wheelCount(currentWheels);
+    }
+
+    private float wheelField(int wheel, float partialTick, int field) {
+        if (wheel >= syncedWheelCount()) {
+            return 0.0f;
+        }
+        float[] frame = WheelSync.lerp(previousWheels, currentWheels, partialTick);
+        return switch (field) {
+            case 0 -> WheelSync.travel(frame, wheel);
+            case 1 -> WheelSync.steerAngle(frame, wheel);
+            default -> WheelSync.spin(frame, wheel);
+        };
     }
 
     /** Server: publish what the sound system needs to hear on every client. */
@@ -478,6 +548,7 @@ public class CarEntity extends Entity {
         try {
             SableCompat.tick(sableBody, this, throttle, steer, handbrake, DT);
             SableCompat.syncEntity(sableBody, this);
+            publishWheelState(SableCompat.wheelTravel(sableBody), SableCompat.wheelSteerAngles(sableBody), SableCompat.wheelSpinRates(sableBody));
             publishSoundState(Math.abs(throttle), SableCompat.slip(sableBody) + (handbrake || (throttle < 0 && SableCompat.speed(sableBody) > 8.0) ? 2.0 : 0.0));
             emitEffects(throttle, SableCompat.speed(sableBody), SableCompat.slip(sableBody));
             checkImpact(SableCompat.speed(sableBody));

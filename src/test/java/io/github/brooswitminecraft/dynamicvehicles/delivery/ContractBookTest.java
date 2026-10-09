@@ -17,8 +17,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class ContractBookTest {
 
+    private static final String OVERWORLD = "minecraft:overworld";
+    private static final String NETHER = "minecraft:the_nether";
+
     private static DeliveryContract contract(UUID playerId, long destX, long destZ, long acceptedAt, long deadline, double reward) {
-        return new DeliveryContract(playerId, UUID.randomUUID(), "minecraft:overworld", 3, -2,
+        return new DeliveryContract(playerId, UUID.randomUUID(), OVERWORLD, 3, -2,
                 destX, 64, destZ, 0.5, reward, acceptedAt, deadline);
     }
 
@@ -60,7 +63,7 @@ class ContractBookTest {
     @Test
     void evaluate_withNoActiveContract_reportsNoActiveContract() {
         ContractBook book = new ContractBook();
-        ContractBook.Evaluation evaluation = book.evaluate(UUID.randomUUID(), 0, 0, () -> 0L);
+        ContractBook.Evaluation evaluation = book.evaluate(UUID.randomUUID(), OVERWORLD, 0, 0, () -> 0L);
 
         assertEquals(ContractBook.Outcome.NO_ACTIVE_CONTRACT, evaluation.outcome());
     }
@@ -71,7 +74,7 @@ class ContractBookTest {
         UUID player = UUID.randomUUID();
         book.accept(contract(player, 1000, 1000, 0, 1000, 10.0));
 
-        ContractBook.Evaluation evaluation = book.evaluate(player, 0, 0, () -> 500L);
+        ContractBook.Evaluation evaluation = book.evaluate(player, OVERWORLD, 0, 0, () -> 500L);
 
         assertEquals(ContractBook.Outcome.STILL_ACTIVE, evaluation.outcome());
         assertTrue(book.hasActive(player), "an in-progress evaluation must not remove the contract");
@@ -83,7 +86,7 @@ class ContractBookTest {
         UUID player = UUID.randomUUID();
         book.accept(contract(player, 1000, 1000, 0, 1000, 42.5));
 
-        ContractBook.Evaluation evaluation = book.evaluate(player, 1000, 1000, () -> 500L);
+        ContractBook.Evaluation evaluation = book.evaluate(player, OVERWORLD, 1000, 1000, () -> 500L);
 
         assertEquals(ContractBook.Outcome.COMPLETED, evaluation.outcome());
         assertEquals(42.5, evaluation.contract().reward(), "reward payout must reflect the contract's own recorded value");
@@ -97,10 +100,37 @@ class ContractBookTest {
         book.accept(contract(player, 1000, 1000, 0, 1000, 42.5));
 
         // one block outside the destination's chunk - close, but not a tight arrival
-        ContractBook.Evaluation evaluation = book.evaluate(player, 1016, 1000, () -> 500L);
+        ContractBook.Evaluation evaluation = book.evaluate(player, OVERWORLD, 1016, 1000, () -> 500L);
 
         assertEquals(ContractBook.Outcome.STILL_ACTIVE, evaluation.outcome());
         assertTrue(book.hasActive(player));
+    }
+
+    @Test
+    void evaluate_sameXZButWrongDimension_doesNotComplete() {
+        ContractBook book = new ContractBook();
+        UUID player = UUID.randomUUID();
+        book.accept(contract(player, 1000, 1000, 0, 1000, 42.5));
+
+        // exact X/Z match, but the player is in the Nether while the destination is the Overworld -
+        // raw coordinates lining up must never be enough on their own (the review's blocking finding).
+        ContractBook.Evaluation evaluation = book.evaluate(player, NETHER, 1000, 1000, () -> 500L);
+
+        assertEquals(ContractBook.Outcome.STILL_ACTIVE, evaluation.outcome());
+        assertTrue(book.hasActive(player), "wrong-dimension arrival must not complete or clear the contract");
+    }
+
+    @Test
+    void evaluate_wrongDimension_expiryStillFiresRegardlessOfDimension() {
+        ContractBook book = new ContractBook();
+        UUID player = UUID.randomUUID();
+        book.accept(contract(player, 1000, 1000, 0, 1000, 42.5));
+
+        // past the deadline while in a different dimension than the destination: expiry is independent of dimension.
+        ContractBook.Evaluation evaluation = book.evaluate(player, NETHER, 0, 0, () -> 1001L);
+
+        assertEquals(ContractBook.Outcome.EXPIRED, evaluation.outcome());
+        assertFalse(book.hasActive(player));
     }
 
     @Test
@@ -109,7 +139,7 @@ class ContractBookTest {
         UUID player = UUID.randomUUID();
         book.accept(contract(player, 1000, 1000, 0, 1000, 42.5));
 
-        ContractBook.Evaluation evaluation = book.evaluate(player, 0, 0, () -> 1001L);
+        ContractBook.Evaluation evaluation = book.evaluate(player, OVERWORLD, 0, 0, () -> 1001L);
 
         assertEquals(ContractBook.Outcome.EXPIRED, evaluation.outcome());
         assertFalse(book.hasActive(player), "expiring must clear the contract, freeing the player for another");
@@ -121,7 +151,7 @@ class ContractBookTest {
         UUID player = UUID.randomUUID();
         book.accept(contract(player, 1000, 1000, 0, 1000, 42.5));
 
-        ContractBook.Evaluation evaluation = book.evaluate(player, 0, 0, () -> 1000L);
+        ContractBook.Evaluation evaluation = book.evaluate(player, OVERWORLD, 0, 0, () -> 1000L);
 
         assertEquals(ContractBook.Outcome.STILL_ACTIVE, evaluation.outcome());
     }
@@ -133,7 +163,7 @@ class ContractBookTest {
         book.accept(contract(player, 1000, 1000, 0, 1000, 42.5));
 
         // arrived AND past deadline in the same check: must be reported expired, never a late reward
-        ContractBook.Evaluation evaluation = book.evaluate(player, 1000, 1000, () -> 1001L);
+        ContractBook.Evaluation evaluation = book.evaluate(player, OVERWORLD, 1000, 1000, () -> 1001L);
 
         assertEquals(ContractBook.Outcome.EXPIRED, evaluation.outcome());
     }

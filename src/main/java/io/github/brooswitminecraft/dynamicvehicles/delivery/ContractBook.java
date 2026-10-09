@@ -57,13 +57,19 @@ public final class ContractBook {
 
     /**
      * AC5/AC7: expires the active contract if the deadline has passed,
-     * otherwise completes it if {@code candidateX,candidateZ} satisfies
-     * {@link ArrivalPredicate}. Either terminal outcome removes the
-     * contract from the book; deadline is checked first, so a candidate
-     * that both arrived and is past deadline is reported EXPIRED, never a
-     * late reward.
+     * otherwise completes it if {@code candidateDimension} matches the
+     * contract's own {@link DeliveryContract#destinationDimension()} AND
+     * {@code candidateX,candidateZ} satisfies {@link ArrivalPredicate} -
+     * a candidate in the right X/Z but the wrong dimension (e.g. the
+     * Nether/End, or any other non-destination dimension) must never
+     * complete just because its raw coordinates line up. Either terminal
+     * outcome removes the contract from the book; deadline is checked
+     * first, so a candidate that both arrived and is past deadline is
+     * reported EXPIRED, never a late reward. Expiry itself is deliberately
+     * independent of dimension - a contract keeps counting down no matter
+     * where the player currently is.
      */
-    public Evaluation evaluate(UUID playerId, long candidateX, long candidateZ, TickClock clock) {
+    public Evaluation evaluate(UUID playerId, String candidateDimension, long candidateX, long candidateZ, TickClock clock) {
         DeliveryContract contract = contracts.get(playerId);
         if (contract == null) {
             return new Evaluation(Outcome.NO_ACTIVE_CONTRACT, null);
@@ -72,7 +78,8 @@ public final class ContractBook {
             contracts.remove(playerId);
             return new Evaluation(Outcome.EXPIRED, contract);
         }
-        if (ArrivalPredicate.hasArrived(contract.destinationStartX(), contract.destinationStartZ(), candidateX, candidateZ)) {
+        boolean sameDimension = contract.destinationDimension().equals(candidateDimension);
+        if (sameDimension && ArrivalPredicate.hasArrived(contract.destinationStartX(), contract.destinationStartZ(), candidateX, candidateZ)) {
             contracts.remove(playerId);
             return new Evaluation(Outcome.COMPLETED, contract);
         }

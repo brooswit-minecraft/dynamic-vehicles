@@ -40,7 +40,8 @@ public final class ContractTickHandler {
         long now = server.overworld().getGameTime();
         for (ServerPlayer player : server.getPlayerList().getPlayers()) {
             BlockPos pos = player.blockPosition();
-            ContractBook.Evaluation evaluation = storage.book().evaluate(player.getUUID(), pos.getX(), pos.getZ(), () -> now);
+            String dimension = player.level().dimension().location().toString();
+            ContractBook.Evaluation evaluation = storage.book().evaluate(player.getUUID(), dimension, pos.getX(), pos.getZ(), () -> now);
             switch (evaluation.outcome()) {
                 case COMPLETED -> onCompleted(player, evaluation.contract(), storage);
                 case EXPIRED -> onExpired(player, storage);

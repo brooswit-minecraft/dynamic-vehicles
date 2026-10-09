@@ -58,13 +58,15 @@ class VehicleSpecTest {
     }
 
     /**
-     * MINECRAFT-172 backward compat: every existing vehicle still goes through the old (seatY, seatZ)
-     * constructor untouched, which must derive a single driver seat -- at x = 0, seat index 0 -- from
-     * exactly those two numbers, so none of these five specs needed an edit for multi-seat support to land.
+     * MINECRAFT-172 backward compat, narrowed by MINECRAFT-182: {@code MUSCLE} and {@code ROCK_CRAWLER}
+     * still go through the old (seatY, seatZ) constructor untouched, which must derive a single driver seat
+     * -- at x = 0, seat index 0 -- from exactly those two numbers. {@code CAR}, {@code TRUCK},
+     * {@code TROPHY} and {@code DRIFT} moved to the full constructor with an explicit multi-seat list
+     * (MINECRAFT-182); their seat counts are covered by {@code VehicleSpecMultiSeatTest} instead.
      */
     @Test
-    void everyExistingVehicleDerivesOneDriverSeatFromItsOldSeatYSeatZ() {
-        for (VehicleSpec spec : java.util.List.of(VehicleSpec.CAR, VehicleSpec.TRUCK, VehicleSpec.TROPHY, VehicleSpec.DRIFT, VehicleSpec.MUSCLE)) {
+    void oneSeatVehiclesDeriveTheirDriverSeatFromTheirOldSeatYSeatZ() {
+        for (VehicleSpec spec : java.util.List.of(VehicleSpec.MUSCLE, VehicleSpec.ROCK_CRAWLER)) {
             assertEquals(1, spec.seatCount());
             VehicleSpec.Seat driver = spec.driverSeat();
             assertEquals(0.0, driver.x(), 1e-9);

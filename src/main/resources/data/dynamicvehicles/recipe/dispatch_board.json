@@ -1,0 +1,22 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "key": {
+    "P": {
+      "tag": "minecraft:planks"
+    },
+    "#": {
+      "item": "minecraft:paper"
+    }
+  },
+  "pattern": [
+    "PPP",
+    "P#P",
+    "PPP"
+  ],
+  "result": {
+    "count": 1,
+    "id": "dynamicvehicles:dispatch_board"
+  },
+  "show_notification": true
+}

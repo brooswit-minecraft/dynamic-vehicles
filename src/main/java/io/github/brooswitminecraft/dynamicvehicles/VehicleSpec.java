@@ -55,6 +55,19 @@ public record VehicleSpec(
             1.6, 1500.0, 12_260.0, 2_570.0, 50_000.0,
             2.8, 40.0, 1.8, 1.25, 0.5, 0.1, 1.35, 0.6);
 
+    /**
+     * A low, sporty car: slightly narrower and noticeably lower than the car (0.75 m ride height against
+     * the car's 0.9), 1100 kg with a shorter 0.6 m spring rest length to match the lower stance. Spring and
+     * damper are the car's scaled to its mass. Drives like the car for now (same drive force, top speed and
+     * grip) &mdash; a sibling story tunes its tires for drifting.
+     */
+    public static final VehicleSpec DRIFT = new VehicleSpec(
+            0.9, 0.42, 1.5,
+            new double[][] {{-0.75, -0.35, 1.2}, {0.75, -0.35, 1.2}, {-0.75, -0.35, -1.2}, {0.75, -0.35, -1.2}},
+            0.35, 0.3, 0.75,
+            0.6, 1100.0, 17_985.0, 3_117.0, 36_667.0,
+            2.4, 32.0, 1.0, 1.0, 0.5, -0.1, 1.0, 1.0);
+
     public double wheelCentreY() {
         return -rideHeight + wheelRadius;
     }

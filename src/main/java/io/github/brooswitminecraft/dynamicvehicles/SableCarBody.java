@@ -137,6 +137,34 @@ final class SableCarBody {
         // same force N times at dt/N each, summing to precisely the single-step result, i.e. no benefit at
         // all. So suspensionForce (which depends on compression RATE, itself velocity-derived) is
         // recomputed every sub-step even though compression itself is not.
+        //
+        // That applyImpulseAtPoint changes what getLinearVelocity/getAngularVelocity return immediately
+        // (rather than being accumulated into a force buffer the next physics step consumes and clears) is
+        // PROVEN, not reasoned from the API's naming: the epic's MINECRAFT-72 review on PR #30 inspected
+        // the native code in the Sable 2.0.5 jar this build already downloads (its sha512 checked against
+        // gradle.properties first) and confirmed applyForce's read-modify-write and getLinearVelocity's
+        // read hit the exact same body offsets, and that the separate, obviously-immediate
+        // addLinearAngularVelocities entry point writes those same offsets too. Verify it yourself against
+        // that artifact rather than trusting transcribed offsets, including this comment's.
+        //
+        // Sub-stepping is not merely a stability knob: pursuing the tire's relaxation target N times
+        // instead of once genuinely changes the force delivered, because the friction circle can now
+        // saturate where a single big step would not have (the epic's mild-cornering measurement: lateral
+        // impulse per tick goes from -144 N*s at N=1 to -165 N*s at N>=2). MINECRAFT-75 (tuning) inherits
+        // this grip change. Nor is wheelSubSteps=1 a behaviour-identical "off": air drag below still reads
+        // subLinear, the velocity AFTER that one sub-step's impulses, where pre-sub-stepping it read the
+        // tick-start velocity before any wheel force was applied.
+        //
+        // Reported slip (slipThisTick below, which feeds lastSlipSpeed/wearSlip/SlipReporter) is a
+        // SEPARATE question from the force above and is handled by WheelSubStepper.subStepSlipSpeed, not
+        // by this sub-step's own WheelMath.tire(..., subDt) call: that call's own slipSpeed carries subDt,
+        // which makes the reported number scale with N two different, opposite ways depending on what is
+        // saturating the tire (see subStepSlipSpeed's own comment for the full account) - wrong either way
+        // for a gate (SlipReporter/wearSlip, both "> 0.3") that is supposed to mean the same thing
+        // regardless of wheelSubSteps. subStepSlipSpeed fixes this by evaluating the identical, untouched
+        // tire() formula at the TICK's dt instead, at the velocity as it stands this sub-step - exactly
+        // what a single un-sub-stepped tick would have reported from that velocity, so N=1 is unaffected
+        // and every other N reads off the same scale.
         int subSteps = Math.max(1, Math.min(4, CarConfig.WHEEL_SUB_STEPS.get()));
         double subDt = dt / subSteps;
         double barRate = spec.springRate() * CarConfig.ANTI_ROLL.get();
@@ -229,17 +257,26 @@ final class SableCarBody {
                 }
                 // What the tire feels comes from the block it is on (grip, rolling resistance), via Dynamic Terrain.
                 SurfaceProperties surface = Surfaces.at(level, hit.getBlockPos());
-                WheelMath.Tire tire = WheelMath.tire(vLong, vLat, force, WheelMath.BASE_FRICTION * Math.min(1.0, surface.grip() * spec.looseGrip()),
-                        surface.rollingResistance() * spec.rollingScale(), lateralScale, drive, brake, brakeGain, spec.massKg() / 4.0, subDt);
+                double gripMu = WheelMath.BASE_FRICTION * Math.min(1.0, surface.grip() * spec.looseGrip());
+                double rollingCoefficient = surface.rollingResistance() * spec.rollingScale();
+                double effectiveMass = spec.massKg() / 4.0;
+                WheelMath.Tire tire = WheelMath.tire(vLong, vLat, force, gripMu, rollingCoefficient, lateralScale,
+                        drive, brake, brakeGain, effectiveMass, subDt);
                 impulseWorld.fma(tire.longitudinal() * subDt, forward).fma(tire.lateral() * subDt, lateral);
-                slipThisTick = Math.max(slipThisTick, tire.slipSpeed());
+                // Reported slip (feeds slipThisTick/lastSlipSpeed/wearSlip/SlipReporter) is evaluated at the
+                // TICK's own dt, not subDt, so it reads the same regardless of wheelSubSteps - see
+                // WheelSubStepper.subStepSlipSpeed's own comment for why. The force above, which this does
+                // NOT touch, still comes from the subDt call: delivered impulse is unaffected.
+                double reportedSlip = WheelSubStepper.subStepSlipSpeed(vLong, vLat, force, gripMu, rollingCoefficient,
+                        lateralScale, drive, brake, brakeGain, effectiveMass, dt);
+                slipThisTick = Math.max(slipThisTick, reportedSlip);
                 // SlipReporter must fire at most once per wheel per tick (not once per sub-step), so we only
                 // track the worst wearSlip seen across this tick's sub-steps here, paired with the force at
                 // the sub-step that produced it (so the reported load matches the reported slip), and report
                 // after the sub-step loop below.
                 double wearSlip = CarConfig.WEAR_ENABLED.get()
-                        ? CarEffectsMath.wearSlip(throttle, forwardSpeed, tire.slipSpeed(), CarConfig.WEAR_STRENGTH.get())
-                        : tire.slipSpeed();
+                        ? CarEffectsMath.wearSlip(throttle, forwardSpeed, reportedSlip, CarConfig.WEAR_STRENGTH.get())
+                        : reportedSlip;
                 if (wearSlip > wearSlipMax[wheel]) {
                     wearSlipMax[wheel] = wearSlip;
                     wearSlipForce[wheel] = force;

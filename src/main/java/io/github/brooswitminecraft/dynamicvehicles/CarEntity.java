@@ -89,6 +89,12 @@ public class CarEntity extends Entity {
     private int forcedSlipTicks;
 
     private final VehicleSpec spec;
+    /** Which seat each current passenger sits in (MINECRAFT-172); seat 0 is always the driver. */
+    private final SeatAssignment<Entity> seats;
+    /** A departing passenger's own dismount point, frozen by {@link #removePassenger} for the
+     * {@link #getDismountLocationForPassenger} lookup that follows it moments later (see that method's
+     * javadoc) -- entries are consumed (removed) as soon as that lookup reads them. */
+    private final java.util.Map<Entity, Vec3> pendingDismounts = new java.util.HashMap<>();
 
     public CarEntity(EntityType<? extends CarEntity> type, Level level) {
         super(type, level);
@@ -96,6 +102,7 @@ public class CarEntity extends Entity {
                 : DynamicVehiclesMod.TROPHY.isBound() && type == DynamicVehiclesMod.TROPHY.get() ? VehicleSpec.TROPHY
                 : DynamicVehiclesMod.DRIFT.isBound() && type == DynamicVehiclesMod.DRIFT.get() ? VehicleSpec.DRIFT
                 : DynamicVehiclesMod.MUSCLE.isBound() && type == DynamicVehiclesMod.MUSCLE.get() ? VehicleSpec.MUSCLE : VehicleSpec.CAR;
+        this.seats = new SeatAssignment<>(spec.seatCount());
     }
 
     /** This vehicle's shape and drivetrain: the car's or the truck's. */
@@ -307,6 +314,10 @@ public class CarEntity extends Entity {
 
     @Override
     protected void addPassenger(Entity passenger) {
+        // Assign the seat before super's own call, so any attachment-point lookup from this point on
+        // (positionRider runs on the very next tick) sees this passenger's own seat, never seat 0's default.
+        pendingDismounts.remove(passenger);
+        seats.add(passenger);
         super.addPassenger(passenger);
         if (!level().isClientSide() && getPassengers().size() == 1) {
             level().playSound(null, getX(), getY() + 0.5, getZ(), ModSounds.ENGINE_START.get(),
@@ -314,8 +325,23 @@ public class CarEntity extends Entity {
         }
     }
 
+    /**
+     * MINECRAFT-172: {@code LivingEntity.stopRiding()} calls {@code super.stopRiding()} (which reaches this
+     * method) BEFORE it asks {@link #getDismountLocationForPassenger}, so by the time that call lands,
+     * {@code seats} must already have forgotten this passenger (for {@link #getControllingPassenger} and the
+     * next {@link #canAddPassenger} check to be instantly correct) -- but the SEAT that's leaving still has
+     * to be known for the dismount lookup that is about to happen. So this freezes that seat's dismount
+     * point into {@link #pendingDismounts} first, then clears {@code seats} as normal.
+     */
     @Override
     protected void removePassenger(Entity passenger) {
+        if (spec.seatCount() > 1) {
+            int index = seats.indexOf(passenger);
+            if (index >= 0) {
+                pendingDismounts.put(passenger, worldDismountPoint(spec.seats().get(index)));
+            }
+        }
+        seats.remove(passenger);
         super.removePassenger(passenger);
         if (!level().isClientSide() && getPassengers().isEmpty()) {
             level().playSound(null, getX(), getY() + 0.5, getZ(), ModSounds.ENGINE_STOP.get(),
@@ -447,7 +473,10 @@ public class CarEntity extends Entity {
 
     @Override
     public InteractionResult interact(Player player, InteractionHand hand) {
-        if (player.isSecondaryUseActive() || !getPassengers().isEmpty()) {
+        // MINECRAFT-172: a free seat, not an empty car -- for a one-seat spec those are the same thing
+        // (today's behavior, unchanged), but a multi-seat spec must let a rider board while others already
+        // are. canAddPassenger (speed gate included) still has the final say inside player.startRiding.
+        if (player.isSecondaryUseActive() || VehicleSeating.firstFreeSeat(seats.occupied()) < 0) {
             return InteractionResult.PASS;
         }
         if (!level().isClientSide()) {
@@ -456,9 +485,15 @@ public class CarEntity extends Entity {
         return InteractionResult.sidedSuccess(level().isClientSide());
     }
 
+    /**
+     * MINECRAFT-172: capacity- and (for multi-seat specs only) speed-gated. A one-seat spec takes the exact
+     * same path it always has ({@code seats.occupied()} has one slot, and {@link VehicleSeating#canBoard}
+     * never speed-gates a single-slot array), so today's behavior is unchanged byte-for-byte.
+     */
     @Override
     protected boolean canAddPassenger(Entity passenger) {
-        return getPassengers().isEmpty();
+        double horizontalSpeed = Math.hypot(getDeltaMovement().x, getDeltaMovement().z);
+        return VehicleSeating.canBoard(seats.occupied(), horizontalSpeed);
     }
 
     /**
@@ -478,14 +513,47 @@ public class CarEntity extends Entity {
         return 1.0f;
     }
 
+    /** MINECRAFT-172: always seat 0, never whichever passenger happens to be first in the entity's own
+     * passenger list -- so a passenger who boards after the driver can never end up "controlling" the car
+     * just because of list order. */
     @Override
     public LivingEntity getControllingPassenger() {
-        return getFirstPassenger() instanceof LivingEntity rider ? rider : null;
+        return seats.driver() instanceof LivingEntity driver ? driver : null;
     }
 
     @Override
     protected Vec3 getPassengerAttachmentPoint(Entity passenger, net.minecraft.world.entity.EntityDimensions dimensions, float scale) {
-        return new Vec3(0.0, spec.seatY(), spec.seatZ());
+        int index = seats.indexOf(passenger);
+        VehicleSpec.Seat seat = spec.seats().get(index < 0 ? 0 : index);
+        return new Vec3(seat.x(), seat.y(), seat.z());
+    }
+
+    /**
+     * MINECRAFT-172: a one-seat spec keeps vanilla's own dismount search untouched (super), exactly as
+     * before this ticket. A multi-seat spec instead lands the rider clear of the body at that seat's own
+     * dismount point (one per seat); exiting is never speed-gated, at any seat, so a rider can never be
+     * trapped. The point itself was already computed and frozen by {@link #removePassenger} (see its
+     * javadoc for why) -- this just reads it, falling back to the driver's own point in the unlikely case
+     * nothing was frozen (passenger was never one of our tracked seats to begin with).
+     */
+    @Override
+    public Vec3 getDismountLocationForPassenger(LivingEntity passenger) {
+        if (spec.seatCount() <= 1) {
+            return super.getDismountLocationForPassenger(passenger);
+        }
+        Vec3 frozen = pendingDismounts.remove(passenger);
+        return frozen != null ? frozen : worldDismountPoint(spec.driverSeat());
+    }
+
+    /** World-space point {@code seat}'s own dismount offset lands at, given this car's current position and heading. */
+    private Vec3 worldDismountPoint(VehicleSpec.Seat seat) {
+        double[] local = VehicleSeating.dismountOffset(seat, spec.halfX());
+        double yaw = Math.toRadians(getYRot());
+        double sin = Math.sin(yaw);
+        double cos = Math.cos(yaw);
+        double worldX = getX() + local[0] * cos - local[2] * sin;
+        double worldZ = getZ() + local[0] * sin + local[2] * cos;
+        return new Vec3(worldX, getY() + local[1], worldZ);
     }
 
     @Override

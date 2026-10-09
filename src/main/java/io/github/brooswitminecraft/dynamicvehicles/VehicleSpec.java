@@ -1,5 +1,7 @@
 package io.github.brooswitminecraft.dynamicvehicles;
 
+import java.util.List;
+
 /**
  * Everything that differs between vehicle types: the shape the physics, renderer and debug overlay share
  * (body frame: origin at the body's centre, x right, y up, z forward), the suspension and the drivetrain.
@@ -18,12 +20,67 @@ public record VehicleSpec(
         double forceScale,
         /** Multiplies the engine sound's pitch (below 1: deeper). */
         double enginePitch,
-        /** Where the driver sits, from the entity origin (bottom centre of the box). */
+        /** Where the driver sits, from the entity origin (bottom centre of the box). Kept alongside
+         * {@link #seats} (rather than folded into it) so every existing vehicle's constructor call
+         * continues to compile untouched -- see the legacy constructor below, which derives the
+         * single-seat {@link #seats} list from exactly these two numbers. */
         double seatY, double seatZ,
         /** Grip on loose surfaces is multiplied by this (capped at the pavement's), and soft ground's rolling resistance by rollingScale. */
         double looseGrip, double rollingScale,
         /** This vehicle's tire model tuning; {@link TireTuning#IDENTITY} for every vehicle that has not opted in. */
-        TireTuning tireTuning) {
+        TireTuning tireTuning,
+        /**
+         * Every seat this vehicle has, in boarding order; seat 0 is always the driver (MINECRAFT-172).
+         * Supports any number of seats (an 8-seat bus included) &mdash; {@code CAR}, {@code TRUCK},
+         * {@code TROPHY}, {@code DRIFT} and {@code MUSCLE} never set this directly: the legacy constructor
+         * below derives their single-entry list from {@code seatY}/{@code seatZ} so they need no edits and
+         * behave byte-for-byte as before (see {@code VehicleSeating}, which gates multi-seat boarding on
+         * speed and never gates a one-seat vehicle at all).
+         */
+        List<Seat> seats) {
+
+    /**
+     * Legacy shape (MINECRAFT-172): exactly the field list every vehicle spec used before multi-seat
+     * support existed. {@code CAR}, {@code TRUCK}, {@code TROPHY}, {@code DRIFT} and {@code MUSCLE} all
+     * still call this constructor unedited; it derives a one-seat {@link #seats} list from {@code seatY}/
+     * {@code seatZ} (driver at x = 0, seat 0) so those five specs need no edits and behave byte-for-byte as
+     * before this ticket.
+     */
+    public VehicleSpec(double halfX, double halfY, double halfZ,
+            double[][] mounts, double wheelRadius, double wheelWidth,
+            double rideHeight, double restLength,
+            double massKg, double springRate, double dampingRate, double maxSpringForce,
+            double wheelbase, double maxSpeed,
+            double forceScale, double enginePitch,
+            double seatY, double seatZ,
+            double looseGrip, double rollingScale,
+            TireTuning tireTuning) {
+        this(halfX, halfY, halfZ, mounts, wheelRadius, wheelWidth, rideHeight, restLength,
+                massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
+                forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
+                List.of(new Seat(0.0, seatY, seatZ)));
+    }
+
+    /**
+     * One seat's local offset from the entity origin (bottom centre of the box): x right, y up, z forward
+     * &mdash; the same frame {@link #seatY}/{@link #seatZ} already used. Doubles as both the passenger
+     * attachment point and (vanilla ties the rider's view to that same point) the per-seat camera position;
+     * {@code VehicleSeating} derives the per-seat dismount point from it separately, since a dismount must
+     * land clear of the body rather than inside it.
+     */
+    public record Seat(double x, double y, double z) {}
+
+    /** Seat 0, the driver &mdash; {@code CarEntity.getControllingPassenger} always reads this seat, never
+     * whichever passenger happens to be first in the entity's own passenger list, so a passenger can never
+     * steer regardless of boarding/dismount order. */
+    public Seat driverSeat() {
+        return seats.get(0);
+    }
+
+    /** How many seats this vehicle has, including the driver's. */
+    public int seatCount() {
+        return seats.size();
+    }
 
     /**
      * Per-vehicle knobs for {@link DriftTireModel}, the pure-function tire model layered on top of

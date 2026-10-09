@@ -97,4 +97,46 @@ class WheelMappingTest {
         assertTrue(Math.abs(WheelMapping.steer(0.1, 0.0, 2.5, false, 1.25)) < Math.abs(WheelMapping.steer(0.1, 0.0, 2.5, false, 1.0)));
         assertEquals(0.0, WheelMapping.steer(0.0, 0.03, 2.5, false, 1.25), 0.0);
     }
+
+    @Test
+    void buttonDownReadsAnInRangeIndexOnly() {
+        byte[] buttons = {0, 1, 0, 1};
+        assertTrue(WheelMapping.buttonDown(buttons, 1));
+        assertTrue(WheelMapping.buttonDown(buttons, 3));
+        assertEquals(false, WheelMapping.buttonDown(buttons, 0));
+        assertEquals(false, WheelMapping.buttonDown(buttons, -1), "disabled (-1) never reads as pressed");
+        assertEquals(false, WheelMapping.buttonDown(buttons, 4), "out of range never reads as pressed");
+        assertEquals(false, WheelMapping.buttonDown(new byte[0], 0));
+    }
+
+    @Test
+    void paddlesReadHonkAndHandbrakeIndependently() {
+        byte[] none = {0, 0, 0, 0};
+        byte[] honkOnly = {0, 1, 0, 0};
+        byte[] handbrakeOnly = {0, 0, 1, 0};
+        byte[] both = {0, 1, 1, 0};
+        assertEquals(new WheelMapping.Paddles(false, false), WheelMapping.paddles(none, 1, 2));
+        assertEquals(new WheelMapping.Paddles(true, false), WheelMapping.paddles(honkOnly, 1, 2));
+        assertEquals(new WheelMapping.Paddles(false, true), WheelMapping.paddles(handbrakeOnly, 1, 2));
+        assertEquals(new WheelMapping.Paddles(true, true), WheelMapping.paddles(both, 1, 2));
+        assertEquals(new WheelMapping.Paddles(false, false), WheelMapping.paddles(both, -1, -1), "disabled paddles never read as pressed");
+    }
+
+    @Test
+    void resolveLeavesJumpDrivenHonkAndHandbrakeUnchangedWithNoWheelOverride() {
+        // No wheel detected (or wheel not overriding this paddle): jump alone must still drive both exactly as
+        // it did before MINECRAFT-167 -- the pre-existing single `handbrake = rider.jumping; honkOnPress(handbrake)`.
+        WheelMapping.Paddles none = new WheelMapping.Paddles(false, false);
+        assertEquals(new WheelMapping.Paddles(false, false), WheelMapping.resolve(false, none));
+        assertEquals(new WheelMapping.Paddles(true, true), WheelMapping.resolve(true, none));
+    }
+
+    @Test
+    void resolveLetsAWheelsPaddlesDriveHonkAndHandbrakeIndependentlyOfJump() {
+        // Wheel active: the client has already forced jump to false, so only the paddles (independent of each
+        // other) should end up true.
+        assertEquals(new WheelMapping.Paddles(true, false), WheelMapping.resolve(false, new WheelMapping.Paddles(true, false)));
+        assertEquals(new WheelMapping.Paddles(false, true), WheelMapping.resolve(false, new WheelMapping.Paddles(false, true)));
+        assertEquals(new WheelMapping.Paddles(true, true), WheelMapping.resolve(false, new WheelMapping.Paddles(true, true)));
+    }
 }

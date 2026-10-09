@@ -125,4 +125,26 @@ public final class WheelMapping {
     public static float merge(float keyboard, double wheel) {
         return Math.abs(wheel) > 1.0e-4 ? (float) Math.max(-1.0, Math.min(1.0, wheel)) : keyboard;
     }
+
+    /** Honk and handbrake read from the wheel's shifter paddles, independent of each other and of jump. */
+    public record Paddles(boolean honk, boolean handbrake) {}
+
+    /** Whether a button index is pressed in a raw GLFW-style button sample; -1 (disabled) never reads as pressed. */
+    public static boolean buttonDown(byte[] buttons, int index) {
+        return index >= 0 && index < buttons.length && buttons[index] != 0;
+    }
+
+    public static Paddles paddles(byte[] buttons, int honkButton, int handbrakeButton) {
+        return new Paddles(buttonDown(buttons, honkButton), buttonDown(buttons, handbrakeButton));
+    }
+
+    /**
+     * CarEntity's honk/handbrake decision (MINECRAFT-167): jump alone drives both exactly as before when the
+     * wheel reports neither paddle pressed (no wheel detected, or a wheel with that paddle disabled/unpressed);
+     * each wheel paddle is an independent extra source once it fires, regardless of jump (a wheel-active client
+     * forces its own jump key to false before this ever sees it, so the two never actually compete).
+     */
+    public static Paddles resolve(boolean jumpPressed, Paddles wheelPaddles) {
+        return new Paddles(jumpPressed || wheelPaddles.honk(), jumpPressed || wheelPaddles.handbrake());
+    }
 }

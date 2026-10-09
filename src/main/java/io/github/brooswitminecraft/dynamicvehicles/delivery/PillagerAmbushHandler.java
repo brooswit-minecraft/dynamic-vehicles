@@ -15,6 +15,7 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.event.entity.EntityJoinLevelEvent;
+import net.neoforged.neoforge.event.entity.EntityLeaveLevelEvent;
 
 import java.util.Optional;
 import java.util.Random;
@@ -113,9 +114,15 @@ public final class PillagerAmbushHandler {
      * is left exactly as is: it is NOT dropped just because it has aged
      * past {@code maxEncounterLifetimeTicks} while unreachable, since doing
      * so would silently orphan a mob that still exists on disk and will
-     * resurface, untracked, the moment its chunk reloads (the real leak a
-     * review caught). The entity's own {@link #AMBUSH_TAG} plus
-     * {@link #onEntityJoinLevel} is the backstop for a record lost any
+     * resurface, untracked, the moment its chunk reloads (round 1's review
+     * finding). Records only ever disappear two ways: this method's own
+     * {@code storage.remove} when the mob is found and despawned, or
+     * {@link #onEntityLeaveLevel} dropping one outright the moment its mob
+     * is permanently removed by some OTHER means - killed, most commonly -
+     * which is round 2's review finding (without it, a killed mob's record
+     * would never be found-and-removed by this sweep, since {@code getEntity}
+     * never returns a dead entity either). The entity's own {@link #AMBUSH_TAG}
+     * plus {@link #onEntityJoinLevel} is the backstop for a record lost any
      * other way.
      */
     public static void sweep(MinecraftServer server, DeliveryContractStorage contracts, long currentTick) {
@@ -178,6 +185,44 @@ public final class PillagerAmbushHandler {
         if (OrphanAmbushCleanup.shouldDiscardOrphan(false, anyoneNearby)) {
             pillager.discard();
         }
+    }
+
+    /**
+     * MINECRAFT-130 review round 2: a record is otherwise only ever removed by this class's
+     * own {@code storage.remove} call inside {@link #resolveAgainstMob} - so a pillager the
+     * player kills, or any other vanilla-side permanent removal, would leave its
+     * {@link EncounterRecord} in {@link PillagerEncounterStorage} forever (an unbounded-growth
+     * leak in the very mechanism meant to prevent accumulation). This drops the record whenever
+     * {@link EncounterRecordLifecycle#shouldDropRecord} says the removal is permanent (killed or
+     * discarded) - and deliberately leaves it alone for a removal that just means the mob left
+     * this loaded view of it (chunk unload, carried across an unload, or a dimension change),
+     * since the mob still exists and the normal sweep needs the record to find it again.
+     */
+    @SubscribeEvent
+    public static void onEntityLeaveLevel(EntityLeaveLevelEvent event) {
+        if (event.getLevel().isClientSide()) {
+            return;
+        }
+        if (!(event.getEntity() instanceof Pillager pillager) || !pillager.getTags().contains(AMBUSH_TAG)) {
+            return;
+        }
+        EncounterRecordLifecycle.RemovalReason reason = mapRemovalReason(pillager.getRemovalReason());
+        if (reason != null && EncounterRecordLifecycle.shouldDropRecord(reason) && pillager.level() instanceof ServerLevel level) {
+            PillagerEncounterStorage.of(level.getServer()).remove(pillager.getUUID());
+        }
+    }
+
+    private static EncounterRecordLifecycle.RemovalReason mapRemovalReason(Entity.RemovalReason reason) {
+        if (reason == null) {
+            return null;
+        }
+        return switch (reason) {
+            case KILLED -> EncounterRecordLifecycle.RemovalReason.KILLED;
+            case DISCARDED -> EncounterRecordLifecycle.RemovalReason.DISCARDED;
+            case UNLOADED_TO_CHUNK -> EncounterRecordLifecycle.RemovalReason.UNLOADED_TO_CHUNK;
+            case UNLOADED_WITH_PLAYER -> EncounterRecordLifecycle.RemovalReason.UNLOADED_WITH_PLAYER;
+            case CHANGED_DIMENSION -> EncounterRecordLifecycle.RemovalReason.CHANGED_DIMENSION;
+        };
     }
 
     private static Optional<Entity> findMob(MinecraftServer server, EncounterRecord record) {

@@ -93,6 +93,16 @@ public record VehicleSpec(
             2.8, 40.0, 1.8, 1.25, 0.5, 0.1, 1.35, 0.6, TireTuning.IDENTITY);
 
     /**
+     * DRIFT's own opt-in marker (see {@link TireTuning#isIdentity()}): these exact numbers are never read
+     * directly by {@link SableCarBody#tick}, which instead reads the live, operator-tunable
+     * {@code CarConfig.driftTireTuning()} once a vehicle's spec has already opted in by way of this field
+     * being non-identity. Kept here mainly as the opt-in marker and as the defaults {@code CarConfig}'s own
+     * drift tire tuning values mirror, and so pure-function tests of {@link DriftTireModel} have a concrete
+     * tuning to exercise without touching config.
+     */
+    private static final TireTuning TIRE_TUNING = new TireTuning(0.72, 1.2, 0.45, 0.5, 0.5, 0.6);
+
+    /**
      * A low, sporty car: slightly narrower and noticeably lower than the car (0.75 m ride height against
      * the car's 0.9), 1100 kg with a shorter 0.6 m spring rest length to match the lower stance. Spring and
      * damper are the car's scaled to its mass. Drive force, top speed and grip match the car's exactly
@@ -101,8 +111,6 @@ public record VehicleSpec(
      * rear grip than front, an early, forgiving slide onset, a sharper handbrake-induced rear-grip cut,
      * throttle-induced oversteer, and countersteer recovery.
      */
-    private static final TireTuning TIRE_TUNING = new TireTuning(0.72, 1.2, 0.45, 0.5, 0.5, 0.6);
-
     public static final VehicleSpec DRIFT = new VehicleSpec(
             0.9, 0.42, 1.5,
             new double[][] {{-0.75, -0.35, 1.2}, {0.75, -0.35, 1.2}, {-0.75, -0.35, -1.2}, {0.75, -0.35, -1.2}},

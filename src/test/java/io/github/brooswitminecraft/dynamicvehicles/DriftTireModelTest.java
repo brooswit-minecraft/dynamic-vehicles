@@ -121,6 +121,32 @@ class DriftTireModelTest {
     }
 
     @Test
+    void counterSteerRecoveryIsSymmetricInBothSlideDirections() {
+        // The steer convention (-1..1, positive = left, same as CarPhysics.step's own `steer`) must give a
+        // countersteer benefit regardless of which way the tire is sliding: steering opposite the sign of
+        // vLat is "into" a positive-vLat slide (steer negative, i.e. right) and "into" a negative-vLat slide
+        // (steer positive, i.e. left) alike - only the SIGN relationship matters, not which side is which.
+        double vLat = DRIFT_TUNING.slipAngleThreshold() * 5.0;
+        double noSteerPositiveSlide = DriftTireModel.effectiveMu(MU, vLat, 0.0, N, 0.0, DRIFT_TUNING, false);
+        double counterPositiveSlide = DriftTireModel.effectiveMu(MU, vLat, 0.0, N, -1.0, DRIFT_TUNING, false);
+        double wrongWayPositiveSlide = DriftTireModel.effectiveMu(MU, vLat, 0.0, N, 1.0, DRIFT_TUNING, false);
+
+        double noSteerNegativeSlide = DriftTireModel.effectiveMu(MU, -vLat, 0.0, N, 0.0, DRIFT_TUNING, false);
+        double counterNegativeSlide = DriftTireModel.effectiveMu(MU, -vLat, 0.0, N, 1.0, DRIFT_TUNING, false);
+        double wrongWayNegativeSlide = DriftTireModel.effectiveMu(MU, -vLat, 0.0, N, -1.0, DRIFT_TUNING, false);
+
+        assertTrue(counterPositiveSlide > noSteerPositiveSlide, "steering right (-1) into a positive-vLat slide must recover grip");
+        assertEquals(noSteerPositiveSlide, wrongWayPositiveSlide, 1e-9, "steering left (+1), away from a positive-vLat slide, must not recover grip");
+
+        assertTrue(counterNegativeSlide > noSteerNegativeSlide, "steering left (+1) into a negative-vLat slide must recover grip");
+        assertEquals(noSteerNegativeSlide, wrongWayNegativeSlide, 1e-9, "steering right (-1), away from a negative-vLat slide, must not recover grip");
+
+        // Mirrored slides with mirrored countersteer recover by the same amount - the model has no bias
+        // toward either steering direction, only toward whichever direction opposes this wheel's own slide.
+        assertEquals(counterPositiveSlide, counterNegativeSlide, 1e-9);
+    }
+
+    @Test
     void aFullCounterSteerCanFullyRecoverGripWhenAssistIsMaxed() {
         VehicleSpec.TireTuning fullAssist = new VehicleSpec.TireTuning(1.0, 0.1, 0.9, 1.0, 0.0, 1.0);
         double vLat = 1.0;

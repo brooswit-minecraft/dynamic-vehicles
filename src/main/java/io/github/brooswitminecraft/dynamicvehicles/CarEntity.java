@@ -91,7 +91,8 @@ public class CarEntity extends Entity {
         super(type, level);
         this.spec = DynamicVehiclesMod.TRUCK.isBound() && type == DynamicVehiclesMod.TRUCK.get() ? VehicleSpec.TRUCK
                 : DynamicVehiclesMod.TROPHY.isBound() && type == DynamicVehiclesMod.TROPHY.get() ? VehicleSpec.TROPHY
-                : DynamicVehiclesMod.DRIFT.isBound() && type == DynamicVehiclesMod.DRIFT.get() ? VehicleSpec.DRIFT : VehicleSpec.CAR;
+                : DynamicVehiclesMod.DRIFT.isBound() && type == DynamicVehiclesMod.DRIFT.get() ? VehicleSpec.DRIFT
+                : DynamicVehiclesMod.MUSCLE.isBound() && type == DynamicVehiclesMod.MUSCLE.get() ? VehicleSpec.MUSCLE : VehicleSpec.CAR;
     }
 
     /** This vehicle's shape and drivetrain: the car's or the truck's. */

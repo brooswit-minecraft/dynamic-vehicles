@@ -3,6 +3,7 @@ package io.github.brooswitminecraft.dynamicvehicles.delivery;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.inventory.AbstractContainerMenu;
@@ -10,7 +11,6 @@ import net.minecraft.world.item.ItemStack;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 
 /**
  * Server-authoritative menu for MINECRAFT-109: holds the {@link DestinationOffer}s
@@ -29,14 +29,18 @@ public final class DispatcherOfferMenu extends AbstractContainerMenu {
     private final List<DispatcherOfferRow> rows;
     private final double dangerMin;
     private final double dangerMax;
+    /** Server-side only (AC12): the villager this session's validity is keyed on. Always {@code null} client-side. */
+    private final Villager dispatcher;
 
     /** Server-side: the real, already-generated offers for this opened session. */
-    public DispatcherOfferMenu(int containerId, Inventory playerInventory, List<DestinationOffer> offers, double dangerMin, double dangerMax) {
+    public DispatcherOfferMenu(int containerId, Inventory playerInventory, List<DestinationOffer> offers, double dangerMin, double dangerMax,
+            Villager dispatcher) {
         super(DispatcherOfferMenus.DISPATCHER_OFFER.get(), containerId);
         this.offers = List.copyOf(offers);
         this.rows = toRows(offers);
         this.dangerMin = dangerMin;
         this.dangerMax = dangerMax;
+        this.dispatcher = dispatcher;
     }
 
     /** Client-side (via {@link net.neoforged.neoforge.network.IContainerFactory}): reads what the server sent. */
@@ -51,6 +55,7 @@ public final class DispatcherOfferMenu extends AbstractContainerMenu {
             decoded.add(new DispatcherOfferRow(extraData.readDouble(), extraData.readDouble(), extraData.readVarLong(), extraData.readDouble()));
         }
         this.rows = List.copyOf(decoded);
+        this.dispatcher = null;
     }
 
     public static List<DispatcherOfferRow> toRows(List<DestinationOffer> offers) {
@@ -88,19 +93,23 @@ public final class DispatcherOfferMenu extends AbstractContainerMenu {
     }
 
     /**
-     * STUB (MINECRAFT-109 AC6): validates the index and tells the player what
-     * was selected, but creates no contract/lifecycle state at all — the
-     * lifecycle slice owns that and must replace this method's body.
+     * MINECRAFT-110 AC1-2, AC12: validates the index, re-checks server-side
+     * validity (AC12 - a stale/forged request must not bypass the same
+     * check {@link #stillValid} performs), then hands off to
+     * {@link DeliveryContracts#tryAccept} to enforce the one-contract
+     * invariant and create real contract state.
      */
     public void acceptOffer(ServerPlayer player, int offerIndex) {
+        if (!stillValid(player)) {
+            player.sendSystemMessage(Component.translatable("message.dynamicvehicles.dispatcher.no_longer_valid"));
+            player.closeContainer();
+            return;
+        }
         if (offerIndex < 0 || offerIndex >= offers.size()) {
             return;
         }
         DestinationOffer offer = offers.get(offerIndex);
-        player.sendSystemMessage(Component.literal(String.format(Locale.ROOT,
-                "Accepted offer #%d (ring %d, danger %.2f) - no contract was created; the delivery lifecycle slice "
-                        + "still needs to implement acceptance.",
-                offerIndex + 1, offer.village().ring(), offer.terms().danger())));
+        DeliveryContracts.tryAccept(player, dispatcher, offer);
         player.closeContainer();
     }
 
@@ -109,8 +118,25 @@ public final class DispatcherOfferMenu extends AbstractContainerMenu {
         return ItemStack.EMPTY;
     }
 
+    /**
+     * MINECRAFT-110 AC12: the Dispatcher villager must still exist, be
+     * alive, carry the {@code dispatcher} profession, and be within normal
+     * interaction range of the player - mirrors vanilla merchant menus
+     * tying validity to the merchant, instead of the previous (slice-d,
+     * disclosed) always-true stub. Only the server-constructed instance
+     * carries a live {@link #dispatcher} reference; the client-constructed
+     * instance (no reference at all - see the second constructor) always
+     * returns true, since the server is what actually enforces this
+     * (AC12 explicitly requires the refusal to be server-side).
+     */
     @Override
     public boolean stillValid(Player player) {
-        return true;
+        if (dispatcher == null) {
+            return true;
+        }
+        boolean sameLevel = dispatcher.level() == player.level();
+        boolean hasProfession = dispatcher.getVillagerData().getProfession() == DispatcherProfession.DISPATCHER.get();
+        double distanceSquared = sameLevel ? dispatcher.distanceToSqr(player) : Double.MAX_VALUE;
+        return DispatcherMenuValidity.isValid(dispatcher.isAlive(), hasProfession, sameLevel, distanceSquared);
     }
 }

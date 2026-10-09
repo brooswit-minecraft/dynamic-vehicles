@@ -30,6 +30,8 @@ import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredItem;
 import net.neoforged.neoforge.registries.DeferredRegister;
 
+import io.github.brooswitminecraft.dynamicvehicles.delivery.ContractTickHandler;
+import io.github.brooswitminecraft.dynamicvehicles.delivery.DeliveryHudPayload;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherInteractionHandler;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherOfferAcceptPayload;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherOfferMenus;
@@ -78,12 +80,15 @@ public class DynamicVehiclesMod {
         NeoForge.EVENT_BUS.addListener(this::registerCommands);
         NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.server.ServerStartedEvent e) -> LightLedger.sweep(e.getServer()));
         NeoForge.EVENT_BUS.addListener(DispatcherInteractionHandler::onEntityInteract);
+        NeoForge.EVENT_BUS.addListener(ContractTickHandler::onServerTick);
+        NeoForge.EVENT_BUS.addListener(ContractTickHandler::onPlayerLoggedIn);
     }
 
     private void registerPayloads(net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent event) {
         var registrar = event.registrar("1");
         registrar.playToServer(LightsTogglePayload.TYPE, LightsTogglePayload.STREAM_CODEC, LightsTogglePayload::handle);
         registrar.playToServer(DispatcherOfferAcceptPayload.TYPE, DispatcherOfferAcceptPayload.STREAM_CODEC, DispatcherOfferAcceptPayload::handle);
+        registrar.playToClient(DeliveryHudPayload.TYPE, DeliveryHudPayload.STREAM_CODEC, DeliveryHudPayload::handle);
     }
 
     private void commonSetup(FMLCommonSetupEvent event) {
@@ -160,6 +165,12 @@ public class DynamicVehiclesMod {
         @SubscribeEvent
         public static void registerScreens(net.neoforged.neoforge.client.event.RegisterMenuScreensEvent event) {
             event.register(DispatcherOfferMenus.DISPATCHER_OFFER.get(), DispatcherOfferScreen::new);
+        }
+
+        @SubscribeEvent
+        public static void registerGuiLayers(net.neoforged.neoforge.client.event.RegisterGuiLayersEvent event) {
+            event.registerAboveAll(ResourceLocation.fromNamespaceAndPath(MODID, "delivery_hud"),
+                    new io.github.brooswitminecraft.dynamicvehicles.delivery.ContractHudOverlay());
         }
     }
 }

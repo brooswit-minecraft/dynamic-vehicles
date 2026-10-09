@@ -75,8 +75,9 @@ public final class DispatcherOfferScreen extends Screen implements MenuAccess<Di
         int swatchX = this.left + PANEL_WIDTH - 76;
         int swatchColor = DangerGauge.colorArgb(row.danger(), menu.dangerMin(), menu.dangerMax());
         graphics.fill(swatchX, rowTop + 3, swatchX + 12, rowTop + 15, swatchColor);
+        DangerGauge.Category category = DangerGauge.categoryFor(row.danger(), menu.dangerMin(), menu.dangerMax());
         String dangerText = String.format(Locale.ROOT, "%.2f %s",
-                row.danger(), DangerGauge.categoryFor(row.danger(), menu.dangerMin(), menu.dangerMax()).name());
+                row.danger(), Component.translatable(DangerGauge.translationKey(category)).getString());
         graphics.drawString(this.font, dangerText, swatchX + 16, rowTop + 5, 0xFFFFFF);
     }
 

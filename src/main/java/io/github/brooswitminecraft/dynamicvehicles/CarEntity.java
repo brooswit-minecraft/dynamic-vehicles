@@ -75,6 +75,10 @@ public class CarEntity extends Entity {
     /** Wheel shifter-paddle state (MINECRAFT-167), reported by {@link WheelPaddlesPayload}; independent of jump. */
     private boolean wheelHonk;
     private boolean wheelHandbrake;
+    /** Explicit drivetrain gear (MINECRAFT-228): which direction the throttle may drive the car from a
+     * standstill. Starts in the default forward gear so a driver who never touches the new reverse input
+     * sees no change. */
+    private CarPhysics.Gear gear = CarPhysics.Gear.DEFAULT_FORWARD;
     /** Server: unit horizontal direction of recent travel, and the headlamp light block this car holds. */
     private net.minecraft.world.phys.Vec3 heading;
     private net.minecraft.core.BlockPos lampBlock;
@@ -268,6 +272,18 @@ public class CarEntity extends Entity {
     void setWheelPaddles(boolean honk, boolean handbrake) {
         wheelHonk = honk;
         wheelHandbrake = handbrake;
+    }
+
+    /**
+     * Server: the rider pressed the explicit reverse-gear input (MINECRAFT-228: keyboard or gamepad, sent
+     * by {@link GearTogglePayload}). Toggles between reverse and the default forward gear -- keyboard and
+     * gamepad never need to pick a specific one of the six forward gears, only whether they're reversing --
+     * and never anything the brake alone can trigger: see {@link CarPhysics.Gear} for the invariant this
+     * protects.
+     */
+    String toggleGear() {
+        gear = gear == CarPhysics.Gear.REVERSE ? CarPhysics.Gear.DEFAULT_FORWARD : CarPhysics.Gear.REVERSE;
+        return gear == CarPhysics.Gear.REVERSE ? "reverse" : "forward";
     }
 
     /** Server: play an impact when the car has just lost a lot of speed at once. */
@@ -615,9 +631,11 @@ public class CarEntity extends Entity {
         }
         LivingEntity rider = getControllingPassenger();
         if (rider == null) {
-            // No one is driving: a wheel paddle from a previous rider must never linger (MINECRAFT-167).
+            // No one is driving: a wheel paddle from a previous rider must never linger (MINECRAFT-167),
+            // and the next driver always starts in forward gear rather than inheriting the last one's.
             wheelHonk = false;
             wheelHandbrake = false;
+            gear = CarPhysics.Gear.DEFAULT_FORWARD;
         }
         if (level() instanceof net.minecraft.server.level.ServerLevel serverLevel && SableCompat.usable()) {
             tickSable(serverLevel, rider);
@@ -636,7 +654,7 @@ public class CarEntity extends Entity {
 
         // Minecraft yaw 0 faces +Z; the physics heading is the entity's yaw in radians.
         CarPhysics.Step step = CarPhysics.step(new CarPhysics.State(speed, Math.toRadians(getYRot())),
-                throttle, steer, handbrake, DT);
+                throttle, steer, handbrake, gear, DT);
         speed = step.state().speed();
         setYRot((float) Math.toDegrees(step.state().heading()));
         double yaw = Math.toRadians(getYRot());
@@ -702,7 +720,7 @@ public class CarEntity extends Entity {
             steer = forcedSteer;
         }
         try {
-            SableCompat.tick(sableBody, this, throttle, steer, handbrake, DT);
+            SableCompat.tick(sableBody, this, throttle, steer, handbrake, gear, DT);
             SableCompat.syncEntity(sableBody, this);
             publishWheelState(SableCompat.wheelTravel(sableBody), SableCompat.wheelSteerAngles(sableBody), SableCompat.wheelSpinRates(sableBody));
             publishSoundState(Math.abs(throttle), SableCompat.slip(sableBody) + (handbrake || (throttle < 0 && SableCompat.speed(sableBody) > 8.0) ? 2.0 : 0.0));

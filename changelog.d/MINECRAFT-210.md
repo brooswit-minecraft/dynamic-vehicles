@@ -1,0 +1,4 @@
+bump: patch
+
+### Changed
+- **Drift car tire tuning retuned (MINECRAFT-207/210).** The drift car's `VehicleSpec.DRIFT` tire tuning, and `CarConfig`'s matching `driftRearGripScale`/`driftSlipAngleThreshold`/`driftGripFalloff`/`driftHandbrakeRearGripCut`/`driftThrottleBite`/`driftCounterSteerAssist` defaults, now sit between the muscle car's identity tuning and the old drift values, closer to muscle for a slightly easier, more planted drift feel. `driftCounterSteerAssist` is the one exception: it moves to 0.8, above the old 0.6 rather than between it and identity's 0.0 — identity's 0.0 reflects "no slide to recover from", not an "easier" endpoint, so a more muscle-like recovery feel means a higher value, not a lower one. Full before/after numbers and reasoning are in `docs/car-tire-tuning.md`. `CAR`, `TRUCK`, `TROPHY`, and `MUSCLE` are untouched.

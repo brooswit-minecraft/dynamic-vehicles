@@ -168,6 +168,87 @@ class DriftTireModelTest {
         assertTrue(!VehicleSpec.DRIFT.tireTuning().isIdentity());
     }
 
+    // --- MINECRAFT-210: DRIFT's tire tuning retune sits between MUSCLE (identity) and the old drift values ---
+
+    // The values DRIFT carried before MINECRAFT-210 (VehicleSpec.TIRE_TUNING's old constructor args),
+    // pinned here as a named constant rather than re-derived, so this test keeps failing if someone
+    // reverts the retune without updating it.
+    private static final VehicleSpec.TireTuning OLD_DRIFT_TUNING =
+            new VehicleSpec.TireTuning(0.72, 1.2, 0.45, 0.5, 0.5, 0.6);
+    private static final VehicleSpec.TireTuning MUSCLE_TUNING = VehicleSpec.TireTuning.IDENTITY;
+
+    @Test
+    void retunedRearGripScaleSitsBetweenMuscleAndOldDrift() {
+        assertTrue(MUSCLE_TUNING.rearGripScale() > DRIFT_TUNING.rearGripScale(),
+                "muscle (identity) has a higher rearGripScale than old drift");
+        assertTrue(DRIFT_TUNING.rearGripScale() > OLD_DRIFT_TUNING.rearGripScale(),
+                "new rearGripScale must be strictly greater than the old drift value");
+        assertTrue(DRIFT_TUNING.rearGripScale() < MUSCLE_TUNING.rearGripScale(),
+                "new rearGripScale must be strictly less than muscle's identity value");
+    }
+
+    @Test
+    void retunedSlipAngleThresholdSitsBetweenMuscleAndOldDrift() {
+        assertTrue(MUSCLE_TUNING.slipAngleThreshold() > DRIFT_TUNING.slipAngleThreshold(),
+                "muscle (identity) has a higher slipAngleThreshold than old drift");
+        assertTrue(DRIFT_TUNING.slipAngleThreshold() > OLD_DRIFT_TUNING.slipAngleThreshold(),
+                "new slipAngleThreshold must be strictly greater than the old drift value");
+        assertTrue(DRIFT_TUNING.slipAngleThreshold() < MUSCLE_TUNING.slipAngleThreshold(),
+                "new slipAngleThreshold must be strictly less than muscle's identity value");
+    }
+
+    @Test
+    void retunedGripFalloffSitsBetweenMuscleAndOldDrift() {
+        assertTrue(MUSCLE_TUNING.gripFalloff() < DRIFT_TUNING.gripFalloff(),
+                "muscle (identity) has a lower gripFalloff than old drift");
+        assertTrue(DRIFT_TUNING.gripFalloff() < OLD_DRIFT_TUNING.gripFalloff(),
+                "new gripFalloff must be strictly less than the old drift value");
+        assertTrue(DRIFT_TUNING.gripFalloff() > MUSCLE_TUNING.gripFalloff(),
+                "new gripFalloff must be strictly greater than muscle's identity value");
+    }
+
+    @Test
+    void retunedHandbrakeRearGripCutSitsBetweenMuscleAndOldDrift() {
+        assertTrue(MUSCLE_TUNING.handbrakeRearGripCut() > DRIFT_TUNING.handbrakeRearGripCut(),
+                "muscle (identity) has a higher handbrakeRearGripCut than old drift");
+        assertTrue(DRIFT_TUNING.handbrakeRearGripCut() > OLD_DRIFT_TUNING.handbrakeRearGripCut(),
+                "new handbrakeRearGripCut must be strictly greater than the old drift value");
+        assertTrue(DRIFT_TUNING.handbrakeRearGripCut() < MUSCLE_TUNING.handbrakeRearGripCut(),
+                "new handbrakeRearGripCut must be strictly less than muscle's identity value");
+    }
+
+    @Test
+    void retunedThrottleBiteSitsBetweenMuscleAndOldDrift() {
+        assertTrue(MUSCLE_TUNING.throttleBite() < DRIFT_TUNING.throttleBite(),
+                "muscle (identity) has a lower throttleBite than old drift");
+        assertTrue(DRIFT_TUNING.throttleBite() < OLD_DRIFT_TUNING.throttleBite(),
+                "new throttleBite must be strictly less than the old drift value");
+        assertTrue(DRIFT_TUNING.throttleBite() > MUSCLE_TUNING.throttleBite(),
+                "new throttleBite must be strictly greater than muscle's identity value");
+    }
+
+    @Test
+    void retunedCounterSteerAssistDeliberatelyExceedsOldDriftInsteadOfSittingBelowIt() {
+        // KNOWN AMBIGUITY (MINECRAFT-210, confirmed by the story's boss comment): identity's 0.0 means "no
+        // slide to recover from", not an "easier" endpoint, so a muscle-like recovery feel means going
+        // HIGHER than the old drift value, not sitting between it and identity. Tested as old < new <= 1.0.
+        assertTrue(DRIFT_TUNING.counterSteerAssist() > OLD_DRIFT_TUNING.counterSteerAssist(),
+                "new counterSteerAssist must be strictly greater than the old drift value");
+        assertTrue(DRIFT_TUNING.counterSteerAssist() <= 1.0,
+                "new counterSteerAssist must stay within CarConfig's allowed range");
+    }
+
+    @Test
+    void carConfigDriftDefaultsMatchVehicleSpecDriftTuning() {
+        VehicleSpec.TireTuning configDefaults = CarConfig.driftTireTuning();
+        assertEquals(DRIFT_TUNING.rearGripScale(), configDefaults.rearGripScale(), 1e-9);
+        assertEquals(DRIFT_TUNING.slipAngleThreshold(), configDefaults.slipAngleThreshold(), 1e-9);
+        assertEquals(DRIFT_TUNING.gripFalloff(), configDefaults.gripFalloff(), 1e-9);
+        assertEquals(DRIFT_TUNING.handbrakeRearGripCut(), configDefaults.handbrakeRearGripCut(), 1e-9);
+        assertEquals(DRIFT_TUNING.throttleBite(), configDefaults.throttleBite(), 1e-9);
+        assertEquals(DRIFT_TUNING.counterSteerAssist(), configDefaults.counterSteerAssist(), 1e-9);
+    }
+
     @Test
     void identityTuningMakesDriftTireModelExactlyWheelMathTireForASpreadOfInputs() {
         VehicleSpec.TireTuning identity = VehicleSpec.TireTuning.IDENTITY;

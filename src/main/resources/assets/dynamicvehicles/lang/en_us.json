@@ -7,6 +7,8 @@
   "entity.dynamicvehicles.trophy_truck": "Trophy Truck",
   "item.dynamicvehicles.drift_car": "Drift Car",
   "entity.dynamicvehicles.drift_car": "Drift Car",
+  "item.dynamicvehicles.muscle_car": "Muscle Car",
+  "entity.dynamicvehicles.muscle_car": "Muscle Car",
   "key.dynamicvehicles.headlights": "Cycle headlights (auto, on, off)",
   "key.categories.dynamicvehicles": "Dynamic Vehicles",
   "entity.dynamicvehicles.villager.dispatcher": "Dispatcher",

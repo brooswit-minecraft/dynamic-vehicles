@@ -49,6 +49,16 @@ public final class OfferGenerator {
                 + normalized * (config.maxRewardDangerMultiplier() - config.minRewardDangerMultiplier());
     }
 
+    /**
+     * Converts a completed contract's computed reward into the integer amount actually
+     * paid, never less than {@code floor} (MINECRAFT-131, inherited item 4). Every computed
+     * reward below {@code floor} pays identically, flattening the bottom of {@link #reward}'s
+     * curve - see {@code docs/delivery-tuning.md}.
+     */
+    public static int payoutAmount(double reward, int floor) {
+        return (int) Math.max(floor, Math.round(reward));
+    }
+
     /** Rolls the full set of contract terms for one candidate (AC2). */
     public static OfferTerms generateTerms(long seed, RegionCoord region, double approxDistance, OfferConfig config) {
         double danger = rollDanger(seed, region, config);

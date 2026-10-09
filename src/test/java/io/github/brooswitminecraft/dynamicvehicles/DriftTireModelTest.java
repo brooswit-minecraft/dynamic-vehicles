@@ -105,7 +105,7 @@ class DriftTireModelTest {
 
     @Test
     void steeringIntoTheSlideRestoresGripComparedToNotSteering() {
-        double vLat = 1.0; // sliding one way
+        double vLat = DRIFT_TUNING.slipAngleThreshold() * 5.0; // well past the threshold, so the falloff curve has already bitten
         double noSteer = DriftTireModel.effectiveMu(MU, vLat, 0.0, N, 0.0, DRIFT_TUNING, false);
         double counterSteer = DriftTireModel.effectiveMu(MU, vLat, 0.0, N, -1.0, DRIFT_TUNING, false);
         assertTrue(counterSteer > noSteer, "steering into the slide must restore some of the grip the falloff curve took away");
@@ -114,7 +114,7 @@ class DriftTireModelTest {
 
     @Test
     void steeringAwayFromTheSlideGivesNoRecovery() {
-        double vLat = 1.0;
+        double vLat = DRIFT_TUNING.slipAngleThreshold() * 5.0;
         double noSteer = DriftTireModel.effectiveMu(MU, vLat, 0.0, N, 0.0, DRIFT_TUNING, false);
         double wrongWay = DriftTireModel.effectiveMu(MU, vLat, 0.0, N, 1.0, DRIFT_TUNING, false);
         assertEquals(noSteer, wrongWay, 1e-9, "steering further into the slide's own direction of travel gives no recovery");

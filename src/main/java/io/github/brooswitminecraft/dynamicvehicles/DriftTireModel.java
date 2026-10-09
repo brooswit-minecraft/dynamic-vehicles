@@ -55,11 +55,11 @@ public final class DriftTireModel {
         if (tuning.counterSteerAssist() > 0.0 && absVLat > 1e-6) {
             // Steering into the slide (the classic countersteer) is steerInput pointing the same way the
             // tire is sliding: -signum(vLat) * steerInput is positive exactly then, and at most 1 since
-            // steerInput is -1..1. Recovery never lifts grip back above baseMu (the un-sliding mu), only
-            // back toward it.
+            // steerInput is -1..1. Recovery linearly interpolates back toward baseMu (the un-sliding mu) -
+            // a full countersteer (countering == 1) with counterSteerAssist == 1 restores it exactly.
             double countering = Math.max(0.0, -Math.signum(vLat) * steerInput);
             double recovery = Math.min(1.0, countering) * tuning.counterSteerAssist();
-            tunedMu = Math.min(baseMu, tunedMu * (1.0 + recovery));
+            tunedMu += recovery * (baseMu - tunedMu);
         }
         return tunedMu;
     }

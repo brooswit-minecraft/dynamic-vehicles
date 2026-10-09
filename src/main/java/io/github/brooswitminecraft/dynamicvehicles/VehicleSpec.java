@@ -196,6 +196,28 @@ public record VehicleSpec(
             0.7, 1700.0, 27_795.0, 4_816.67, 56_666.67,
             2.3, 34.0, 2.1, 0.7, 0.5, -0.15, 1.0, 1.0, TireTuning.IDENTITY);
 
+    /**
+     * A climbing-tuned crawler (MINECRAFT-176): the tallest ride height on the roster (1.9 m, above
+     * {@code TROPHY}'s 1.6) on the longest suspension travel too ({@code restLength} 2.0 m, above
+     * {@code TROPHY}'s 1.6 m) for maximum wheel articulation over broken ground, a short 2.2 m wheelbase
+     * (shorter than every existing vehicle) for tight turning and flex, big 0.65 m wheels wrapped in wide
+     * 0.55 m tires, and the roster's highest {@code looseGrip} (1.6, above {@code TROPHY}'s 1.35) for
+     * climbing bite on loose surfaces. 1900 kg, lighter than {@code TRUCK} but heavier than everything
+     * else, with a {@code forceScale} of 2.0 (second only to {@code MUSCLE}'s 2.1) delivered through a low
+     * 18 m/s top speed &mdash; low-end torque over speed, not a racer. Spring, damper and the spring force
+     * cap are the car's scaled to its mass (same pattern as {@code DRIFT}/{@code MUSCLE}). Carries no drift
+     * tire tuning: the climbing character comes from the base spec's own suspension and grip fields, not
+     * from {@link DriftTireModel}, so {@code tireTuning()} stays {@link TireTuning#IDENTITY} and this
+     * vehicle routes through the plain {@code WheelMath} tire path exactly like {@code CAR}/{@code
+     * TRUCK}/{@code TROPHY}/{@code MUSCLE}.
+     */
+    public static final VehicleSpec ROCK_CRAWLER = new VehicleSpec(
+            1.0, 0.6, 1.6,
+            new double[][] {{-0.95, -0.5, 1.1}, {0.95, -0.5, 1.1}, {-0.95, -0.5, -1.1}, {0.95, -0.5, -1.1}},
+            0.65, 0.55, 1.9,
+            2.0, 1900.0, 31_065.0, 5_383.33, 63_333.33,
+            2.2, 18.0, 2.0, 0.6, 0.6, -0.2, 1.6, 0.5, TireTuning.IDENTITY);
+
     public double wheelCentreY() {
         return -rideHeight + wheelRadius;
     }

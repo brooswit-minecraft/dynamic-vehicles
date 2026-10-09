@@ -242,4 +242,28 @@ class OfferGeneratorTest {
         assertFalse(a.danger() == b.danger() && a.reward() == b.reward(),
                 "different candidates at the same distance should not be forced into identical terms");
     }
+
+    // --- MINECRAFT-131: reward payout floor (inherited item 4) ---
+
+    @Test
+    void payoutAmount_defaultFloorMatchesTheOldHardCodedLiteral() {
+        // DispatcherOfferConfig.REWARD_PAYOUT_FLOOR's default is 1, matching the literal
+        // ContractTickHandler used before this ticket moved it into config.
+        assertEquals(1, OfferGenerator.payoutAmount(0.2, 1));
+        assertEquals(1, OfferGenerator.payoutAmount(0.9, 1));
+        assertEquals(5, OfferGenerator.payoutAmount(4.6, 1), "above the floor, payout still rounds the computed reward");
+    }
+
+    @Test
+    void payoutAmount_flattensEveryRewardBelowTheFloorToTheSameValue() {
+        assertEquals(3, OfferGenerator.payoutAmount(0.1, 3));
+        assertEquals(3, OfferGenerator.payoutAmount(2.9, 3));
+        assertEquals(3, OfferGenerator.payoutAmount(3.0, 3));
+    }
+
+    @Test
+    void payoutAmount_neverPaysLessThanTheFloorEvenForZeroOrNegativeReward() {
+        assertEquals(1, OfferGenerator.payoutAmount(0.0, 1));
+        assertEquals(1, OfferGenerator.payoutAmount(-5.0, 1));
+    }
 }

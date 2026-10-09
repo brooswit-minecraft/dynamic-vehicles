@@ -3,6 +3,7 @@ package io.github.brooswitminecraft.dynamicvehicles;
 import net.neoforged.neoforge.common.ModConfigSpec;
 
 import io.github.brooswitminecraft.dynamicvehicles.delivery.AmbushConfig;
+import io.github.brooswitminecraft.dynamicvehicles.delivery.DangerRollMode;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.OfferConfig;
 
 /**
@@ -46,6 +47,12 @@ public final class DispatcherOfferConfig {
     public static final ModConfigSpec.DoubleValue AMBUSH_SPAWN_ARC_DEGREES;
     public static final ModConfigSpec.IntValue AMBUSH_MAX_ENCOUNTER_LIFETIME_TICKS;
     public static final ModConfigSpec.DoubleValue AMBUSH_NEARBY_PLAYER_RADIUS;
+
+    // MINECRAFT-131: no-playtest config carve-out for values the implementing slices
+    // left hard-coded, or left as a design question disclosed but not resolved.
+    public static final ModConfigSpec.IntValue REWARD_PAYOUT_FLOOR;
+    public static final ModConfigSpec.IntValue DISPATCHER_ACQUISITION_CAP_PER_VILLAGE;
+    public static final ModConfigSpec.EnumValue<DangerRollMode> DANGER_ROLL_MODE;
 
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
@@ -143,6 +150,35 @@ public final class DispatcherOfferConfig {
                 .comment("A non-owner player within this many blocks of an ambush mob blocks its despawn (AC5), "
                         + "so cleanup never pulls a mob out from under someone fighting it.")
                 .defineInRange("ambushNearbyPlayerRadius", 24.0, 0.0, 1000.0);
+
+        REWARD_PAYOUT_FLOOR = builder
+                .comment("Minimum reward payout, in emeralds, for a completed contract - a computed reward below "
+                        + "this still pays this much, so a completed delivery never reads as paying nothing. "
+                        + "Interacts multiplicatively with rewardPerBlock and the danger multiplier: every "
+                        + "computed reward below this value pays identically, flattening the bottom of the "
+                        + "reward curve (see docs/delivery-tuning.md). Lowering rewardPerBlock widens that flat "
+                        + "region. Currency (emeralds) is not configurable here - see docs.")
+                .defineInRange("rewardPayoutFloor", 1, 0, Integer.MAX_VALUE);
+
+        DISPATCHER_ACQUISITION_CAP_PER_VILLAGE = builder
+                .comment("Intended cap on how many villagers at a single village's Bell(s) may hold the "
+                        + "Dispatcher profession at once. -1 means uncapped, which is today's ACTUAL behaviour "
+                        + "and the only behaviour currently implemented - this entry is exposed and documented "
+                        + "per MINECRAFT-113/131 so the knob exists and is discoverable, but NO ENFORCEMENT "
+                        + "MECHANISM IS WIRED TO IT YET: changing this value has no effect until that mechanism "
+                        + "is built (see docs/delivery-tuning.md and the MINECRAFT-131 PR description for why it "
+                        + "was not built blind). Do not treat a non-default value here as taking effect.")
+                .defineInRange("dispatcherAcquisitionCapPerVillage", -1, -1, Integer.MAX_VALUE);
+
+        DANGER_ROLL_MODE = builder
+                .comment("How a contract's danger is rolled. PER_REGION (default) is today's ACTUAL behaviour and "
+                        + "the only mode currently implemented: danger is a pure function of (world seed, "
+                        + "destination region) with no distance/ring input, so the same village is always "
+                        + "equally dangerous in a given world. PER_OFFER is a documented, NOT-YET-IMPLEMENTED "
+                        + "placeholder for rolling danger fresh per offer instead - selecting it has no effect "
+                        + "yet; danger still rolls PER_REGION until that mode is built (see "
+                        + "docs/delivery-tuning.md). Do not flip this without play feedback.")
+                .defineEnum("dangerRollMode", DangerRollMode.PER_REGION);
 
         SPEC = builder.build();
     }

@@ -118,6 +118,24 @@ public record VehicleSpec(
             0.6, 1100.0, 17_985.0, 3_117.0, 36_667.0,
             2.4, 32.0, 1.0, 1.0, 0.5, -0.1, 1.0, 1.0, TIRE_TUNING);
 
+    /**
+     * A heavy, rear-biased-feeling muscle car (MINECRAFT-165): 1700 kg, a 2.2 m wheelbase shorter than the
+     * car's 2.4 m (less pitch leverage) under a 0.95 m ride height taller than the car's 0.9 m (more CoM
+     * height above the wheels), driven by {@code forceScale} 2.0 &mdash; double the car's and well past
+     * {@code TROPHY}'s 1.25, the next-strongest vehicle. Spring, damper and the spring force cap are the
+     * car's scaled to its mass (same pattern as {@code DRIFT}), so it sags the same ~0.15 m at rest. The
+     * combination of a short wheelbase, a comparatively tall ride height and a hard-launching engine is a
+     * tuning/feel target for "nearly pops a wheelie on a hard launch" (not a hard physics assertion here;
+     * {@code VehicleSpecMuscleTest} checks the spec's own ingredients for that feel, not a simulated
+     * outcome) &mdash; tires, not assists, explain any wheelspin that shows up first.
+     */
+    public static final VehicleSpec MUSCLE = new VehicleSpec(
+            1.0, 0.5, 1.65,
+            new double[][] {{-0.85, -0.4, 1.1}, {0.85, -0.4, 1.1}, {-0.85, -0.4, -1.1}, {0.85, -0.4, -1.1}},
+            0.38, 0.34, 0.95,
+            0.7, 1700.0, 27_795.0, 4_816.67, 56_666.67,
+            2.2, 34.0, 2.0, 0.7, 0.5, -0.15, 1.0, 1.0, TireTuning.IDENTITY);
+
     public double wheelCentreY() {
         return -rideHeight + wheelRadius;
     }

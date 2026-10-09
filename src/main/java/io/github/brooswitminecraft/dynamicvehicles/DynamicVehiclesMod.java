@@ -67,6 +67,11 @@ public class DynamicVehiclesMod {
                     .sized(VehicleSpec.DRIFT.width(), VehicleSpec.DRIFT.height()).clientTrackingRange(10).updateInterval(1)
                     .build(ResourceLocation.fromNamespaceAndPath(MODID, "drift_car").toString()));
     public static final DeferredItem<CarItem> DRIFT_ITEM = ITEMS.register("drift_car", () -> new CarItem(new Item.Properties().stacksTo(1), DRIFT, 0.0));
+    public static final DeferredHolder<EntityType<?>, EntityType<CarEntity>> MUSCLE = ENTITIES.register("muscle_car",
+            () -> EntityType.Builder.<CarEntity>of(CarEntity::new, MobCategory.MISC)
+                    .sized(VehicleSpec.MUSCLE.width(), VehicleSpec.MUSCLE.height()).clientTrackingRange(10).updateInterval(1)
+                    .build(ResourceLocation.fromNamespaceAndPath(MODID, "muscle_car").toString()));
+    public static final DeferredItem<CarItem> MUSCLE_ITEM = ITEMS.register("muscle_car", () -> new CarItem(new Item.Properties().stacksTo(1), MUSCLE, 0.0));
 
     public DynamicVehiclesMod(IEventBus modEventBus, ModContainer modContainer) {
         modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.SERVER, CarConfig.SPEC);
@@ -157,6 +162,7 @@ public class DynamicVehiclesMod {
             event.accept(TRUCK_ITEM);
             event.accept(TROPHY_ITEM);
             event.accept(DRIFT_ITEM);
+            event.accept(MUSCLE_ITEM);
         }
     }
 
@@ -170,6 +176,7 @@ public class DynamicVehiclesMod {
             event.registerEntityRenderer(TRUCK.get(), CarRenderer::new);
             event.registerEntityRenderer(TROPHY.get(), CarRenderer::new);
             event.registerEntityRenderer(DRIFT.get(), CarRenderer::new);
+            event.registerEntityRenderer(MUSCLE.get(), CarRenderer::new);
         }
 
         @SubscribeEvent

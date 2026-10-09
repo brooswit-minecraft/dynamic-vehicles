@@ -197,7 +197,7 @@ final class SableCarBody {
         // and every other N reads off the same scale.
         int subSteps = Math.max(1, Math.min(4, CarConfig.WHEEL_SUB_STEPS.get()));
         double subDt = dt / subSteps;
-        double barRate = spec.springRate() * CarConfig.ANTI_ROLL.get();
+        double barRate = spec.springRate() * CarConfig.ANTI_ROLL.get() * spec.antiRollScale();
         Vector3d subLinear = new Vector3d(linear);
         Vector3d subAngular = new Vector3d(angular);
         double[] wearSlipMax = new double[wheelCount];

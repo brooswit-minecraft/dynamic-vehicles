@@ -345,6 +345,54 @@ public record VehicleSpec(
             0.35, 650.0, 10_627.5, 1_841.67, 21_666.67,
             2.7, 48.0, 1.3, 1.3, 0.4, 0.0, 0.6, 1.0, TireTuning.IDENTITY, 0.012);
 
+    /**
+     * A bus (MINECRAFT-162/191): the roster's longest ({@code halfZ} 3.7 m, above {@code TRUCK}'s 2.0 m),
+     * heaviest (4200 kg, above {@code MONSTER_TRUCK}'s 2600 kg) and, by far, slowest-turning vehicle. The
+     * "slow to turn, large turning radius" character needs no new mechanism at all: {@link
+     * WheelMath#maxSteerAngle} already takes {@code wheelbase}, and a turning radius is (informally)
+     * wheelbase divided by the tangent of the steer angle it is holding &mdash; so simply giving this
+     * vehicle the roster's longest wheelbase (4.6 m, above {@code INDY}'s previous-longest 2.7 m) widens
+     * its turning circle on its own, with the shared mechanical steer limit ({@code CarPhysics.MAX_STEER})
+     * and every other vehicle's own wheelbase completely untouched. Ride height (1.0 m) and suspension
+     * travel (1.0 m) match {@code TRUCK}'s; spring, damper and the spring force cap are the car's own
+     * (1200 kg) numbers scaled to this vehicle's mass at that <em>same</em> damping ratio (the norm every
+     * vehicle but {@code MONSTER_TRUCK} follows), so it settles the same fraction of its travel the same
+     * way. A middling 20 m/s top speed and a {@code forceScale} of 3.0 &mdash; {@code forceScale}/{@code
+     * massKg} &asymp; 0.00071, below every other vehicle's own ratio (the car's own 1.0/1200 &asymp;
+     * 0.00083 included) &mdash; a heavy, unhurried vehicle that still has enough drive to get its own mass
+     * moving. A deep 0.6 {@code enginePitch} (between the car's 1.0 and {@code MONSTER_TRUCK}'s lowest,
+     * 0.5). {@code looseGrip} (0.9) and {@code rollingScale} (0.8) sit a little under the car's own 1.0/1.0
+     * &mdash; a heavy pavement vehicle, not tuned for loose ground either way. Carries no drift tuning and
+     * no downforce: {@code tireTuning()} stays {@link TireTuning#IDENTITY} and {@code
+     * downforceGripPerSpeed} stays {@code 0.0}, so this vehicle's cornering grip routes through the plain
+     * {@code WheelMath} tire path exactly like {@code CAR}/{@code TRUCK}/{@code TROPHY}/{@code MUSCLE}/
+     * {@code ROCK_CRAWLER}/{@code MONSTER_TRUCK}/{@code INDY}, and {@code SableCarBody.tick}'s downforce
+     * multiplier is exactly 1.0 for it too.
+     *
+     * <p>8 seats (MINECRAFT-172's multi-seat base): the driver (seat 0, unmoved at x = 0, z = 3.0, near the
+     * front) and 7 passengers in three rows of two plus one front passenger, each row a distinct {@code z}
+     * further back (1.4, -0.2, -1.8) so every same-side seat keeps its own distinct dismount point (see
+     * {@link VehicleSeating#dismountOffset}, which keys a seat's dismount x purely off which side of the
+     * body &mdash; {@code x &gt;= 0} or not &mdash; the seat sits on). Every seat's {@code |x|} (0 or 0.6 m)
+     * sits well inside {@code halfX} (1.15 m), and every {@code |z|} (at most 3.0 m) well inside {@code
+     * halfZ} (3.7 m).
+     */
+    public static final VehicleSpec BUS = new VehicleSpec(
+            1.15, 0.9, 3.7,
+            new double[][] {{-1.0, -0.6, 2.3}, {1.0, -0.6, 2.3}, {-1.0, -0.6, -2.3}, {1.0, -0.6, -2.3}},
+            0.55, 0.45, 1.0,
+            1.0, 4200.0, 68_670.0, 11_900.0, 140_000.0,
+            4.6, 20.0, 3.0, 0.6, 0.95, 3.0, 0.9, 0.8, TireTuning.IDENTITY, 0.0,
+            List.of(
+                    new Seat(0.0, 0.95, 3.0),
+                    new Seat(-0.6, 0.95, 3.0),
+                    new Seat(0.6, 0.95, 1.4),
+                    new Seat(-0.6, 0.95, 1.4),
+                    new Seat(0.6, 0.95, -0.2),
+                    new Seat(-0.6, 0.95, -0.2),
+                    new Seat(0.6, 0.95, -1.8),
+                    new Seat(-0.6, 0.95, -1.8)));
+
     /** The gripMu multiplier {@link SableCarBody#tick} applies for this vehicle's own {@code
      * downforceGripPerSpeed} at this forward speed (m/s, either direction): 1.0 (no change) for every
      * vehicle whose {@code downforceGripPerSpeed} is 0.0 &mdash; see the field's own javadoc. */

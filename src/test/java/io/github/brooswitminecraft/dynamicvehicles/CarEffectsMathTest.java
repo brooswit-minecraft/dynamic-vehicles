@@ -40,4 +40,22 @@ class CarEffectsMathTest {
         assertTrue(CarEffectsMath.dustAmount(0.0, 8.0, 1.0) > 0, "a slide kicks dust even slowly");
         assertEquals(0, CarEffectsMath.dustAmount(30.0, 0.0, 0.0));
     }
+
+    @Test
+    void exhaustStartsExactlyAtMinSpeed() {
+        assertEquals(0, CarEffectsMath.exhaustAmount(1.0, CarEffectsMath.MIN_EXHAUST_SPEED - 0.01, 1.0),
+                "just under the threshold: nothing yet");
+        assertTrue(CarEffectsMath.exhaustAmount(1.0, CarEffectsMath.MIN_EXHAUST_SPEED, 1.0) > 0,
+                "right at the threshold: exhaust starts");
+    }
+
+    @Test
+    void dustStartsExactlyAtMinSpeedOrOnSlipAlone() {
+        assertEquals(0, CarEffectsMath.dustAmount(CarEffectsMath.MIN_DUST_SPEED - 0.01, 0.0, 1.0),
+                "just under the speed threshold with no slip: nothing yet");
+        assertTrue(CarEffectsMath.dustAmount(CarEffectsMath.MIN_DUST_SPEED, 0.0, 1.0) > 0,
+                "right at the speed threshold: dust starts");
+        assertEquals(0, CarEffectsMath.dustAmount(0.0, 2.99, 1.0), "just under the slip-alone threshold");
+        assertTrue(CarEffectsMath.dustAmount(0.0, 3.0, 1.0) > 0, "right at the slip-alone threshold");
+    }
 }

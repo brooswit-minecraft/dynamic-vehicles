@@ -98,6 +98,8 @@ public class CarEntity extends Entity {
     private final java.util.Map<Entity, Vec3> pendingDismounts = new java.util.HashMap<>();
     /** How long this vehicle has been stopped, for auto-dismounting a boarded mob (MINECRAFT-211). */
     private final StoppedTimer stoppedTimer = new StoppedTimer();
+    /** Whether this vehicle is currently too fast to carry a mob safely (MINECRAFT-249). */
+    private final CrashEjectionLatch crashEjectionLatch = new CrashEjectionLatch();
 
     public CarEntity(EntityType<? extends CarEntity> type, Level level) {
         super(type, level);
@@ -270,7 +272,16 @@ public class CarEntity extends Entity {
         wheelHandbrake = handbrake;
     }
 
-    /** Server: play an impact when the car has just lost a lot of speed at once. */
+    /**
+     * Server: play an impact when the car has just lost a lot of speed at once.
+     *
+     * <p>MINECRAFT-249 (review round 2): a real crash shows up here as a sudden speed LOSS, which {@link
+     * CrashEjectionLatch} (a speed-SPIKE threshold) can never catch on its own, so this also ejects every
+     * mob passenger on exactly the tick {@link ImpactEjectionTrigger} says the impact itself fires --
+     * reusing {@link #impactCooldown} both as the existing sound/block-break gate (unchanged) and as the
+     * re-board latch, so an ejected mob cannot immediately re-board while the cooldown is still running
+     * (see {@link #canAddPassenger}/{@link #push}).
+     */
     void checkImpact(double currentSpeed) {
         if (impactCooldown > 0) {
             impactCooldown--;
@@ -278,12 +289,13 @@ public class CarEntity extends Entity {
         int severity = CarSoundMath.impactSeverity(lastTickSpeed - currentSpeed);
         double speedBefore = lastTickSpeed;
         lastTickSpeed = currentSpeed;
-        if (severity > 0 && impactCooldown == 0) {
+        if (ImpactEjectionTrigger.shouldEject(severity, impactCooldown)) {
             impactCooldown = 10;
             level().playSound(null, getX(), getY() + 0.5, getZ(), ModSounds.impact(severity),
                     net.minecraft.sounds.SoundSource.NEUTRAL, (float) CarSoundMath.impactVolume(severity),
                     0.9f + random.nextFloat() * 0.2f);
             hitBlockAhead(speedBefore);
+            ejectAllMobPassengers();
         }
     }
 
@@ -506,7 +518,8 @@ public class CarEntity extends Entity {
     @Override
     public void push(Entity entity) {
         super.push(entity);
-        if (!level().isClientSide() && entity instanceof Mob mob
+        if (!level().isClientSide() && entity instanceof Mob mob && !crashEjectionLatch.isLatched()
+                && impactCooldown == 0
                 && MobBoardingRules.canAutoBoard(mob, spec, stoppedTimer.isLatched())) {
             mob.startRiding(this);
         }
@@ -524,11 +537,18 @@ public class CarEntity extends Entity {
      * {@code MobBoardingRules.canAutoBoard} also refuses while {@link #stoppedTimer} is latched, so a mob
      * that just auto-dismounted (or any mob touching an already-long-stopped bus) cannot immediately
      * re-board.
+     *
+     * <p>MINECRAFT-249: a mob is also refused outright while {@link #crashEjectionLatch} is latched (this
+     * vehicle is too fast -- see {@link CrashEjectionLatch}) or while {@link #impactCooldown} is still
+     * running (a real crash just ejected it -- see {@link #checkImpact}/{@link ImpactEjectionTrigger}), so
+     * a mob just ejected for either reason cannot immediately re-board through the same contact that would
+     * otherwise trigger it again next tick.
      */
     @Override
     protected boolean canAddPassenger(Entity passenger) {
         if (passenger instanceof Mob mob) {
-            return MobBoardingRules.canAutoBoard(mob, spec, stoppedTimer.isLatched())
+            return !crashEjectionLatch.isLatched() && impactCooldown == 0
+                    && MobBoardingRules.canAutoBoard(mob, spec, stoppedTimer.isLatched())
                     && VehicleSeating.firstFreeNonDriverSeat(seats.occupied()) >= 0;
         }
         double horizontalSpeed = Math.hypot(getDeltaMovement().x, getDeltaMovement().z);
@@ -621,7 +641,9 @@ public class CarEntity extends Entity {
         }
         if (level() instanceof net.minecraft.server.level.ServerLevel serverLevel && SableCompat.usable()) {
             tickSable(serverLevel, rider);
-            checkAutoDismount();
+            if (!checkCrashEjection()) {
+                checkAutoDismount();
+            }
             return;
         }
         double throttle = rider == null ? 0.0 : Math.max(-1.0, Math.min(1.0, rider.zza));
@@ -660,7 +682,9 @@ public class CarEntity extends Entity {
         publishSoundState(Math.abs(throttle), slip);
         emitEffects(throttle, speed, slip);
         checkImpact(Math.abs(speed));
-        checkAutoDismount();
+        if (!checkCrashEjection()) {
+            checkAutoDismount();
+        }
     }
 
     /**
@@ -681,6 +705,59 @@ public class CarEntity extends Entity {
                 mob.stopRiding();
             }
         }
+    }
+
+    /**
+     * MINECRAFT-249: once this vehicle's speed crosses {@link CrashEjectionLatch#CRASH_EJECT_SPEED_THRESHOLD},
+     * every mob passenger is ejected to a safe nearby position immediately, in place of (never alongside)
+     * the normal stop-based {@link #checkAutoDismount} for that tick -- a vehicle this fast can never also
+     * be "stopped past threshold" in the same tick anyway, so the two never actually compete, but the
+     * caller skips the other check regardless so the priority is explicit rather than incidental. Returns
+     * whether the vehicle is currently latched too-fast, so the caller knows whether to run the normal
+     * check at all. The latch (see {@link CrashEjectionLatch}) also blocks {@link #canAddPassenger} from
+     * letting any mob board while the vehicle stays this fast, so ejection never churns with
+     * contact-triggered boarding.
+     */
+    private boolean checkCrashEjection() {
+        double horizontalSpeed = Math.hypot(getDeltaMovement().x, getDeltaMovement().z);
+        if (crashEjectionLatch.tick(horizontalSpeed)) {
+            ejectAllMobPassengers();
+        }
+        return crashEjectionLatch.isLatched();
+    }
+
+    /**
+     * MINECRAFT-249: ejects every MOB passenger (never a player -- player dismount is untouched by this
+     * ticket) to a safe nearby position, found by {@link SafeEjectPlacement} against this level's own
+     * collision. Called for a crash/fast-movement speed spike ({@link #checkCrashEjection}), a real
+     * impact ({@link #checkImpact}), and this vehicle being actually destroyed ({@link #remove}), so a
+     * mob is never left riding a vehicle that no longer exists or that just crashed.
+     */
+    private void ejectAllMobPassengers() {
+        if (!(level() instanceof net.minecraft.server.level.ServerLevel serverLevel)) {
+            return;
+        }
+        for (Entity passenger : java.util.List.copyOf(getPassengers())) {
+            if (passenger instanceof Mob mob) {
+                ejectMob(serverLevel, mob);
+            }
+        }
+    }
+
+    private void ejectMob(net.minecraft.server.level.ServerLevel serverLevel, Mob mob) {
+        double originX = getX();
+        double originY = getY();
+        double originZ = getZ();
+        double[] safe = SafeEjectPlacement.find(originX, originY, originZ,
+                candidate -> isFreeOfBlocks(serverLevel, mob, candidate));
+        mob.stopRiding();
+        mob.setPos(safe[0], safe[1], safe[2]);
+    }
+
+    /** Whether {@code mob}'s own bounding box, moved to {@code pos}, collides with no block in {@code serverLevel}. */
+    private boolean isFreeOfBlocks(net.minecraft.server.level.ServerLevel serverLevel, Mob mob, double[] pos) {
+        net.minecraft.world.phys.AABB box = mob.getBoundingBox().move(pos[0] - mob.getX(), pos[1] - mob.getY(), pos[2] - mob.getZ());
+        return serverLevel.noCollision(mob, box);
     }
 
     private void tickSable(net.minecraft.server.level.ServerLevel serverLevel, LivingEntity rider) {
@@ -724,8 +801,21 @@ public class CarEntity extends Entity {
         }
     }
 
+    /**
+     * MINECRAFT-249: a vehicle actually DESTROYED ({@link Entity.RemovalReason#shouldDestroy}: killed or
+     * discarded, never simply unloaded or changing dimension) must never leave a mob riding a vehicle
+     * that no longer exists, so every mob passenger is ejected first, while this entity's position is
+     * still valid. Deliberately NOT every removal reason: MINECRAFT-203 requires a parked bus with a mob
+     * aboard to survive a chunk unload (or a dimension change) with the mob still seated, so ejecting on
+     * {@code UNLOADED_TO_CHUNK}/{@code UNLOADED_WITH_PLAYER}/{@code CHANGED_DIMENSION} would both break
+     * that and call {@code setPos} on an entity that is not actually staying loaded to be repositioned. A
+     * player passenger is untouched here, exactly as before this ticket.
+     */
     @Override
     public void remove(Entity.RemovalReason reason) {
+        if (reason.shouldDestroy()) {
+            ejectAllMobPassengers();
+        }
         if (sableBody != null) {
             SableCompat.remove(sableBody);
             sableBody = null;

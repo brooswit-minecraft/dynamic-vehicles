@@ -4,6 +4,7 @@ import java.util.List;
 
 import org.joml.Matrix4f;
 
+import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 
 import net.minecraft.client.Minecraft;
@@ -11,6 +12,7 @@ import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.texture.OverlayTexture;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.phys.Vec3;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
@@ -44,11 +46,18 @@ public final class SkidMarkRenderer {
         if (marks.isEmpty()) {
             return;
         }
-        // event.getPoseStack() already carries the camera-relative transform the level renderer itself
-        // uses at this stage, so world coordinates (SkidMark#x/y/z) go straight onto the matrix below
-        // with no extra camera-position translation (unlike CarRenderer's per-entity PoseStack, which
-        // starts at that entity's own render origin instead).
-        Matrix4f matrix = event.getPoseStack().last().pose();
+        // event.getPoseStack() at AFTER_PARTICLES is a fresh identity PoseStack (confirmed against the
+        // decompiled NeoForge 21.1.250 LevelRenderer#renderLevel: it allocates `new PoseStack()`, and
+        // only the per-entity renders translate it by that entity's own camera-relative offset before
+        // popping back to identity — the stack itself never carries the camera's world-position
+        // translation, only the separate model-view matrix does). So we push our own camera-relative
+        // translation here before drawing world-space mark coordinates, the same way entity rendering
+        // offsets by `blockpos - cameraPos` instead of using absolute world coordinates directly.
+        PoseStack poseStack = event.getPoseStack();
+        poseStack.pushPose();
+        Vec3 camPos = event.getCamera().getPosition();
+        poseStack.translate(-camPos.x(), -camPos.y(), -camPos.z());
+        Matrix4f matrix = poseStack.last().pose();
         MultiBufferSource.BufferSource buffers = Minecraft.getInstance().renderBuffers().bufferSource();
         VertexConsumer consumer = buffers.getBuffer(RenderType.entityTranslucent(TEXTURE));
         long now = System.currentTimeMillis();
@@ -60,6 +69,7 @@ public final class SkidMarkRenderer {
             quad(consumer, matrix, mark, alpha);
         }
         buffers.endBatch(RenderType.entityTranslucent(TEXTURE));
+        poseStack.popPose();
     }
 
     /** One mark's quad, long-ways along the heading it was laid at (see {@link CarEntity#WHEELS}'s own

@@ -311,9 +311,12 @@ final class SableCarBody {
                 // already opted in does the actual tuning VALUES come from config (CarConfig.driftTireTuning(),
                 // live-reloadable) rather than the spec's own numbers, which exist only to mark the opt-in.
                 boolean driftTuned = !spec.tireTuning().isIdentity();
+                // MINECRAFT-227/245: spec.vehicleTuning() (LSD lock, front/rear torque split, torque-
+                // vectoring gain, camber, toe) is threaded through to this call site for a later story to
+                // read; WheelMath.tire's overload below does not read it, so this is a mathematical no-op.
                 WheelMath.Tire tire = !driftTuned
                         ? WheelMath.tire(vLong, vLat, force, gripMu, rollingCoefficient, lateralScale,
-                                drive, brake, brakeGain, effectiveMass, subDt)
+                                drive, brake, brakeGain, effectiveMass, subDt, spec.vehicleTuning())
                         : DriftTireModel.tire(vLong, vLat, force, gripMu, rollingCoefficient, lateralScale,
                                 drive, brake, brakeGain, effectiveMass, subDt, CarConfig.driftTireTuning(),
                                 front, handbrake, steer);

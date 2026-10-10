@@ -114,12 +114,15 @@ public final class CarPhysics {
             next = 0.0;
         }
         // Belt and suspenders on the same invariant: whatever the accel math above did, the current gear
-        // still never lets speed cross zero into the direction it does not allow. Neutral is grouped with
-        // the forward gears here (not reverse) -- it must never let brake alone put the car in reverse.
-        if (gear != Gear.REVERSE && next < 0.0) {
+        // still never lets brake alone CROSS speed into the direction it does not allow, starting from a
+        // standstill or from the allowed side. Neutral is grouped with the forward gears here (not
+        // reverse) -- it must never let brake alone put the car in reverse. This only guards the crossing,
+        // not every tick's sign: a car already rolling the "wrong" way for its gear (e.g. just toggled
+        // gear while moving) must coast/brake down normally instead of snapping to a dead stop.
+        if (gear != Gear.REVERSE && speed >= 0.0 && next < 0.0) {
             next = 0.0;
         }
-        if (gear == Gear.REVERSE && next > 0.0) {
+        if (gear == Gear.REVERSE && speed <= 0.0 && next > 0.0) {
             next = 0.0;
         }
         next = Math.max(-REVERSE_MAX, Math.min(MAX_SPEED, next));

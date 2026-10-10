@@ -61,6 +61,27 @@ class CarPhysicsTest {
     }
 
     @Test
+    void togglingToReverseWhileStillRollingForwardCoastsInsteadOfStoppingDead() {
+        // Review finding: the zero-crossing clamp must not fire just because the car is on the "wrong"
+        // side for its newly-selected gear -- only brake-alone creating NEW motion in the disallowed
+        // direction from a standstill (or from the allowed side) is blocked. A driver who toggles to
+        // REVERSE while still coasting forward at speed must decelerate normally for one step, not get
+        // clamped to a dead stop.
+        Step step = CarPhysics.step(new State(10, 0), 0, 0, false, Gear.REVERSE, DT);
+        assertTrue(step.state().speed() > 0, "must not snap to zero the instant REVERSE is selected");
+        assertTrue(step.state().speed() < 10, "must still be decelerating");
+    }
+
+    @Test
+    void togglingToForwardWhileStillRollingBackwardCoastsInsteadOfStoppingDead() {
+        // Mirror of the above: toggling to a forward gear while still rolling in reverse must coast down,
+        // not snap to zero.
+        Step step = CarPhysics.step(new State(-5, 0), 0, 0, false, Gear.D1, DT);
+        assertTrue(step.state().speed() < 0, "must not snap to zero the instant a forward gear is selected");
+        assertTrue(step.state().speed() > -5, "must still be decelerating");
+    }
+
+    @Test
     void brakingAtStandstillInNeutralNeverReverses() {
         Step braked = run(new State(0, 0), -1, 0, false, Gear.NEUTRAL, 200);
         assertEquals(0.0, braked.state().speed(), 1e-9, "neutral must never reverse under brake alone");

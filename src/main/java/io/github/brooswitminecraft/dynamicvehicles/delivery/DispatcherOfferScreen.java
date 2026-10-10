@@ -45,6 +45,18 @@ public final class DispatcherOfferScreen extends Screen implements MenuAccess<Di
         this.top = Math.max(24, (this.height - rowCount * ROW_HEIGHT) / 2);
     }
 
+    /**
+     * MINECRAFT-264/MINECRAFT-260: vanilla's {@code Screen#renderBackground} runs a
+     * full-screen GPU blur ({@code renderBlurredBackground}) plus a panorama/menu-background
+     * texture. Villager trading ({@code MerchantScreen}, via {@code AbstractContainerScreen})
+     * skips all of that and just dims with {@link #renderTransparentBackground}; this screen
+     * matches that instead of the {@code Screen} default.
+     */
+    @Override
+    public void renderBackground(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        this.renderTransparentBackground(graphics);
+    }
+
     @Override
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         this.renderBackground(graphics, mouseX, mouseY, partialTick);

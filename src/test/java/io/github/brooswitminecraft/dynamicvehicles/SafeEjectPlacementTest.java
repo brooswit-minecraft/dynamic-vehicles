@@ -8,19 +8,26 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Pure-function checks for {@link SafeEjectPlacement} (MINECRAFT-249): never a point the caller's {@code
- * isFree} predicate rejects, never farther than {@link SafeEjectPlacement#SEARCH_RADIUS_BLOCKS}, and the
- * origin itself as a last resort when nothing else is free.
+ * isFree} predicate rejects, never farther than {@link SafeEjectPlacement#SEARCH_RADIUS_BLOCKS}, nearest
+ * candidate first, falling back to the origin itself -- untested -- only once every candidate is rejected.
  */
 class SafeEjectPlacementTest {
 
+    /**
+     * The origin itself is never tried as a candidate -- only ever returned as a fallback when every
+     * candidate offset is rejected -- so the nearest offset wins even when the predicate accepts
+     * everything, including points the origin's own position would otherwise satisfy just as well.
+     */
     @Test
-    void returnsTheOriginWhenItIsAlreadyFree() {
+    void prefersTheNearestOffsetOverTheOriginWhenEverythingIsFree() {
         double[] result = SafeEjectPlacement.find(5.0, 10.0, 5.0, candidate -> true);
-        assertArrayEquals(new double[] {5.0, 10.0, 5.0}, result);
+        assertEquals(1.0, Math.max(Math.abs(result[0] - 5.0), Math.abs(result[2] - 5.0)),
+                "the nearest ring's own first offset must win, not the untested origin");
+        assertEquals(10.0, result[1], "height is never searched, only x/z offset");
     }
 
     @Test
-    void returnsTheNearestFreeCandidateWhenTheOriginIsBlocked() {
+    void returnsTheNearestFreeCandidateWhenCloserOnesAreBlocked() {
         double[] result = SafeEjectPlacement.find(0.0, 0.0, 0.0, candidate -> {
             double dx = candidate[0];
             double dz = candidate[2];

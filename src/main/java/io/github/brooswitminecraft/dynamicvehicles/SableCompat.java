@@ -20,8 +20,8 @@ final class SableCompat {
         return SableCarBody.create(level, car);
     }
 
-    static void tick(Object body, CarEntity car, double throttle, double steer, boolean handbrake, double dt) {
-        ((SableCarBody) body).tick(car, throttle, steer, handbrake, dt);
+    static void tick(Object body, CarEntity car, double throttle, double steer, boolean handbrake, CarPhysics.Gear gear, double dt) {
+        ((SableCarBody) body).tick(car, throttle, steer, handbrake, gear, dt);
     }
 
     static void syncEntity(Object body, CarEntity car) {

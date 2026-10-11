@@ -30,6 +30,7 @@ public final class DispatcherOfferConfig {
 
     public static final ModConfigSpec.DoubleValue DANGER_MIN;
     public static final ModConfigSpec.DoubleValue DANGER_MAX;
+    public static final ModConfigSpec.DoubleValue REWARD_BASE;
     public static final ModConfigSpec.DoubleValue REWARD_PER_BLOCK;
     public static final ModConfigSpec.DoubleValue MIN_REWARD_DANGER_MULTIPLIER;
     public static final ModConfigSpec.DoubleValue MAX_REWARD_DANGER_MULTIPLIER;
@@ -97,16 +98,19 @@ public final class DispatcherOfferConfig {
         DANGER_MAX = builder
                 .comment("Maximum rolled danger value (exclusive), on a 0..1 scale. Must be greater than dangerMin.")
                 .defineInRange("dangerMax", 1.0, 0.0, 1.0);
+        REWARD_BASE = builder
+                .comment("Fixed reward units granted for every delivery before distance and danger are applied.")
+                .defineInRange("rewardBase", 2.0, 0.0, 1000.0);
         REWARD_PER_BLOCK = builder
                 .comment("Reward units granted per block of approximate distance, before the danger multiplier.")
-                .defineInRange("rewardPerBlock", 0.2, 0.0, 1000.0);
+                .defineInRange("rewardPerBlock", 0.01, 0.0, 1000.0);
         MIN_REWARD_DANGER_MULTIPLIER = builder
                 .comment("Reward multiplier applied when a contract's rolled danger == dangerMin.")
                 .defineInRange("minRewardDangerMultiplier", 1.0, 0.0, 100.0);
         MAX_REWARD_DANGER_MULTIPLIER = builder
                 .comment("Reward multiplier applied when a contract's rolled danger == dangerMax. Must be >= "
                         + "minRewardDangerMultiplier.")
-                .defineInRange("maxRewardDangerMultiplier", 3.0, 0.0, 100.0);
+                .defineInRange("maxRewardDangerMultiplier", 2.0, 0.0, 100.0);
         TIME_ALLOWANCE_BASE_TICKS = builder
                 .comment("Fixed component of a contract's deadline, in game ticks (20 ticks = 1 second), granted "
                         + "regardless of distance.")
@@ -192,6 +196,7 @@ public final class DispatcherOfferConfig {
                 new int[] {0, NOVICE_SLOTS.get(), APPRENTICE_SLOTS.get(), JOURNEYMAN_SLOTS.get(), EXPERT_SLOTS.get(), MASTER_SLOTS.get()},
                 DANGER_MIN.get(),
                 DANGER_MAX.get(),
+                REWARD_BASE.get(),
                 REWARD_PER_BLOCK.get(),
                 MIN_REWARD_DANGER_MULTIPLIER.get(),
                 MAX_REWARD_DANGER_MULTIPLIER.get(),

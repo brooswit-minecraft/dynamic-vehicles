@@ -3,17 +3,16 @@
 Covers the delivery feature (`...dynamicvehicles.delivery`, epic MINECRAFT-76).
 Written by MINECRAFT-131, the no-playtest config-and-docs carve-out: it makes
 every tuning value a documented, named server config entry, and lists what
-nobody has yet observed in a running game. **No values here were retuned.**
-Actual tuning is gated on a person playing the loop — see "Values most
-needing play feedback" below.
+nobody has yet observed in a running game. Reward defaults were retuned in
+MINECRAFT-263 to correct payouts that were far too large; further tuning is
+gated on a person playing the loop — see "Values most needing play feedback"
+below.
 
 All entries live in `DispatcherOfferConfig` (root package), written to
 `dynamicvehicles-dispatcher-server.toml` on the server. Every entry below
-already existed in config before this ticket **except** `rewardPayoutFloor`,
-`dispatcherAcquisitionCapPerVillage`, and `dangerRollMode`, which this ticket
-added (moving a hard-coded value, or exposing an inherited design question,
-per the sections below). Moving a value into config never changed its
-numeric default — behaviour today is identical to behaviour before this PR.
+already existed in config before MINECRAFT-131 **except** `rewardPayoutFloor`,
+`dispatcherAcquisitionCapPerVillage`, and `dangerRollMode`. MINECRAFT-263
+adds `rewardBase` and retunes the reward defaults described below.
 
 ## Destination rings and offer slots
 
@@ -36,9 +35,10 @@ numeric default — behaviour today is identical to behaviour before this PR.
 |---|---|---|---|---|
 | `dangerMin` | 0..1 scale | 0.0 | 0.0–1.0 | Lower bound of a contract's rolled danger. |
 | `dangerMax` | 0..1 scale (exclusive) | 1.0 | 0.0–1.0, must be `> dangerMin` | Upper bound. |
-| `rewardPerBlock` | reward units / block | 0.2 | 0.0–1000.0 | Scales the whole reward curve. **Lowering this widens the flat region created by `rewardPayoutFloor` below** — see that section. |
+| `rewardBase` | reward units | 2.0 | 0.0–1000.0 | Fixed component for every delivery before distance and danger. It keeps short runs worthwhile without changing the payout floor. |
+| `rewardPerBlock` | reward units / block | 0.01 | 0.0–1000.0 | Distance component of the reward curve. **Lowering this widens the flat region created by `rewardPayoutFloor` below** — see that section. |
 | `minRewardDangerMultiplier` | multiplier | 1.0 | 0.0–100.0 | Reward multiplier at `dangerMin`. |
-| `maxRewardDangerMultiplier` | multiplier | 3.0 | 0.0–100.0, must be `>= minRewardDangerMultiplier` | Reward multiplier at `dangerMax`. A high-danger, short trip can still out-pay a long, safe one through this multiplier — that's deliberate (AC4). |
+| `maxRewardDangerMultiplier` | multiplier | 2.0 | 0.0–100.0, must be `>= minRewardDangerMultiplier` | Reward multiplier at `dangerMax`. A high-danger, short trip can still out-pay a long, safe one through this multiplier — that's deliberate (AC4). |
 | `rewardPayoutFloor` | emeralds | 1 | 0–2147483647 | **New in this ticket** (moved out of `ContractTickHandler`, which hard-coded `max(1, round(reward))`). See "Reward payout floor" below. |
 | `dangerRollMode` | enum: `PER_REGION` (only implemented) / `PER_OFFER` (placeholder) | `PER_REGION` | — | **New in this ticket**, documentation-only. See "Danger determinism" below — selecting `PER_OFFER` currently has no effect. |
 | `dispatcherAcquisitionCapPerVillage` | villagers, or `-1` for uncapped | -1 | -1 or 0–2147483647 | **New in this ticket**, documentation-only — **not enforced by any mechanism yet**. See "Dispatcher acquisition / density" below. |
@@ -57,18 +57,15 @@ pay something else.
 
 `ContractTickHandler` pays `max(rewardPayoutFloor, round(reward))` emeralds
 on contract completion. The floor is sensible on its own — a completed
-delivery paying zero would read as broken — but it interacts multiplicatively
-with `rewardPerBlock` and the danger multiplier: **every computed reward
-below the floor pays identically**, flattening the bottom of the reward
-curve that `reward = distance × rewardPerBlock × dangerMultiplier` otherwise
-keeps strictly monotonic.
+delivery paying zero would read as broken — but it can still flatten the
+bottom of the curve: **every computed reward below the floor pays
+identically**. The configured formula is `reward = (rewardBase + distance ×
+rewardPerBlock) × dangerMultiplier`.
 
-With today's defaults (`rewardPerBlock` 0.2, danger multiplier 1.0–3.0), the
-floor binds below a computed reward of 1.0, i.e. `distance × 0.2 ×
-dangerMultiplier < 1.0`. At minimum danger (multiplier 1.0) that's
-`distance < 5` blocks; at maximum danger (multiplier 3.0) it's `distance <
-1.67` blocks. In practice almost nothing falls under it today, since
-real destination distances are far larger than 5 blocks.
+With today's defaults (`rewardBase` 2.0, `rewardPerBlock` 0.01, danger
+multiplier 1.0–2.0), the computed reward is at least 2.0 before the payout
+floor, so the default floor does not bind. A server that lowers `rewardBase`
+or a danger multiplier can reintroduce a flat region.
 
 **This is a trap for future tuning specifically:** if a person asks to lower
 `rewardPerBlock` to make long trips feel less lucrative, the floor silently

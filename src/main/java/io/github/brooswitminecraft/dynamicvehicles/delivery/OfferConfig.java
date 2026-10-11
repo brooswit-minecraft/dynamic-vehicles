@@ -20,6 +20,7 @@ import java.util.Objects;
  * @param slotsByLevel               how many offer slots to fill at each level; index 0 unused, length 6
  * @param dangerMin                  minimum rolled danger value (inclusive), on a 0..1 scale
  * @param dangerMax                  maximum rolled danger value (exclusive), on a 0..1 scale; must be &gt; dangerMin
+ * @param rewardBase                 fixed reward units per delivery before distance and danger are applied
  * @param rewardPerBlock             reward units per block of approximate distance, before the danger multiplier
  * @param minRewardDangerMultiplier  reward multiplier applied when danger == dangerMin
  * @param maxRewardDangerMultiplier  reward multiplier applied when danger == dangerMax; must be &gt;= minRewardDangerMultiplier
@@ -31,6 +32,7 @@ public record OfferConfig(
         int[] slotsByLevel,
         double dangerMin,
         double dangerMax,
+        double rewardBase,
         double rewardPerBlock,
         double minRewardDangerMultiplier,
         double maxRewardDangerMultiplier,
@@ -45,6 +47,9 @@ public record OfferConfig(
         }
         if (dangerMax <= dangerMin) {
             throw new IllegalArgumentException("dangerMax must be > dangerMin: " + dangerMax + " <= " + dangerMin);
+        }
+        if (rewardBase < 0.0) {
+            throw new IllegalArgumentException("rewardBase must be >= 0: " + rewardBase);
         }
         if (maxRewardDangerMultiplier < minRewardDangerMultiplier) {
             throw new IllegalArgumentException(

@@ -477,11 +477,11 @@ public class CarEntity extends Entity {
             tag.putFloat("OrientationZ", q.z);
             tag.putFloat("OrientationW", q.w);
         }
-        java.util.List<SeatPersistence.Assignment> assignments = new java.util.ArrayList<>();
+        java.util.List<SeatAssignments.Assignment> assignments = new java.util.ArrayList<>();
         for (int index = 0; index < seats.seatCount(); index++) {
             Entity passenger = seats.at(index);
             if (passenger != null) {
-                assignments.add(new SeatPersistence.Assignment(passenger.getUUID(), index));
+                assignments.add(new SeatAssignments.Assignment(passenger.getUUID(), index));
             }
         }
         SeatPersistence.write(tag, assignments);

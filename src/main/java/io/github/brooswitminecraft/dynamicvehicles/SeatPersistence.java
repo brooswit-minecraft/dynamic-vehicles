@@ -1,10 +1,8 @@
 package io.github.brooswitminecraft.dynamicvehicles;
 
-import java.util.HashMap;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.HashSet;
-import java.util.Set;
 import java.util.UUID;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
@@ -18,12 +16,10 @@ public final class SeatPersistence {
 
     private SeatPersistence() {}
 
-    public record Assignment(UUID passenger, int seat) {}
-
     /** Writes every occupied seat by passenger UUID, independent of vanilla's passenger-list order. */
-    public static void write(CompoundTag vehicleTag, List<Assignment> assignments) {
+    public static void write(CompoundTag vehicleTag, List<SeatAssignments.Assignment> assignments) {
         ListTag savedSeats = new ListTag();
-        for (Assignment assignment : assignments) {
+        for (SeatAssignments.Assignment assignment : assignments) {
             CompoundTag savedSeat = new CompoundTag();
             savedSeat.putUUID(TAG_PASSENGER, assignment.passenger());
             savedSeat.putInt(TAG_SEAT, assignment.seat());
@@ -37,8 +33,7 @@ public final class SeatPersistence {
      * load and use normal first-free-seat placement for that rider.
      */
     public static Map<UUID, Integer> read(CompoundTag vehicleTag, int seatCount) {
-        Map<UUID, Integer> assignments = new HashMap<>();
-        Set<Integer> occupiedSeats = new HashSet<>();
+        List<SeatAssignments.Assignment> savedAssignments = new ArrayList<>();
         ListTag savedSeats = vehicleTag.getList(TAG_SEATS, Tag.TAG_COMPOUND);
         for (int i = 0; i < savedSeats.size(); i++) {
             CompoundTag savedSeat = savedSeats.getCompound(i);
@@ -46,11 +41,8 @@ public final class SeatPersistence {
                 continue;
             }
             UUID passenger = savedSeat.getUUID(TAG_PASSENGER);
-            int seat = savedSeat.getInt(TAG_SEAT);
-            if (seat >= 0 && seat < seatCount && !assignments.containsKey(passenger) && occupiedSeats.add(seat)) {
-                assignments.put(passenger, seat);
-            }
+            savedAssignments.add(new SeatAssignments.Assignment(passenger, savedSeat.getInt(TAG_SEAT)));
         }
-        return assignments;
+        return SeatAssignments.validAssignments(savedAssignments, seatCount);
     }
 }

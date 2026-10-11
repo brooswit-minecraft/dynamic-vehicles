@@ -229,6 +229,8 @@ public class DynamicVehiclesMod {
         public static void registerGuiLayers(net.neoforged.neoforge.client.event.RegisterGuiLayersEvent event) {
             event.registerAboveAll(ResourceLocation.fromNamespaceAndPath(MODID, "delivery_hud"),
                     new io.github.brooswitminecraft.dynamicvehicles.delivery.ContractHudOverlay());
+            event.registerAboveAll(ResourceLocation.fromNamespaceAndPath(MODID, "delivery_waypoint"),
+                    new io.github.brooswitminecraft.dynamicvehicles.delivery.ContractWaypointOverlay());
         }
     }
 }

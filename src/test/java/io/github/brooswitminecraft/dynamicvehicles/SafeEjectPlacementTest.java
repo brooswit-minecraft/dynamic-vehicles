@@ -9,7 +9,8 @@ import org.junit.jupiter.api.Test;
 /**
  * Pure-function checks for {@link SafeEjectPlacement} (MINECRAFT-249): never a point the caller's {@code
  * isFree} predicate rejects, never farther than {@link SafeEjectPlacement#SEARCH_RADIUS_BLOCKS}, nearest
- * candidate first, falling back to the origin itself -- untested -- only once every candidate is rejected.
+ * candidate first, accepting the origin only when the predicate confirms it is safe, and returning no
+ * placement when every candidate (including the origin) is rejected.
  */
 class SafeEjectPlacementTest {
 

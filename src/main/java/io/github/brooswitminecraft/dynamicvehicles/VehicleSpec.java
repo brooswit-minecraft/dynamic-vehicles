@@ -49,7 +49,34 @@ public record VehicleSpec(
          * behave byte-for-byte as before (see {@code VehicleSeating}, which gates multi-seat boarding on
          * speed and never gates a one-seat vehicle at all).
          */
-        List<Seat> seats) {
+        List<Seat> seats,
+        /** This vehicle's per-vehicle tuning dials (MINECRAFT-227/245): LSD lock, front/rear torque split,
+         * torque-vectoring gain, camber and toe. {@link VehicleTuning#IDENTITY} for every vehicle that has
+         * not opted in &mdash; today that is every vehicle on the roster, since this story is data and
+         * plumbing only (no LSD/vectoring/camber/toe behaviour yet). See {@link VehicleTuning} for why these
+         * five fields are grouped into their own small type rather than folded into {@link TireTuning} or
+         * left as bare fields on this record. */
+        VehicleTuning vehicleTuning) {
+
+    /** As the full (canonical) constructor above, minus the trailing {@link #vehicleTuning} (MINECRAFT-227/245):
+     * exactly the field list every vehicle spec used before this ticket. {@code CAR}, {@code TRUCK},
+     * {@code TROPHY}, {@code DRIFT}, {@code BUS} and {@code CARGO_TRUCK} all still call this constructor
+     * unedited, with {@link #vehicleTuning} defaulted to {@link VehicleTuning#IDENTITY}. */
+    public VehicleSpec(double halfX, double halfY, double halfZ,
+            double[][] mounts, double wheelRadius, double wheelWidth,
+            double rideHeight, double restLength,
+            double massKg, double springRate, double dampingRate, double maxSpringForce,
+            double wheelbase, double maxSpeed,
+            double forceScale, double enginePitch,
+            double seatY, double seatZ,
+            double looseGrip, double rollingScale,
+            TireTuning tireTuning, double downforceGripPerSpeed, double antiRollScale,
+            List<Seat> seats) {
+        this(halfX, halfY, halfZ, mounts, wheelRadius, wheelWidth, rideHeight, restLength,
+                massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
+                forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
+                downforceGripPerSpeed, antiRollScale, seats, VehicleTuning.IDENTITY);
+    }
 
     /**
      * Legacy shape (MINECRAFT-172): exactly the field list every vehicle spec used before multi-seat
@@ -163,6 +190,45 @@ public record VehicleSpec(
         public static final TireTuning IDENTITY = new TireTuning(1.0, 999.0, 0.0, 1.0, 0.0, 0.0);
 
         /** Whether this tuning is exactly {@link #IDENTITY} &mdash; the gate {@code SableCarBody.tick} uses to skip {@link DriftTireModel}. */
+        public boolean isIdentity() {
+            return this.equals(IDENTITY);
+        }
+    }
+
+    /**
+     * Per-vehicle tuning dials (MINECRAFT-227/245), foundation for the sibling stories that implement LSD,
+     * torque distribution/vectoring and camber/toe: this story is data and plumbing only, so none of these
+     * five fields is read by any physics computation yet (see {@code WheelMath.tire}'s own overload that
+     * accepts a {@code VehicleTuning} and ignores it, and {@code SableCarBody.tick}, which reads
+     * {@code spec.vehicleTuning()} and passes it there). {@link #IDENTITY} is the value every field must
+     * take for a vehicle's handling to stay exactly as it is today.
+     *
+     * <p>Grouped into their own small type rather than added to {@link TireTuning} or left as bare fields
+     * on {@link VehicleSpec} directly: they are a different physical domain from {@link TireTuning} (which
+     * is entirely about {@link DriftTireModel}'s cornering-slip curve), and the epic's later stories will
+     * each extend or read this same bundle together, exactly the way {@link TireTuning} already groups
+     * {@link DriftTireModel}'s six knobs for the same reason.
+     *
+     * @param lsdLockPercent limited-slip differential lock, 0 (open, no lock) to 1 (fully locked); 0 = no
+     *        lock at all (identity) &mdash; a later story reads this to resist one driven wheel of an axle
+     *        spinning faster than its partner
+     * @param frontTorqueSplit front axle's share of total drive torque, 0 (all rear) to 1 (all front); 0.5 =
+     *        an even 50/50 split (identity) &mdash; matches this story's own wiring at {@code WheelMath.tire}'s
+     *        new overload, which every vehicle reaches with this exact value today
+     * @param vectoringGain fraction of a torque-vectoring correction (shifting drive torque side to side
+     *        across an axle to help the car turn) applied at each wheel; 0 = no vectoring at all (identity)
+     * @param camberDeg static camber angle, degrees (negative: top of the wheel tilted in toward the car);
+     *        0 = upright, no camber (identity)
+     * @param toeDeg static toe angle, degrees (positive: toe-in, the front of the wheel angled toward the
+     *        car's centreline); 0 = parallel to the car's own forward axis, no toe (identity)
+     */
+    public record VehicleTuning(double lsdLockPercent, double frontTorqueSplit, double vectoringGain,
+            double camberDeg, double toeDeg) {
+
+        /** No LSD lock, an even front/rear torque split, no vectoring, no camber, no toe. */
+        public static final VehicleTuning IDENTITY = new VehicleTuning(0.0, 0.5, 0.0, 0.0, 0.0);
+
+        /** Whether this tuning is exactly {@link #IDENTITY}. */
         public boolean isIdentity() {
             return this.equals(IDENTITY);
         }

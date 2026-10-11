@@ -604,6 +604,7 @@ public class CarEntity extends Entity {
             if (clientSounds == null) {
                 clientSounds = CarSoundsClient.start(this);
             }
+            SkidMarksClient.tick(this);
             return;
         }
         double travelled = Math.hypot(getX() - xo, getZ() - zo);
@@ -726,6 +727,9 @@ public class CarEntity extends Entity {
 
     @Override
     public void remove(Entity.RemovalReason reason) {
+        if (level().isClientSide()) {
+            SkidMarksClient.forget(this);
+        }
         if (sableBody != null) {
             SableCompat.remove(sableBody);
             sableBody = null;

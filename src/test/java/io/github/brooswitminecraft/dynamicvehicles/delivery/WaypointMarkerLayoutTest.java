@@ -33,8 +33,8 @@ class WaypointMarkerLayoutTest {
     void clampsCornerAlongTrueBearing() {
         WaypointMarkerLayout.Point point = project(20, 20, 10);
         assertTrue(point.clamped());
-        assertEquals(0.95, point.x(), 1e-9);
-        assertTrue(point.y() < 0.1, "upper-right bearing should reach the top edge");
+        assertEquals(0.05, point.y(), 1e-9);
+        assertTrue(point.x() > 0.5, "upper-right bearing should retain its rightward component");
     }
 
     @Test

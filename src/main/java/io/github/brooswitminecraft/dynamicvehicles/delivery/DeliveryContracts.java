@@ -67,6 +67,7 @@ public final class DeliveryContracts {
                 true,
                 contract.destinationDimension(),
                 contract.destinationStartX(),
+                contract.destinationStartY(),
                 contract.destinationStartZ(),
                 contract.deadlineTick(),
                 contract.danger(),

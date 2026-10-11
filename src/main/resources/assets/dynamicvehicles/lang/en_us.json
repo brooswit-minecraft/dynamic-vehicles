@@ -20,6 +20,7 @@
   "item.dynamicvehicles.cargo_truck": "Cargo Truck",
   "entity.dynamicvehicles.cargo_truck": "Cargo Truck",
   "key.dynamicvehicles.headlights": "Cycle headlights (auto, on, off)",
+  "key.dynamicvehicles.gear_reverse": "Toggle reverse gear",
   "key.categories.dynamicvehicles": "Dynamic Vehicles",
   "entity.dynamicvehicles.villager.dispatcher": "Dispatcher",
   "block.dynamicvehicles.dispatch_board": "Dispatch Board",

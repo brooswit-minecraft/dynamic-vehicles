@@ -102,7 +102,7 @@ final class SableCarBody {
     }
 
     /** Apply this tick's wheel forces, then move the entity to where the body is. */
-    void tick(CarEntity car, double throttle, double steer, boolean handbrake, double dt) {
+    void tick(CarEntity car, double throttle, double steer, boolean handbrake, CarPhysics.Gear gear, double dt) {
         box.updatePose();
         Pose3d pose = new Pose3d(box.getPose());
         Vector3d position = pose.position();
@@ -282,9 +282,12 @@ final class SableCarBody {
                 } else if (throttle < 0) {
                     if (forwardSpeed > 0.5) {
                         brake = -throttle * BRAKE_FORCE * spec.forceScale();
-                    } else {
+                    } else if (gear == CarPhysics.Gear.REVERSE) {
                         drive = throttle * REVERSE_FORCE * spec.forceScale() * Math.max(0.0, 1.0 - Math.abs(forwardSpeed) / 8.0);
                     }
+                    // gear is NEUTRAL or a forward gear and the car is near a standstill: holding brake must
+                    // never reverse it (MINECRAFT-228 hard acceptance criterion) -- only an explicit REVERSE
+                    // gear lets throttle < 0 drive the car backward.
                 }
                 double brakeGain = 1.0;
                 if (throttle == 0 && Math.abs(forwardSpeed) < 1.5) {

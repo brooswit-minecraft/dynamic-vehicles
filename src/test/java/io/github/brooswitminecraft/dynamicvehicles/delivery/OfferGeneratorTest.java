@@ -26,27 +26,33 @@ class OfferGeneratorTest {
                 new int[] {0, 2, 4, 6, 10, 16},
                 new int[] {0, 1, 2, 3, 4, 5},
                 0.0, 1.0,
-                0.2,
-                1.0, 3.0,
+                2.0, 0.01,
+                1.0, 2.0,
                 6000, 4.0);
     }
 
     @Test
     void offerConfig_rejectsMismatchedPerLevelArrayLengths() {
         assertThrows(IllegalArgumentException.class, () -> new OfferConfig(
-                new int[] {0, 1, 2}, new int[] {0, 1, 2, 3, 4, 5}, 0.0, 1.0, 0.2, 1.0, 3.0, 6000, 4.0));
+                new int[] {0, 1, 2}, new int[] {0, 1, 2, 3, 4, 5}, 0.0, 1.0, 2.0, 0.01, 1.0, 2.0, 6000, 4.0));
     }
 
     @Test
     void offerConfig_rejectsDangerMaxNotGreaterThanDangerMin() {
         assertThrows(IllegalArgumentException.class, () -> new OfferConfig(
-                new int[] {0, 2, 4, 6, 10, 16}, new int[] {0, 1, 2, 3, 4, 5}, 0.5, 0.5, 0.2, 1.0, 3.0, 6000, 4.0));
+                new int[] {0, 2, 4, 6, 10, 16}, new int[] {0, 1, 2, 3, 4, 5}, 0.5, 0.5, 2.0, 0.01, 1.0, 2.0, 6000, 4.0));
     }
 
     @Test
     void offerConfig_rejectsRewardMultiplierDecreasingWithDanger() {
         assertThrows(IllegalArgumentException.class, () -> new OfferConfig(
-                new int[] {0, 2, 4, 6, 10, 16}, new int[] {0, 1, 2, 3, 4, 5}, 0.0, 1.0, 0.2, 3.0, 1.0, 6000, 4.0));
+                new int[] {0, 2, 4, 6, 10, 16}, new int[] {0, 1, 2, 3, 4, 5}, 0.0, 1.0, 2.0, 0.01, 3.0, 1.0, 6000, 4.0));
+    }
+
+    @Test
+    void offerConfig_rejectsNegativeRewardBase() {
+        assertThrows(IllegalArgumentException.class, () -> new OfferConfig(
+                new int[] {0, 2, 4, 6, 10, 16}, new int[] {0, 1, 2, 3, 4, 5}, 0.0, 1.0, -0.01, 0.01, 1.0, 2.0, 6000, 4.0));
     }
 
     // --- AC5: villager level gates the eligible rings ---
@@ -161,7 +167,7 @@ class OfferGeneratorTest {
     void danger_staysWithinTheConfiguredRange() {
         OfferConfig config = new OfferConfig(
                 new int[] {0, 2, 4, 6, 10, 16}, new int[] {0, 1, 2, 3, 4, 5},
-                0.25, 0.75, 0.2, 1.0, 3.0, 6000, 4.0);
+                0.25, 0.75, 2.0, 0.01, 1.0, 2.0, 6000, 4.0);
         for (int x = 0; x < 50; x++) {
             double danger = OfferGenerator.rollDanger(1234L, new RegionCoord(x, -x), config);
             assertTrue(danger >= 0.25 && danger < 0.75, "danger " + danger + " is outside the configured [0.25, 0.75) range");
@@ -169,6 +175,38 @@ class OfferGeneratorTest {
     }
 
     // --- AC4: reward scales from both distance and danger, monotonically ---
+
+    @Test
+    void reward_usesTheConfiguredBaseDistanceAndDangerFormula() {
+        OfferConfig config = config();
+        double[][] cases = {
+                {500.0, 7.0, 10.5, 14.0},
+                {1500.0, 17.0, 25.5, 34.0},
+                {5000.0, 52.0, 78.0, 104.0},
+                {8000.0, 82.0, 123.0, 164.0}
+        };
+
+        double previousLow = Double.NEGATIVE_INFINITY;
+        double previousMid = Double.NEGATIVE_INFINITY;
+        double previousHigh = Double.NEGATIVE_INFINITY;
+        for (double[] rewardCase : cases) {
+            double distance = rewardCase[0];
+            double low = OfferGenerator.reward(distance, 0.0, config);
+            double mid = OfferGenerator.reward(distance, 0.5, config);
+            double high = OfferGenerator.reward(distance, 1.0, config);
+
+            assertEquals(rewardCase[1], low, 1e-9, "low-danger reward at " + distance + " blocks");
+            assertEquals(rewardCase[2], mid, 1e-9, "mid-danger reward at " + distance + " blocks");
+            assertEquals(rewardCase[3], high, 1e-9, "high-danger reward at " + distance + " blocks");
+            assertTrue(low > previousLow && mid > previousMid && high > previousHigh,
+                    "reward must increase with distance at every danger level");
+            assertTrue(low < mid && mid < high,
+                    "reward must increase with danger at " + distance + " blocks");
+            previousLow = low;
+            previousMid = mid;
+            previousHigh = high;
+        }
+    }
 
     @Test
     void reward_isMonotonicIncreasingInDistanceAtFixedDanger() {

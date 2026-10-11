@@ -39,7 +39,7 @@ public final class OfferGenerator {
      * allowing a short/high-risk offer to out-pay a long/low-risk one.
      */
     public static double reward(double approxDistance, double danger, OfferConfig config) {
-        return approxDistance * config.rewardPerBlock() * dangerMultiplier(danger, config);
+        return (config.rewardBase() + approxDistance * config.rewardPerBlock()) * dangerMultiplier(danger, config);
     }
 
     private static double dangerMultiplier(double danger, OfferConfig config) {

@@ -46,6 +46,19 @@ public final class SeatAssignment<T> {
         return index;
     }
 
+    /**
+     * Restores a rider to one particular saved seat. Returns {@code true} only when that seat exists and
+     * is currently free. Normal boarding must continue to use {@link #add(Object, boolean)}; this is only
+     * for restoring the UUID-to-seat relationship saved by {@link SeatPersistence}.
+     */
+    public boolean restore(T rider, int index) {
+        if (index < 0 || index >= seats.length || seats[index] != null) {
+            return false;
+        }
+        seats[index] = rider;
+        return true;
+    }
+
     /** Frees whichever seat this rider occupies, if any. */
     public void remove(T rider) {
         for (int i = 0; i < seats.length; i++) {

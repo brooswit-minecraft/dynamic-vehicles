@@ -99,6 +99,8 @@ public class CarEntity extends Entity {
     private final VehicleSpec spec;
     /** Which seat each current passenger sits in (MINECRAFT-172); seat 0 is always the driver. */
     private final SeatAssignment<Entity> seats;
+    /** Saved UUID-to-seat assignments, consumed as vanilla reconstructs passenger entities on load. */
+    private final java.util.Map<java.util.UUID, Integer> savedSeatAssignments = new java.util.HashMap<>();
     /** A departing passenger's own dismount point, frozen by {@link #removePassenger} for the
      * {@link #getDismountLocationForPassenger} lookup that follows it moments later (see that method's
      * javadoc) -- entries are consumed (removed) as soon as that lookup reads them. */
@@ -350,7 +352,10 @@ public class CarEntity extends Entity {
         pendingDismounts.remove(passenger);
         // MINECRAFT-211: a non-player (an auto-boarding mob) never takes seat 0, the driver's, even if it
         // is empty -- only a player may ever drive.
-        seats.add(passenger, !(passenger instanceof Player));
+        Integer savedSeat = savedSeatAssignments.remove(passenger.getUUID());
+        if (savedSeat == null || !seats.restore(passenger, savedSeat)) {
+            seats.add(passenger, !(passenger instanceof Player));
+        }
         super.addPassenger(passenger);
         if (!level().isClientSide() && getPassengers().size() == 1) {
             level().playSound(null, getX(), getY() + 0.5, getZ(), ModSounds.ENGINE_START.get(),
@@ -474,6 +479,8 @@ public class CarEntity extends Entity {
         if (orientation != null) {
             savedOrientation = new org.joml.Quaternionf(orientation.x(), orientation.y(), orientation.z(), orientation.w());
         }
+        savedSeatAssignments.clear();
+        savedSeatAssignments.putAll(SeatPersistence.read(tag, spec.seatCount()));
     }
 
     @Override
@@ -493,6 +500,14 @@ public class CarEntity extends Entity {
             tag.putFloat("OrientationZ", q.z);
             tag.putFloat("OrientationW", q.w);
         }
+        java.util.List<SeatAssignments.Assignment> assignments = new java.util.ArrayList<>();
+        for (int index = 0; index < seats.seatCount(); index++) {
+            Entity passenger = seats.at(index);
+            if (passenger != null) {
+                assignments.add(new SeatAssignments.Assignment(passenger.getUUID(), index));
+            }
+        }
+        SeatPersistence.write(tag, assignments);
     }
 
     /** The orientation to restore when the body is recreated after a reload, or null to derive it from the yaw. */

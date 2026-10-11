@@ -750,6 +750,10 @@ public class CarEntity extends Entity {
         double originZ = getZ();
         double[] safe = SafeEjectPlacement.find(originX, originY, originZ,
                 candidate -> isFreeOfBlocks(serverLevel, mob, candidate));
+        if (safe == null) {
+            // Keep the mob mounted until a collision-free nearby position exists; never place it inside a block.
+            return;
+        }
         mob.stopRiding();
         mob.setPos(safe[0], safe[1], safe[2]);
     }

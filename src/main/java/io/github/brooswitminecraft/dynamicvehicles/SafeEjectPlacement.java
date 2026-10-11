@@ -14,7 +14,7 @@ public final class SafeEjectPlacement {
     /** How far, in blocks, {@link #find} will search before giving up -- "never teleported far". */
     public static final int SEARCH_RADIUS_BLOCKS = 3;
 
-    /** Offsets (x, y, z) around the origin, nearest ring first, {@link #find} tries before falling back. */
+    /** Offsets (x, y, z) around the origin, nearest ring first. */
     private static final double[][] OFFSETS = buildOffsets();
 
     private SafeEjectPlacement() {}
@@ -22,8 +22,8 @@ public final class SafeEjectPlacement {
     /**
      * The first of a small ring of candidate points around ({@code originX}, {@code originY}, {@code
      * originZ}) -- same height as the vehicle, out to {@link #SEARCH_RADIUS_BLOCKS} blocks horizontally,
-     * nearest first -- that {@code isFree} accepts; the origin itself (the vehicle's own position) if
-     * none of them are, since a mob must land somewhere and that is better than nowhere.
+     * nearest first -- that {@code isFree} accepts. If no nearby point is safe, the origin is checked as
+     * a last resort; if it is unsafe too, {@code null} is returned and the caller must defer ejection.
      */
     public static double[] find(double originX, double originY, double originZ, Predicate<double[]> isFree) {
         for (double[] offset : OFFSETS) {
@@ -32,7 +32,8 @@ public final class SafeEjectPlacement {
                 return candidate;
             }
         }
-        return new double[] {originX, originY, originZ};
+        double[] origin = {originX, originY, originZ};
+        return isFree.test(origin) ? origin : null;
     }
 
     private static double[][] buildOffsets() {

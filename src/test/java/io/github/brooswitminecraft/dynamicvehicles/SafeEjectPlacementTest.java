@@ -44,8 +44,15 @@ class SafeEjectPlacementTest {
     }
 
     @Test
-    void fallsBackToTheOriginWhenNothingInRangeIsFree() {
+    void refusesToReturnAnUnsafeOriginWhenNothingInRangeIsFree() {
         double[] result = SafeEjectPlacement.find(3.0, 7.0, -2.0, candidate -> false);
+        assertEquals(null, result, "an exhausted search must not return an unvalidated origin");
+    }
+
+    @Test
+    void acceptsTheOriginOnlyWhenItIsActuallyFree() {
+        double[] result = SafeEjectPlacement.find(3.0, 7.0, -2.0,
+                candidate -> candidate[0] == 3.0 && candidate[1] == 7.0 && candidate[2] == -2.0);
         assertArrayEquals(new double[] {3.0, 7.0, -2.0}, result);
     }
 

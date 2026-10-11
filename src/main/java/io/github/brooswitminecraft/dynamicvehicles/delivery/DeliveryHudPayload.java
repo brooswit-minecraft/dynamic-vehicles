@@ -29,6 +29,7 @@ public record DeliveryHudPayload(
         boolean active,
         String destinationDimension,
         double destinationX,
+        double destinationY,
         double destinationZ,
         long deadlineTick,
         double danger,
@@ -44,6 +45,7 @@ public record DeliveryHudPayload(
                 buf.writeBoolean(payload.active());
                 buf.writeUtf(payload.destinationDimension());
                 buf.writeDouble(payload.destinationX());
+                buf.writeDouble(payload.destinationY());
                 buf.writeDouble(payload.destinationZ());
                 buf.writeVarLong(payload.deadlineTick());
                 buf.writeDouble(payload.danger());
@@ -51,12 +53,12 @@ public record DeliveryHudPayload(
                 buf.writeDouble(payload.dangerMax());
             },
             buf -> new DeliveryHudPayload(
-                    buf.readBoolean(), buf.readUtf(), buf.readDouble(), buf.readDouble(),
+                    buf.readBoolean(), buf.readUtf(), buf.readDouble(), buf.readDouble(), buf.readDouble(),
                     buf.readVarLong(), buf.readDouble(), buf.readDouble(), buf.readDouble()));
 
     /** The HUD-cleared payload sent on complete/expire. */
     public static DeliveryHudPayload inactive() {
-        return new DeliveryHudPayload(false, "", 0.0, 0.0, 0L, 0.0, 0.0, 0.0);
+        return new DeliveryHudPayload(false, "", 0.0, 0.0, 0.0, 0L, 0.0, 0.0, 0.0);
     }
 
     @Override

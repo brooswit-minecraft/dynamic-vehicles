@@ -106,14 +106,15 @@ public final class WheelMath {
         return new Tire(wantLong * scale, wantLat * scale, slip, wantLong);
     }
 
-    /** As above, carrying this wheel's vehicle's {@link VehicleSpec.VehicleTuning} through to this call
-     * site for a later story to read (MINECRAFT-227/245: LSD lock, front/rear torque split, torque-
-     * vectoring gain, camber, toe) &mdash; {@code tuning} is NOT read here and does not affect the result;
-     * this overload exists purely so a later story can add the math without touching every caller again. */
+    /** As above, applying the vehicle's static camber/toe setup before the existing friction-circle math.
+     * Other {@link VehicleSpec.VehicleTuning} fields remain owned by their respective models. */
     public static Tire tire(double vLong, double vLat, double normalForce, double mu, double rollingCoefficient,
             double lateralScale, double driveForce, double brakeForce, double brakeGain, double effectiveMass,
             double dt, VehicleSpec.VehicleTuning tuning) {
-        return tire(vLong, vLat, normalForce, mu, rollingCoefficient, lateralScale, driveForce, brakeForce, brakeGain, effectiveMass, dt);
+        CamberToeGripModel.GripModifiers modifiers = CamberToeGripModel.modifiers(tuning.camberDeg(), tuning.toeDeg());
+        return tire(vLong, vLat, normalForce, mu * modifiers.longitudinalMuScale(),
+                rollingCoefficient, lateralScale * modifiers.lateralScale(), driveForce, brakeForce,
+                brakeGain, effectiveMass, dt);
     }
 
     /**

@@ -7,6 +7,12 @@ public final class ImpactRules {
 
     private ImpactRules() {}
 
+    enum BlockImpactRoute {
+        TERRAIN_EROSION,
+        TRUCK_BAMBOO,
+        DEFAULT
+    }
+
     /** A creeper contact is meaningful only at the existing hard-impact threshold and outside the cooldown. */
     public static boolean creeperExplosionEligible(double speed, double minImpactSpeed, boolean coolingDown) {
         return !coolingDown && speed >= minImpactSpeed;
@@ -25,6 +31,21 @@ public final class ImpactRules {
     /** Dirt and sand are terrain material: collision reports abuse to Dynamic Terrain rather than deleting it. */
     public static boolean usesTerrainErosion(boolean dirtOrSand) {
         return dirtOrSand;
+    }
+
+    /**
+     * Select the special block-impact path before collision code considers a truck-only return.
+     * Loose terrain is deliberately first: it is handled by Dynamic Terrain for every vehicle,
+     * including a truck.
+     */
+    static BlockImpactRoute blockImpactRoute(boolean truck, boolean dirtOrSand, boolean bamboo, boolean breakable) {
+        if (usesTerrainErosion(dirtOrSand)) {
+            return BlockImpactRoute.TERRAIN_EROSION;
+        }
+        if (truckMayBreakBamboo(truck, bamboo, breakable)) {
+            return BlockImpactRoute.TRUCK_BAMBOO;
+        }
+        return BlockImpactRoute.DEFAULT;
     }
 
     static double afterSolidImpact(double speed) {

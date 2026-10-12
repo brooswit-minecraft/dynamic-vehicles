@@ -15,11 +15,25 @@ class ImpactRulesTest {
     }
 
     @Test
+    void truckRoutesDirtAndSandToTerrainBeforeItsNarrowBambooRule() {
+        assertEquals(ImpactRules.BlockImpactRoute.TERRAIN_EROSION,
+                ImpactRules.blockImpactRoute(true, true, false, true),
+                "a truck impact on dirt or sand must reach Dynamic Terrain before the truck return");
+        assertEquals(ImpactRules.BlockImpactRoute.TERRAIN_EROSION,
+                ImpactRules.blockImpactRoute(true, true, true, true),
+                "terrain remains authoritative even if a block is otherwise bamboo-eligible");
+    }
+
+    @Test
     void onlyBreakableBambooInFrontOfTheTruckIsEligible() {
         assertTrue(ImpactRules.truckMayBreakBamboo(true, true, true));
         assertFalse(ImpactRules.truckMayBreakBamboo(false, true, true));
         assertFalse(ImpactRules.truckMayBreakBamboo(true, false, true));
         assertFalse(ImpactRules.truckMayBreakBamboo(true, true, false));
+        assertEquals(ImpactRules.BlockImpactRoute.TRUCK_BAMBOO,
+                ImpactRules.blockImpactRoute(true, false, true, true));
+        assertEquals(ImpactRules.BlockImpactRoute.DEFAULT,
+                ImpactRules.blockImpactRoute(true, false, true, false));
     }
 
     @Test

@@ -43,6 +43,7 @@ public final class WheelInput {
     private static boolean lastSentHonk;
     private static boolean lastSentHandbrake;
     private static boolean wasRidingCarForPaddles;
+    private static CarPhysics.Gear lastSentShifterGear;
 
     private WheelInput() {}
 
@@ -104,6 +105,9 @@ public final class WheelInput {
             // resend even if our last-sent flags happen to already match (e.g. after a disconnect/rejoin).
             lastSentHonk = false;
             lastSentHandbrake = false;
+            // The newly mounted car starts with its own default gear state, so resend a held physical
+            // shifter position even when it matches the last car we rode.
+            lastSentShifterGear = null;
         }
         wasRidingCarForPaddles = ridingCar;
         if (!ridingCar) {
@@ -125,6 +129,13 @@ public final class WheelInput {
             lastSentHonk = paddles.honk();
             lastSentHandbrake = paddles.handbrake();
             PacketDistributor.sendToServer(new WheelPaddlesPayload(paddles.honk(), paddles.handbrake()));
+        }
+        if (wheelActive && ClientConfig.WHEEL_SHIFTER_ENABLED.get()) {
+            CarPhysics.Gear shifterGear = WheelMapping.shifterGear(true, readButtons(device), shifterButtons());
+            if (shifterGear != null && shifterGear != lastSentShifterGear) {
+                lastSentShifterGear = shifterGear;
+                PacketDistributor.sendToServer(new GearSelectPayload(shifterGear));
+            }
         }
     }
 
@@ -178,6 +189,14 @@ public final class WheelInput {
 
     private static WheelMapping.PedalRest restMode() {
         return WheelMapping.restOr(ClientConfig.WHEEL_PEDAL_REST.get(), profile().pedalRest());
+    }
+
+    private static WheelMapping.ShifterButtons shifterButtons() {
+        return new WheelMapping.ShifterButtons(
+                ClientConfig.WHEEL_SHIFTER_NEUTRAL_BUTTON.get(), ClientConfig.WHEEL_SHIFTER_REVERSE_BUTTON.get(),
+                ClientConfig.WHEEL_SHIFTER_FORWARD_BUTTONS[0].get(), ClientConfig.WHEEL_SHIFTER_FORWARD_BUTTONS[1].get(),
+                ClientConfig.WHEEL_SHIFTER_FORWARD_BUTTONS[2].get(), ClientConfig.WHEEL_SHIFTER_FORWARD_BUTTONS[3].get(),
+                ClientConfig.WHEEL_SHIFTER_FORWARD_BUTTONS[4].get(), ClientConfig.WHEEL_SHIFTER_FORWARD_BUTTONS[5].get());
     }
 
     private static boolean isRiding() {

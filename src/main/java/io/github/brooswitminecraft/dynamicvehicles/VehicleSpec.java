@@ -214,10 +214,10 @@ public record VehicleSpec(
 
     /**
      * Per-vehicle tuning dials (MINECRAFT-227/245), foundation for the sibling stories that implement LSD,
-     * torque distribution/vectoring and camber/toe. The torque-split and vectoring fields are read by
-     * {@link TorqueDistribution}; the remaining fields are retained for their sibling stories.
-     * {@link #IDENTITY} is the value every field must take for a vehicle's handling to stay exactly as it
-     * is today.
+     * torque distribution/vectoring and camber/toe. Torque-split and vectoring are read by
+     * {@link TorqueDistribution}; camber and toe are read by {@link CamberToeGripModel} through
+     * {@code WheelMath.tire}; the remaining fields are read by their respective models. {@link #IDENTITY}
+     * is the value every field must take for a vehicle's handling to stay exactly as it is today.
      *
      * <p>Grouped into their own small type rather than added to {@link TireTuning} or left as bare fields
      * on {@link VehicleSpec} directly: they are a different physical domain from {@link TireTuning} (which

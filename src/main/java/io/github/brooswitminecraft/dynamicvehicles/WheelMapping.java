@@ -147,4 +147,25 @@ public final class WheelMapping {
     public static Paddles resolve(boolean jumpPressed, Paddles wheelPaddles) {
         return new Paddles(jumpPressed || wheelPaddles.honk(), jumpPressed || wheelPaddles.handbrake());
     }
+
+    /** Configured GLFW button indexes for the optional physical shifter. -1 means unmapped. */
+    public record ShifterButtons(int neutral, int reverse, int d1, int d2, int d3, int d4, int d5, int d6) {}
+
+    /** Resolves an H-pattern/sequential button sample to the existing explicit gear state. */
+    public static CarPhysics.Gear shifterGear(byte[] buttons, ShifterButtons mapping) {
+        if (buttonDown(buttons, mapping.reverse())) return CarPhysics.Gear.REVERSE;
+        if (buttonDown(buttons, mapping.neutral())) return CarPhysics.Gear.NEUTRAL;
+        if (buttonDown(buttons, mapping.d1())) return CarPhysics.Gear.D1;
+        if (buttonDown(buttons, mapping.d2())) return CarPhysics.Gear.D2;
+        if (buttonDown(buttons, mapping.d3())) return CarPhysics.Gear.D3;
+        if (buttonDown(buttons, mapping.d4())) return CarPhysics.Gear.D4;
+        if (buttonDown(buttons, mapping.d5())) return CarPhysics.Gear.D5;
+        if (buttonDown(buttons, mapping.d6())) return CarPhysics.Gear.D6;
+        return null;
+    }
+
+    /** The feature gate is deliberately outside all normal input mapping: disabled means no gear selection. */
+    public static CarPhysics.Gear shifterGear(boolean enabled, byte[] buttons, ShifterButtons mapping) {
+        return enabled ? shifterGear(buttons, mapping) : null;
+    }
 }

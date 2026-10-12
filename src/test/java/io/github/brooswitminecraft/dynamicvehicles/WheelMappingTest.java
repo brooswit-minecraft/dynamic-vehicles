@@ -139,4 +139,18 @@ class WheelMappingTest {
         assertEquals(new WheelMapping.Paddles(false, true), WheelMapping.resolve(false, new WheelMapping.Paddles(false, true)));
         assertEquals(new WheelMapping.Paddles(true, true), WheelMapping.resolve(false, new WheelMapping.Paddles(true, true)));
     }
+
+    @Test
+    void physicalShifterMapsEveryExplicitGearAndLeavesUnmappedButtonsAlone() {
+        var mapping = new WheelMapping.ShifterButtons(0, 1, 2, 3, 4, 5, 6, 7);
+        CarPhysics.Gear[] expected = {CarPhysics.Gear.NEUTRAL, CarPhysics.Gear.REVERSE, CarPhysics.Gear.D1, CarPhysics.Gear.D2,
+                CarPhysics.Gear.D3, CarPhysics.Gear.D4, CarPhysics.Gear.D5, CarPhysics.Gear.D6};
+        for (int button = 0; button < expected.length; button++) {
+            byte[] sample = new byte[8]; sample[button] = 1;
+            assertEquals(expected[button], WheelMapping.shifterGear(sample, mapping));
+        }
+        assertEquals(null, WheelMapping.shifterGear(new byte[8], mapping));
+        assertEquals(null, WheelMapping.shifterGear(new byte[] {1}, new WheelMapping.ShifterButtons(-1, -1, -1, -1, -1, -1, -1, -1)));
+        assertEquals(null, WheelMapping.shifterGear(false, new byte[] {0, 1}, mapping), "off by default leaves a physical reverse button entirely inert");
+    }
 }

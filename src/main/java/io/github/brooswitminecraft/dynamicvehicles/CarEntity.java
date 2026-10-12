@@ -286,6 +286,12 @@ public class CarEntity extends Entity {
         return gear == CarPhysics.Gear.REVERSE ? "reverse" : "forward";
     }
 
+    /** Server: selects one state from the explicit MINECRAFT-228 gear interface. */
+    String selectGear(CarPhysics.Gear selected) {
+        gear = selected;
+        return selected == CarPhysics.Gear.REVERSE ? "reverse" : selected == CarPhysics.Gear.NEUTRAL ? "neutral" : selected.name().toLowerCase(java.util.Locale.ROOT);
+    }
+
     /** Server: play an impact when the car has just lost a lot of speed at once. */
     void checkImpact(double currentSpeed) {
         if (impactCooldown > 0) {

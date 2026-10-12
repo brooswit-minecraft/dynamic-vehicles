@@ -163,7 +163,7 @@ public class DynamicVehiclesMod {
                                 .then(Commands.argument("value", DoubleArgumentType.doubleArg())
                                         .executes(context -> tuneDrivenVehicle(context,
                                                 StringArgumentType.getString(context, "setting"),
-                                                DoubleArgumentType.getDouble(context, "value")))))));
+                                                DoubleArgumentType.getDouble(context, "value"))))))));
         // Debug: /dvdrive <throttle> <steer> <ticks> drives every loaded car as if a rider held those inputs.
         event.getDispatcher().register(Commands.literal("dvdrive").requires(source -> source.hasPermission(2))
                 .then(Commands.argument("throttle", DoubleArgumentType.doubleArg(-1, 1))

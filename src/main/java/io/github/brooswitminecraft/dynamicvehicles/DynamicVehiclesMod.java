@@ -155,7 +155,7 @@ public class DynamicVehiclesMod {
                             CarDebug.enabled = false;
                             context.getSource().sendSuccess(() -> Component.literal("car debug overlay off"), true);
                             return 1;
-                        }))))
+                        })))
                 // Per-instance rather than type-wide tuning: the command only changes the car the player is
                 // currently driving, and CarEntity persists that state in the entity's own NBT.
                 .then(Commands.literal("tune")

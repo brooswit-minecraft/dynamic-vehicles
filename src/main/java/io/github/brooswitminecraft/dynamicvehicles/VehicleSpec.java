@@ -214,10 +214,9 @@ public record VehicleSpec(
 
     /**
      * Per-vehicle tuning dials (MINECRAFT-227/245), foundation for the sibling stories that implement LSD,
-     * torque distribution/vectoring and camber/toe: this story is data and plumbing only, so none of these
-     * five fields is read by any physics computation yet (see {@code WheelMath.tire}'s own overload that
-     * accepts a {@code VehicleTuning} and ignores it, and {@code SableCarBody.tick}, which reads
-     * {@code spec.vehicleTuning()} and passes it there). {@link #IDENTITY} is the value every field must
+     * torque distribution/vectoring and camber/toe. Camber and toe are read by {@link CamberToeGripModel}
+     * through {@code WheelMath.tire}; the remaining fields are read by their respective models.
+     * {@link #IDENTITY} is the value every field must
      * take for a vehicle's handling to stay exactly as it is today.
      *
      * <p>Grouped into their own small type rather than added to {@link TireTuning} or left as bare fields

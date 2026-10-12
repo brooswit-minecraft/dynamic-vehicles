@@ -364,9 +364,9 @@ final class SableCarBody {
                 // live-reloadable) rather than the spec's own numbers, which exist only to mark the opt-in.
                 boolean driftTuned = !spec.tireTuning().isIdentity();
                 // MINECRAFT-317: this entity's persisted tuning (LSD lock, front/rear torque split, torque-
-                // vectoring gain, camber, toe) is threaded through to the owning physics model. On this
-                // branch WheelMath's overload does not yet read camber/toe, so those two values remain a
-                // mathematical no-op until the already-existing alignment model is merged into the parent.
+                // vectoring gain, camber, toe) is threaded through to the owning physics model. WheelMath
+                // applies the static alignment grip modifiers; the differential and torque-distribution
+                // models consume their respective values above.
                 WheelMath.Tire tire = !driftTuned
                         ? WheelMath.tire(vLong, vLat, force, gripMu, rollingCoefficient, lateralScale,
                                 drive, brake, brakeGain, effectiveMass, subDt, tuning)

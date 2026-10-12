@@ -6,6 +6,7 @@ import com.mojang.logging.LogUtils;
 
 import com.mojang.brigadier.arguments.DoubleArgumentType;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
+import com.mojang.brigadier.arguments.StringArgumentType;
 
 import net.minecraft.commands.Commands;
 import net.minecraft.core.registries.Registries;
@@ -154,7 +155,15 @@ public class DynamicVehiclesMod {
                             CarDebug.enabled = false;
                             context.getSource().sendSuccess(() -> Component.literal("car debug overlay off"), true);
                             return 1;
-                        }))));
+                        }))))
+                // Per-instance rather than type-wide tuning: the command only changes the car the player is
+                // currently driving, and CarEntity persists that state in the entity's own NBT.
+                .then(Commands.literal("tune")
+                        .then(Commands.argument("setting", StringArgumentType.word())
+                                .then(Commands.argument("value", DoubleArgumentType.doubleArg())
+                                        .executes(context -> tuneDrivenVehicle(context,
+                                                StringArgumentType.getString(context, "setting"),
+                                                DoubleArgumentType.getDouble(context, "value")))))));
         // Debug: /dvdrive <throttle> <steer> <ticks> drives every loaded car as if a rider held those inputs.
         event.getDispatcher().register(Commands.literal("dvdrive").requires(source -> source.hasPermission(2))
                 .then(Commands.argument("throttle", DoubleArgumentType.doubleArg(-1, 1))
@@ -186,6 +195,32 @@ public class DynamicVehiclesMod {
                             context.getSource().sendSuccess(() -> Component.literal("forced slip on " + count + " car(s)"), true);
                             return count;
                         }))));
+    }
+
+    private static int tuneDrivenVehicle(com.mojang.brigadier.context.CommandContext<net.minecraft.commands.CommandSourceStack> context,
+            String setting, double value) {
+        net.minecraft.world.entity.Entity actor = context.getSource().getEntity();
+        if (!(actor instanceof net.minecraft.world.entity.player.Player player)
+                || !(player.getVehicle() instanceof CarEntity car)
+                || car.getControllingPassenger() != player) {
+            context.getSource().sendFailure(Component.literal("You must be driving the vehicle you want to tune."));
+            return 0;
+        }
+        if (!car.setVehicleTuning(setting, value)) {
+            context.getSource().sendFailure(Component.literal("Unknown tuning. Use lsd_lock_percent, front_torque_split, "
+                    + "vectoring_gain, camber_deg, or toe_deg."));
+            return 0;
+        }
+        VehicleSpec.VehicleTuning tuned = car.vehicleTuning();
+        context.getSource().sendSuccess(() -> Component.literal("Updated this vehicle: " + setting + " = "
+                + switch (setting) {
+                    case "lsd_lock_percent" -> tuned.lsdLockPercent();
+                    case "front_torque_split" -> tuned.frontTorqueSplit();
+                    case "vectoring_gain" -> tuned.vectoringGain();
+                    case "camber_deg" -> tuned.camberDeg();
+                    default -> tuned.toeDeg();
+                }), true);
+        return 1;
     }
 
     private void addCreative(BuildCreativeModeTabContentsEvent event) {

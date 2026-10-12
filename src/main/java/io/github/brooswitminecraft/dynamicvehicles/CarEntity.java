@@ -97,6 +97,8 @@ public class CarEntity extends Entity {
     private int forcedSlipTicks;
 
     private final VehicleSpec spec;
+    /** Per-entity tuning, initialized from the immutable vehicle type then retained in this entity's NBT. */
+    private VehicleSpec.VehicleTuning vehicleTuning;
     /** Which seat each current passenger sits in (MINECRAFT-172); seat 0 is always the driver. */
     private final SeatAssignment<Entity> seats;
     /** Saved UUID-to-seat assignments, consumed as vanilla reconstructs passenger entities on load. */
@@ -119,12 +121,45 @@ public class CarEntity extends Entity {
                 : DynamicVehiclesMod.INDY.isBound() && type == DynamicVehiclesMod.INDY.get() ? VehicleSpec.INDY
                 : DynamicVehiclesMod.BUS.isBound() && type == DynamicVehiclesMod.BUS.get() ? VehicleSpec.BUS
                 : DynamicVehiclesMod.CARGO_TRUCK.isBound() && type == DynamicVehiclesMod.CARGO_TRUCK.get() ? VehicleSpec.CARGO_TRUCK : VehicleSpec.CAR;
+        this.vehicleTuning = spec.vehicleTuning();
         this.seats = new SeatAssignment<>(spec.seatCount());
     }
 
     /** This vehicle's shape and drivetrain: the car's or the truck's. */
     public VehicleSpec spec() {
         return spec;
+    }
+
+    /** The current, per-instance tuning used by the server-side wheel physics. */
+    VehicleSpec.VehicleTuning vehicleTuning() {
+        return vehicleTuning;
+    }
+
+    /**
+     * Applies one driver-configurable tuning dial to this particular entity. Values are always clamped before
+     * they can reach physics, including values received through a command or loaded from old/corrupt save data.
+     *
+     * @return whether {@code setting} was a supported dial
+     */
+    boolean setVehicleTuning(String setting, double value) {
+        double lsd = vehicleTuning.lsdLockPercent();
+        double split = vehicleTuning.frontTorqueSplit();
+        double vectoring = vehicleTuning.vectoringGain();
+        double camber = vehicleTuning.camberDeg();
+        double toe = vehicleTuning.toeDeg();
+        switch (setting) {
+            case "lsd_lock_percent" -> lsd = value;
+            case "front_torque_split" -> split = value;
+            case "vectoring_gain" -> vectoring = value;
+            case "camber_deg" -> camber = value;
+            case "toe_deg" -> toe = value;
+            default -> {
+                return false;
+            }
+        }
+        vehicleTuning = VehicleTuningLimits.clamp(new VehicleSpec.VehicleTuning(lsd, split, vectoring, camber, toe),
+                spec.vehicleTuning());
+        return true;
     }
 
     @Override
@@ -487,6 +522,13 @@ public class CarEntity extends Entity {
         }
         savedSeatAssignments.clear();
         savedSeatAssignments.putAll(SeatPersistence.read(tag, spec.seatCount()));
+        VehicleSpec.VehicleTuning defaults = spec.vehicleTuning();
+        vehicleTuning = VehicleTuningLimits.clamp(new VehicleSpec.VehicleTuning(
+                tag.contains("TuningLsdLock", Tag.TAG_DOUBLE) ? tag.getDouble("TuningLsdLock") : defaults.lsdLockPercent(),
+                tag.contains("TuningFrontSplit", Tag.TAG_DOUBLE) ? tag.getDouble("TuningFrontSplit") : defaults.frontTorqueSplit(),
+                tag.contains("TuningVectoring", Tag.TAG_DOUBLE) ? tag.getDouble("TuningVectoring") : defaults.vectoringGain(),
+                tag.contains("TuningCamber", Tag.TAG_DOUBLE) ? tag.getDouble("TuningCamber") : defaults.camberDeg(),
+                tag.contains("TuningToe", Tag.TAG_DOUBLE) ? tag.getDouble("TuningToe") : defaults.toeDeg()), defaults);
     }
 
     @Override
@@ -506,6 +548,11 @@ public class CarEntity extends Entity {
             tag.putFloat("OrientationZ", q.z);
             tag.putFloat("OrientationW", q.w);
         }
+        tag.putDouble("TuningLsdLock", vehicleTuning.lsdLockPercent());
+        tag.putDouble("TuningFrontSplit", vehicleTuning.frontTorqueSplit());
+        tag.putDouble("TuningVectoring", vehicleTuning.vectoringGain());
+        tag.putDouble("TuningCamber", vehicleTuning.camberDeg());
+        tag.putDouble("TuningToe", vehicleTuning.toeDeg());
         java.util.List<SeatAssignments.Assignment> assignments = new java.util.ArrayList<>();
         for (int index = 0; index < seats.seatCount(); index++) {
             Entity passenger = seats.at(index);

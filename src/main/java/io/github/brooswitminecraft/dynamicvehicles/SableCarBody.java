@@ -103,6 +103,7 @@ final class SableCarBody {
 
     /** Apply this tick's wheel forces, then move the entity to where the body is. */
     void tick(CarEntity car, double throttle, double steer, boolean handbrake, CarPhysics.Gear gear, double dt) {
+        VehicleSpec.VehicleTuning tuning = car.vehicleTuning();
         box.updatePose();
         Pose3d pose = new Pose3d(box.getPose());
         Vector3d position = pose.position();
@@ -310,10 +311,10 @@ final class SableCarBody {
                     lateralScale = 0.35;
                 }
                 int partner = partners[wheel];
-                boolean torqueDistributionActive = spec.vehicleTuning().frontTorqueSplit() != 0.5
-                        || spec.vehicleTuning().vectoringGain() != 0.0;
+                boolean torqueDistributionActive = tuning.frontTorqueSplit() != 0.5
+                        || tuning.vectoringGain() != 0.0;
                 if (torqueDistributionActive) {
-                    drive = TorqueDistribution.distribute(drive, front, mount[0] < 0.0, spec.vehicleTuning(), steer);
+                    drive = TorqueDistribution.distribute(drive, front, mount[0] < 0.0, tuning, steer);
                 }
                 if (drive != 0.0 && partner >= 0 && !torqueDistributionActive) {
                     // The zero-lock path in distribute returns drive unchanged exactly, preserving the
@@ -321,7 +322,7 @@ final class SableCarBody {
                     LimitedSlipDifferential.DrivePair axleDrive = LimitedSlipDifferential.distribute(
                             drive, drive, wheelSpin[wheel] * spec.wheelRadius(),
                             wheelSpin[partner] * spec.wheelRadius(), gripForces[wheel], gripForces[partner],
-                            spec.vehicleTuning().lsdLockPercent());
+                            tuning.lsdLockPercent());
                     drive = axleDrive.left();
                 } else if (drive != 0.0 && partner >= 0) {
                     // Split/vectoring chooses the axle's requested drive first; LSD then makes its one
@@ -337,14 +338,14 @@ final class SableCarBody {
                                             ? throttle * REVERSE_FORCE * spec.forceScale()
                                                     * Math.max(0.0, 1.0 - Math.abs(forwardSpeed) / 8.0)
                                             : 0.0,
-                            partnerMount[2] > 0.0, partnerMount[0] < 0.0, spec.vehicleTuning(), steer);
+                            partnerMount[2] > 0.0, partnerMount[0] < 0.0, tuning, steer);
                     LimitedSlipDifferential.DrivePair axleDrive = left
                             ? LimitedSlipDifferential.distribute(drive, partnerDrive,
                                     wheelSpin[wheel] * spec.wheelRadius(), wheelSpin[partner] * spec.wheelRadius(),
-                                    gripForces[wheel], gripForces[partner], spec.vehicleTuning().lsdLockPercent())
+                                    gripForces[wheel], gripForces[partner], tuning.lsdLockPercent())
                             : LimitedSlipDifferential.distribute(partnerDrive, drive,
                                     wheelSpin[partner] * spec.wheelRadius(), wheelSpin[wheel] * spec.wheelRadius(),
-                                    gripForces[partner], gripForces[wheel], spec.vehicleTuning().lsdLockPercent());
+                                    gripForces[partner], gripForces[wheel], tuning.lsdLockPercent());
                     drive = left ? axleDrive.left() : axleDrive.right();
                 }
                 // What the tire feels comes from the block it is on (grip, rolling resistance), via Dynamic Terrain.
@@ -362,12 +363,13 @@ final class SableCarBody {
                 // already opted in does the actual tuning VALUES come from config (CarConfig.driftTireTuning(),
                 // live-reloadable) rather than the spec's own numbers, which exist only to mark the opt-in.
                 boolean driftTuned = !spec.tireTuning().isIdentity();
-                // MINECRAFT-227/245: spec.vehicleTuning() (LSD lock, front/rear torque split, torque-
-                // vectoring gain, camber, toe) is threaded through to this call site for a later story to
-                // read; WheelMath.tire's overload below does not read it, so this is a mathematical no-op.
+                // MINECRAFT-317: this entity's persisted tuning (LSD lock, front/rear torque split, torque-
+                // vectoring gain, camber, toe) is threaded through to the owning physics model. On this
+                // branch WheelMath's overload does not yet read camber/toe, so those two values remain a
+                // mathematical no-op until the already-existing alignment model is merged into the parent.
                 WheelMath.Tire tire = !driftTuned
                         ? WheelMath.tire(vLong, vLat, force, gripMu, rollingCoefficient, lateralScale,
-                                drive, brake, brakeGain, effectiveMass, subDt, spec.vehicleTuning())
+                                drive, brake, brakeGain, effectiveMass, subDt, tuning)
                         : DriftTireModel.tire(vLong, vLat, force, gripMu, rollingCoefficient, lateralScale,
                                 drive, brake, brakeGain, effectiveMass, subDt, CarConfig.driftTireTuning(),
                                 front, handbrake, steer);

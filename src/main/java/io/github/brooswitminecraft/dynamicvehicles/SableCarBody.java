@@ -310,7 +310,12 @@ final class SableCarBody {
                     lateralScale = 0.35;
                 }
                 int partner = partners[wheel];
-                if (drive != 0.0 && partner >= 0) {
+                boolean torqueDistributionActive = spec.vehicleTuning().frontTorqueSplit() != 0.5
+                        || spec.vehicleTuning().vectoringGain() != 0.0;
+                if (torqueDistributionActive) {
+                    drive = TorqueDistribution.distribute(drive, front, mount[0] < 0.0, spec.vehicleTuning(), steer);
+                }
+                if (drive != 0.0 && partner >= 0 && !torqueDistributionActive) {
                     // The zero-lock path in distribute returns drive unchanged exactly, preserving the
                     // existing open-differential path for every vehicle that has not opted in.
                     LimitedSlipDifferential.DrivePair axleDrive = LimitedSlipDifferential.distribute(
@@ -318,6 +323,29 @@ final class SableCarBody {
                             wheelSpin[partner] * spec.wheelRadius(), gripForces[wheel], gripForces[partner],
                             spec.vehicleTuning().lsdLockPercent());
                     drive = axleDrive.left();
+                } else if (drive != 0.0 && partner >= 0) {
+                    // Split/vectoring chooses the axle's requested drive first; LSD then makes its one
+                    // traction-based transfer across that already-distributed pair, rather than applying
+                    // either correction twice.
+                    double[] partnerMount = spec.mounts()[partner];
+                    boolean left = mount[0] < 0.0;
+                    double partnerDrive = TorqueDistribution.distribute(
+                            throttle > 0
+                                    ? throttle * DRIVE_FORCE * spec.forceScale()
+                                            * Math.max(0.0, 1.0 - Math.abs(forwardSpeed) / spec.maxSpeed())
+                                    : throttle < 0 && forwardSpeed <= 0.5 && gear == CarPhysics.Gear.REVERSE
+                                            ? throttle * REVERSE_FORCE * spec.forceScale()
+                                                    * Math.max(0.0, 1.0 - Math.abs(forwardSpeed) / 8.0)
+                                            : 0.0,
+                            partnerMount[2] > 0.0, partnerMount[0] < 0.0, spec.vehicleTuning(), steer);
+                    LimitedSlipDifferential.DrivePair axleDrive = left
+                            ? LimitedSlipDifferential.distribute(drive, partnerDrive,
+                                    wheelSpin[wheel] * spec.wheelRadius(), wheelSpin[partner] * spec.wheelRadius(),
+                                    gripForces[wheel], gripForces[partner], spec.vehicleTuning().lsdLockPercent())
+                            : LimitedSlipDifferential.distribute(partnerDrive, drive,
+                                    wheelSpin[partner] * spec.wheelRadius(), wheelSpin[wheel] * spec.wheelRadius(),
+                                    gripForces[partner], gripForces[wheel], spec.vehicleTuning().lsdLockPercent());
+                    drive = left ? axleDrive.left() : axleDrive.right();
                 }
                 // What the tire feels comes from the block it is on (grip, rolling resistance), via Dynamic Terrain.
                 SurfaceProperties surface = Surfaces.at(level, hit.getBlockPos());

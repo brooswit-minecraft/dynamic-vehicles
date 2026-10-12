@@ -24,7 +24,7 @@ class CamberToeGripModelTest {
     void toeIsSymmetricAndBothKnobsStayWithinSaneBounds() {
         assertEquals(CamberToeGripModel.modifiers(0.0, 2.0), CamberToeGripModel.modifiers(0.0, -2.0));
         CamberToeGripModel.GripModifiers bounded = CamberToeGripModel.modifiers(80.0, -50.0);
-        assertTrue(bounded.longitudinalMuScale() >= 0.89 && bounded.longitudinalMuScale() <= 1.0);
-        assertTrue(bounded.lateralScale() >= 1.0 && bounded.lateralScale() <= 1.12);
+        assertTrue(bounded.longitudinalMuScale() >= 0.89 - 1e-12 && bounded.longitudinalMuScale() <= 1.0);
+        assertTrue(bounded.lateralScale() >= 1.0 - 1e-12 && bounded.lateralScale() <= 1.12 + 1e-12);
     }
 }

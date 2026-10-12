@@ -139,6 +139,23 @@ public record VehicleSpec(
                 downforceGripPerSpeed, antiRollScale, List.of(new Seat(0.0, seatY, seatZ)));
     }
 
+    /** As above, with an explicit per-vehicle tuning bundle for a single-seat vehicle. */
+    public VehicleSpec(double halfX, double halfY, double halfZ,
+            double[][] mounts, double wheelRadius, double wheelWidth,
+            double rideHeight, double restLength,
+            double massKg, double springRate, double dampingRate, double maxSpringForce,
+            double wheelbase, double maxSpeed,
+            double forceScale, double enginePitch,
+            double seatY, double seatZ,
+            double looseGrip, double rollingScale,
+            TireTuning tireTuning, double downforceGripPerSpeed, double antiRollScale,
+            VehicleTuning vehicleTuning) {
+        this(halfX, halfY, halfZ, mounts, wheelRadius, wheelWidth, rideHeight, restLength,
+                massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
+                forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
+                downforceGripPerSpeed, antiRollScale, List.of(new Seat(0.0, seatY, seatZ)), vehicleTuning);
+    }
+
     /**
      * One seat's local offset from the entity origin (bottom centre of the box): x right, y up, z forward
      * &mdash; the same frame {@link #seatY}/{@link #seatZ} already used. Doubles as both the passenger
@@ -383,7 +400,10 @@ public record VehicleSpec(
      * tire tuning: the climbing character comes from the base spec's own suspension and grip fields, not
      * from {@link DriftTireModel}, so {@code tireTuning()} stays {@link TireTuning#IDENTITY} and this
      * vehicle routes through the plain {@code WheelMath} tire path exactly like {@code CAR}/{@code
-     * TRUCK}/{@code TROPHY}/{@code MUSCLE}.
+     * TRUCK}/{@code TROPHY}/{@code MUSCLE}. MINECRAFT-296 gives it a 65% limited-slip lock: this is the
+     * roster's purpose-built slow technical climber, where moving torque away from an unloaded spinning
+     * wheel toward its planted partner should make uneven-ground climbs feel more controlled without
+     * changing the open-differential default for the rest of the roster.
      *
      * <p>MINECRAFT-208/212/214: this vehicle's narrow track relative to its tall ride height (static
      * stability factor {@code track/(2*rideHeight)} &asymp; 0.50, against the car's &asymp; 0.89) made it
@@ -397,7 +417,8 @@ public record VehicleSpec(
             new double[][] {{-0.95, -0.5, 1.1}, {0.95, -0.5, 1.1}, {-0.95, -0.5, -1.1}, {0.95, -0.5, -1.1}},
             0.65, 0.55, 1.9,
             2.0, 1900.0, 31_065.0, 5_383.33, 63_333.33,
-            2.2, 18.0, 2.0, 0.6, 0.6, -0.2, 1.6, 0.5, TireTuning.IDENTITY, 0.0, 2.0);
+            2.2, 18.0, 2.0, 0.6, 0.6, -0.2, 1.6, 0.5, TireTuning.IDENTITY, 0.0, 2.0,
+            new VehicleTuning(0.65, 0.5, 0.0, 0.0, 0.0));
 
     /**
      * A monster truck (MINECRAFT-180, story MINECRAFT-160): the roster's biggest wheels (0.9 m radius,

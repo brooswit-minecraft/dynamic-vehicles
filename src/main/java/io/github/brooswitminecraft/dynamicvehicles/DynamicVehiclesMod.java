@@ -144,26 +144,27 @@ public class DynamicVehiclesMod {
     /** Debug entry point: /dvspin <slipSpeed> <ticks> makes every loaded car's wheels report that slip, to exercise terrain wear. */
     private void registerCommands(RegisterCommandsEvent event) {
         // /dtcar debug on|off: draws each car's physics box (red) and where its suspension rays hit the ground (green).
-        event.getDispatcher().register(Commands.literal("dtcar").requires(source -> source.hasPermission(2))
-                .then(Commands.literal("debug")
-                        .then(Commands.literal("on").executes(context -> {
-                            CarDebug.enabled = true;
-                            context.getSource().sendSuccess(() -> Component.literal("car debug overlay on"), true);
-                            return 1;
-                        }))
-                        .then(Commands.literal("off").executes(context -> {
-                            CarDebug.enabled = false;
-                            context.getSource().sendSuccess(() -> Component.literal("car debug overlay off"), true);
-                            return 1;
-                        })))
+        var dtcar = Commands.literal("dtcar").requires(source -> source.hasPermission(2));
+        dtcar.then(Commands.literal("debug")
+                .then(Commands.literal("on").executes(context -> {
+                    CarDebug.enabled = true;
+                    context.getSource().sendSuccess(() -> Component.literal("car debug overlay on"), true);
+                    return 1;
+                }))
+                .then(Commands.literal("off").executes(context -> {
+                    CarDebug.enabled = false;
+                    context.getSource().sendSuccess(() -> Component.literal("car debug overlay off"), true);
+                    return 1;
+                })));
                 // Per-instance rather than type-wide tuning: the command only changes the car the player is
                 // currently driving, and CarEntity persists that state in the entity's own NBT.
-                .then(Commands.literal("tune")
-                        .then(Commands.argument("setting", StringArgumentType.word())
-                                .then(Commands.argument("value", DoubleArgumentType.doubleArg())
-                                        .executes(context -> tuneDrivenVehicle(context,
-                                                StringArgumentType.getString(context, "setting"),
-                                                DoubleArgumentType.getDouble(context, "value"))))))));
+        dtcar.then(Commands.literal("tune")
+                .then(Commands.argument("setting", StringArgumentType.word())
+                        .then(Commands.argument("value", DoubleArgumentType.doubleArg())
+                                .executes(context -> tuneDrivenVehicle(context,
+                                        StringArgumentType.getString(context, "setting"),
+                                        DoubleArgumentType.getDouble(context, "value"))))));
+        event.getDispatcher().register(dtcar);
         // Debug: /dvdrive <throttle> <steer> <ticks> drives every loaded car as if a rider held those inputs.
         event.getDispatcher().register(Commands.literal("dvdrive").requires(source -> source.hasPermission(2))
                 .then(Commands.argument("throttle", DoubleArgumentType.doubleArg(-1, 1))

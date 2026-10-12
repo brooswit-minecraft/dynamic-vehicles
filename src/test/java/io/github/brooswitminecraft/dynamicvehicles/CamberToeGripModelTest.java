@@ -5,7 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Test;
 
-/** Pure-function coverage for MINECRAFT-314's bounded static alignment grip model. */
+/** Pure-function coverage for the bounded static alignment grip model. */
 class CamberToeGripModelTest {
     @Test
     void zeroCamberAndToeAreExactlyIdentity() {

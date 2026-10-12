@@ -105,6 +105,9 @@ public final class WheelInput {
             // resend even if our last-sent flags happen to already match (e.g. after a disconnect/rejoin).
             lastSentHonk = false;
             lastSentHandbrake = false;
+            // The newly mounted car starts with its own default gear state, so resend a held physical
+            // shifter position even when it matches the last car we rode.
+            lastSentShifterGear = null;
         }
         wasRidingCarForPaddles = ridingCar;
         if (!ridingCar) {
@@ -127,10 +130,12 @@ public final class WheelInput {
             lastSentHandbrake = paddles.handbrake();
             PacketDistributor.sendToServer(new WheelPaddlesPayload(paddles.honk(), paddles.handbrake()));
         }
-        CarPhysics.Gear shifterGear = WheelMapping.shifterGear(wheelActive && ClientConfig.WHEEL_SHIFTER_ENABLED.get(), readButtons(device), shifterButtons());
-        if (shifterGear != null && shifterGear != lastSentShifterGear) {
-            lastSentShifterGear = shifterGear;
-            PacketDistributor.sendToServer(new GearSelectPayload(shifterGear));
+        if (wheelActive && ClientConfig.WHEEL_SHIFTER_ENABLED.get()) {
+            CarPhysics.Gear shifterGear = WheelMapping.shifterGear(true, readButtons(device), shifterButtons());
+            if (shifterGear != null && shifterGear != lastSentShifterGear) {
+                lastSentShifterGear = shifterGear;
+                PacketDistributor.sendToServer(new GearSelectPayload(shifterGear));
+            }
         }
     }
 

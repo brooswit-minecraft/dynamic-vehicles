@@ -8,16 +8,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ContractHudOverlayTest {
     @Test
     void legacyOverlayIsHiddenByDefaultForAnActiveContract() {
-        assertFalse(ContractHudOverlay.shouldRender(false, true));
+        assertFalse(ContractHudVisibility.shouldRender(false, true));
     }
 
     @Test
     void legacyOverlayReturnsWhenEnabledForAnActiveContract() {
-        assertTrue(ContractHudOverlay.shouldRender(true, true));
+        assertTrue(ContractHudVisibility.shouldRender(true, true));
     }
 
     @Test
     void legacyOverlayNeverRendersWithoutAnActiveContract() {
-        assertFalse(ContractHudOverlay.shouldRender(true, false));
+        assertFalse(ContractHudVisibility.shouldRender(true, false));
     }
 }

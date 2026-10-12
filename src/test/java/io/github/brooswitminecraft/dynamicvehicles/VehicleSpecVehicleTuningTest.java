@@ -9,9 +9,9 @@ import org.junit.jupiter.api.Test;
  * MINECRAFT-227/245: the per-vehicle tuning data model (LSD lock, front/rear torque split, torque-
  * vectoring gain, camber, toe). MINECRAFT-296 opts only {@link VehicleSpec#ROCK_CRAWLER} into its LSD
  * lock percentage; every other vehicle must carry exactly {@link VehicleSpec.VehicleTuning#IDENTITY}, whose
- * zero lock makes the differential's exact no-op path preserve existing open-differential behaviour. The
+ * zero lock and identity torque-distribution values preserve existing open-differential behaviour. The
  * {@code WheelMath.tire} overload that accepts a {@code VehicleTuning} remains a mathematical no-op,
- * preserving the remaining tuning fields for their later stories. This is the regression guarantee the
+ * preserving camber and toe for their later stories. This is the regression guarantee the
  * epic's hard constraint ("defaults leave every vehicle's handling byte-for-byte unchanged") depends on,
  * following the same pattern
  * {@code VehicleSpecIndyTest.everyPreExistingVehicleHasNoDownforceAndAnUnchangedGripMultiplier} and

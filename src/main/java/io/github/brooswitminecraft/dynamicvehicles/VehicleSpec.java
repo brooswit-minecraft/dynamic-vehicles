@@ -214,11 +214,10 @@ public record VehicleSpec(
 
     /**
      * Per-vehicle tuning dials (MINECRAFT-227/245), foundation for the sibling stories that implement LSD,
-     * torque distribution/vectoring and camber/toe: this story is data and plumbing only, so none of these
-     * five fields is read by any physics computation yet (see {@code WheelMath.tire}'s own overload that
-     * accepts a {@code VehicleTuning} and ignores it, and {@code SableCarBody.tick}, which reads
-     * {@code spec.vehicleTuning()} and passes it there). {@link #IDENTITY} is the value every field must
-     * take for a vehicle's handling to stay exactly as it is today.
+     * torque distribution/vectoring and camber/toe. The torque-split and vectoring fields are read by
+     * {@link TorqueDistribution}; the remaining fields are retained for their sibling stories.
+     * {@link #IDENTITY} is the value every field must take for a vehicle's handling to stay exactly as it
+     * is today.
      *
      * <p>Grouped into their own small type rather than added to {@link TireTuning} or left as bare fields
      * on {@link VehicleSpec} directly: they are a different physical domain from {@link TireTuning} (which
@@ -230,8 +229,7 @@ public record VehicleSpec(
      *        lock at all (identity) &mdash; a later story reads this to resist one driven wheel of an axle
      *        spinning faster than its partner
      * @param frontTorqueSplit front axle's share of total drive torque, 0 (all rear) to 1 (all front); 0.5 =
-     *        an even 50/50 split (identity) &mdash; matches this story's own wiring at {@code WheelMath.tire}'s
-     *        new overload, which every vehicle reaches with this exact value today
+     *        an even 50/50 split (identity), preserving the historical per-wheel drive command
      * @param vectoringGain fraction of a torque-vectoring correction (shifting drive torque side to side
      *        across an axle to help the car turn) applied at each wheel; 0 = no vectoring at all (identity)
      * @param camberDeg static camber angle, degrees (negative: top of the wheel tilted in toward the car);

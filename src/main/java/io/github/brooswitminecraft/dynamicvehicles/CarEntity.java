@@ -339,22 +339,26 @@ public class CarEntity extends Entity {
             boolean bamboo = state.is(BlockTags.BAMBOO_BLOCKS);
             boolean dirtOrSand = state.is(BlockTags.DIRT) || state.is(BlockTags.SAND);
             boolean glass = state.getBlock() instanceof TransparentBlock || state.getBlock() instanceof StainedGlassPaneBlock;
+            ImpactRules.BlockImpactRoute route = ImpactRules.blockImpactRoute(
+                    spec == VehicleSpec.TRUCK, dirtOrSand, bamboo, breakable);
+
+            // Dynamic Terrain is the sole authority for loose terrain; it decides resistance and whether
+            // material shifts downhill or degrades. This is selected before the truck-only return below,
+            // so truck impacts cannot suppress dirt/sand terrain routing.
+            if (route == ImpactRules.BlockImpactRoute.TERRAIN_EROSION) {
+                SlipReporter.report(serverLevel, pos, speedBefore, MASS_KG);
+                return;
+            }
 
             // The truck has a deliberately narrow vegetation interaction. It never gains the generic
             // block-breaking privilege merely by being heavier than a car.
             if (spec == VehicleSpec.TRUCK) {
-                if (ImpactRules.truckMayBreakBamboo(true, bamboo, breakable)) {
+                if (route == ImpactRules.BlockImpactRoute.TRUCK_BAMBOO) {
                     serverLevel.destroyBlock(pos, true, this);
                 }
                 return;
             }
 
-            // Dynamic Terrain is the sole authority for loose terrain; it decides resistance and whether
-            // material shifts downhill or degrades. Do not replace that path with direct block deletion.
-            if (ImpactRules.usesTerrainErosion(dirtOrSand)) {
-                SlipReporter.report(serverLevel, pos, speedBefore, MASS_KG);
-                return;
-            }
             if (!ImpactRules.glassMayBreak(glass, state.isCollisionShapeFullBlock(serverLevel, pos))) {
                 return;
             }

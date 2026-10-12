@@ -6,6 +6,7 @@ import net.minecraft.nbt.FloatTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
 import net.minecraft.network.syncher.SynchedEntityData;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.Entity;
@@ -13,8 +14,12 @@ import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.MoverType;
+import net.minecraft.world.entity.monster.Creeper;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.StainedGlassPaneBlock;
+import net.minecraft.world.level.block.TransparentBlock;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 
 /**
@@ -326,9 +331,32 @@ public class CarEntity extends Entity {
         double reach = spec.halfZ() + 0.6;
         for (double dy : new double[] {0.4, 1.0}) {
             net.minecraft.core.BlockPos pos = net.minecraft.core.BlockPos.containing(getX() + heading.x * reach, getY() + dy, getZ() + heading.z * reach);
-            net.minecraft.world.level.block.state.BlockState state = serverLevel.getBlockState(pos);
+            BlockState state = serverLevel.getBlockState(pos);
             if (state.isAir() || !state.getFluidState().isEmpty()) {
                 continue;
+            }
+            boolean breakable = !state.hasBlockEntity() && state.getDestroySpeed(serverLevel, pos) >= 0.0;
+            boolean bamboo = state.is(BlockTags.BAMBOO_BLOCKS);
+            boolean dirtOrSand = state.is(BlockTags.DIRT) || state.is(BlockTags.SAND);
+            boolean glass = state.getBlock() instanceof TransparentBlock || state.getBlock() instanceof StainedGlassPaneBlock;
+
+            // The truck has a deliberately narrow vegetation interaction. It never gains the generic
+            // block-breaking privilege merely by being heavier than a car.
+            if (spec == VehicleSpec.TRUCK) {
+                if (ImpactRules.truckMayBreakBamboo(true, bamboo, breakable)) {
+                    serverLevel.destroyBlock(pos, true, this);
+                }
+                return;
+            }
+
+            // Dynamic Terrain is the sole authority for loose terrain; it decides resistance and whether
+            // material shifts downhill or degrades. Do not replace that path with direct block deletion.
+            if (ImpactRules.usesTerrainErosion(dirtOrSand)) {
+                SlipReporter.report(serverLevel, pos, speedBefore, MASS_KG);
+                return;
+            }
+            if (!ImpactRules.glassMayBreak(glass, state.isCollisionShapeFullBlock(serverLevel, pos))) {
+                return;
             }
             double chance = state.hasBlockEntity() ? 0.0
                     : CollisionMath.breakChance(speedBefore, state.getDestroySpeed(serverLevel, pos),
@@ -550,6 +578,14 @@ public class CarEntity extends Entity {
     @Override
     public void push(Entity entity) {
         super.push(entity);
+        if (!level().isClientSide() && entity instanceof Creeper creeper
+                && ImpactRules.creeperExplosionEligible(horizontalSpeed(), CarConfig.COLLISION_MIN_SPEED.get(), impactCooldown > 0)) {
+            // Use the vanilla mob explosion interaction so gamerules/protection hooks retain authority.
+            // The entity must be removed explicitly because Creeper's own detonation helper is private.
+            impactCooldown = 10;
+            level().explode(creeper, creeper.getX(), creeper.getY(), creeper.getZ(), 3.0f, Level.ExplosionInteraction.MOB);
+            creeper.discard();
+        }
         if (!level().isClientSide() && entity instanceof Mob mob
                 && MobBoardingRules.canAutoBoard(mob, spec, stoppedTimer.isLatched())) {
             mob.startRiding(this);
@@ -693,7 +729,7 @@ public class CarEntity extends Entity {
         setDeltaMovement(forward.x * speed * DT, vy, forward.z * speed * DT);
         move(MoverType.SELF, getDeltaMovement());
         if (horizontalCollision) {
-            speed *= 0.3;
+            speed = ImpactRules.afterSolidImpact(speed);
         }
         double slip = step.slipSpeed();
         if (forcedSlipTicks > 0) {
@@ -835,5 +871,11 @@ public class CarEntity extends Entity {
 
     public double speed() {
         return speed;
+    }
+
+    /** Current server-authoritative horizontal speed, including Sable-synchronised vehicles. */
+    private double horizontalSpeed() {
+        Vec3 motion = getDeltaMovement();
+        return Math.hypot(motion.x, motion.z) * 20.0;
     }
 }

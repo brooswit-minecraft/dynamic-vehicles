@@ -220,6 +220,16 @@ final class SableCarBody {
                 subSuspension[wheel] = WheelMath.suspensionForce(compressions[wheel], rate, spec.springRate(), spec.dampingRate(), spec.maxSpringForce());
             }
             double[] forces = WheelSubStepper.afterAntiRoll(subSuspension, compressions, partners, barRate);
+            double[] gripForces = new double[wheelCount];
+            for (int wheel = 0; wheel < wheelCount; wheel++) {
+                if (wheelHits[wheel].getType() == HitResult.Type.MISS || !(forces[wheel] > 0.0)) {
+                    continue;
+                }
+                SurfaceProperties surface = Surfaces.at(level, wheelHits[wheel].getBlockPos());
+                double gripMu = WheelMath.BASE_FRICTION * Math.min(1.0, surface.grip() * spec.looseGrip())
+                        * spec.downforceGripMultiplier(forwardSpeed);
+                gripForces[wheel] = gripMu * forces[wheel];
+            }
 
             // Pass 2 of this sub-step: suspension and tire forces from this sub-step's forces[].
             for (int wheel = 0; wheel < wheelCount; wheel++) {
@@ -298,6 +308,16 @@ final class SableCarBody {
                     brake = HANDBRAKE_FORCE * spec.forceScale();
                     drive = 0.0;
                     lateralScale = 0.35;
+                }
+                int partner = partners[wheel];
+                if (drive != 0.0 && partner >= 0) {
+                    // The zero-lock path in distribute returns drive unchanged exactly, preserving the
+                    // existing open-differential path for every vehicle that has not opted in.
+                    LimitedSlipDifferential.DrivePair axleDrive = LimitedSlipDifferential.distribute(
+                            drive, drive, wheelSpin[wheel] * spec.wheelRadius(),
+                            wheelSpin[partner] * spec.wheelRadius(), gripForces[wheel], gripForces[partner],
+                            spec.vehicleTuning().lsdLockPercent());
+                    drive = axleDrive.left();
                 }
                 // What the tire feels comes from the block it is on (grip, rolling resistance), via Dynamic Terrain.
                 SurfaceProperties surface = Surfaces.at(level, hit.getBlockPos());

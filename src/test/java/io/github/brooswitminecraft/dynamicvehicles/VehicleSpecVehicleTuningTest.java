@@ -19,8 +19,8 @@ import org.junit.jupiter.api.Test;
 class VehicleSpecVehicleTuningTest {
 
     /** Every vehicle on the roster, the same set {@code VehicleSpecRockCrawlerAntiRollTest} iterates. */
-    private static final VehicleSpec[] EVERY_VEHICLE = {VehicleSpec.CAR, VehicleSpec.TRUCK, VehicleSpec.TROPHY,
-            VehicleSpec.DRIFT, VehicleSpec.MUSCLE, VehicleSpec.ROCK_CRAWLER, VehicleSpec.MONSTER_TRUCK,
+    private static final VehicleSpec[] OPEN_DIFFERENTIAL_VEHICLES = {VehicleSpec.CAR, VehicleSpec.TRUCK, VehicleSpec.TROPHY,
+            VehicleSpec.DRIFT, VehicleSpec.MUSCLE, VehicleSpec.MONSTER_TRUCK,
             VehicleSpec.INDY, VehicleSpec.BUS, VehicleSpec.CARGO_TRUCK};
 
     @Test
@@ -35,13 +35,20 @@ class VehicleSpecVehicleTuningTest {
     }
 
     @Test
-    void everyVehicleOnTheRosterCarriesTheIdentityVehicleTuning() {
-        // No vehicle has opted in yet -- this story is data and plumbing only (no LSD/vectoring/camber/toe
-        // behaviour), so every existing VehicleSpec constant must still carry exactly IDENTITY here.
-        for (VehicleSpec spec : EVERY_VEHICLE) {
+    void everyNonOptInVehicleKeepsTheIdentityVehicleTuning() {
+        // MINECRAFT-296 deliberately opts only ROCK_CRAWLER into LSD. Every other existing VehicleSpec
+        // must retain the exact identity tuning, whose zero lock takes LimitedSlipDifferential's exact
+        // early-return path and leaves today's open-differential drive values byte-for-byte unchanged.
+        for (VehicleSpec spec : OPEN_DIFFERENTIAL_VEHICLES) {
             assertTrue(spec.vehicleTuning().isIdentity(),
-                    "pre-existing vehicle must carry the identity vehicle tuning");
+                    "non-opt-in vehicle must carry the identity vehicle tuning");
         }
+    }
+
+    @Test
+    void rockCrawlerIsTheOnlyLsdOptIn() {
+        assertEquals(0.65, VehicleSpec.ROCK_CRAWLER.vehicleTuning().lsdLockPercent(), 1e-12);
+        assertTrue(!VehicleSpec.ROCK_CRAWLER.vehicleTuning().isIdentity());
     }
 
     @Test

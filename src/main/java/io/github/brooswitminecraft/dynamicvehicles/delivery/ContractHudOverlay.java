@@ -12,6 +12,8 @@ import net.minecraft.util.Mth;
 
 import java.util.Locale;
 
+import io.github.brooswitminecraft.dynamicvehicles.ClientConfig;
+
 /**
  * MINECRAFT-110 AC4: the persistent HUD element shown while a contract is
  * active - destination direction, remaining distance, remaining time.
@@ -27,7 +29,7 @@ public final class ContractHudOverlay implements LayeredDraw.Layer {
     @Override
     public void render(GuiGraphics graphics, DeltaTracker deltaTracker) {
         DeliveryHudPayload hud = ClientContractHud.current();
-        if (!hud.active()) {
+        if (!shouldRender(ClientConfig.SHOW_LEGACY_CONTRACT_HUD.get(), hud.active())) {
             return;
         }
         Minecraft minecraft = Minecraft.getInstance();
@@ -67,6 +69,11 @@ public final class ContractHudOverlay implements LayeredDraw.Layer {
         graphics.drawString(minecraft.font, timeText, x + 16, y + 10, 0xFFFFFF);
         graphics.fill(x + 16, y + 21, x + 28, y + 29, swatchColor);
         graphics.drawString(minecraft.font, dangerText, x + 32, y + 20, 0xFFFFFF);
+    }
+
+    /** Keeps the legacy overlay opt-in while the waypoint marker remains the default presentation. */
+    static boolean shouldRender(boolean legacyOverlayEnabled, boolean contractActive) {
+        return legacyOverlayEnabled && contractActive;
     }
 
     private static String formatRemaining(long remainingTicks) {

@@ -130,6 +130,7 @@ public class DynamicVehiclesMod {
         var registrar = event.registrar("1");
         registrar.playToServer(LightsTogglePayload.TYPE, LightsTogglePayload.STREAM_CODEC, LightsTogglePayload::handle);
         registrar.playToServer(WheelPaddlesPayload.TYPE, WheelPaddlesPayload.STREAM_CODEC, WheelPaddlesPayload::handle);
+        registrar.playToServer(GearTogglePayload.TYPE, GearTogglePayload.STREAM_CODEC, GearTogglePayload::handle);
         registrar.playToServer(DispatcherOfferAcceptPayload.TYPE, DispatcherOfferAcceptPayload.STREAM_CODEC, DispatcherOfferAcceptPayload::handle);
         registrar.playToClient(DeliveryHudPayload.TYPE, DeliveryHudPayload.STREAM_CODEC, DeliveryHudPayload::handle);
     }

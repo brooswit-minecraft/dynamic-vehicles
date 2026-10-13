@@ -30,7 +30,8 @@ public final class SettlementFounder {
             return false;
         }
 
-        BlockPos target = new BlockPos(contract.destinationStartX(), contract.destinationStartY(), contract.destinationStartZ());
+        BlockPos target = BlockPos.containing((double) contract.destinationStartX(), (double) contract.destinationStartY(),
+                (double) contract.destinationStartZ());
         if (!level.hasChunkAt(target)) {
             return false;
         }

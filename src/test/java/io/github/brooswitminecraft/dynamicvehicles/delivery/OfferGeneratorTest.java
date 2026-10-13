@@ -23,7 +23,7 @@ class OfferGeneratorTest {
 
     private static OfferConfig config() {
         return new OfferConfig(
-                new int[] {0, 2, 4, 6, 10, 16},
+                new int[] {0, 1, 2, 3, 4, 5},
                 new int[] {0, 1, 2, 3, 4, 5},
                 0.0, 1.0,
                 2.0, 0.01,
@@ -40,19 +40,19 @@ class OfferGeneratorTest {
     @Test
     void offerConfig_rejectsDangerMaxNotGreaterThanDangerMin() {
         assertThrows(IllegalArgumentException.class, () -> new OfferConfig(
-                new int[] {0, 2, 4, 6, 10, 16}, new int[] {0, 1, 2, 3, 4, 5}, 0.5, 0.5, 2.0, 0.01, 1.0, 2.0, 6000, 4.0));
+                new int[] {0, 1, 2, 3, 4, 5}, new int[] {0, 1, 2, 3, 4, 5}, 0.5, 0.5, 2.0, 0.01, 1.0, 2.0, 6000, 4.0));
     }
 
     @Test
     void offerConfig_rejectsRewardMultiplierDecreasingWithDanger() {
         assertThrows(IllegalArgumentException.class, () -> new OfferConfig(
-                new int[] {0, 2, 4, 6, 10, 16}, new int[] {0, 1, 2, 3, 4, 5}, 0.0, 1.0, 2.0, 0.01, 3.0, 1.0, 6000, 4.0));
+                new int[] {0, 1, 2, 3, 4, 5}, new int[] {0, 1, 2, 3, 4, 5}, 0.0, 1.0, 2.0, 0.01, 3.0, 1.0, 6000, 4.0));
     }
 
     @Test
     void offerConfig_rejectsNegativeRewardBase() {
         assertThrows(IllegalArgumentException.class, () -> new OfferConfig(
-                new int[] {0, 2, 4, 6, 10, 16}, new int[] {0, 1, 2, 3, 4, 5}, 0.0, 1.0, -0.01, 0.01, 1.0, 2.0, 6000, 4.0));
+                new int[] {0, 1, 2, 3, 4, 5}, new int[] {0, 1, 2, 3, 4, 5}, 0.0, 1.0, -0.01, 0.01, 1.0, 2.0, 6000, 4.0));
     }
 
     // --- AC5: villager level gates the eligible rings ---
@@ -82,12 +82,12 @@ class OfferGeneratorTest {
     }
 
     @Test
-    void levelGating_rejectsLevelsOutsideTheVanillaOneToFiveRange() {
+    void levelGating_capsLevelsOutsideTheVanillaOneToFiveRange() {
         OfferConfig config = config();
-        assertThrows(IllegalArgumentException.class, () -> config.maxRingForLevel(0));
-        assertThrows(IllegalArgumentException.class, () -> config.maxRingForLevel(6));
-        assertThrows(IllegalArgumentException.class, () -> config.slotsForLevel(0));
-        assertThrows(IllegalArgumentException.class, () -> config.slotsForLevel(6));
+        assertEquals(config.maxRingForLevel(1), config.maxRingForLevel(0));
+        assertEquals(config.maxRingForLevel(5), config.maxRingForLevel(6));
+        assertEquals(config.slotsForLevel(1), config.slotsForLevel(0));
+        assertEquals(config.slotsForLevel(5), config.slotsForLevel(6));
     }
 
     // --- AC1: slot filling that spills across rings ---

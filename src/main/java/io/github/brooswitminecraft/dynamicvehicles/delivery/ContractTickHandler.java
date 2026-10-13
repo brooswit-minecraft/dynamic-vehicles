@@ -17,9 +17,9 @@ import io.github.brooswitminecraft.dynamicvehicles.DispatcherOfferConfig;
  * online player's active contract against {@link ArrivalPredicate} and the
  * deadline, instead of only checking on interaction. Deliberately never
  * calls {@link DispatcherOfferService#generateOffers} or
- * {@link VillagePlacementService#findVillages} - both do blocking chunk
- * loads, and a contract already carries its own destination and start
- * location, so neither is needed here. Runs every {@link #EVALUATE_INTERVAL_TICKS}
+ * {@link VillagePlacementService#findPredictedVillages}; a contract already
+ * carries its own predicted destination location, so neither is needed here.
+ * Runs every {@link #EVALUATE_INTERVAL_TICKS}
  * ticks per player, not every tick, and skips players with no active
  * contract via {@link ContractBook#evaluate} without touching the book's
  * map otherwise.

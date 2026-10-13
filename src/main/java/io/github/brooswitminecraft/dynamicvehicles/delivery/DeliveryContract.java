@@ -8,7 +8,7 @@ import java.util.UUID;
  * {@link ContractBook} needs to enforce one-active-contract (AC2), evaluate
  * expiry and arrival (AC5-7), and round-trip to persistence (AC3), with no
  * Minecraft type anywhere in it. The destination is recorded as the
- * recovered {@link ConfirmedVillage#startBlockPos()} coordinates - the tight
+ * predicted {@link PredictedVillage#targetBlockPos()} coordinates - the tight
  * AC6 arrival target - never the placement region.
  *
  * @param playerId              the contract holder

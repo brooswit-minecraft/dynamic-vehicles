@@ -25,6 +25,15 @@ public final class BuilderTradeHandler {
     private static void add(VillagerTradesEvent event, int level, net.minecraft.world.item.Item cost,
             int costCount, net.minecraft.world.item.Item output, int maxUses, int xp) {
         event.getTrades().get(level).add((entity, random) -> new MerchantOffer(
-                new ItemCost(cost, costCount), new ItemStack(output), maxUses, xp, 0.05F));
+                new ItemCost(cost, costCount), new ItemStack(output), maxUses, xp, 0.05F) {
+            @Override
+            public boolean take(ItemStack offeredA, ItemStack offeredB) {
+                boolean accepted = super.take(offeredA, offeredB);
+                if (accepted && entity instanceof net.minecraft.world.entity.npc.Villager villager) {
+                    BuilderSettlementService.attemptSettlement(villager, level);
+                }
+                return accepted;
+            }
+        });
     }
 }

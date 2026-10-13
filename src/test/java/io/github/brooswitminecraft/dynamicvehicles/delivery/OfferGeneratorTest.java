@@ -2,7 +2,6 @@ package io.github.brooswitminecraft.dynamicvehicles.delivery;
 
 import org.junit.jupiter.api.Test;
 
-import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -99,20 +98,14 @@ class OfferGeneratorTest {
         int level = 4; // Expert: maxRing 10, slots 4
         List<RegionCoord> searchOrder = RingMath.destinationRingsUpTo(origin, config.maxRingForLevel(level), 99L);
 
-        // Simulate a world where ring 1 confirms nothing and every farther
-        // ring confirms exactly one candidate - the slot count can only be
-        // met by spilling past ring 1 into rings 2+.
-        List<RegionCoord> confirmedPerRing = new ArrayList<>();
+        // Simulate a world where ring 1 yields no candidate but every farther
+        // predicted placement does. The offer list must spill past the eight
+        // adjacent regions rather than stop after ring 1 is empty.
         List<RegionCoord> found = RingMath.collectUpToSlots(searchOrder, config.slotsForLevel(level), region -> {
             int ring = RingMath.ringOf(origin, region);
             if (ring == 1) {
                 return null;
             }
-            boolean ringAlreadyHasOne = confirmedPerRing.stream().anyMatch(r -> RingMath.ringOf(origin, r) == ring);
-            if (ringAlreadyHasOne) {
-                return null;
-            }
-            confirmedPerRing.add(region);
             return region;
         });
 

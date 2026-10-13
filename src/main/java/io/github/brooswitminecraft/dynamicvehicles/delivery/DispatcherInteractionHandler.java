@@ -61,7 +61,8 @@ public final class DispatcherInteractionHandler {
         }
 
         List<DestinationOffer> offers = DispatcherOfferService.generateOffers(
-                serverLevel, villager.blockPosition(), villager.getVillagerData().getLevel(), DispatcherOfferConfig.toOfferConfig());
+                serverLevel, villager.blockPosition(), villager.getUUID(), serverLevel.getGameTime(),
+                villager.getVillagerData().getLevel(), DispatcherOfferConfig.toOfferConfig());
 
         double dangerMin = DispatcherOfferConfig.DANGER_MIN.get();
         double dangerMax = DispatcherOfferConfig.DANGER_MAX.get();

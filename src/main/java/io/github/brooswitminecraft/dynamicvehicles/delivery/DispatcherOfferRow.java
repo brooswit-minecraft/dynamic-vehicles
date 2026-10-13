@@ -8,7 +8,7 @@ package io.github.brooswitminecraft.dynamicvehicles.delivery;
  * {@code RegistryFriendlyByteBuf}. {@link DispatcherOfferMenu} is the only
  * class that builds these from a real {@link DestinationOffer}.
  *
- * @param approxDistanceBlocks {@link ConfirmedVillage#approxDistance()}, in blocks
+ * @param approxDistanceBlocks {@link PredictedVillage#approxDistance()}, in blocks
  * @param danger                {@link OfferTerms#danger()}
  * @param timeAllowanceTicks    {@link OfferTerms#timeAllowanceTicks()}
  * @param reward                {@link OfferTerms#reward()}

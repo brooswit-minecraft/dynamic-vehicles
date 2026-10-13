@@ -61,19 +61,19 @@ public final class DispatcherOfferConfig {
         NOVICE_MAX_RING = builder
                 .comment("Furthest destination ring (inclusive; each ring is one more village structure "
                         + "placement-region step out) a Novice Dispatcher's offers may reach.")
-                .defineInRange("noviceMaxRing", 2, 1, 1000);
+                .defineInRange("noviceMaxRing", 1, 1, 1000);
         APPRENTICE_MAX_RING = builder
                 .comment("Furthest destination ring an Apprentice Dispatcher's offers may reach.")
-                .defineInRange("apprenticeMaxRing", 4, 1, 1000);
+                .defineInRange("apprenticeMaxRing", 2, 1, 1000);
         JOURNEYMAN_MAX_RING = builder
                 .comment("Furthest destination ring a Journeyman Dispatcher's offers may reach.")
-                .defineInRange("journeymanMaxRing", 6, 1, 1000);
+                .defineInRange("journeymanMaxRing", 3, 1, 1000);
         EXPERT_MAX_RING = builder
                 .comment("Furthest destination ring an Expert Dispatcher's offers may reach.")
-                .defineInRange("expertMaxRing", 10, 1, 1000);
+                .defineInRange("expertMaxRing", 4, 1, 1000);
         MASTER_MAX_RING = builder
                 .comment("Furthest destination ring a Master Dispatcher's offers may reach.")
-                .defineInRange("masterMaxRing", 16, 1, 1000);
+                .defineInRange("masterMaxRing", 5, 1, 1000);
 
         NOVICE_SLOTS = builder
                 .comment("How many offer slots a Novice Dispatcher fills.")

@@ -2,7 +2,6 @@ package io.github.brooswitminecraft.dynamicvehicles.delivery;
 
 import org.junit.jupiter.api.Test;
 
-import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -23,7 +22,7 @@ class OfferGeneratorTest {
 
     private static OfferConfig config() {
         return new OfferConfig(
-                new int[] {0, 2, 4, 6, 10, 16},
+                new int[] {0, 1, 2, 3, 4, 5},
                 new int[] {0, 1, 2, 3, 4, 5},
                 0.0, 1.0,
                 2.0, 0.01,
@@ -40,19 +39,19 @@ class OfferGeneratorTest {
     @Test
     void offerConfig_rejectsDangerMaxNotGreaterThanDangerMin() {
         assertThrows(IllegalArgumentException.class, () -> new OfferConfig(
-                new int[] {0, 2, 4, 6, 10, 16}, new int[] {0, 1, 2, 3, 4, 5}, 0.5, 0.5, 2.0, 0.01, 1.0, 2.0, 6000, 4.0));
+                new int[] {0, 1, 2, 3, 4, 5}, new int[] {0, 1, 2, 3, 4, 5}, 0.5, 0.5, 2.0, 0.01, 1.0, 2.0, 6000, 4.0));
     }
 
     @Test
     void offerConfig_rejectsRewardMultiplierDecreasingWithDanger() {
         assertThrows(IllegalArgumentException.class, () -> new OfferConfig(
-                new int[] {0, 2, 4, 6, 10, 16}, new int[] {0, 1, 2, 3, 4, 5}, 0.0, 1.0, 2.0, 0.01, 3.0, 1.0, 6000, 4.0));
+                new int[] {0, 1, 2, 3, 4, 5}, new int[] {0, 1, 2, 3, 4, 5}, 0.0, 1.0, 2.0, 0.01, 3.0, 1.0, 6000, 4.0));
     }
 
     @Test
     void offerConfig_rejectsNegativeRewardBase() {
         assertThrows(IllegalArgumentException.class, () -> new OfferConfig(
-                new int[] {0, 2, 4, 6, 10, 16}, new int[] {0, 1, 2, 3, 4, 5}, 0.0, 1.0, -0.01, 0.01, 1.0, 2.0, 6000, 4.0));
+                new int[] {0, 1, 2, 3, 4, 5}, new int[] {0, 1, 2, 3, 4, 5}, 0.0, 1.0, -0.01, 0.01, 1.0, 2.0, 6000, 4.0));
     }
 
     // --- AC5: villager level gates the eligible rings ---
@@ -82,12 +81,12 @@ class OfferGeneratorTest {
     }
 
     @Test
-    void levelGating_rejectsLevelsOutsideTheVanillaOneToFiveRange() {
+    void levelGating_capsLevelsOutsideTheVanillaOneToFiveRange() {
         OfferConfig config = config();
-        assertThrows(IllegalArgumentException.class, () -> config.maxRingForLevel(0));
-        assertThrows(IllegalArgumentException.class, () -> config.maxRingForLevel(6));
-        assertThrows(IllegalArgumentException.class, () -> config.slotsForLevel(0));
-        assertThrows(IllegalArgumentException.class, () -> config.slotsForLevel(6));
+        assertEquals(config.maxRingForLevel(1), config.maxRingForLevel(0));
+        assertEquals(config.maxRingForLevel(5), config.maxRingForLevel(6));
+        assertEquals(config.slotsForLevel(1), config.slotsForLevel(0));
+        assertEquals(config.slotsForLevel(5), config.slotsForLevel(6));
     }
 
     // --- AC1: slot filling that spills across rings ---
@@ -99,20 +98,14 @@ class OfferGeneratorTest {
         int level = 4; // Expert: maxRing 10, slots 4
         List<RegionCoord> searchOrder = RingMath.destinationRingsUpTo(origin, config.maxRingForLevel(level), 99L);
 
-        // Simulate a world where ring 1 confirms nothing and every farther
-        // ring confirms exactly one candidate - the slot count can only be
-        // met by spilling past ring 1 into rings 2+.
-        List<RegionCoord> confirmedPerRing = new ArrayList<>();
+        // Simulate a world where ring 1 yields no candidate but every farther
+        // predicted placement does. The offer list must spill past the eight
+        // adjacent regions rather than stop after ring 1 is empty.
         List<RegionCoord> found = RingMath.collectUpToSlots(searchOrder, config.slotsForLevel(level), region -> {
             int ring = RingMath.ringOf(origin, region);
             if (ring == 1) {
                 return null;
             }
-            boolean ringAlreadyHasOne = confirmedPerRing.stream().anyMatch(r -> RingMath.ringOf(origin, r) == ring);
-            if (ringAlreadyHasOne) {
-                return null;
-            }
-            confirmedPerRing.add(region);
             return region;
         });
 

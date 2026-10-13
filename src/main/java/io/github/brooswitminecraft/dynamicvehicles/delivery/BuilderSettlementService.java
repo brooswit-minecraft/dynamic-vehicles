@@ -14,6 +14,7 @@ import net.minecraft.world.phys.AABB;
 /** Server-side, destructive-only-after-preflight Builder settlement path. */
 public final class BuilderSettlementService {
     public static final String CAMPFIRE_POS_TAG = "dynamicvehicles.builderCampfire";
+    private static final int CAMPFIRE_SEARCH_RADIUS = 8;
     private static final int BUILDING_RADIUS = 1;
     private static final int BUILDING_HEIGHT = 4;
 
@@ -43,12 +44,12 @@ public final class BuilderSettlementService {
         }
     }
 
-    public static void attemptSettlement(Villager villager, int tradeLevel) {
+    public static void attemptSettlement(Villager villager) {
         if (!(villager.level() instanceof ServerLevel level)) return;
-        BlockPos campfire = BlockPos.of(villager.getPersistentData().getLong(CAMPFIRE_POS_TAG));
-        if (!level.getBlockState(campfire).is(Blocks.CAMPFIRE)) return;
+        BlockPos campfire = findCampfireAnchor(level, villager);
+        if (campfire == null) return;
         int villagerLevel = villager.getVillagerData().getLevel();
-        if (level.random.nextDouble() >= BuilderSettlementPlan.settlementChance(villagerLevel, tradeLevel)) return;
+        if (level.random.nextDouble() >= BuilderSettlementPlan.settlementChance(villagerLevel)) return;
 
         VillageBuilding buildingVariant = VillageBuilding.from(
                 BuilderSettlementPlan.selectBuildingVariant(level.random.nextInt(VillageBuilding.values().length)));
@@ -60,6 +61,30 @@ public final class BuilderSettlementService {
         placeBuilding(level, building, rotation, buildingVariant);
         level.removeBlock(campfire, false);
         villager.getPersistentData().remove(CAMPFIRE_POS_TAG);
+    }
+
+    /**
+     * A campfire placed by the mod keeps its precise marker; otherwise an existing,
+     * player-placed vanilla campfire in the bounded loaded neighbourhood is eligible.
+     */
+    private static BlockPos findCampfireAnchor(ServerLevel level, Villager villager) {
+        if (villager.getPersistentData().contains(CAMPFIRE_POS_TAG)) {
+            BlockPos recorded = BlockPos.of(villager.getPersistentData().getLong(CAMPFIRE_POS_TAG));
+            if (level.hasChunkAt(recorded) && level.getBlockState(recorded).is(Blocks.CAMPFIRE)) return recorded;
+        }
+        BlockPos origin = villager.blockPosition();
+        BlockPos best = null;
+        double bestDistance = Double.MAX_VALUE;
+        for (BlockPos candidate : BlockPos.betweenClosed(origin.offset(-CAMPFIRE_SEARCH_RADIUS, -2, -CAMPFIRE_SEARCH_RADIUS),
+                origin.offset(CAMPFIRE_SEARCH_RADIUS, 2, CAMPFIRE_SEARCH_RADIUS))) {
+            if (!level.hasChunkAt(candidate) || !level.getBlockState(candidate).is(Blocks.CAMPFIRE)) continue;
+            double distance = candidate.distSqr(origin);
+            if (distance < bestDistance) {
+                best = candidate.immutable();
+                bestDistance = distance;
+            }
+        }
+        return best;
     }
 
     private static boolean isSafeBuildingSite(ServerLevel level, BlockPos center, ChunkPos campfireChunk,

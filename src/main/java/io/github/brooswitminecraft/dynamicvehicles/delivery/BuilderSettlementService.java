@@ -38,8 +38,8 @@ public final class BuilderSettlementService {
 
     private static boolean isSafeBuildingSite(ServerLevel level, BlockPos center, ChunkPos campfireChunk) {
         if (!level.hasChunkAt(center) || !new ChunkPos(center).equals(campfireChunk)) return false;
-        AABB bounds = new AABB(center.offset(-BUILDING_RADIUS, 0, -BUILDING_RADIUS),
-                center.offset(BUILDING_RADIUS + 1, BUILDING_HEIGHT, BUILDING_RADIUS + 1));
+        AABB bounds = new AABB(center.getX() - BUILDING_RADIUS, center.getY(), center.getZ() - BUILDING_RADIUS,
+                center.getX() + BUILDING_RADIUS + 1, center.getY() + BUILDING_HEIGHT, center.getZ() + BUILDING_RADIUS + 1);
         if (!level.getEntities((Entity) null, bounds).isEmpty()) return false;
         for (int x = -BUILDING_RADIUS; x <= BUILDING_RADIUS; x++) {
             for (int z = -BUILDING_RADIUS; z <= BUILDING_RADIUS; z++) {

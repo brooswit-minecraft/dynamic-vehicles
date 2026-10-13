@@ -36,7 +36,7 @@ public final class DeliveryContracts {
     public static void tryAccept(ServerPlayer player, Villager dispatcher, DestinationOffer offer) {
         DeliveryContractStorage storage = DeliveryContractStorage.of(player.server);
         long now = player.server.overworld().getGameTime();
-        ConfirmedVillage village = offer.village();
+        PredictedVillage village = offer.village();
 
         DeliveryContract contract = new DeliveryContract(
                 player.getUUID(),
@@ -44,9 +44,9 @@ public final class DeliveryContracts {
                 village.identity().dimension().location().toString(),
                 village.identity().region().x(),
                 village.identity().region().z(),
-                village.startBlockPos().getX(),
-                village.startBlockPos().getY(),
-                village.startBlockPos().getZ(),
+                village.targetBlockPos().getX(),
+                village.targetBlockPos().getY(),
+                village.targetBlockPos().getZ(),
                 offer.terms().danger(),
                 offer.terms().reward(),
                 now,

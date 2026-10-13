@@ -106,7 +106,7 @@ class RingMathTest {
     }
 
     // collectUpToSlots is the slot-count-stop / exhaustion seam
-    // VillagePlacementService.findVillages delegates to (AC6); kept here,
+    // VillagePlacementService.findPredictedVillages delegates to (AC6); kept here,
     // not in a VillagePlacementService test, because that class references
     // Minecraft types and can't be loaded in a plain unit test JVM.
 

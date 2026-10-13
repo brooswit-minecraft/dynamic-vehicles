@@ -60,18 +60,16 @@ public record OfferConfig(
 
     /** @param level vanilla villager profession level, 1 (Novice) .. 5 (Master) */
     public int maxRingForLevel(int level) {
-        return maxRingByLevel[requireValidLevel(level)];
+        return maxRingByLevel[effectiveLevel(level)];
     }
 
     /** @param level vanilla villager profession level, 1 (Novice) .. 5 (Master) */
     public int slotsForLevel(int level) {
-        return slotsByLevel[requireValidLevel(level)];
+        return slotsByLevel[effectiveLevel(level)];
     }
 
-    private static int requireValidLevel(int level) {
-        if (level < 1 || level > 5) {
-            throw new IllegalArgumentException("level must be 1..5 (vanilla Novice..Master): " + level);
-        }
-        return level;
+    /** Vanilla only uses 1..5, but malformed or future values must not expand this search beyond Master. */
+    private static int effectiveLevel(int level) {
+        return Math.clamp(level, 1, 5);
     }
 }

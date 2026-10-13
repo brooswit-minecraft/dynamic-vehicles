@@ -25,10 +25,17 @@ class SettlementFoundationPlanTest {
     }
 
     @Test
-    void villagerCountIsStableAndBounded() {
+    void tradingPostPopulationIsStableAndMany() {
         String key = "minecraft:12:-48";
         int count = SettlementFoundationPlan.villagerCount(key);
         assertEquals(count, SettlementFoundationPlan.villagerCount(key));
-        assertTrue(count >= 1 && count <= 12);
+        assertEquals(8, count);
+        assertTrue(count >= 6);
+    }
+
+    @Test
+    void tradingPostLayoutIsExplicitlyBounded() {
+        assertEquals(3, SettlementFoundationPlan.TRADING_POST_RADIUS);
+        assertEquals(5, SettlementFoundationPlan.TRADING_POST_HEIGHT);
     }
 }

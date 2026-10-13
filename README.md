@@ -50,3 +50,16 @@ redistributing anything built on it.
 ## Sounds
 
 The car has an engine (start and stop sounds, idle, mid and high loops faded and pitched by speed and throttle), impact sounds chosen by how much speed a crash sheds, and tire sounds (rolling noise rough or smooth by surface, a snow loop on snow and ice, light and hard skid loops on slip and hard braking). All are positional, so nearby players hear the car. The client config `soundVolume` scales the looping sounds. Space also sounds the horn. The car sounds were provided by the repository owner; `scripts/convert_sounds.sh` converts the source WAV files to the mono OGG files in `src/main/resources/assets/dynamicvehicles/sounds/car/`.
+# Builder donation trades
+
+The Builder uses a campfire workstation. Its donation trades scale by tier:
+
+| Tier | Material and cost | Output | Villager XP |
+| --- | --- | --- | --- |
+| 1 | 8 oak logs | 1 stick | 1 |
+| 2 | 16 cobblestone | 1 dirt | 5 |
+| 3 | 20 sandstone | 1 oak leaves | 10 |
+| 4 | 24 bricks | 1 stick | 15 |
+| 5 | 28 quartz blocks | 1 dirt | 30 |
+
+Each completed donation uses settlement chance `((villagerLevel - 1) / 4.0) * ((tradeLevel - 1) / 4.0)`; a failed roll or unsafe placement must retain its campfire.

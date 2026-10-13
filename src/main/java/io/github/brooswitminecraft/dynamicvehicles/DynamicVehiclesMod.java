@@ -40,6 +40,10 @@ import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherOfferMenus
 import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherOfferScreen;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherPoiTypes;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherProfession;
+import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderPoiTypes;
+import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderProfession;
+import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderTradeHandler;
+import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderCampfireHandler;
 
 /** Entry point and registry for the first vehicle, a 4-wheel car (MINECRAFT-63). */
 @Mod(DynamicVehiclesMod.MODID)
@@ -113,6 +117,8 @@ public class DynamicVehiclesMod {
         DispatcherBlocks.BLOCKS.register(modEventBus);
         DispatcherPoiTypes.POI_TYPES.register(modEventBus);
         DispatcherProfession.PROFESSIONS.register(modEventBus);
+        BuilderPoiTypes.POI_TYPES.register(modEventBus);
+        BuilderProfession.PROFESSIONS.register(modEventBus);
         DispatcherOfferMenus.MENUS.register(modEventBus);
         modEventBus.addListener(this::commonSetup);
         modEventBus.addListener(this::addCreative);
@@ -120,6 +126,8 @@ public class DynamicVehiclesMod {
         NeoForge.EVENT_BUS.addListener(this::registerCommands);
         NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.server.ServerStartedEvent e) -> LightLedger.sweep(e.getServer()));
         NeoForge.EVENT_BUS.addListener(DispatcherInteractionHandler::onEntityInteract);
+        NeoForge.EVENT_BUS.addListener(BuilderTradeHandler::registerTrades);
+        NeoForge.EVENT_BUS.addListener(BuilderCampfireHandler::onLevelTick);
         NeoForge.EVENT_BUS.addListener(ContractTickHandler::onServerTick);
         NeoForge.EVENT_BUS.addListener(ContractTickHandler::onPlayerLoggedIn);
         NeoForge.EVENT_BUS.addListener(ContractTickHandler::onPlayerLoggedOut);

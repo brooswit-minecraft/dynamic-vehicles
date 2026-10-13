@@ -17,6 +17,9 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 
+import java.util.function.Consumer;
+import java.util.function.Predicate;
+
 /**
  * The first vehicle: a 4-wheel car. Server-authoritative. The rider's
  * forward/strafe input drives {@link CarPhysics}; each tick every wheel
@@ -748,14 +751,24 @@ public class CarEntity extends Entity {
         double originX = getX();
         double originY = getY();
         double originZ = getZ();
-        double[] safe = SafeEjectPlacement.find(originX, originY, originZ,
-                candidate -> isFreeOfBlocks(serverLevel, mob, candidate));
+        tryEjectMobAtSafePosition(originX, originY, originZ,
+                candidate -> isFreeOfBlocks(serverLevel, mob, candidate), mob::stopRiding,
+                candidate -> mob.setPos(candidate[0], candidate[1], candidate[2]));
+    }
+
+    /**
+     * Production ejection decision shared with the world-backed path above. If no collision-free point
+     * exists, neither callback runs: the mob stays mounted rather than being placed inside a block.
+     */
+    static boolean tryEjectMobAtSafePosition(double originX, double originY, double originZ,
+            Predicate<double[]> isFree, Runnable stopRiding, Consumer<double[]> setPosition) {
+        double[] safe = SafeEjectPlacement.find(originX, originY, originZ, isFree);
         if (safe == null) {
-            // Keep the mob mounted until a collision-free nearby position exists; never place it inside a block.
-            return;
+            return false;
         }
-        mob.stopRiding();
-        mob.setPos(safe[0], safe[1], safe[2]);
+        stopRiding.run();
+        setPosition.accept(safe);
+        return true;
     }
 
     /** Whether {@code mob}'s own bounding box, moved to {@code pos}, collides with no block in {@code serverLevel}. */

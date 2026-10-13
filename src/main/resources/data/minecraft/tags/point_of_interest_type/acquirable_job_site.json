@@ -1,5 +1,6 @@
 {
   "values": [
-    "dynamicvehicles:dispatch_board"
+    "dynamicvehicles:dispatch_board",
+    "dynamicvehicles:builder_campfire"
   ]
 }

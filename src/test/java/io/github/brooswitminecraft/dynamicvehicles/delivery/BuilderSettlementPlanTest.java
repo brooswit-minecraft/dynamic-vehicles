@@ -31,4 +31,12 @@ class BuilderSettlementPlanTest {
         assertFalse(BuilderSettlementPlan.shouldReplaceCampfire(false, true));
         assertFalse(BuilderSettlementPlan.shouldReplaceCampfire(true, false));
     }
+
+    @Test
+    void buildingSelectionIsDeterministicAndLimitedToProjectOwnedVariants() {
+        assertEquals(BuilderSettlementPlan.BuildingVariant.OAK_HUT, BuilderSettlementPlan.selectBuildingVariant(0));
+        assertEquals(BuilderSettlementPlan.BuildingVariant.SPRUCE_HUT, BuilderSettlementPlan.selectBuildingVariant(1));
+        assertEquals(BuilderSettlementPlan.BuildingVariant.OAK_HUT, BuilderSettlementPlan.selectBuildingVariant(2));
+        assertEquals(BuilderSettlementPlan.BuildingVariant.SPRUCE_HUT, BuilderSettlementPlan.selectBuildingVariant(-1));
+    }
 }

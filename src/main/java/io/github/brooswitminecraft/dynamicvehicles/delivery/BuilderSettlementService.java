@@ -34,6 +34,13 @@ public final class BuilderSettlementService {
             this.post = post;
             this.stair = stair;
         }
+
+        static VillageBuilding from(BuilderSettlementPlan.BuildingVariant variant) {
+            return switch (variant) {
+                case OAK_HUT -> OAK_HUT;
+                case SPRUCE_HUT -> SPRUCE_HUT;
+            };
+        }
     }
 
     public static void attemptSettlement(Villager villager, int tradeLevel) {
@@ -43,7 +50,8 @@ public final class BuilderSettlementService {
         int villagerLevel = villager.getVillagerData().getLevel();
         if (level.random.nextDouble() >= BuilderSettlementPlan.settlementChance(villagerLevel, tradeLevel)) return;
 
-        VillageBuilding buildingVariant = VillageBuilding.values()[level.random.nextInt(VillageBuilding.values().length)];
+        VillageBuilding buildingVariant = VillageBuilding.from(
+                BuilderSettlementPlan.selectBuildingVariant(level.random.nextInt(VillageBuilding.values().length)));
         Direction rotation = Direction.Plane.HORIZONTAL.getRandomDirection(level.random);
         BlockPos building = campfire.relative(rotation, 4);
         if (!isSafeBuildingSite(level, building, new ChunkPos(campfire), buildingVariant)) return;

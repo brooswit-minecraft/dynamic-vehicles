@@ -631,11 +631,8 @@ public class CarEntity extends Entity {
         super.push(entity);
         if (!level().isClientSide() && entity instanceof Creeper creeper
                 && ImpactRules.creeperExplosionEligible(horizontalSpeed(), CarConfig.COLLISION_MIN_SPEED.get(), impactCooldown > 0)) {
-            // Use the vanilla mob explosion interaction so gamerules/protection hooks retain authority.
-            // The entity must be removed explicitly because Creeper's own detonation helper is private.
             impactCooldown = 10;
-            level().explode(creeper, creeper.getX(), creeper.getY(), creeper.getZ(), 3.0f, Level.ExplosionInteraction.MOB);
-            creeper.discard();
+            CreeperExplosions.detonate((net.minecraft.server.level.ServerLevel) level(), creeper);
         }
         if (!level().isClientSide() && entity instanceof Mob mob
                 && MobBoardingRules.canAutoBoard(mob, spec, stoppedTimer.isLatched())) {

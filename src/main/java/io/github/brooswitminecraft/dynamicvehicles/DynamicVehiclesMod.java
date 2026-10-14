@@ -44,6 +44,7 @@ import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderPoiTypes;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderProfession;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderTradeHandler;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderCampfireHandler;
+import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderPassiveSettlementHandler;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.VillagerNoonProgressionHandler;
 
 /** Entry point and registry for the first vehicle, a 4-wheel car (MINECRAFT-63). */
@@ -128,7 +129,9 @@ public class DynamicVehiclesMod {
         NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.server.ServerStartedEvent e) -> LightLedger.sweep(e.getServer()));
         NeoForge.EVENT_BUS.addListener(DispatcherInteractionHandler::onEntityInteract);
         NeoForge.EVENT_BUS.addListener(BuilderTradeHandler::registerTrades);
+        NeoForge.EVENT_BUS.addListener(BuilderTradeHandler::onTrade);
         NeoForge.EVENT_BUS.addListener(BuilderCampfireHandler::onLevelTick);
+        NeoForge.EVENT_BUS.addListener(BuilderPassiveSettlementHandler::onLevelTick);
         NeoForge.EVENT_BUS.addListener(VillagerNoonProgressionHandler::onLevelTick);
         NeoForge.EVENT_BUS.addListener(ContractTickHandler::onServerTick);
         NeoForge.EVENT_BUS.addListener(ContractTickHandler::onPlayerLoggedIn);

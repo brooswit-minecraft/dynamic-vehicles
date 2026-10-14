@@ -23,6 +23,7 @@
   "key.dynamicvehicles.gear_reverse": "Toggle reverse gear",
   "key.categories.dynamicvehicles": "Dynamic Vehicles",
   "entity.dynamicvehicles.villager.dispatcher": "Dispatcher",
+  "entity.minecraft.villager.dynamicvehicles.builder": "Builder",
   "block.dynamicvehicles.dispatch_board": "Dispatch Board",
   "gui.dynamicvehicles.dispatcher.no_offers": "No destinations available right now.",
   "gauge.dynamicvehicles.danger.safe": "Safe",
@@ -34,5 +35,6 @@
   "message.dynamicvehicles.dispatcher.no_longer_valid": "This Dispatcher is no longer available.",
   "message.dynamicvehicles.dispatcher.accepted": "Contract accepted. Check your HUD for the destination.",
   "message.dynamicvehicles.dispatcher.completed": "Delivery complete! You earned %s emerald(s).",
+  "message.dynamicvehicles.dispatcher.site_unsafe": "Trading Post site is protected or unsafe. Delivery remains active and will retry when the site is clear.",
   "message.dynamicvehicles.dispatcher.expired": "Your delivery contract expired."
 }

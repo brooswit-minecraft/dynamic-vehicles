@@ -5,7 +5,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.npc.Villager;
 import net.neoforged.neoforge.event.tick.LevelTickEvent;
 
-/** Daily, server-authoritative villager progression and Builder settlement rolls. */
+/** Daily, server-authoritative villager progression. Builder settlement has its own elapsed-time path. */
 public final class VillagerNoonProgressionHandler {
     static final String LAST_NOON_DAY_TAG = "dynamicvehicles.lastNoonProgressionDay";
     /** Conservative passive progression: one villager-XP per Minecraft day. */
@@ -27,8 +27,5 @@ public final class VillagerNoonProgressionHandler {
         if (hasProcessedDay && !BuilderSettlementPlan.shouldRunForDay(lastDay, day)) return;
         villager.getPersistentData().putLong(LAST_NOON_DAY_TAG, day);
         villager.setVillagerXp(villager.getVillagerXp() + PASSIVE_XP_PER_NOON);
-        if (villager.getVillagerData().getProfession() == BuilderProfession.BUILDER.get()) {
-            BuilderSettlementService.attemptSettlement(villager);
-        }
     }
 }

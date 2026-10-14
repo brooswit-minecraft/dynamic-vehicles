@@ -8,11 +8,22 @@ import org.junit.jupiter.api.Test;
 
 class BuilderSettlementPlanTest {
     @Test
-    void settlementChanceUsesTheRequiredFractionalFormula() {
-        assertEquals(1.0D, BuilderSettlementPlan.settlementChance(5, 5));
-        assertEquals(0.5D, BuilderSettlementPlan.settlementChance(5, 3));
-        assertEquals(0.0625D, BuilderSettlementPlan.settlementChance(2, 2));
-        assertEquals(0.0D, BuilderSettlementPlan.settlementChance(1, 5));
+    void settlementChanceMapsEveryBuilderLevelToTheRequiredFraction() {
+        assertEquals(0.0D, BuilderSettlementPlan.settlementChance(1));
+        assertEquals(0.025D, BuilderSettlementPlan.settlementChance(2));
+        assertEquals(0.05D, BuilderSettlementPlan.settlementChance(3));
+        assertEquals(0.075D, BuilderSettlementPlan.settlementChance(4));
+        assertEquals(0.10D, BuilderSettlementPlan.settlementChance(5));
+    }
+
+    @Test
+    void noonSchedulingAndPersistenceGateAreDeterministic() {
+        assertTrue(BuilderSettlementPlan.isNoon(6000));
+        assertTrue(BuilderSettlementPlan.isNoon(30000));
+        assertFalse(BuilderSettlementPlan.isNoon(5999));
+        assertFalse(BuilderSettlementPlan.isNoon(6001));
+        assertTrue(BuilderSettlementPlan.shouldRunForDay(4, 5));
+        assertFalse(BuilderSettlementPlan.shouldRunForDay(5, 5));
     }
 
     @Test

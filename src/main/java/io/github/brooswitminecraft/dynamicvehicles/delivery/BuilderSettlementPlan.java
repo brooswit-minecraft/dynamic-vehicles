@@ -7,9 +7,22 @@ public final class BuilderSettlementPlan {
     public enum BuildingVariant { OAK_HUT, SPRUCE_HUT }
     private BuilderSettlementPlan() {}
 
-    /** The specified fractional settlement chance; level one can never settle. */
-    public static double settlementChance(int villagerLevel, int tradeLevel) {
-        return ((villagerLevel - 1) / 4.0D) * ((tradeLevel - 1) / 4.0D);
+    /**
+     * Builder's once-per-noon settlement roll: 0%, 2.5%, 5%, 7.5%, and 10%
+     * for levels one through five.  The calculation deliberately stays fractional.
+     */
+    public static double settlementChance(int villagerLevel) {
+        return Math.max(0, Math.min(4, villagerLevel - 1)) / 40.0D;
+    }
+
+    /** Vanilla days are 24000 ticks and noon is tick 6000. */
+    public static boolean isNoon(long dayTime) {
+        return Math.floorMod(dayTime, 24000L) == 6000L;
+    }
+
+    /** A persisted day marker makes a noon pass retry-safe across tick and save boundaries. */
+    public static boolean shouldRunForDay(long lastProcessedDay, long currentDay) {
+        return lastProcessedDay != currentDay;
     }
 
     /** A campfire is removed only after the replacement structure is known safe. */

@@ -5,6 +5,7 @@ import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.npc.Villager;
+import net.minecraft.world.entity.npc.VillagerProfession;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
@@ -44,23 +45,36 @@ public final class BuilderSettlementService {
         }
     }
 
-    public static void attemptSettlement(Villager villager) {
+    public static void attemptDonationSettlement(Villager villager) {
+        attemptSettlement(villager, BuilderSettlementPlan.donationSettlementChance(
+                villager.getVillagerData().getLevel()));
+    }
+
+    public static void attemptPassiveSettlement(Villager villager) {
+        attemptSettlement(villager, BuilderSettlementPlan.passiveSettlementChance(
+                villager.getVillagerData().getLevel()));
+    }
+
+    private static void attemptSettlement(Villager villager, double settlementChance) {
         if (!(villager.level() instanceof ServerLevel level)) return;
         BlockPos campfire = findCampfireAnchor(level, villager);
         if (campfire == null) return;
-        int villagerLevel = villager.getVillagerData().getLevel();
-        if (level.random.nextDouble() >= BuilderSettlementPlan.settlementChance(villagerLevel)) return;
+        if (level.random.nextDouble() >= settlementChance) return;
 
         VillageBuilding buildingVariant = VillageBuilding.from(
                 BuilderSettlementPlan.selectBuildingVariant(level.random.nextInt(VillageBuilding.values().length)));
         Direction rotation = Direction.Plane.HORIZONTAL.getRandomDirection(level.random);
         BlockPos building = campfire.relative(rotation, 4);
-        if (!isSafeBuildingSite(level, building, new ChunkPos(campfire), buildingVariant)) return;
+        boolean placementIsSafe = isSafeBuildingSite(level, building, new ChunkPos(campfire), buildingVariant);
+        if (!BuilderSettlementPlan.shouldCompleteSettlement(level.getBlockState(campfire).is(Blocks.CAMPFIRE), true,
+                placementIsSafe)) return;
 
         // The full footprint and entity volume were checked before either mutation.
         placeBuilding(level, building, rotation, buildingVariant);
         level.removeBlock(campfire, false);
         villager.getPersistentData().remove(CAMPFIRE_POS_TAG);
+        // Keep the successful Builder-to-unemployed conversion even if this villager has traded before.
+        villager.setVillagerData(villager.getVillagerData().setProfession(VillagerProfession.NONE));
     }
 
     /**

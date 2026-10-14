@@ -57,4 +57,11 @@ class ImpactRulesTest {
         assertEquals(0.9, second, 1.0e-9);
         assertTrue(second < first && first < 10.0);
     }
+
+    @Test
+    void collisionSlipIsCappedAndNeverNegative() {
+        assertEquals(5.0, ImpactRules.impactSlip(5.0), 0.0);
+        assertEquals(ImpactRules.MAX_IMPACT_SLIP, ImpactRules.impactSlip(40.0), 0.0);
+        assertEquals(0.0, ImpactRules.impactSlip(-3.0), 0.0);
+    }
 }

@@ -815,6 +815,16 @@ public class CarEntity extends Entity {
         checkAutoDismount();
     }
 
+    /** Explosions (creepers, TNT, another car blowing up) damage the car; the explosion itself comes next tick via {@link #tickHealth}. */
+    @Override
+    public boolean hurt(net.minecraft.world.damagesource.DamageSource source, float amount) {
+        if (source.is(net.minecraft.tags.DamageTypeTags.IS_EXPLOSION)) {
+            damage(amount);
+            return true;
+        }
+        return super.hurt(source, amount);
+    }
+
     /** Server: take damage (Sable-driven cars only; the kinematic fallback has no health). */
     private void damage(float amount) {
         if (amount <= 0.0f || sableBody == null || isRemoved() || level().isClientSide()) {

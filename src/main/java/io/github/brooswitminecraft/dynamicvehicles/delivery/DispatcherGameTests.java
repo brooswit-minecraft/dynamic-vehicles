@@ -70,6 +70,8 @@ public final class DispatcherGameTests {
                 .add(ResourceLocation.fromNamespaceAndPath("dynamicatmosphere", "atmosphere_grid"));
         ChannelAttributes.getOrCreateAdHocChannels(player.connection.getConnection())
                 .add(ResourceLocation.fromNamespaceAndPath("dynamicatmosphere", "smoke_grid"));
+        ChannelAttributes.getOrCreateAdHocChannels(player.connection.getConnection())
+                .add(ResourceLocation.fromNamespaceAndPath("dynamicatmosphere", "material_grid"));
 
         var event = new PlayerInteractEvent.EntityInteract(player, InteractionHand.MAIN_HAND, villager);
         DispatcherInteractionHandler.onEntityInteract(event);

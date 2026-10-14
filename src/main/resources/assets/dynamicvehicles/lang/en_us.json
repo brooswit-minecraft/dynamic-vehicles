@@ -34,5 +34,6 @@
   "message.dynamicvehicles.dispatcher.no_longer_valid": "This Dispatcher is no longer available.",
   "message.dynamicvehicles.dispatcher.accepted": "Contract accepted. Check your HUD for the destination.",
   "message.dynamicvehicles.dispatcher.completed": "Delivery complete! You earned %s emerald(s).",
+  "message.dynamicvehicles.dispatcher.site_unsafe": "Trading Post site is protected or unsafe. Delivery remains active and will retry when the site is clear.",
   "message.dynamicvehicles.dispatcher.expired": "Your delivery contract expired."
 }

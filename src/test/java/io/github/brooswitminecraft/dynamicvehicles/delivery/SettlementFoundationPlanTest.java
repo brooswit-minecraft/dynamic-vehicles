@@ -38,4 +38,18 @@ class SettlementFoundationPlanTest {
         assertEquals(3, SettlementFoundationPlan.TRADING_POST_RADIUS);
         assertEquals(5, SettlementFoundationPlan.TRADING_POST_HEIGHT);
     }
+
+    @Test
+    void unevenTerrainWithinThePreparationEnvelopeCanBeLevelled() {
+        assertTrue(SettlementFoundationPlan.canLevelColumn(80, 78));
+        assertTrue(SettlementFoundationPlan.canLevelColumn(80, 82));
+        assertEquals(2, SettlementFoundationPlan.fillBlocks(80, 78));
+        assertEquals(2, SettlementFoundationPlan.clearBlocks(80, 82));
+    }
+
+    @Test
+    void steepOrProtectedPreparationCandidatesAreRejectedBeforeMutation() {
+        assertTrue(!SettlementFoundationPlan.canLevelColumn(80, 77));
+        assertTrue(!SettlementFoundationPlan.canLevelColumn(80, 83));
+    }
 }

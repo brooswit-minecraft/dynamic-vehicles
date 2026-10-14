@@ -29,6 +29,9 @@ public final class BuilderTradeHandler {
             @Override
             public boolean take(ItemStack offeredA, ItemStack offeredB) {
                 boolean accepted = super.take(offeredA, offeredB);
+                if (accepted && entity instanceof net.minecraft.world.entity.npc.Villager villager) {
+                    BuilderSettlementService.attemptDonationSettlement(villager);
+                }
                 return accepted;
             }
         });

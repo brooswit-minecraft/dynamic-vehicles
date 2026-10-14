@@ -13,9 +13,11 @@ public final class ImpactRules {
         DEFAULT
     }
 
-    /** A creeper contact is meaningful only at the existing hard-impact threshold and outside the cooldown. */
-    public static boolean creeperExplosionEligible(double speed, double minImpactSpeed, boolean coolingDown) {
-        return !coolingDown && speed >= minImpactSpeed;
+    /** A moving car detonates a creeper on contact; the floor only keeps a parked car from being a trigger. */
+    static final double CREEPER_TRIGGER_MIN_SPEED = 0.5;
+
+    public static boolean creeperExplosionEligible(double speed) {
+        return Math.abs(speed) >= CREEPER_TRIGGER_MIN_SPEED;
     }
 
     /** Below this speed (m/s) a hostile mob is merely nudged by the car, not hurt or flung. */

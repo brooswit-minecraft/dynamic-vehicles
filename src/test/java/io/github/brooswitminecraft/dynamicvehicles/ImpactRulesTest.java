@@ -8,10 +8,10 @@ import org.junit.jupiter.api.Test;
 
 class ImpactRulesTest {
     @Test
-    void creeperExplosionNeedsThresholdAndIsDeduplicatedByCooldown() {
-        assertFalse(ImpactRules.creeperExplosionEligible(7.99, 8.0, false));
-        assertTrue(ImpactRules.creeperExplosionEligible(8.0, 8.0, false));
-        assertFalse(ImpactRules.creeperExplosionEligible(30.0, 8.0, true));
+    void creeperExplodesOnContactWithAnyMovingCar() {
+        assertFalse(ImpactRules.creeperExplosionEligible(0.1));
+        assertTrue(ImpactRules.creeperExplosionEligible(0.5));
+        assertTrue(ImpactRules.creeperExplosionEligible(2.0));
     }
 
     @Test

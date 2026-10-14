@@ -631,10 +631,9 @@ public class CarEntity extends Entity {
     public void push(Entity entity) {
         super.push(entity);
         if (!level().isClientSide() && entity instanceof Creeper creeper
-                && ImpactRules.creeperExplosionEligible(horizontalSpeed(), CarConfig.COLLISION_MIN_SPEED.get(), impactCooldown > 0)) {
+                && ImpactRules.creeperExplosionEligible(horizontalSpeed())) {
             // Use the vanilla mob explosion interaction so gamerules/protection hooks retain authority.
             // The entity must be removed explicitly because Creeper's own detonation helper is private.
-            impactCooldown = 10;
             level().explode(creeper, creeper.getX(), creeper.getY(), creeper.getZ(), 3.0f, Level.ExplosionInteraction.MOB);
             creeper.discard();
         }

@@ -30,6 +30,15 @@ class BuilderSettlementPlanTest {
         assertTrue(BuilderSettlementPlan.shouldReplaceCampfire(true, true));
         assertFalse(BuilderSettlementPlan.shouldReplaceCampfire(false, true));
         assertFalse(BuilderSettlementPlan.shouldReplaceCampfire(true, false));
+        assertTrue(BuilderSettlementPlan.shouldResetBuilder(true, true));
+        assertFalse(BuilderSettlementPlan.shouldResetBuilder(false, true));
+        assertFalse(BuilderSettlementPlan.shouldResetBuilder(true, false));
+    }
+
+    @Test
+    void replacementHouseUsesTheRequiredEnclosedFootprint() {
+        assertEquals(5, BuilderSettlementPlan.HOUSE_FOOTPRINT_WIDTH);
+        assertEquals(4, BuilderSettlementPlan.HOUSE_HEIGHT);
     }
 
     @Test

@@ -2,6 +2,8 @@ package io.github.brooswitminecraft.dynamicvehicles.delivery;
 
 /** Minecraft-free Builder donation and placement decisions. */
 public final class BuilderSettlementPlan {
+    public static final int HOUSE_FOOTPRINT_WIDTH = 5;
+    public static final int HOUSE_HEIGHT = 4;
     public enum BuildingVariant { OAK_HUT, SPRUCE_HUT }
     private BuilderSettlementPlan() {}
 
@@ -13,6 +15,11 @@ public final class BuilderSettlementPlan {
     /** A campfire is removed only after the replacement structure is known safe. */
     public static boolean shouldReplaceCampfire(boolean placementIsSafe, boolean rollSucceeded) {
         return placementIsSafe && rollSucceeded;
+    }
+
+    /** A complete settlement also retires the Builder; failures leave it unchanged. */
+    public static boolean shouldResetBuilder(boolean placementIsSafe, boolean rollSucceeded) {
+        return shouldReplaceCampfire(placementIsSafe, rollSucceeded);
     }
 
     /** Maps a supplied bounded random index to a project-owned building variant. */

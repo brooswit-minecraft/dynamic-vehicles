@@ -5,17 +5,22 @@ import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.npc.Villager;
+import net.minecraft.world.entity.npc.VillagerProfession;
+import net.minecraft.world.item.trading.MerchantOffers;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.BedBlock;
 import net.minecraft.world.level.block.Blocks;
-import net.minecraft.world.level.block.StairBlock;
+import net.minecraft.world.level.block.DoorBlock;
+import net.minecraft.world.level.block.state.properties.BedPart;
+import net.minecraft.world.level.block.state.properties.DoubleBlockHalf;
 import net.minecraft.world.phys.AABB;
 
 /** Server-side, destructive-only-after-preflight Builder settlement path. */
 public final class BuilderSettlementService {
     public static final String CAMPFIRE_POS_TAG = "dynamicvehicles.builderCampfire";
-    private static final int BUILDING_RADIUS = 1;
-    private static final int BUILDING_HEIGHT = 4;
+    private static final int BUILDING_RADIUS = (BuilderSettlementPlan.HOUSE_FOOTPRINT_WIDTH - 1) / 2;
+    private static final int BUILDING_HEIGHT = BuilderSettlementPlan.HOUSE_HEIGHT;
 
     private BuilderSettlementService() {}
 
@@ -56,10 +61,20 @@ public final class BuilderSettlementService {
         BlockPos building = campfire.relative(rotation, 4);
         if (!isSafeBuildingSite(level, building, new ChunkPos(campfire), buildingVariant)) return;
 
-        // The full footprint and entity volume were checked before either mutation.
+        // The full footprint and entity volume were checked before any mutation.
         placeBuilding(level, building, rotation, buildingVariant);
         level.removeBlock(campfire, false);
+        resetToUnemployed(villager);
         villager.getPersistentData().remove(CAMPFIRE_POS_TAG);
+    }
+
+    /** A settled Builder retires completely, including its leveled donation offers. */
+    private static void resetToUnemployed(Villager villager) {
+        villager.setVillagerData(villager.getVillagerData()
+                .setProfession(VillagerProfession.NONE)
+                .setLevel(1));
+        villager.setVillagerXp(0);
+        villager.setOffers(new MerchantOffers());
     }
 
     private static boolean isSafeBuildingSite(ServerLevel level, BlockPos center, ChunkPos campfireChunk,
@@ -83,10 +98,28 @@ public final class BuilderSettlementService {
             for (int z = -BUILDING_RADIUS; z <= BUILDING_RADIUS; z++) {
                 level.setBlock(center.offset(x, 0, z), buildingVariant.plank.defaultBlockState(), Block.UPDATE_ALL);
                 level.setBlock(center.offset(x, 3, z), buildingVariant.plank.defaultBlockState(), Block.UPDATE_ALL);
+                if (Math.abs(x) == BUILDING_RADIUS || Math.abs(z) == BUILDING_RADIUS) {
+                    for (int y = 1; y < 3; y++)
+                        level.setBlock(center.offset(x, y, z), buildingVariant.plank.defaultBlockState(), Block.UPDATE_ALL);
+                }
             }
         }
-        for (int x : new int[] {-1, 1}) for (int z : new int[] {-1, 1})
-            for (int y = 1; y < 3; y++) level.setBlock(center.offset(x, y, z), buildingVariant.post.defaultBlockState(), Block.UPDATE_ALL);
-        level.setBlock(center.relative(rotation).above(), buildingVariant.stair.defaultBlockState().setValue(StairBlock.FACING, rotation), Block.UPDATE_ALL);
+        for (int x : new int[] {-BUILDING_RADIUS, BUILDING_RADIUS})
+            for (int z : new int[] {-BUILDING_RADIUS, BUILDING_RADIUS})
+                for (int y = 1; y < 3; y++)
+                    level.setBlock(center.offset(x, y, z), buildingVariant.post.defaultBlockState(), Block.UPDATE_ALL);
+
+        BlockPos doorway = center.relative(rotation, BUILDING_RADIUS);
+        level.setBlock(doorway.above(), Blocks.OAK_DOOR.defaultBlockState()
+                .setValue(DoorBlock.FACING, rotation).setValue(DoorBlock.HALF, DoubleBlockHalf.LOWER), Block.UPDATE_ALL);
+        level.setBlock(doorway.above(2), Blocks.OAK_DOOR.defaultBlockState()
+                .setValue(DoorBlock.FACING, rotation).setValue(DoorBlock.HALF, DoubleBlockHalf.UPPER), Block.UPDATE_ALL);
+
+        BlockPos bedFoot = center.relative(rotation.getOpposite());
+        level.setBlock(bedFoot.above(), Blocks.RED_BED.defaultBlockState()
+                .setValue(BedBlock.FACING, rotation).setValue(BedBlock.PART, BedPart.FOOT), Block.UPDATE_ALL);
+        level.setBlock(bedFoot.relative(rotation).above(), Blocks.RED_BED.defaultBlockState()
+                .setValue(BedBlock.FACING, rotation).setValue(BedBlock.PART, BedPart.HEAD), Block.UPDATE_ALL);
+        level.setBlock(center.relative(rotation.getClockWise()).above(), Blocks.BARREL.defaultBlockState(), Block.UPDATE_ALL);
     }
 }

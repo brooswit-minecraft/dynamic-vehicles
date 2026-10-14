@@ -2,8 +2,10 @@ package io.github.brooswitminecraft.dynamicvehicles.delivery;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.particles.ParticleTypes;
+import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.tags.StructureTags;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
@@ -13,13 +15,15 @@ import net.minecraft.world.entity.npc.VillagerProfession;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.Heightmap;
 
 /**
  * Bounded arrival-side Trading Post founder. The layout is a 7x7x5 spruce
  * pavilion: a spruce floor and roof, four stripped-oak corner posts, a central
- * Dispatch Board with Bell, and eight villagers (one Dispatcher). Every cell
- * is proven clear and level before the first world mutation.
+ * Dispatch Board with Bell, and eight villagers (one Dispatcher). Before
+ * founding, each footprint column may be adjusted by at most two blocks using
+ * only whitelisted natural terrain; every cell is proven safe first.
  */
 public final class SettlementFounder {
     private SettlementFounder() {
@@ -50,6 +54,10 @@ public final class SettlementFounder {
             return true;
         }
         if (decision == SettlementFoundationPlan.Decision.UNSAFE_SITE) {
+            // The contract is restored by ContractTickHandler and retried on
+            // its normal cadence; action-bar feedback makes that nonterminal
+            // result explicit without filling the player's chat on each retry.
+            player.displayClientMessage(Component.translatable("message.dynamicvehicles.dispatcher.site_unsafe"), true);
             return false;
         }
 
@@ -99,11 +107,22 @@ public final class SettlementFounder {
             for (int z = -radius; z <= radius; z++) {
                 int worldX = center.getX() + x;
                 int worldZ = center.getZ() + z;
-                if (level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, worldX, worldZ) != floorY) {
+                BlockPos column = new BlockPos(worldX, floorY, worldZ);
+                if (!level.hasChunkAt(column) || !level.structureManager().getAllStructuresAt(column).isEmpty()) {
                     return false;
                 }
-                for (int y = 0; y < SettlementFoundationPlan.TRADING_POST_HEIGHT; y++) {
-                    if (!level.isEmptyBlock(new BlockPos(worldX, floorY + y, worldZ))) {
+                int terrainY = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, worldX, worldZ);
+                if (!SettlementFoundationPlan.canLevelColumn(floorY, terrainY)) {
+                    return false;
+                }
+                for (int y = terrainY; y < floorY; y++) {
+                    if (!level.isEmptyBlock(new BlockPos(worldX, y, worldZ))) {
+                        return false;
+                    }
+                }
+                for (int y = floorY; y < floorY + SettlementFoundationPlan.TRADING_POST_HEIGHT; y++) {
+                    BlockState state = level.getBlockState(new BlockPos(worldX, y, worldZ));
+                    if (!state.isAir() && !isPermittedTerrain(state)) {
                         return false;
                     }
                 }
@@ -114,9 +133,20 @@ public final class SettlementFounder {
 
     private static void placeTradingPost(ServerLevel level, BlockPos center) {
         int radius = SettlementFoundationPlan.TRADING_POST_RADIUS;
+        int floorY = center.getY();
         for (int x = -radius; x <= radius; x++) {
             for (int z = -radius; z <= radius; z++) {
                 BlockPos floor = center.offset(x, 0, z);
+                int terrainY = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, floor.getX(), floor.getZ());
+                for (int y = terrainY; y < floorY; y++) {
+                    level.setBlock(new BlockPos(floor.getX(), y, floor.getZ()), Blocks.DIRT.defaultBlockState(), Block.UPDATE_ALL);
+                }
+                for (int y = floorY; y < floorY + SettlementFoundationPlan.TRADING_POST_HEIGHT; y++) {
+                    BlockPos cell = new BlockPos(floor.getX(), y, floor.getZ());
+                    if (!level.isEmptyBlock(cell)) {
+                        level.setBlock(cell, Blocks.AIR.defaultBlockState(), Block.UPDATE_ALL);
+                    }
+                }
                 level.setBlock(floor, Blocks.SPRUCE_PLANKS.defaultBlockState(), Block.UPDATE_ALL);
                 level.setBlock(floor.above(SettlementFoundationPlan.TRADING_POST_HEIGHT - 1),
                         Blocks.SPRUCE_PLANKS.defaultBlockState(), Block.UPDATE_ALL);
@@ -131,5 +161,17 @@ public final class SettlementFounder {
         }
         level.setBlock(center, DispatcherBlocks.DISPATCH_BOARD.get().defaultBlockState(), Block.UPDATE_ALL);
         level.setBlock(center.above(), Blocks.BELL.defaultBlockState(), Block.UPDATE_ALL);
+    }
+
+    /** Reject anything that is not ordinary, dry vanilla terrain or foliage. */
+    private static boolean isPermittedTerrain(BlockState state) {
+        return state.getFluidState().isEmpty()
+                && (state.is(BlockTags.DIRT)
+                || state.is(BlockTags.BASE_STONE_OVERWORLD)
+                || state.is(BlockTags.SAND)
+                || state.is(BlockTags.TERRACOTTA)
+                || state.is(BlockTags.LEAVES)
+                || state.is(Blocks.GRASS_BLOCK)
+                || state.is(Blocks.GRAVEL));
     }
 }

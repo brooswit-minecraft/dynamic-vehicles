@@ -14,7 +14,10 @@ public final class BuilderPassiveSettlementHandler {
         if (!(event.getLevel() instanceof ServerLevel level)) return;
         long gameTime = level.getGameTime();
         for (Entity entity : level.getEntities().getAll()) {
-            if (entity instanceof Villager villager) attemptPassiveSettlement(villager, gameTime);
+            if (entity instanceof Villager villager) {
+                BuilderSettlementService.processPendingDonations(villager);
+                attemptPassiveSettlement(villager, gameTime);
+            }
         }
     }
 

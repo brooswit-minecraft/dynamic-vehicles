@@ -129,6 +129,7 @@ public class DynamicVehiclesMod {
         NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.server.ServerStartedEvent e) -> LightLedger.sweep(e.getServer()));
         NeoForge.EVENT_BUS.addListener(DispatcherInteractionHandler::onEntityInteract);
         NeoForge.EVENT_BUS.addListener(BuilderTradeHandler::registerTrades);
+        NeoForge.EVENT_BUS.addListener(BuilderTradeHandler::onTrade);
         NeoForge.EVENT_BUS.addListener(BuilderCampfireHandler::onLevelTick);
         NeoForge.EVENT_BUS.addListener(BuilderPassiveSettlementHandler::onLevelTick);
         NeoForge.EVENT_BUS.addListener(VillagerNoonProgressionHandler::onLevelTick);

@@ -7,7 +7,6 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.npc.VillagerProfession;
 import net.minecraft.world.item.trading.MerchantOffers;
-import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.BedBlock;
 import net.minecraft.world.level.block.Blocks;
@@ -19,6 +18,7 @@ import net.minecraft.world.phys.AABB;
 /** Server-side, destructive-only-after-preflight Builder settlement path. */
 public final class BuilderSettlementService {
     public static final String CAMPFIRE_POS_TAG = "dynamicvehicles.builderCampfire";
+    private static final String PENDING_DONATIONS_TAG = "dynamicvehicles.pendingBuilderDonations";
     private static final int CAMPFIRE_SEARCH_RADIUS = 8;
     private static final int BUILDING_RADIUS = (BuilderSettlementPlan.HOUSE_FOOTPRINT_WIDTH - 1) / 2;
     private static final int BUILDING_HEIGHT = BuilderSettlementPlan.HOUSE_HEIGHT;
@@ -49,9 +49,26 @@ public final class BuilderSettlementService {
         }
     }
 
-    public static void attemptDonationSettlement(Villager villager) {
+    public static void attemptDonationSettlement(Villager villager, int tradeTier) {
         attemptSettlement(villager, BuilderSettlementPlan.donationSettlementChance(
-                villager.getVillagerData().getLevel()));
+                villager.getVillagerData().getLevel(), tradeTier));
+    }
+
+    public static void queueDonationSettlement(Villager villager, int tradeTier) {
+        int[] previous = villager.getPersistentData().getIntArray(PENDING_DONATIONS_TAG);
+        int[] pending = java.util.Arrays.copyOf(previous, previous.length + 2);
+        pending[previous.length] = villager.getVillagerData().getLevel();
+        pending[previous.length + 1] = tradeTier;
+        villager.getPersistentData().putIntArray(PENDING_DONATIONS_TAG, pending);
+    }
+
+    /** MerchantResultSlot awards XP after the trade event; retire only after the transaction finishes. */
+    static void processPendingDonations(Villager villager) {
+        int[] pending = villager.getPersistentData().getIntArray(PENDING_DONATIONS_TAG);
+        villager.getPersistentData().remove(PENDING_DONATIONS_TAG);
+        for (int i = 0; i + 1 < pending.length; i += 2) {
+            attemptSettlement(villager, BuilderSettlementPlan.donationSettlementChance(pending[i], pending[i + 1]));
+        }
     }
 
     public static void attemptPassiveSettlement(Villager villager) {
@@ -61,6 +78,7 @@ public final class BuilderSettlementService {
 
     private static void attemptSettlement(Villager villager, double settlementChance) {
         if (!(villager.level() instanceof ServerLevel level)) return;
+        if (villager.getVillagerData().getProfession() != BuilderProfession.BUILDER.get()) return;
         BlockPos campfire = findCampfireAnchor(level, villager);
         if (campfire == null) return;
         if (level.random.nextDouble() >= settlementChance) return;
@@ -69,7 +87,7 @@ public final class BuilderSettlementService {
                 BuilderSettlementPlan.selectBuildingVariant(level.random.nextInt(VillageBuilding.values().length)));
         Direction rotation = Direction.Plane.HORIZONTAL.getRandomDirection(level.random);
         BlockPos building = campfire.relative(rotation, 4);
-        boolean placementIsSafe = isSafeBuildingSite(level, building, new ChunkPos(campfire), buildingVariant);
+        boolean placementIsSafe = isSafeBuildingSite(level, building, rotation);
         if (!BuilderSettlementPlan.shouldCompleteSettlement(level.getBlockState(campfire).is(Blocks.CAMPFIRE), true,
                 placementIsSafe)) return;
 
@@ -78,8 +96,6 @@ public final class BuilderSettlementService {
         level.removeBlock(campfire, false);
         resetToUnemployed(villager);
         villager.getPersistentData().remove(CAMPFIRE_POS_TAG);
-        // Keep the successful Builder-to-unemployed conversion even if this villager has traded before.
-        villager.setVillagerData(villager.getVillagerData().setProfession(VillagerProfession.NONE));
     }
 
     /** A settled Builder retires completely, including its leveled donation offers. */
@@ -88,6 +104,8 @@ public final class BuilderSettlementService {
                 .setProfession(VillagerProfession.NONE)
                 .setLevel(1));
         villager.setVillagerXp(0);
+        villager.updateMerchantTimer = 0;
+        villager.increaseProfessionLevelOnUpdate = false;
         villager.setOffers(new MerchantOffers());
     }
 
@@ -115,14 +133,19 @@ public final class BuilderSettlementService {
         return best;
     }
 
-    private static boolean isSafeBuildingSite(ServerLevel level, BlockPos center, ChunkPos campfireChunk,
-            VillageBuilding buildingVariant) {
-        if (!level.hasChunkAt(center) || !new ChunkPos(center).equals(campfireChunk)) return false;
+    private static boolean isSafeBuildingSite(ServerLevel level, BlockPos center, Direction rotation) {
+        BlockPos entrance = center.relative(rotation, BUILDING_RADIUS + 1);
+        if (!level.hasChunkAt(entrance) || !level.isEmptyBlock(entrance.above())
+                || !level.isEmptyBlock(entrance.above(2))
+                || !level.getBlockState(entrance.below()).isFaceSturdy(level, entrance.below(), Direction.UP)) return false;
         AABB bounds = new AABB(center.getX() - BUILDING_RADIUS, center.getY(), center.getZ() - BUILDING_RADIUS,
                 center.getX() + BUILDING_RADIUS + 1, center.getY() + BUILDING_HEIGHT, center.getZ() + BUILDING_RADIUS + 1);
         if (!level.getEntities((Entity) null, bounds).isEmpty()) return false;
         for (int x = -BUILDING_RADIUS; x <= BUILDING_RADIUS; x++) {
             for (int z = -BUILDING_RADIUS; z <= BUILDING_RADIUS; z++) {
+                BlockPos floor = center.offset(x, 0, z);
+                if (!level.hasChunkAt(floor) || !level.getWorldBorder().isWithinBounds(floor)
+                        || !level.getBlockState(floor.below()).isFaceSturdy(level, floor.below(), Direction.UP)) return false;
                 for (int y = 0; y < BUILDING_HEIGHT; y++) {
                     if (!level.isEmptyBlock(center.offset(x, y, z))) return false;
                 }

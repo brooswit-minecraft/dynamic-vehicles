@@ -7,10 +7,23 @@ import net.minecraft.world.item.trading.MerchantOffer;
 import net.minecraft.world.entity.npc.VillagerTrades;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.event.village.VillagerTradesEvent;
+import net.neoforged.neoforge.event.entity.player.TradeWithVillagerEvent;
+import net.minecraft.world.entity.npc.Villager;
 
 /** Registers the documented, level-scaled Builder material donations. */
 public final class BuilderTradeHandler {
     private BuilderTradeHandler() {}
+
+    /** The completed-trade event also handles offers restored from NBT after a reload. */
+    public static void onTrade(TradeWithVillagerEvent event) {
+        if (!(event.getAbstractVillager() instanceof Villager villager)
+                || villager.getVillagerData().getProfession() != BuilderProfession.BUILDER.get()) return;
+        var cost = event.getMerchantOffer().getBaseCostA();
+        int tier = cost.is(Items.OAK_LOG) ? 1 : cost.is(Items.COBBLESTONE) ? 2
+                : cost.is(Items.SANDSTONE) ? 3 : cost.is(Items.BRICK) ? 4
+                : cost.is(Items.QUARTZ_BLOCK) ? 5 : 0;
+        if (tier > 0) BuilderSettlementService.queueDonationSettlement(villager, tier);
+    }
 
     @SubscribeEvent
     public static void registerTrades(VillagerTradesEvent event) {
@@ -25,15 +38,6 @@ public final class BuilderTradeHandler {
     private static void add(VillagerTradesEvent event, int level, net.minecraft.world.item.Item cost,
             int costCount, net.minecraft.world.item.Item output, int maxUses, int xp) {
         event.getTrades().get(level).add((entity, random) -> new MerchantOffer(
-                new ItemCost(cost, costCount), new ItemStack(output), maxUses, xp, 0.05F) {
-            @Override
-            public boolean take(ItemStack offeredA, ItemStack offeredB) {
-                boolean accepted = super.take(offeredA, offeredB);
-                if (accepted && entity instanceof net.minecraft.world.entity.npc.Villager villager) {
-                    BuilderSettlementService.attemptDonationSettlement(villager);
-                }
-                return accepted;
-            }
-        });
+                new ItemCost(cost, costCount), new ItemStack(output), maxUses, xp, 0.05F));
     }
 }

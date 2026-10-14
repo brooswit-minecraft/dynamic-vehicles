@@ -17,7 +17,7 @@ class BuilderProfessionResourceTest {
         try (InputStream in = getClass().getResourceAsStream("/assets/dynamicvehicles/lang/en_us.json")) {
             assertTrue(in != null);
             assertTrue(new String(in.readAllBytes(), StandardCharsets.UTF_8)
-                    .contains("\"entity.dynamicvehicles.villager.builder\""));
+                    .contains("\"entity.minecraft.villager.dynamicvehicles.builder\""));
         }
     }
 

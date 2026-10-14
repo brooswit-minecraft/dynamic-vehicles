@@ -9,11 +9,11 @@ import org.junit.jupiter.api.Test;
 class BuilderSettlementPlanTest {
     @Test
     void donationAndPassiveRatesAreIndependentlyLevelScaled() {
-        assertEquals(0.0D, BuilderSettlementPlan.donationSettlementChance(1));
-        assertEquals(0.025D, BuilderSettlementPlan.donationSettlementChance(2));
-        assertEquals(0.05D, BuilderSettlementPlan.donationSettlementChance(3));
-        assertEquals(0.075D, BuilderSettlementPlan.donationSettlementChance(4));
-        assertEquals(0.10D, BuilderSettlementPlan.donationSettlementChance(5));
+        assertEquals(0.0D, BuilderSettlementPlan.donationSettlementChance(1, 5));
+        assertEquals(0.0625D, BuilderSettlementPlan.donationSettlementChance(2, 2));
+        assertEquals(0.25D, BuilderSettlementPlan.donationSettlementChance(3, 3));
+        assertEquals(0.5625D, BuilderSettlementPlan.donationSettlementChance(4, 4));
+        assertEquals(1.0D, BuilderSettlementPlan.donationSettlementChance(5, 5));
         assertEquals(0.0D, BuilderSettlementPlan.passiveSettlementChance(1));
         assertEquals(0.0002D, BuilderSettlementPlan.passiveSettlementChance(2));
         assertEquals(0.0004D, BuilderSettlementPlan.passiveSettlementChance(3));

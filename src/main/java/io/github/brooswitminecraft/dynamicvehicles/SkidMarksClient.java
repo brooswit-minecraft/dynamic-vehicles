@@ -5,7 +5,12 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.phys.Vec3;
+import org.joml.Vector3f;
 
 /**
  * Client-side tracking of per-wheel skid decals (MINECRAFT-225): every client tick of a car that is on
@@ -34,21 +39,15 @@ final class SkidMarksClient {
             return;
         }
         double yaw = Math.toRadians(car.getYRot());
-        double sin = Math.sin(yaw);
-        double cos = Math.cos(yaw);
-        double y = car.getY() + SkidMarkMath.SURFACE_OFFSET;
         long now = System.currentTimeMillis();
         double[][] wheels = car.spec().mounts();
         for (int wheel = 0; wheel < wheels.length; wheel++) {
             double[] mount = wheels[wheel];
-            double[] local = {mount[0], mount[2]};
-            // Same rotation convention as CarEntity#reportSlip: local[0] = right offset, local[1] = forward offset.
-            double x = car.getX() + local[0] * cos - local[1] * sin;
-            double z = car.getZ() + local[0] * sin + local[1] * cos;
-            BlockPos below = BlockPos.containing(x, car.getY() - 0.05, z);
-            if (car.level().getBlockState(below).getCollisionShape(car.level(), below).isEmpty()) {
-                continue;
-            }
+            BlockHitResult support = wheelSupport(car, mount);
+            if (support.getType() == HitResult.Type.MISS || support.getDirection() != Direction.UP) continue;
+            double x = support.getLocation().x;
+            double y = support.getLocation().y + SkidMarkMath.SURFACE_OFFSET;
+            double z = support.getLocation().z;
             SkidMarkRingBuffer buffer = BUFFERS.computeIfAbsent(key(car.getId(), wheel),
                     k -> new SkidMarkRingBuffer(SkidMarkMath.MAX_PER_WHEEL));
             SkidMark last = buffer.latest();
@@ -57,6 +56,26 @@ final class SkidMarksClient {
             }
             buffer.add(new SkidMark(x, y, z, (float) yaw, now));
         }
+    }
+
+    /** Match the physics suspension ray for rigid bodies; the simple model's origin is ground height. */
+    static BlockHitResult wheelSupport(CarEntity car, double[] mount) {
+        Vec3 from;
+        Vec3 to;
+        if (car.isRigidBody()) {
+            var orientation = car.renderOrientation(1.0F);
+            Vector3f offset = orientation.transform(new Vector3f((float) mount[0], (float) mount[1], (float) mount[2]));
+            Vector3f down = orientation.transform(new Vector3f(0, -1, 0));
+            from = car.position().add(offset.x, car.spec().halfY() + offset.y, offset.z);
+            to = from.add(down.x * (car.spec().restLength() + 0.25),
+                    down.y * (car.spec().restLength() + 0.25), down.z * (car.spec().restLength() + 0.25));
+        } else {
+            double yaw = Math.toRadians(car.getYRot());
+            from = car.position().add(mount[0] * Math.cos(yaw) - mount[2] * Math.sin(yaw), 0.25,
+                    mount[0] * Math.sin(yaw) + mount[2] * Math.cos(yaw));
+            to = from.add(0, -0.5, 0);
+        }
+        return car.level().clip(new ClipContext(from, to, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, car));
     }
 
     /** Forgets every ring buffer for a car that just left the client (from {@code onClientRemoval}):

@@ -9,9 +9,10 @@ public final class BuilderSettlementPlan {
     public enum BuildingVariant { OAK_HUT, SPRUCE_HUT }
     private BuilderSettlementPlan() {}
 
-    /** Builder donations retain their original 0%, 2.5%, 5%, 7.5%, and 10% settlement roll. */
-    public static double donationSettlementChance(int villagerLevel) {
-        return Math.max(0, Math.min(4, villagerLevel - 1)) / 40.0D;
+    /** Both Builder level and the completed donation tier contribute; level five/tier five guarantees the roll. */
+    public static double donationSettlementChance(int villagerLevel, int tradeTier) {
+        return (Math.max(0, Math.min(4, villagerLevel - 1)) / 4.0D)
+                * (Math.max(0, Math.min(4, tradeTier - 1)) / 4.0D);
     }
 
     /**

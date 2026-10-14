@@ -95,10 +95,10 @@ public final class SettlementFounder {
      * Checking the whole footprint prevents us from overwriting player builds,
      * terrain, or entities merely because a delivery reached its target.
      */
-    private static boolean isSafeTradingPostSite(ServerLevel level, BlockPos center) {
+    static boolean isSafeTradingPostSite(ServerLevel level, BlockPos center) {
         int radius = SettlementFoundationPlan.TRADING_POST_RADIUS;
         int floorY = center.getY();
-        AABB bounds = new AABB(center.getX() - radius, floorY, center.getZ() - radius,
+        AABB bounds = new AABB(center.getX() - radius, floorY - SettlementFoundationPlan.MAX_TERRAIN_ADJUSTMENT, center.getZ() - radius,
                 center.getX() + radius + 1, floorY + SettlementFoundationPlan.TRADING_POST_HEIGHT, center.getZ() + radius + 1);
         if (!level.getEntities((Entity) null, bounds).isEmpty()) {
             return false;
@@ -108,13 +108,15 @@ public final class SettlementFounder {
                 int worldX = center.getX() + x;
                 int worldZ = center.getZ() + z;
                 BlockPos column = new BlockPos(worldX, floorY, worldZ);
-                if (!level.hasChunkAt(column) || !level.structureManager().getAllStructuresAt(column).isEmpty()) {
+                if (!level.hasChunkAt(column) || !level.getWorldBorder().isWithinBounds(column)
+                        || !level.structureManager().getAllStructuresAt(column).isEmpty()) {
                     return false;
                 }
                 int terrainY = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, worldX, worldZ);
                 if (!SettlementFoundationPlan.canLevelColumn(floorY, terrainY)) {
                     return false;
                 }
+                if (!isPermittedTerrain(level.getBlockState(new BlockPos(worldX, terrainY - 1, worldZ)))) return false;
                 for (int y = terrainY; y < floorY; y++) {
                     if (!level.isEmptyBlock(new BlockPos(worldX, y, worldZ))) {
                         return false;
@@ -131,7 +133,7 @@ public final class SettlementFounder {
         return true;
     }
 
-    private static void placeTradingPost(ServerLevel level, BlockPos center) {
+    static void placeTradingPost(ServerLevel level, BlockPos center) {
         int radius = SettlementFoundationPlan.TRADING_POST_RADIUS;
         int floorY = center.getY();
         for (int x = -radius; x <= radius; x++) {
@@ -165,12 +167,15 @@ public final class SettlementFounder {
 
     /** Reject anything that is not ordinary, dry vanilla terrain or foliage. */
     private static boolean isPermittedTerrain(BlockState state) {
-        return state.getFluidState().isEmpty()
+        return !state.hasBlockEntity() && state.getFluidState().isEmpty()
                 && (state.is(BlockTags.DIRT)
                 || state.is(BlockTags.BASE_STONE_OVERWORLD)
                 || state.is(BlockTags.SAND)
                 || state.is(BlockTags.TERRACOTTA)
                 || state.is(BlockTags.LEAVES)
+                || state.is(BlockTags.FLOWERS)
+                || state.is(Blocks.SHORT_GRASS) || state.is(Blocks.TALL_GRASS)
+                || state.is(Blocks.FERN) || state.is(Blocks.LARGE_FERN) || state.is(Blocks.SNOW)
                 || state.is(Blocks.GRASS_BLOCK)
                 || state.is(Blocks.GRAVEL));
     }

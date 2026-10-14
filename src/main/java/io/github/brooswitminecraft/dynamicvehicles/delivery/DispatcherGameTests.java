@@ -64,6 +64,10 @@ public final class DispatcherGameTests {
         // negotiation actually having happened.
         ChannelAttributes.getOrCreateAdHocChannels(player.connection.getConnection())
                 .add(ResourceLocation.fromNamespaceAndPath("neoforge", "advanced_open_screen"));
+        // Dynamic Atmosphere is present in the GameTest runtime for the creeper-burst integration test.
+        // Its periodic atmosphere-grid update is also sent to this mock connection.
+        ChannelAttributes.getOrCreateAdHocChannels(player.connection.getConnection())
+                .add(ResourceLocation.fromNamespaceAndPath("dynamicatmosphere", "atmosphere_grid"));
 
         var event = new PlayerInteractEvent.EntityInteract(player, InteractionHand.MAIN_HAND, villager);
         DispatcherInteractionHandler.onEntityInteract(event);

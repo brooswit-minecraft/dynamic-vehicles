@@ -23,6 +23,7 @@ final class AtmosphereCompat {
     static void exhaust(ServerLevel level, BlockPos pos, int amount) {
         var material = exhaustMaterial();
         Emitter.emit(level, material, pos, amount);
+        EmissionObserver.record(material, pos, amount);
     }
 
     static void dust(ServerLevel level, BlockPos pos, int amount) {
@@ -40,4 +41,25 @@ final class AtmosphereCompat {
     static io.github.brooswitminecraft.dynamicatmosphere.AtmosphereMaterial exhaustMaterial() {
         return io.github.brooswitminecraft.dynamicatmosphere.AtmosphereMaterial.EXHAUST;
     }
+
+    /** GameTests observe the material passed through the real compatibility emission path. */
+    static final class EmissionObserver {
+        private static java.util.function.Consumer<Emission> observer;
+
+        static void install(java.util.function.Consumer<Emission> next) {
+            observer = next;
+        }
+
+        static void clear() {
+            observer = null;
+        }
+
+        private static void record(Object material, BlockPos pos, int amount) {
+            if (observer != null) {
+                observer.accept(new Emission(material, pos, amount));
+            }
+        }
+    }
+
+    record Emission(Object material, BlockPos pos, int amount) {}
 }

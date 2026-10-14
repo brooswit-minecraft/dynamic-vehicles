@@ -150,6 +150,7 @@ tasks.register("downloadAtmosphere") {
 dependencies {
     compileOnly files(atmosphereJar).builtBy("downloadAtmosphere")
     // Unit tests verify the optional atmosphere integration's exact material identity.
+    testCompileOnly files(atmosphereJar).builtBy("downloadAtmosphere")
     testRuntimeOnly files(atmosphereJar).builtBy("downloadAtmosphere")
     compileOnly files(sableJar, sableCompanionJar).builtBy("downloadSable")
     compileOnly files(terrainJar).builtBy("downloadTerrain")

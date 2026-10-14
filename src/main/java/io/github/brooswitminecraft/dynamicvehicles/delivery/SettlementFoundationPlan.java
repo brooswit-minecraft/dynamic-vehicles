@@ -38,4 +38,19 @@ public final class SettlementFoundationPlan {
     /** The bounded pavilion footprint is seven blocks square and five blocks high. */
     public static final int TRADING_POST_RADIUS = 3;
     public static final int TRADING_POST_HEIGHT = 5;
+
+    /** No column is adjusted by more than two blocks during automatic preparation. */
+    public static final int MAX_TERRAIN_ADJUSTMENT = 2;
+
+    public static boolean canLevelColumn(int floorY, int terrainY) {
+        return Math.abs(terrainY - floorY) <= MAX_TERRAIN_ADJUSTMENT;
+    }
+
+    public static int fillBlocks(int floorY, int terrainY) {
+        return Math.max(0, floorY - terrainY);
+    }
+
+    public static int clearBlocks(int floorY, int terrainY) {
+        return Math.max(0, terrainY - floorY);
+    }
 }

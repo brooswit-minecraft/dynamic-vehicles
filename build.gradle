@@ -149,6 +149,9 @@ tasks.register("downloadAtmosphere") {
 
 dependencies {
     compileOnly files(atmosphereJar).builtBy("downloadAtmosphere")
+    // GameTests verify the optional atmosphere integration's actual material identity.
+    // runtimeOnly affects the development/GameTest classpath, never the shipped mod jar.
+    runtimeOnly files(atmosphereJar).builtBy("downloadAtmosphere")
     compileOnly files(sableJar, sableCompanionJar).builtBy("downloadSable")
     compileOnly files(terrainJar).builtBy("downloadTerrain")
     // dynamicterrain is a REQUIRED (not optional, unlike Sable/Atmosphere above) runtime

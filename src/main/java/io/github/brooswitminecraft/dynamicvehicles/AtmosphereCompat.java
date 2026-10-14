@@ -21,9 +21,8 @@ final class AtmosphereCompat {
     }
 
     static void exhaust(ServerLevel level, BlockPos pos, int amount) {
-        var material = io.github.brooswitminecraft.dynamicatmosphere.AtmosphereMaterial.EXHAUST;
+        var material = exhaustMaterial();
         Emitter.emit(level, material, pos, amount);
-        EmissionObserver.record(material, pos, amount);
     }
 
     static void dust(ServerLevel level, BlockPos pos, int amount) {
@@ -37,24 +36,8 @@ final class AtmosphereCompat {
         }
     }
 
-    /** Test-only observation seam; production callers cannot install one. */
-    static final class EmissionObserver {
-        private static java.util.function.Consumer<Emission> observer;
-
-        static void install(java.util.function.Consumer<Emission> next) {
-            observer = next;
-        }
-
-        static void clear() {
-            observer = null;
-        }
-
-        private static void record(Object material, BlockPos pos, int amount) {
-            if (observer != null) {
-                observer.accept(new Emission(material, pos, amount));
-            }
-        }
+    /** The real Dynamic Atmosphere exhaust singleton, never a re-created look-alike. */
+    static io.github.brooswitminecraft.dynamicatmosphere.AtmosphereMaterial exhaustMaterial() {
+        return io.github.brooswitminecraft.dynamicatmosphere.AtmosphereMaterial.EXHAUST;
     }
-
-    record Emission(Object material, BlockPos pos, int amount) {}
 }

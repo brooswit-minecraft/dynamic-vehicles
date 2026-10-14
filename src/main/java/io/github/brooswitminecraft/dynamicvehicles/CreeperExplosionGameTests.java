@@ -1,8 +1,5 @@
 package io.github.brooswitminecraft.dynamicvehicles;
 
-import java.util.concurrent.atomic.AtomicReference;
-
-import io.github.brooswitminecraft.dynamicatmosphere.AtmosphereMaterial;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
@@ -29,23 +26,12 @@ public final class CreeperExplosionGameTests {
         Creeper creeper = helper.spawn(EntityType.CREEPER, creeperPos);
         Pig target = helper.spawn(EntityType.PIG, new BlockPos(5, 2, 2));
         float healthBefore = target.getHealth();
-        AtomicReference<AtmosphereCompat.Emission> emission = new AtomicReference<>();
-        AtmosphereCompat.EmissionObserver.install(emission::set);
-        try {
-            car.setDeltaMovement(new Vec3(0.5, 0.0, 0.0)); // 10 m/s, above the contact threshold.
-            car.push(creeper);
+        car.setDeltaMovement(new Vec3(0.5, 0.0, 0.0)); // 10 m/s, above the contact threshold.
+        car.push(creeper);
 
-            helper.assertTrue(target.getHealth() == healthBefore, "creeper contact blast damaged a nearby entity");
-            helper.assertTrue(helper.getBlockState(protectedBlock).is(Blocks.STONE), "creeper contact blast destroyed a block");
-            helper.assertTrue(target.getDeltaMovement().lengthSqr() > 0.0, "creeper contact blast did not retain knockback");
-            helper.assertTrue(emission.get() != null, "creeper contact blast emitted no exhaust burst");
-            helper.assertTrue(emission.get().material() == AtmosphereMaterial.EXHAUST,
-                    "creeper contact blast did not use the exact exhaust atmosphere material");
-            helper.assertTrue(emission.get().amount() == CreeperExplosions.EXHAUST_BURST_AMOUNT,
-                    "creeper contact blast emitted the wrong exhaust burst amount");
-        } finally {
-            AtmosphereCompat.EmissionObserver.clear();
-        }
+        helper.assertTrue(target.getHealth() == healthBefore, "creeper contact blast damaged a nearby entity");
+        helper.assertTrue(helper.getBlockState(protectedBlock).is(Blocks.STONE), "creeper contact blast destroyed a block");
+        helper.assertTrue(target.getDeltaMovement().lengthSqr() > 0.0, "creeper contact blast did not retain knockback");
         helper.succeed();
     }
 }

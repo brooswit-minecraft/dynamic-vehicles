@@ -15,6 +15,26 @@ class ImpactRulesTest {
     }
 
     @Test
+    void hostileMobsAreKnockedToTheSideTheyAreOn() {
+        // Car faces +Z (forward 0,1); perpendicular is (-1,0).
+        assertEquals(-1, ImpactRules.lateralSide(0, 1, 1.0, 2.0));
+        assertEquals(1, ImpactRules.lateralSide(0, 1, -1.0, 2.0));
+        // Same sides when the car reverses toward the mob's other end: depends only on lateral offset.
+        assertEquals(-1, ImpactRules.lateralSide(0, 1, 0.2, -2.0));
+        // Dead ahead goes to the positive side, never straight back.
+        assertEquals(1, ImpactRules.lateralSide(0, 1, 0.0, 2.0));
+    }
+
+    @Test
+    void hostileMobHitNeedsSpeedAndScalesDamage() {
+        assertFalse(ImpactRules.hostileMobHitEligible(2.9));
+        assertTrue(ImpactRules.hostileMobHitEligible(-3.0));
+        assertTrue(ImpactRules.hostileMobHitDamage(10.0) > ImpactRules.hostileMobHitDamage(4.0));
+        assertEquals(20.0f, ImpactRules.hostileMobHitDamage(500.0));
+        assertTrue(ImpactRules.hostileMobKnockback(20.0) > ImpactRules.hostileMobKnockback(4.0));
+    }
+
+    @Test
     void truckRoutesDirtAndSandToTerrainBeforeItsNarrowBambooRule() {
         assertEquals(ImpactRules.BlockImpactRoute.TERRAIN_EROSION,
                 ImpactRules.blockImpactRoute(true, true, false, true),

@@ -15,6 +15,7 @@ import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.MoverType;
 import net.minecraft.world.entity.monster.Creeper;
+import net.minecraft.world.entity.monster.Enemy;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.StainedGlassPaneBlock;
@@ -636,6 +637,22 @@ public class CarEntity extends Entity {
             impactCooldown = 10;
             level().explode(creeper, creeper.getX(), creeper.getY(), creeper.getZ(), 3.0f, Level.ExplosionInteraction.MOB);
             creeper.discard();
+        }
+        if (!level().isClientSide() && entity instanceof Enemy && entity instanceof LivingEntity victim
+                && !(entity instanceof Creeper) && !hasPassenger(entity)) {
+            double hitSpeed = Math.abs(speed);
+            if (ImpactRules.hostileMobHitEligible(hitSpeed)) {
+                double yaw = Math.toRadians(getYRot());
+                double fx = -Math.sin(yaw);
+                double fz = Math.cos(yaw);
+                // Fling the mob out of the car's path toward whichever side of the car it is more on.
+                int side = ImpactRules.lateralSide(fx, fz, victim.getX() - getX(), victim.getZ() - getZ());
+                double strength = ImpactRules.hostileMobKnockback(hitSpeed);
+                if (victim.hurt(damageSources().generic(), ImpactRules.hostileMobHitDamage(hitSpeed))) {
+                    victim.setDeltaMovement(victim.getDeltaMovement().add(-fz * side * strength, 0.25, fx * side * strength));
+                    victim.hurtMarked = true;
+                }
+            }
         }
         if (!level().isClientSide() && entity instanceof Mob mob
                 && MobBoardingRules.canAutoBoard(mob, spec, stoppedTimer.isLatched())) {

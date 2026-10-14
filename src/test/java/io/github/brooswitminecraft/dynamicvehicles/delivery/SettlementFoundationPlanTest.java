@@ -9,19 +9,17 @@ class SettlementFoundationPlanTest {
     @Test
     void existingVillageAlwaysWinsOverEveryFoundingPath() {
         assertEquals(SettlementFoundationPlan.Decision.EXISTING_VILLAGE,
-                SettlementFoundationPlan.decide(true, false, true));
+                SettlementFoundationPlan.decide(true, false));
         assertEquals(SettlementFoundationPlan.Decision.EXISTING_VILLAGE,
-                SettlementFoundationPlan.decide(true, true, false));
+                SettlementFoundationPlan.decide(true, true));
     }
 
     @Test
-    void priorFoundationAndUnsafeSitesNeverFoundAgain() {
+    void missingVillageIsAlwaysFoundedUnlessAlreadyFounded() {
         assertEquals(SettlementFoundationPlan.Decision.ALREADY_FOUNDED,
-                SettlementFoundationPlan.decide(false, true, true));
-        assertEquals(SettlementFoundationPlan.Decision.UNSAFE_SITE,
-                SettlementFoundationPlan.decide(false, false, false));
+                SettlementFoundationPlan.decide(false, true));
         assertEquals(SettlementFoundationPlan.Decision.FOUND,
-                SettlementFoundationPlan.decide(false, false, true));
+                SettlementFoundationPlan.decide(false, false));
     }
 
     @Test
@@ -37,19 +35,5 @@ class SettlementFoundationPlanTest {
     void tradingPostLayoutIsExplicitlyBounded() {
         assertEquals(3, SettlementFoundationPlan.TRADING_POST_RADIUS);
         assertEquals(5, SettlementFoundationPlan.TRADING_POST_HEIGHT);
-    }
-
-    @Test
-    void unevenTerrainWithinThePreparationEnvelopeCanBeLevelled() {
-        assertTrue(SettlementFoundationPlan.canLevelColumn(80, 78));
-        assertTrue(SettlementFoundationPlan.canLevelColumn(80, 82));
-        assertEquals(2, SettlementFoundationPlan.fillBlocks(80, 78));
-        assertEquals(2, SettlementFoundationPlan.clearBlocks(80, 82));
-    }
-
-    @Test
-    void steepOrProtectedPreparationCandidatesAreRejectedBeforeMutation() {
-        assertTrue(!SettlementFoundationPlan.canLevelColumn(80, 77));
-        assertTrue(!SettlementFoundationPlan.canLevelColumn(80, 83));
     }
 }

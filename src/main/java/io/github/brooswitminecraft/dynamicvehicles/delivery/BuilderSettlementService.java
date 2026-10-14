@@ -74,7 +74,7 @@ public final class BuilderSettlementService {
         level.removeBlock(campfire, false);
         villager.getPersistentData().remove(CAMPFIRE_POS_TAG);
         // Keep the successful Builder-to-unemployed conversion even if this villager has traded before.
-        villager.setVillagerData(villager.getVillagerData().withProfession(VillagerProfession.NONE));
+        villager.setVillagerData(villager.getVillagerData().setProfession(VillagerProfession.NONE));
     }
 
     /**

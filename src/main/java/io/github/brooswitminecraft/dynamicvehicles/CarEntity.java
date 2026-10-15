@@ -639,7 +639,7 @@ public class CarEntity extends Entity {
         }
         if (!level().isClientSide() && entity instanceof Enemy && entity instanceof LivingEntity victim
                 && !(entity instanceof Creeper) && !hasPassenger(entity)) {
-            double hitSpeed = Math.abs(speed);
+            double hitSpeed = horizontalSpeed();
             if (ImpactRules.hostileMobHitEligible(hitSpeed)) {
                 double yaw = Math.toRadians(getYRot());
                 double fx = -Math.sin(yaw);

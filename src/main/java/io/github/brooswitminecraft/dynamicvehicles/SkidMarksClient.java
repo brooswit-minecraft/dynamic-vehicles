@@ -58,7 +58,7 @@ final class SkidMarksClient {
         }
     }
 
-    /** Match the physics suspension ray for rigid bodies; the simple model's origin is ground height. */
+    /** Match the physics suspension ray for the rigid body. */
     static BlockHitResult wheelSupport(CarEntity car, double[] mount) {
         Vec3 from;
         Vec3 to;

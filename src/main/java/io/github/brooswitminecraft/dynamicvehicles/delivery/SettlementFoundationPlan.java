@@ -12,18 +12,17 @@ public final class SettlementFoundationPlan {
     public enum Decision {
         FOUND,
         EXISTING_VILLAGE,
-        ALREADY_FOUNDED,
-        UNSAFE_SITE
+        ALREADY_FOUNDED
     }
 
-    public static Decision decide(boolean existingVillage, boolean alreadyFounded, boolean boardAndBellSpaceClear) {
+    public static Decision decide(boolean existingVillage, boolean alreadyFounded) {
         if (existingVillage) {
             return Decision.EXISTING_VILLAGE;
         }
         if (alreadyFounded) {
             return Decision.ALREADY_FOUNDED;
         }
-        return boardAndBellSpaceClear ? Decision.FOUND : Decision.UNSAFE_SITE;
+        return Decision.FOUND;
     }
 
     /**
@@ -39,18 +38,6 @@ public final class SettlementFoundationPlan {
     public static final int TRADING_POST_RADIUS = 3;
     public static final int TRADING_POST_HEIGHT = 5;
 
-    /** No column is adjusted by more than two blocks during automatic preparation. */
-    public static final int MAX_TERRAIN_ADJUSTMENT = 2;
-
-    public static boolean canLevelColumn(int floorY, int terrainY) {
-        return Math.abs(terrainY - floorY) <= MAX_TERRAIN_ADJUSTMENT;
-    }
-
-    public static int fillBlocks(int floorY, int terrainY) {
-        return Math.max(0, floorY - terrainY);
-    }
-
-    public static int clearBlocks(int floorY, int terrainY) {
-        return Math.max(0, terrainY - floorY);
-    }
+    /** How far below the floor a column is filled while looking for solid ground. */
+    public static final int MAX_FOUNDATION_DEPTH = 48;
 }

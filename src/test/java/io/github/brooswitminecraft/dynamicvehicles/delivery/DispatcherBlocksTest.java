@@ -91,7 +91,7 @@ class DispatcherBlocksTest {
         assertTrue(content.contains("\"" + BLOCK_ID + "\""), "recipe result must be " + BLOCK_ID);
         assertTrue(content.contains("minecraft:planks"), "recipe should use common planks, not a specific wood type");
         assertTrue(content.contains("\"item\": \"minecraft:paper\""), "recipe must retain its paper centre");
-        assertTrue(content.contains("\"PPP\",\n    \"P#P\",\n    \"PPP\""),
+        assertTrue(content.replace("\r\n", "\n").contains("\"PPP\",\n    \"P#P\",\n    \"PPP\""),
                 "recipe must retain eight planks around paper");
     }
 

@@ -1,33 +1,36 @@
 package io.github.brooswitminecraft.dynamicvehicles.delivery;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.tags.StructureTags;
-import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.npc.VillagerProfession;
-import net.minecraft.world.phys.AABB;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.Heightmap;
 
 /**
- * Bounded arrival-side Trading Post founder. The layout is a 7x7x5 spruce
- * pavilion: a spruce floor and roof, four stripped-oak corner posts, a central
- * Dispatch Board with Bell, and eight villagers (one Dispatcher). Every cell
- * is proven clear and level before the first world mutation.
+ * Arrival-side Trading Post founder. When a delivery arrives and no village
+ * exists at the destination, the site is prepared by force and the post is
+ * placed: the footprint is cleared of whatever occupies it (terrain, water,
+ * foliage, builds) and every column is filled down to solid ground. The layout
+ * is a 7x7x5 spruce pavilion: a spruce floor and roof, four stripped-oak corner
+ * posts, a central Dispatch Board with Bell, and eight villagers (one Dispatcher).
+ * The only reason to defer is an unloaded destination chunk.
  */
 public final class SettlementFounder {
     private SettlementFounder() {
     }
 
     /**
-     * @return whether arrival can complete. An unsafe unloaded/occupied site remains
-     *         an active delivery so a later sweep can retry without losing its contract.
+     * @return whether arrival can complete. An unloaded destination chunk leaves the
+     *         delivery active so a later sweep can retry without losing its contract.
      */
     public static boolean onArrival(ServerPlayer player, DeliveryContract contract, DeliveryContractStorage storage) {
         if (!(player.level() instanceof ServerLevel level)) {
@@ -42,15 +45,10 @@ public final class SettlementFounder {
         boolean existingVillage = level.structureManager().getStructureWithPieceAt(target, StructureTags.VILLAGE).isValid();
         String key = settlementKey(contract);
         BlockPos boardPos = new BlockPos(target.getX(), level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, target.getX(), target.getZ()), target.getZ());
-        boolean safeSite = isSafeTradingPostSite(level, boardPos);
 
-        SettlementFoundationPlan.Decision decision = SettlementFoundationPlan.decide(existingVillage, storage.hasFoundedSettlement(key), safeSite);
-        if (decision == SettlementFoundationPlan.Decision.EXISTING_VILLAGE
-                || decision == SettlementFoundationPlan.Decision.ALREADY_FOUNDED) {
+        SettlementFoundationPlan.Decision decision = SettlementFoundationPlan.decide(existingVillage, storage.hasFoundedSettlement(key));
+        if (decision != SettlementFoundationPlan.Decision.FOUND) {
             return true;
-        }
-        if (decision == SettlementFoundationPlan.Decision.UNSAFE_SITE) {
-            return false;
         }
 
         // Persist the one-way claim before mutating the world. Repeated arrival,
@@ -81,42 +79,33 @@ public final class SettlementFounder {
         return contract.destinationDimension() + ":" + contract.destinationRegionX() + ":" + contract.destinationRegionZ();
     }
 
-    /**
-     * A rejected candidate is intentionally left untouched and the contract is
-     * restored by {@link ContractTickHandler}, allowing a later, safe retry.
-     * Checking the whole footprint prevents us from overwriting player builds,
-     * terrain, or entities merely because a delivery reached its target.
-     */
-    private static boolean isSafeTradingPostSite(ServerLevel level, BlockPos center) {
+    static void placeTradingPost(ServerLevel level, BlockPos center) {
         int radius = SettlementFoundationPlan.TRADING_POST_RADIUS;
         int floorY = center.getY();
-        AABB bounds = new AABB(center.getX() - radius, floorY, center.getZ() - radius,
-                center.getX() + radius + 1, floorY + SettlementFoundationPlan.TRADING_POST_HEIGHT, center.getZ() + radius + 1);
-        if (!level.getEntities((Entity) null, bounds).isEmpty()) {
-            return false;
-        }
-        for (int x = -radius; x <= radius; x++) {
-            for (int z = -radius; z <= radius; z++) {
-                int worldX = center.getX() + x;
-                int worldZ = center.getZ() + z;
-                if (level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, worldX, worldZ) != floorY) {
-                    return false;
-                }
-                for (int y = 0; y < SettlementFoundationPlan.TRADING_POST_HEIGHT; y++) {
-                    if (!level.isEmptyBlock(new BlockPos(worldX, floorY + y, worldZ))) {
-                        return false;
-                    }
-                }
-            }
-        }
-        return true;
-    }
-
-    private static void placeTradingPost(ServerLevel level, BlockPos center) {
-        int radius = SettlementFoundationPlan.TRADING_POST_RADIUS;
+        int minY = level.getMinBuildHeight();
+        int maxY = level.getMaxBuildHeight() - 1;
         for (int x = -radius; x <= radius; x++) {
             for (int z = -radius; z <= radius; z++) {
                 BlockPos floor = center.offset(x, 0, z);
+                int terrainY = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, floor.getX(), floor.getZ());
+                // Clear everything above the floor, including hillside that rises past the roof.
+                int clearTop = Math.min(maxY, Math.max(floorY + SettlementFoundationPlan.TRADING_POST_HEIGHT - 1, terrainY));
+                for (int y = floorY; y <= clearTop; y++) {
+                    BlockPos cell = new BlockPos(floor.getX(), y, floor.getZ());
+                    if (!level.isEmptyBlock(cell)) {
+                        level.setBlock(cell, Blocks.AIR.defaultBlockState(), Block.UPDATE_ALL);
+                    }
+                }
+                // Fill downward until solid ground, so the floor never hangs over air, water or lava.
+                int bottom = Math.max(minY, floorY - SettlementFoundationPlan.MAX_FOUNDATION_DEPTH);
+                for (int y = floorY - 1; y >= bottom; y--) {
+                    BlockPos support = new BlockPos(floor.getX(), y, floor.getZ());
+                    BlockState state = level.getBlockState(support);
+                    if (state.getFluidState().isEmpty() && state.isFaceSturdy(level, support, Direction.UP)) {
+                        break;
+                    }
+                    level.setBlock(support, Blocks.DIRT.defaultBlockState(), Block.UPDATE_ALL);
+                }
                 level.setBlock(floor, Blocks.SPRUCE_PLANKS.defaultBlockState(), Block.UPDATE_ALL);
                 level.setBlock(floor.above(SettlementFoundationPlan.TRADING_POST_HEIGHT - 1),
                         Blocks.SPRUCE_PLANKS.defaultBlockState(), Block.UPDATE_ALL);

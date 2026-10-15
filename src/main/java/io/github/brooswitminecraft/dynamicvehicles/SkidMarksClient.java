@@ -5,6 +5,13 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import net.minecraft.core.Direction;
+import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.phys.Vec3;
+import org.joml.Vector3f;
+
 /**
  * Client-side tracking of per-wheel skid decals (MINECRAFT-225): every client tick of a car that is on
  * the ground and skidding hard enough ({@link SkidMarkMath#isSkidding}), checks whether each wheel has
@@ -24,19 +31,23 @@ final class SkidMarksClient {
 
     /** Called once per client tick of {@code car}, from {@link CarEntity#tick()}'s client branch. */
     static void tick(CarEntity car) {
-        if (!car.onGround() || !SkidMarkMath.isSkidding(car.clientSlip())) {
+        // The client receives authoritative vehicle positions via setPos; it does not run the server's
+        // collision step, so Entity#onGround is not a reliable client-side ground signal here. Gate each
+        // wheel against the block directly beneath its contact point instead. Slip remains the shared
+        // synced signal used by the audio path, so ordinary rolling still cannot lay marks.
+        if (!SkidMarkMath.isSkidding(car.clientSlip())) {
             return;
         }
         double yaw = Math.toRadians(car.getYRot());
-        double sin = Math.sin(yaw);
-        double cos = Math.cos(yaw);
-        double y = car.getY() + SkidMarkMath.SURFACE_OFFSET;
         long now = System.currentTimeMillis();
-        for (int wheel = 0; wheel < CarEntity.WHEELS.length; wheel++) {
-            double[] local = CarEntity.WHEELS[wheel];
-            // Same rotation convention as CarEntity#reportSlip: local[0] = right offset, local[1] = forward offset.
-            double x = car.getX() + local[0] * cos - local[1] * sin;
-            double z = car.getZ() + local[0] * sin + local[1] * cos;
+        double[][] wheels = car.spec().mounts();
+        for (int wheel = 0; wheel < wheels.length; wheel++) {
+            double[] mount = wheels[wheel];
+            BlockHitResult support = wheelSupport(car, mount);
+            if (support.getType() == HitResult.Type.MISS || support.getDirection() != Direction.UP) continue;
+            double x = support.getLocation().x;
+            double y = support.getLocation().y + SkidMarkMath.SURFACE_OFFSET;
+            double z = support.getLocation().z;
             SkidMarkRingBuffer buffer = BUFFERS.computeIfAbsent(key(car.getId(), wheel),
                     k -> new SkidMarkRingBuffer(SkidMarkMath.MAX_PER_WHEEL));
             SkidMark last = buffer.latest();
@@ -47,10 +58,30 @@ final class SkidMarksClient {
         }
     }
 
+    /** Match the physics suspension ray for the rigid body. */
+    static BlockHitResult wheelSupport(CarEntity car, double[] mount) {
+        Vec3 from;
+        Vec3 to;
+        if (car.isRigidBody()) {
+            var orientation = car.renderOrientation(1.0F);
+            Vector3f offset = orientation.transform(new Vector3f((float) mount[0], (float) mount[1], (float) mount[2]));
+            Vector3f down = orientation.transform(new Vector3f(0, -1, 0));
+            from = car.position().add(offset.x, car.spec().halfY() + offset.y, offset.z);
+            to = from.add(down.x * (car.spec().restLength() + 0.25),
+                    down.y * (car.spec().restLength() + 0.25), down.z * (car.spec().restLength() + 0.25));
+        } else {
+            double yaw = Math.toRadians(car.getYRot());
+            from = car.position().add(mount[0] * Math.cos(yaw) - mount[2] * Math.sin(yaw), 0.25,
+                    mount[0] * Math.sin(yaw) + mount[2] * Math.cos(yaw));
+            to = from.add(0, -0.5, 0);
+        }
+        return car.level().clip(new ClipContext(from, to, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, car));
+    }
+
     /** Forgets every ring buffer for a car that just left the client (from {@code onClientRemoval}):
      * without this a long session watching many cars come and go would grow {@link #BUFFERS} forever. */
     static void forget(CarEntity car) {
-        for (int wheel = 0; wheel < CarEntity.WHEELS.length; wheel++) {
+        for (int wheel = 0; wheel < car.spec().mounts().length; wheel++) {
             BUFFERS.remove(key(car.getId(), wheel));
         }
     }

@@ -9,19 +9,17 @@ class SettlementFoundationPlanTest {
     @Test
     void existingVillageAlwaysWinsOverEveryFoundingPath() {
         assertEquals(SettlementFoundationPlan.Decision.EXISTING_VILLAGE,
-                SettlementFoundationPlan.decide(true, false, true));
+                SettlementFoundationPlan.decide(true, false));
         assertEquals(SettlementFoundationPlan.Decision.EXISTING_VILLAGE,
-                SettlementFoundationPlan.decide(true, true, false));
+                SettlementFoundationPlan.decide(true, true));
     }
 
     @Test
-    void priorFoundationAndUnsafeSitesNeverFoundAgain() {
+    void missingVillageIsAlwaysFoundedUnlessAlreadyFounded() {
         assertEquals(SettlementFoundationPlan.Decision.ALREADY_FOUNDED,
-                SettlementFoundationPlan.decide(false, true, true));
-        assertEquals(SettlementFoundationPlan.Decision.UNSAFE_SITE,
-                SettlementFoundationPlan.decide(false, false, false));
+                SettlementFoundationPlan.decide(false, true));
         assertEquals(SettlementFoundationPlan.Decision.FOUND,
-                SettlementFoundationPlan.decide(false, false, true));
+                SettlementFoundationPlan.decide(false, false));
     }
 
     @Test

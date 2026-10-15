@@ -12,18 +12,17 @@ public final class SettlementFoundationPlan {
     public enum Decision {
         FOUND,
         EXISTING_VILLAGE,
-        ALREADY_FOUNDED,
-        UNSAFE_SITE
+        ALREADY_FOUNDED
     }
 
-    public static Decision decide(boolean existingVillage, boolean alreadyFounded, boolean boardAndBellSpaceClear) {
+    public static Decision decide(boolean existingVillage, boolean alreadyFounded) {
         if (existingVillage) {
             return Decision.EXISTING_VILLAGE;
         }
         if (alreadyFounded) {
             return Decision.ALREADY_FOUNDED;
         }
-        return boardAndBellSpaceClear ? Decision.FOUND : Decision.UNSAFE_SITE;
+        return Decision.FOUND;
     }
 
     /**
@@ -38,4 +37,7 @@ public final class SettlementFoundationPlan {
     /** The bounded pavilion footprint is seven blocks square and five blocks high. */
     public static final int TRADING_POST_RADIUS = 3;
     public static final int TRADING_POST_HEIGHT = 5;
+
+    /** How far below the floor a column is filled while looking for solid ground. */
+    public static final int MAX_FOUNDATION_DEPTH = 48;
 }

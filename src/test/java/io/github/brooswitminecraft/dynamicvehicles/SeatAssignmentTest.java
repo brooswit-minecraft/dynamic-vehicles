@@ -61,6 +61,38 @@ class SeatAssignmentTest {
         assertEquals("alice", seats.driver());
     }
 
+    /**
+     * MINECRAFT-249: a player and a mob both boarding the same vehicle, whichever order {@code add} is
+     * called in within the tick (CarEntity's actual mount order can vary), must never seat the mob in
+     * seat 0 -- the mob's own call always excludes the driver seat, so seat 0 only ever goes to the player,
+     * regardless of which of the two mounts first.
+     */
+    @Test
+    void seatZeroNeverGoesToAMobNoMatterWhichBoardsFirst() {
+        SeatAssignment<String> mobFirst = new SeatAssignment<>(3);
+        assertEquals(1, mobFirst.add("cow", true));
+        assertEquals(0, mobFirst.add("player", false));
+        assertEquals("player", mobFirst.driver());
+
+        SeatAssignment<String> playerFirst = new SeatAssignment<>(3);
+        assertEquals(0, playerFirst.add("player", false));
+        assertEquals(1, playerFirst.add("cow", true));
+        assertEquals("player", playerFirst.driver());
+    }
+
+    /**
+     * MINECRAFT-249: if seat 0 is the only seat still free when a mob tries to board, the mob's own
+     * excludeDriverSeat call must refuse (-1) rather than ever taking it, even though {@code occupied()}
+     * reports the seat as free.
+     */
+    @Test
+    void aMobRefusesTheLastFreeSeatWhenItIsSeatZero() {
+        SeatAssignment<String> seats = new SeatAssignment<>(2);
+        seats.add("player", true); // seat 1, driver seat 0 left free
+        assertEquals(-1, seats.add("cow", true), "the only free seat is seat 0 -- a mob must never take it");
+        assertNull(seats.driver());
+    }
+
     @Test
     void anEightSeatRosterBoardsAllEightAndThenRefuses() {
         SeatAssignment<String> seats = new SeatAssignment<>(8);

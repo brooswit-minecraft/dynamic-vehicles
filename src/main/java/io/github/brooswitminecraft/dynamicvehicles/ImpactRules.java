@@ -28,6 +28,11 @@ public final class ImpactRules {
         return Math.abs(speed) >= CREEPER_TRIGGER_MIN_SPEED;
     }
 
+    /** A creeper contact is meaningful only at the existing hard-impact threshold and outside the cooldown. */
+    public static boolean creeperExplosionEligible(double speed, double minImpactSpeed, boolean coolingDown) {
+        return !coolingDown && speed >= minImpactSpeed;
+    }
+
     /** Below this speed (m/s) a hostile mob is merely nudged by the car, not hurt or flung. */
     static final double MOB_HIT_MIN_SPEED = 3.0;
     static final double MOB_HIT_DAMAGE_PER_SPEED = 0.75;

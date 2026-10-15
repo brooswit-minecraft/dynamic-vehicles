@@ -43,7 +43,7 @@ public final class BuilderSettlementGameTests {
     @GameTest(template = "settlement_test")
     public static void completedDonationBuildsEnclosedHouseAndRetiresTradedBuilder(GameTestHelper helper) {
         Villager villager = builder(helper);
-        var player = helper.makeMockServerPlayerInLevel();
+        var player = GameTestMockPlayers.create(helper);
         villager.setTradingPlayer(player);
         // A plain offer has no custom take() subclass, just like one restored from a saved world.
         MerchantOffer offer = new MerchantOffer(new ItemCost(Items.QUARTZ_BLOCK, 28), new ItemStack(Items.DIRT), 2, 30, 0.05F);

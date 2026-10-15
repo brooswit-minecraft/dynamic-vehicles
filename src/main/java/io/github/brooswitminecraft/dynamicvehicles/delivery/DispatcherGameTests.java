@@ -51,7 +51,7 @@ public final class DispatcherGameTests {
     public static void rightClickingADispatcherOpensTheOffersMenu(GameTestHelper helper) {
         Villager villager = helper.spawn(EntityType.VILLAGER, new BlockPos(2, 2, 2));
         villager.setVillagerData(villager.getVillagerData().setProfession(DispatcherProfession.DISPATCHER.get()));
-        ServerPlayer player = helper.makeMockServerPlayerInLevel();
+        ServerPlayer player = GameTestMockPlayers.create(helper);
         player.moveTo(helper.absolutePos(new BlockPos(2, 2, 3)).getCenter());
 
         // makeMockServerPlayerInLevel()'s connection never ran the real client's mod-channel

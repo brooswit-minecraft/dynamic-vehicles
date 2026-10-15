@@ -30,8 +30,24 @@ jobs:
       - name: Build and test
         run: ./gradlew build --no-daemon
 
+      # Gradle reports BUILD SUCCESSFUL even when the GameTest server fails to start (e.g. a
+      # required mod missing from the runtime classpath), so a green exit code proves nothing.
+      # Fail closed: the server must not have failed to start, and every @GameTest in the source
+      # must be reported as a passed required test.
       - name: Run GameTests
-        run: ./gradlew runGameTestServer --no-daemon
+        run: |
+          set -o pipefail
+          ./gradlew runGameTestServer --no-daemon 2>&1 | tee gametest.log
+          if grep -q 'Failed to start the minecraft server' gametest.log; then
+            echo "::error::GameTest server failed to start; no production GameTest executed"
+            exit 1
+          fi
+          expected=$(grep -rhE '^\s*@GameTest\(' src/main | wc -l)
+          passed=$(sed -n 's/.*All \([0-9][0-9]*\) required tests passed.*/\1/p' gametest.log | tail -n1)
+          if [ -z "$passed" ] || [ "$expected" -eq 0 ] || [ "$passed" != "$expected" ]; then
+            echo "::error::expected $expected GameTests to pass, log reports '${passed:-none}'"
+            exit 1
+          fi
 
       - name: Upload mod jar
         uses: actions/upload-artifact@v4

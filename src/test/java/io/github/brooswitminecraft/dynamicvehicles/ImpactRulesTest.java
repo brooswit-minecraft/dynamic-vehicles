@@ -15,6 +15,13 @@ class ImpactRulesTest {
     }
 
     @Test
+    void creeperExplosionNeedsThresholdAndIsDeduplicatedByCooldown() {
+        assertFalse(ImpactRules.creeperExplosionEligible(7.99, 8.0, false));
+        assertTrue(ImpactRules.creeperExplosionEligible(8.0, 8.0, false));
+        assertFalse(ImpactRules.creeperExplosionEligible(30.0, 8.0, true));
+    }
+
+    @Test
     void hostileMobsAreKnockedToTheSideTheyAreOn() {
         // Car faces +Z (forward 0,1); perpendicular is (-1,0).
         assertEquals(-1, ImpactRules.lateralSide(0, 1, 1.0, 2.0));

@@ -3,8 +3,6 @@ package io.github.brooswitminecraft.dynamicvehicles.delivery;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.InteractionHand;
-import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.npc.Villager;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
@@ -31,32 +29,19 @@ public final class DispatcherInteractionHandler {
 
     @SubscribeEvent
     public static void onEntityInteract(PlayerInteractEvent.EntityInteract event) {
-        if (event.getHand() != InteractionHand.MAIN_HAND) {
+        var click = ProfessionInteraction.match(event, DispatcherProfession.DISPATCHER).orElse(null);
+        if (click == null) {
             return;
         }
-        // Only the logical server generates/opens; on the client getEntity() is a LocalPlayer, never a ServerPlayer.
-        if (!(event.getEntity() instanceof ServerPlayer player)) {
-            return;
-        }
-        if (player.isSecondaryUseActive()) {
-            return; // mirrors vanilla Villager#mobInteract: sneak-clicking falls through to default handling.
-        }
-        if (!(event.getTarget() instanceof Villager villager) || villager.isBaby() || !villager.isAlive()) {
-            return;
-        }
-        if (villager.getVillagerData().getProfession() != DispatcherProfession.DISPATCHER.get()) {
-            return;
-        }
-        if (!(player.level() instanceof ServerLevel serverLevel)) {
-            return;
-        }
+        ServerPlayer player = click.player();
+        ServerLevel serverLevel = click.level();
+        Villager villager = click.villager();
 
         // MINECRAFT-110 AC2: refuse with player-visible feedback before even generating offers -
         // one contract at a time is enforced server-side, not only by hiding the accept button.
         if (DeliveryContracts.hasActive(player)) {
             player.sendSystemMessage(Component.translatable("message.dynamicvehicles.dispatcher.already_active"));
-            event.setCanceled(true);
-            event.setCancellationResult(InteractionResult.SUCCESS);
+            ProfessionInteraction.consume(event);
             return;
         }
 
@@ -72,7 +57,6 @@ public final class DispatcherInteractionHandler {
                 new DispatcherOfferMenuProvider(offers, villager.getDisplayName(), dangerMin, dangerMax, villager),
                 buf -> DispatcherOfferMenu.writeExtraData(buf, dangerMin, dangerMax, rows));
 
-        event.setCanceled(true);
-        event.setCancellationResult(InteractionResult.SUCCESS);
+        ProfessionInteraction.consume(event);
     }
 }

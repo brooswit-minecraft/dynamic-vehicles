@@ -89,6 +89,9 @@ public class CarEntity extends Entity {
     private net.minecraft.world.phys.Vec3 heading;
     private net.minecraft.core.BlockPos lampBlock;
 
+    /** Server: remaining health, 0..{@link CarHealth#MAX}; see {@link CarHealth} for the thresholds. */
+    private float health = CarHealth.MAX;
+
     private org.joml.Quaternionf savedOrientation;
     /** The Sable rigid body, as Object so this class never loads Sable types (see SableCompat). */
     private Object sableBody;
@@ -344,6 +347,7 @@ public class CarEntity extends Entity {
         int severity = CarSoundMath.impactSeverity(lastTickSpeed - currentSpeed);
         double speedBefore = lastTickSpeed;
         lastTickSpeed = currentSpeed;
+        damage(CarHealth.crashDamage(speedBefore - currentSpeed));
         if (severity > 0 && impactCooldown == 0) {
             impactCooldown = 10;
             level().playSound(null, getX(), getY() + 0.5, getZ(), ModSounds.impact(severity),
@@ -552,6 +556,8 @@ public class CarEntity extends Entity {
         if (orientation != null) {
             savedOrientation = new org.joml.Quaternionf(orientation.x(), orientation.y(), orientation.z(), orientation.w());
         }
+        health = tag.contains("VehicleHealth", Tag.TAG_FLOAT)
+                ? Math.max(0.0f, Math.min(CarHealth.MAX, tag.getFloat("VehicleHealth"))) : CarHealth.MAX;
         savedSeatAssignments.clear();
         savedSeatAssignments.putAll(SeatPersistence.read(tag, spec.seatCount()));
         VehicleSpec.VehicleTuning defaults = spec.vehicleTuning();
@@ -580,6 +586,7 @@ public class CarEntity extends Entity {
             tag.putFloat("OrientationZ", q.z);
             tag.putFloat("OrientationW", q.w);
         }
+        tag.putFloat("VehicleHealth", health);
         tag.putDouble("TuningLsdLock", vehicleTuning.lsdLockPercent());
         tag.putDouble("TuningFrontSplit", vehicleTuning.frontTorqueSplit());
         tag.putDouble("TuningVectoring", vehicleTuning.vectoringGain());
@@ -612,6 +619,12 @@ public class CarEntity extends Entity {
         // are. canAddPassenger (speed gate included) still has the final say inside player.startRiding.
         if (player.isSecondaryUseActive() || VehicleSeating.firstFreeSeat(seats.occupied()) < 0) {
             return InteractionResult.PASS;
+        }
+        if (CarHealth.wrecked(health)) {
+            if (!level().isClientSide()) {
+                player.displayClientMessage(net.minecraft.network.chat.Component.literal("This vehicle is too damaged to enter."), true);
+            }
+            return InteractionResult.sidedSuccess(level().isClientSide());
         }
         if (!level().isClientSide()) {
             player.startRiding(this);
@@ -658,6 +671,9 @@ public class CarEntity extends Entity {
      */
     @Override
     protected boolean canAddPassenger(Entity passenger) {
+        if (CarHealth.wrecked(health)) {
+            return false;
+        }
         if (passenger instanceof Mob mob) {
             return MobBoardingRules.canAutoBoard(mob, spec, stoppedTimer.isLatched())
                     && VehicleSeating.firstFreeNonDriverSeat(seats.occupied()) >= 0;
@@ -756,8 +772,70 @@ public class CarEntity extends Entity {
         }
         if (level() instanceof net.minecraft.server.level.ServerLevel serverLevel) {
             tickSable(serverLevel, rider);
+            checkAutoDismount();
+            tickHealth();
+            return;
         }
         checkAutoDismount();
+    }
+
+    /** Explosions (creepers, TNT, another car blowing up) damage the car; the explosion itself comes next tick via {@link #tickHealth}. */
+    @Override
+    public boolean hurt(net.minecraft.world.damagesource.DamageSource source, float amount) {
+        if (source.is(net.minecraft.tags.DamageTypeTags.IS_EXPLOSION)) {
+            damage(amount);
+            return true;
+        }
+        return super.hurt(source, amount);
+    }
+
+    /** Server: take damage after the Sable body has been initialized. */
+    private void damage(float amount) {
+        if (amount <= 0.0f || sableBody == null || isRemoved() || level().isClientSide()) {
+            return;
+        }
+        health = Math.max(0.0f, health - amount);
+    }
+
+    /** Server: smoke, fire, flip and wreck handling for this tick, then explosion if health ran out. */
+    private void tickHealth() {
+        if (isRemoved() || !(level() instanceof net.minecraft.server.level.ServerLevel serverLevel)) {
+            return;
+        }
+        if (sableBody != null) {
+            try {
+                org.joml.Vector3f up = SableCompat.orientation(sableBody).transform(new org.joml.Vector3f(0, 1, 0));
+                if (CarHealth.flipped(up.y)) {
+                    damage(CarHealth.flippedDamage(DT));
+                }
+            } catch (RuntimeException gone) {
+                // Sable has released the body; no orientation to judge this tick.
+            }
+        }
+        boolean burning = CarHealth.burning(health) && !isInWater();
+        if (burning) {
+            damage(CarHealth.burnDamage(DT));
+            setRemainingFireTicks(40);
+            if (tickCount % 20 == 0) {
+                for (Entity passenger : getPassengers()) {
+                    passenger.igniteForSeconds(2.0f);
+                }
+            }
+        }
+        if (CarHealth.smoking(health) && tickCount % 3 == 0) {
+            serverLevel.sendParticles(burning ? net.minecraft.core.particles.ParticleTypes.LARGE_SMOKE
+                    : net.minecraft.core.particles.ParticleTypes.SMOKE,
+                    getX(), getY() + 1.0, getZ(), burning ? 4 : 2, 0.4, 0.2, 0.4, 0.02);
+        }
+        if (health <= 0.0f) {
+            ejectPassengers();
+            serverLevel.explode(this, getX(), getY() + 0.5, getZ(), 4.0f, Level.ExplosionInteraction.TNT);
+            discard();
+            return;
+        }
+        if (CarHealth.wrecked(health) && !getPassengers().isEmpty()) {
+            ejectPassengers();
+        }
     }
 
     /**

@@ -16,8 +16,8 @@ import net.neoforged.neoforge.network.registration.ChannelAttributes;
 /**
  * GameTest mock players whose connection never ran the real client's mod-channel negotiation, so
  * NeoForge refuses to send them any payload the connection has not declared. Sable and Dynamic
- * Atmosphere are both on the GameTest runtime classpath; Sable pushes {@code sable:dimension_physics}
- * during {@code PlayerList#placeNewPlayer} itself, so the channels must be declared on the connection
+ * Atmosphere are both on the GameTest runtime classpath; Sable pushes its datapack payloads ({@code sable:dimension_physics},
+ * {@code floating_material}, {@code physics_property}) during {@code PlayerList#placeNewPlayer} itself, so the channels must be declared on the connection
  * BEFORE login, which {@link GameTestHelper#makeMockServerPlayerInLevel()} gives no hook for. This
  * builds the same player that helper does (same profile, creative, non-spectator, embedded channel)
  * with the mod channels declared first — the test-only equivalent of the negotiation having happened.
@@ -41,6 +41,8 @@ final class GameTestMockPlayers {
         Connection connection = new Connection(PacketFlow.SERVERBOUND);
         new EmbeddedChannel(connection);
         declare(connection, "sable", "dimension_physics");
+        declare(connection, "sable", "floating_material");
+        declare(connection, "sable", "physics_property");
         declare(connection, "dynamicatmosphere", "atmosphere_grid");
         declare(connection, "dynamicatmosphere", "smoke_grid");
         declare(connection, "dynamicatmosphere", "material_grid");

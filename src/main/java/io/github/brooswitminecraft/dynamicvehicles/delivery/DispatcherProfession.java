@@ -1,10 +1,6 @@
 package io.github.brooswitminecraft.dynamicvehicles.delivery;
 
-import com.google.common.collect.ImmutableSet;
-
-import net.minecraft.core.Holder;
 import net.minecraft.core.registries.Registries;
-import net.minecraft.world.entity.ai.village.poi.PoiType;
 import net.minecraft.world.entity.npc.VillagerProfession;
 import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredRegister;
@@ -33,11 +29,6 @@ public final class DispatcherProfession {
 
     /** Package-visible for direct unit testing without a registry/event bus. */
     static VillagerProfession create() {
-        return new VillagerProfession("dispatcher", DispatcherProfession::isDispatchBoardPoi, DispatcherProfession::isDispatchBoardPoi,
-                ImmutableSet.of(), ImmutableSet.of(), null);
-    }
-
-    private static boolean isDispatchBoardPoi(Holder<PoiType> poiType) {
-        return poiType.is(DispatcherPoiTypes.DISPATCH_BOARD.getKey());
+        return VillagerJobSites.profession("dispatcher", DispatcherPoiTypes.DISPATCH_BOARD);
     }
 }

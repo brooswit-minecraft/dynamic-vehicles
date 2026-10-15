@@ -22,9 +22,6 @@ import net.minecraft.world.level.block.TransparentBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 
-import java.util.function.Consumer;
-import java.util.function.Predicate;
-
 /**
  * The first vehicle: a 4-wheel car. Server-authoritative. The rider's
  * forward/strafe input drives a Sable rigid body ({@link SableCarBody}); each
@@ -911,15 +908,10 @@ public class CarEntity extends Entity {
     private boolean checkCrashEjection() {
         double horizontalSpeed = Math.hypot(getDeltaMovement().x, getDeltaMovement().z);
         boolean risingEdge = crashEjectionLatch.tick(horizontalSpeed);
-        if (shouldAttemptCrashEjection(risingEdge, crashEjectionLatch.isLatched(), hasMobPassenger())) {
+        if (MobEjection.shouldAttemptCrashEjection(risingEdge, crashEjectionLatch.isLatched(), hasMobPassenger())) {
             ejectAllMobPassengers();
         }
         return crashEjectionLatch.isLatched();
-    }
-
-    /** Eject on the latch's rising edge, and keep retrying every tick while still latched with a mob aboard. */
-    static boolean shouldAttemptCrashEjection(boolean risingEdge, boolean latched, boolean mobAboard) {
-        return risingEdge || (latched && mobAboard);
     }
 
     private boolean hasMobPassenger() {
@@ -953,24 +945,9 @@ public class CarEntity extends Entity {
         double originX = getX();
         double originY = getY();
         double originZ = getZ();
-        tryEjectMobAtSafePosition(originX, originY, originZ,
+        MobEjection.tryEjectAtSafePosition(originX, originY, originZ,
                 candidate -> isFreeOfBlocks(serverLevel, mob, candidate), mob::stopRiding,
                 candidate -> mob.setPos(candidate[0], candidate[1], candidate[2]));
-    }
-
-    /**
-     * Production ejection decision shared with the world-backed path above. If no collision-free point
-     * exists, neither callback runs: the mob stays mounted rather than being placed inside a block.
-     */
-    static boolean tryEjectMobAtSafePosition(double originX, double originY, double originZ,
-            Predicate<double[]> isFree, Runnable stopRiding, Consumer<double[]> setPosition) {
-        double[] safe = SafeEjectPlacement.find(originX, originY, originZ, isFree);
-        if (safe == null) {
-            return false;
-        }
-        stopRiding.run();
-        setPosition.accept(safe);
-        return true;
     }
 
     /** Whether {@code mob}'s own bounding box, moved to {@code pos}, collides with no block in {@code serverLevel}. */

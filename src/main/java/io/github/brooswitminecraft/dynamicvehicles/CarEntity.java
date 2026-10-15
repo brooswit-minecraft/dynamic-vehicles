@@ -13,7 +13,6 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
-import net.minecraft.world.entity.MoverType;
 import net.minecraft.world.entity.monster.Creeper;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
@@ -24,16 +23,15 @@ import net.minecraft.world.phys.Vec3;
 
 /**
  * The first vehicle: a 4-wheel car. Server-authoritative. The rider's
- * forward/strafe input drives {@link CarPhysics}; each tick every wheel
- * reports its slip to Dynamic Terrain for the block beneath it, and the car
- * never modifies terrain itself.
+ * forward/strafe input drives a Sable rigid body ({@link SableCarBody}); each
+ * tick every wheel reports its slip to Dynamic Terrain for the block beneath
+ * it, and the car never modifies terrain itself.
  */
 public class CarEntity extends Entity {
     /** Wheel offsets from the car centre: x = right, z = forward, in metres. */
-    static final double[][] WHEELS = {{-0.8, 1.2}, {0.8, 1.2}, {-0.8, -1.2}, {0.8, -1.2}}; // x, z; same as CarGeometry.MOUNTS
     static final double MASS_KG = 1200.0;
+    private static final int WHEEL_COUNT = 4;
     private static final double DT = 1.0 / 20.0;
-    private static final double GRAVITY = 0.08;
 
     /** The body's orientation, synced every tick so clients can draw pitch and roll. */
     private static final net.minecraft.network.syncher.EntityDataAccessor<org.joml.Quaternionf> DATA_ORIENTATION =
@@ -91,15 +89,12 @@ public class CarEntity extends Entity {
     private net.minecraft.world.phys.Vec3 heading;
     private net.minecraft.core.BlockPos lampBlock;
 
-    private double speed;
     private org.joml.Quaternionf savedOrientation;
     /** The Sable rigid body, as Object so this class never loads Sable types (see SableCompat). */
     private Object sableBody;
-    private double forcedSlip;
     private double forcedThrottle;
     private double forcedSteer;
     private int forcedDriveTicks;
-    private int forcedSlipTicks;
 
     private final VehicleSpec spec;
     /** Per-entity tuning, initialized from the immutable vehicle type then retained in this entity's NBT. */
@@ -358,6 +353,11 @@ public class CarEntity extends Entity {
         }
     }
 
+    /** A collision reports like one wheel taking the hit (a quarter of the car), at a capped slip speed. */
+    private void reportImpact(net.minecraft.server.level.ServerLevel serverLevel, net.minecraft.core.BlockPos pos, double speedBefore) {
+        SlipReporter.report(serverLevel, pos, ImpactRules.impactSlip(speedBefore), MASS_KG / WHEEL_COUNT);
+    }
+
     /** Server: a hard hit may break the block ahead (soft and fast is likely), otherwise it erodes it. At most one block. */
     private void hitBlockAhead(double speedBefore) {
         if (!CarConfig.COLLISION_BREAKING.get() || heading == null || !(level() instanceof net.minecraft.server.level.ServerLevel serverLevel)) {
@@ -381,7 +381,7 @@ public class CarEntity extends Entity {
             // material shifts downhill or degrades. This is selected before the truck-only return below,
             // so truck impacts cannot suppress dirt/sand terrain routing.
             if (route == ImpactRules.BlockImpactRoute.TERRAIN_EROSION) {
-                SlipReporter.report(serverLevel, pos, speedBefore, MASS_KG);
+                reportImpact(serverLevel, pos, speedBefore);
                 return;
             }
 
@@ -403,7 +403,7 @@ public class CarEntity extends Entity {
             if (chance > 0.0 && random.nextDouble() < chance) {
                 serverLevel.destroyBlock(pos, true, this);
             } else {
-                SlipReporter.report(serverLevel, pos, speedBefore, MASS_KG);
+                reportImpact(serverLevel, pos, speedBefore);
             }
             return;
         }
@@ -754,47 +754,9 @@ public class CarEntity extends Entity {
             wheelHandbrake = false;
             gear = CarPhysics.Gear.DEFAULT_FORWARD;
         }
-        if (level() instanceof net.minecraft.server.level.ServerLevel serverLevel && SableCompat.usable()) {
+        if (level() instanceof net.minecraft.server.level.ServerLevel serverLevel) {
             tickSable(serverLevel, rider);
-            checkAutoDismount();
-            return;
         }
-        double throttle = rider == null ? 0.0 : Math.max(-1.0, Math.min(1.0, rider.zza));
-        double steer = rider == null ? 0.0 : Math.max(-1.0, Math.min(1.0, rider.xxa));
-        // Sneak is vanilla's dismount key, so without a wheel active the handbrake is the jump key (space).
-        // With a wheel active, the client forces jumping false and reports the paddles separately instead
-        // (MINECRAFT-167), so honk and handbrake are independent signals rather than both riding on jump.
-        boolean jumpPressed = rider != null && rider.jumping;
-        WheelMapping.Paddles paddles = WheelMapping.resolve(jumpPressed, new WheelMapping.Paddles(wheelHonk, wheelHandbrake));
-        boolean handbrake = paddles.handbrake();
-        honkOnPress(paddles.honk());
-
-        // Minecraft yaw 0 faces +Z; the physics heading is the entity's yaw in radians.
-        CarPhysics.Step step = CarPhysics.step(new CarPhysics.State(speed, Math.toRadians(getYRot())),
-                throttle, steer, handbrake, gear, DT);
-        speed = step.state().speed();
-        setYRot((float) Math.toDegrees(step.state().heading()));
-        double yaw = Math.toRadians(getYRot());
-        Vec3 forward = new Vec3(-Math.sin(yaw), 0.0, Math.cos(yaw));
-        double vy = onGround() ? -0.01 : getDeltaMovement().y - GRAVITY;
-        setDeltaMovement(forward.x * speed * DT, vy, forward.z * speed * DT);
-        move(MoverType.SELF, getDeltaMovement());
-        if (horizontalCollision) {
-            speed = ImpactRules.afterSolidImpact(speed);
-        }
-        double slip = step.slipSpeed();
-        if (forcedSlipTicks > 0) {
-            forcedSlipTicks--;
-            slip = Math.max(slip, forcedSlip);
-        }
-        if (tickCount % 20 == 0 && Math.abs(speed) > 0.1) {
-            DynamicVehiclesMod.LOGGER.debug("car {} speed {} m/s at {} {} {}", getUUID(), String.format("%.2f", speed),
-                    String.format("%.1f", getX()), String.format("%.1f", getY()), String.format("%.1f", getZ()));
-        }
-        reportSlip(CarConfig.WEAR_ENABLED.get() ? CarEffectsMath.wearSlip(throttle, speed, slip, CarConfig.WEAR_STRENGTH.get()) : slip);
-        publishSoundState(Math.abs(throttle), slip);
-        emitEffects(throttle, speed, slip);
-        checkImpact(Math.abs(speed));
         checkAutoDismount();
     }
 
@@ -891,37 +853,11 @@ public class CarEntity extends Entity {
         }
     }
 
-    /** Every wheel reports the same slip for the block under it; terrain decides what it does. */
-    private void reportSlip(double slipSpeed) {
-        if (slipSpeed <= 0 || !onGround()) {
-            return;
-        }
-        double yaw = Math.toRadians(getYRot());
-        double sin = Math.sin(yaw);
-        double cos = Math.cos(yaw);
-        for (double[] wheel : WHEELS) {
-            double x = getX() + wheel[0] * cos - wheel[1] * sin;
-            double z = getZ() + wheel[0] * sin + wheel[1] * cos;
-            BlockPos under = BlockPos.containing(x, getY() - 0.05, z);
-            SlipReporter.report(level(), under, slipSpeed, MASS_KG / WHEELS.length);
-        }
-    }
-
-    /** Debug: report at least this slip every tick for a while, to exercise terrain wear without driving. */
-    public void forceSlip(double slipSpeed, int ticks) {
-        forcedSlip = slipSpeed;
-        forcedSlipTicks = ticks;
-    }
-
     /** Debug: drive as if a rider held these inputs, for a while. */
     public void forceDrive(double throttle, double steer, int ticks) {
         forcedThrottle = throttle;
         forcedSteer = steer;
         forcedDriveTicks = ticks;
-    }
-
-    public double speed() {
-        return speed;
     }
 
     /** Current server-authoritative horizontal speed, including Sable-synchronised vehicles. */

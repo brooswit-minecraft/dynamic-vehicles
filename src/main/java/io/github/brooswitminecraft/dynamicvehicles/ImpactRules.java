@@ -5,7 +5,15 @@ public final class ImpactRules {
     /** The existing collision response removes 70% of forward speed per solid impact. */
     static final double SOLID_IMPACT_SPEED_SCALE = 0.3;
 
+    /** A collision report never claims more sliding than this (m/s), so one crash cannot outweigh a sustained burnout. */
+    static final double MAX_IMPACT_SLIP = 10.0;
+
     private ImpactRules() {}
+
+    /** The slip speed a collision reports to terrain: the speed the car hit at, capped at {@link #MAX_IMPACT_SLIP}. */
+    static double impactSlip(double speedBefore) {
+        return Math.max(0.0, Math.min(speedBefore, MAX_IMPACT_SLIP));
+    }
 
     enum BlockImpactRoute {
         TERRAIN_EROSION,

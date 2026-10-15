@@ -106,6 +106,17 @@ public final class WheelMath {
         return new Tire(wantLong * scale, wantLat * scale, slip, wantLong);
     }
 
+    /** As above, applying the vehicle's static camber/toe setup before the existing friction-circle math.
+     * Other {@link VehicleSpec.VehicleTuning} fields remain owned by their respective models. */
+    public static Tire tire(double vLong, double vLat, double normalForce, double mu, double rollingCoefficient,
+            double lateralScale, double driveForce, double brakeForce, double brakeGain, double effectiveMass,
+            double dt, VehicleSpec.VehicleTuning tuning) {
+        CamberToeGripModel.GripModifiers modifiers = CamberToeGripModel.modifiers(tuning.camberDeg(), tuning.toeDeg());
+        return tire(vLong, vLat, normalForce, mu * modifiers.longitudinalMuScale(),
+                rollingCoefficient, lateralScale * modifiers.lateralScale(), driveForce, brakeForce,
+                brakeGain, effectiveMass, dt);
+    }
+
     /**
      * @param compression metres the spring is shorter than its rest length (negative: not touching)
      * @param compressionRate m/s the spring is being squeezed (positive: the wheel is moving toward the car body)

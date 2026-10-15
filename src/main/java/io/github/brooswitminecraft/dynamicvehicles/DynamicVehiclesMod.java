@@ -6,6 +6,7 @@ import com.mojang.logging.LogUtils;
 
 import com.mojang.brigadier.arguments.DoubleArgumentType;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
+import com.mojang.brigadier.arguments.StringArgumentType;
 
 import net.minecraft.commands.Commands;
 import net.minecraft.core.registries.Registries;
@@ -39,6 +40,12 @@ import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherOfferMenus
 import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherOfferScreen;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherPoiTypes;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherProfession;
+import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderPoiTypes;
+import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderProfession;
+import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderTradeHandler;
+import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderCampfireHandler;
+import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderPassiveSettlementHandler;
+import io.github.brooswitminecraft.dynamicvehicles.delivery.VillagerNoonProgressionHandler;
 
 /** Entry point and registry for the first vehicle, a 4-wheel car (MINECRAFT-63). */
 @Mod(DynamicVehiclesMod.MODID)
@@ -112,6 +119,8 @@ public class DynamicVehiclesMod {
         DispatcherBlocks.BLOCKS.register(modEventBus);
         DispatcherPoiTypes.POI_TYPES.register(modEventBus);
         DispatcherProfession.PROFESSIONS.register(modEventBus);
+        BuilderPoiTypes.POI_TYPES.register(modEventBus);
+        BuilderProfession.PROFESSIONS.register(modEventBus);
         DispatcherOfferMenus.MENUS.register(modEventBus);
         modEventBus.addListener(this::commonSetup);
         modEventBus.addListener(this::addCreative);
@@ -119,6 +128,11 @@ public class DynamicVehiclesMod {
         NeoForge.EVENT_BUS.addListener(this::registerCommands);
         NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.server.ServerStartedEvent e) -> LightLedger.sweep(e.getServer()));
         NeoForge.EVENT_BUS.addListener(DispatcherInteractionHandler::onEntityInteract);
+        NeoForge.EVENT_BUS.addListener(BuilderTradeHandler::registerTrades);
+        NeoForge.EVENT_BUS.addListener(BuilderTradeHandler::onTrade);
+        NeoForge.EVENT_BUS.addListener(BuilderCampfireHandler::onLevelTick);
+        NeoForge.EVENT_BUS.addListener(BuilderPassiveSettlementHandler::onLevelTick);
+        NeoForge.EVENT_BUS.addListener(VillagerNoonProgressionHandler::onLevelTick);
         NeoForge.EVENT_BUS.addListener(ContractTickHandler::onServerTick);
         NeoForge.EVENT_BUS.addListener(ContractTickHandler::onPlayerLoggedIn);
         NeoForge.EVENT_BUS.addListener(ContractTickHandler::onPlayerLoggedOut);
@@ -130,6 +144,8 @@ public class DynamicVehiclesMod {
         var registrar = event.registrar("1");
         registrar.playToServer(LightsTogglePayload.TYPE, LightsTogglePayload.STREAM_CODEC, LightsTogglePayload::handle);
         registrar.playToServer(WheelPaddlesPayload.TYPE, WheelPaddlesPayload.STREAM_CODEC, WheelPaddlesPayload::handle);
+        registrar.playToServer(GearTogglePayload.TYPE, GearTogglePayload.STREAM_CODEC, GearTogglePayload::handle);
+        registrar.playToServer(GearSelectPayload.TYPE, GearSelectPayload.STREAM_CODEC, GearSelectPayload::handle);
         registrar.playToServer(DispatcherOfferAcceptPayload.TYPE, DispatcherOfferAcceptPayload.STREAM_CODEC, DispatcherOfferAcceptPayload::handle);
         registrar.playToClient(DeliveryHudPayload.TYPE, DeliveryHudPayload.STREAM_CODEC, DeliveryHudPayload::handle);
     }
@@ -138,21 +154,29 @@ public class DynamicVehiclesMod {
         LOGGER.info("Dynamic Vehicles loaded");
     }
 
-    /** Debug entry point: /dvspin <slipSpeed> <ticks> makes every loaded car's wheels report that slip, to exercise terrain wear. */
     private void registerCommands(RegisterCommandsEvent event) {
         // /dtcar debug on|off: draws each car's physics box (red) and where its suspension rays hit the ground (green).
-        event.getDispatcher().register(Commands.literal("dtcar").requires(source -> source.hasPermission(2))
-                .then(Commands.literal("debug")
-                        .then(Commands.literal("on").executes(context -> {
-                            CarDebug.enabled = true;
-                            context.getSource().sendSuccess(() -> Component.literal("car debug overlay on"), true);
-                            return 1;
-                        }))
-                        .then(Commands.literal("off").executes(context -> {
-                            CarDebug.enabled = false;
-                            context.getSource().sendSuccess(() -> Component.literal("car debug overlay off"), true);
-                            return 1;
-                        }))));
+        var dtcar = Commands.literal("dtcar").requires(source -> source.hasPermission(2));
+        dtcar.then(Commands.literal("debug")
+                .then(Commands.literal("on").executes(context -> {
+                    CarDebug.enabled = true;
+                    context.getSource().sendSuccess(() -> Component.literal("car debug overlay on"), true);
+                    return 1;
+                }))
+                .then(Commands.literal("off").executes(context -> {
+                    CarDebug.enabled = false;
+                    context.getSource().sendSuccess(() -> Component.literal("car debug overlay off"), true);
+                    return 1;
+                })));
+                // Per-instance rather than type-wide tuning: the command only changes the car the player is
+                // currently driving, and CarEntity persists that state in the entity's own NBT.
+        dtcar.then(Commands.literal("tune")
+                .then(Commands.argument("setting", StringArgumentType.word())
+                        .then(Commands.argument("value", DoubleArgumentType.doubleArg())
+                                .executes(context -> tuneDrivenVehicle(context,
+                                        StringArgumentType.getString(context, "setting"),
+                                        DoubleArgumentType.getDouble(context, "value"))))));
+        event.getDispatcher().register(dtcar);
         // Debug: /dvdrive <throttle> <steer> <ticks> drives every loaded car as if a rider held those inputs.
         event.getDispatcher().register(Commands.literal("dvdrive").requires(source -> source.hasPermission(2))
                 .then(Commands.argument("throttle", DoubleArgumentType.doubleArg(-1, 1))
@@ -170,20 +194,32 @@ public class DynamicVehiclesMod {
                                     context.getSource().sendSuccess(() -> Component.literal("driving " + count + " car(s)"), true);
                                     return count;
                                 })))));
-        event.getDispatcher().register(Commands.literal("dvspin").requires(source -> source.hasPermission(2))
-                .then(Commands.argument("slip", DoubleArgumentType.doubleArg(0))
-                        .then(Commands.argument("ticks", IntegerArgumentType.integer(1, 24000)).executes(context -> {
-                            int cars = 0;
-                            for (net.minecraft.world.entity.Entity entity : context.getSource().getLevel().getAllEntities()) {
-                                if (entity instanceof CarEntity car) {
-                                    car.forceSlip(DoubleArgumentType.getDouble(context, "slip"), IntegerArgumentType.getInteger(context, "ticks"));
-                                    cars++;
-                                }
-                            }
-                            int count = cars;
-                            context.getSource().sendSuccess(() -> Component.literal("forced slip on " + count + " car(s)"), true);
-                            return count;
-                        }))));
+    }
+
+    private static int tuneDrivenVehicle(com.mojang.brigadier.context.CommandContext<net.minecraft.commands.CommandSourceStack> context,
+            String setting, double value) {
+        net.minecraft.world.entity.Entity actor = context.getSource().getEntity();
+        if (!(actor instanceof net.minecraft.world.entity.player.Player player)
+                || !(player.getVehicle() instanceof CarEntity car)
+                || car.getControllingPassenger() != player) {
+            context.getSource().sendFailure(Component.literal("You must be driving the vehicle you want to tune."));
+            return 0;
+        }
+        if (!car.setVehicleTuning(setting, value)) {
+            context.getSource().sendFailure(Component.literal("Unknown tuning. Use lsd_lock_percent, front_torque_split, "
+                    + "vectoring_gain, camber_deg, or toe_deg."));
+            return 0;
+        }
+        VehicleSpec.VehicleTuning tuned = car.vehicleTuning();
+        context.getSource().sendSuccess(() -> Component.literal("Updated this vehicle: " + setting + " = "
+                + switch (setting) {
+                    case "lsd_lock_percent" -> tuned.lsdLockPercent();
+                    case "front_torque_split" -> tuned.frontTorqueSplit();
+                    case "vectoring_gain" -> tuned.vectoringGain();
+                    case "camber_deg" -> tuned.camberDeg();
+                    default -> tuned.toeDeg();
+                }), true);
+        return 1;
     }
 
     private void addCreative(BuildCreativeModeTabContentsEvent event) {
@@ -229,6 +265,8 @@ public class DynamicVehiclesMod {
         public static void registerGuiLayers(net.neoforged.neoforge.client.event.RegisterGuiLayersEvent event) {
             event.registerAboveAll(ResourceLocation.fromNamespaceAndPath(MODID, "delivery_hud"),
                     new io.github.brooswitminecraft.dynamicvehicles.delivery.ContractHudOverlay());
+            event.registerAboveAll(ResourceLocation.fromNamespaceAndPath(MODID, "delivery_waypoint"),
+                    new io.github.brooswitminecraft.dynamicvehicles.delivery.ContractWaypointOverlay());
         }
     }
 }

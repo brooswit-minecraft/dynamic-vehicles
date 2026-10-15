@@ -3,8 +3,8 @@ package io.github.brooswitminecraft.dynamicvehicles.delivery;
 /**
  * MINECRAFT-110 AC6's tight arrival criterion: a candidate position has
  * arrived only when it is in the SAME 16x16 chunk column as the
- * destination's recovered actual village start position
- * ({@link ConfirmedVillage#startBlockPos()}) - never the whole structure
+ * destination's predicted village-placement chunk
+ * ({@link PredictedVillage#targetBlockPos()}) - never the whole structure
  * placement region, which can be hundreds of blocks across. Plain integer
  * math (mirrors {@code SectionPos.blockToSectionCoord}'s {@code >> 4}
  * without needing the Minecraft type) so the near-miss case AC9 requires is

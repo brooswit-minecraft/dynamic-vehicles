@@ -8,7 +8,9 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.level.saveddata.SavedData;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -29,6 +31,7 @@ public final class DeliveryContractStorage extends SavedData {
     private static final String NAME = "dynamicvehicles_contracts";
 
     private final ContractBook book = new ContractBook();
+    private final Set<String> foundedSettlements = new HashSet<>();
 
     public static DeliveryContractStorage of(MinecraftServer server) {
         return server.overworld().getDataStorage()
@@ -37,6 +40,14 @@ public final class DeliveryContractStorage extends SavedData {
 
     public ContractBook book() {
         return book;
+    }
+
+    public boolean hasFoundedSettlement(String key) {
+        return foundedSettlements.contains(key);
+    }
+
+    public void markSettlementFounded(String key) {
+        foundedSettlements.add(key);
     }
 
     private static DeliveryContractStorage load(CompoundTag tag, HolderLookup.Provider registries) {
@@ -60,6 +71,10 @@ public final class DeliveryContractStorage extends SavedData {
                     entry.getLong("DeadlineTick")));
         }
         storage.book.restore(loaded);
+        ListTag settlements = tag.getList("FoundedSettlements", Tag.TAG_STRING);
+        for (int i = 0; i < settlements.size(); i++) {
+            storage.foundedSettlements.add(settlements.getString(i));
+        }
         return storage;
     }
 
@@ -85,6 +100,11 @@ public final class DeliveryContractStorage extends SavedData {
             list.add(entry);
         }
         tag.put("Contracts", list);
+        ListTag settlements = new ListTag();
+        for (String key : foundedSettlements) {
+            settlements.add(net.minecraft.nbt.StringTag.valueOf(key));
+        }
+        tag.put("FoundedSettlements", settlements);
         return tag;
     }
 }

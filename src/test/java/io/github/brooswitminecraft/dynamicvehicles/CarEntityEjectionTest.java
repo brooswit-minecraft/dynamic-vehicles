@@ -36,4 +36,39 @@ class CarEntityEjectionTest {
         assertTrue(stoppedRiding.get());
         assertTrue(placed.get());
     }
+
+    @Test
+    void ejectionBlockedOnTheRisingEdgeIsRetriedWhileLatchedAndSucceedsOnceASafeSpotOpens() {
+        CrashEjectionLatch latch = new CrashEjectionLatch();
+        double fast = CrashEjectionLatch.CRASH_EJECT_SPEED_THRESHOLD + 1.0;
+        AtomicBoolean mounted = new AtomicBoolean(true);
+        AtomicBoolean placed = new AtomicBoolean();
+        boolean[] safeNow = {false};
+
+        // Tick 1: the speed crosses the threshold (rising edge) but every candidate is blocked.
+        boolean edge = latch.tick(fast);
+        assertTrue(CarEntity.shouldAttemptCrashEjection(edge, latch.isLatched(), mounted.get()));
+        assertFalse(CarEntity.tryEjectMobAtSafePosition(0, 0, 0, c -> safeNow[0], () -> mounted.set(false), c -> placed.set(true)));
+        assertTrue(mounted.get(), "a blocked ejection must keep the mob mounted, never place it in a block");
+        assertFalse(placed.get());
+
+        // Tick 2: still too fast, so the latch does NOT fire again -- but the retry must still run.
+        edge = latch.tick(fast);
+        assertFalse(edge, "the latch only fires on the rising edge");
+        safeNow[0] = true;
+        assertTrue(CarEntity.shouldAttemptCrashEjection(edge, latch.isLatched(), mounted.get()),
+                "a latched vehicle with a mob still aboard must retry ejection");
+        assertTrue(CarEntity.tryEjectMobAtSafePosition(0, 0, 0, c -> safeNow[0], () -> mounted.set(false), c -> placed.set(true)));
+        assertFalse(mounted.get());
+        assertTrue(placed.get());
+
+        // Tick 3: the mob is gone, so there is nothing left to retry.
+        edge = latch.tick(fast);
+        assertFalse(CarEntity.shouldAttemptCrashEjection(edge, latch.isLatched(), mounted.get()));
+    }
+
+    @Test
+    void noRetryWhenNotLatchedEvenWithAMobAboard() {
+        assertFalse(CarEntity.shouldAttemptCrashEjection(false, false, true));
+    }
 }

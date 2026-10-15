@@ -92,7 +92,7 @@ class VehicleSpecTest {
                 VehicleSpec.CAR.forceScale(), VehicleSpec.CAR.enginePitch(),
                 VehicleSpec.CAR.seatY(), VehicleSpec.CAR.seatZ(),
                 VehicleSpec.CAR.looseGrip(), VehicleSpec.CAR.rollingScale(),
-                VehicleSpec.CAR.tireTuning(), 0.0, busSeats);
+                VehicleSpec.CAR.tireTuning(), 0.0, 1.0, busSeats);
 
         assertEquals(8, bus.seatCount());
         assertEquals(0.0, bus.driverSeat().x(), 1e-9);

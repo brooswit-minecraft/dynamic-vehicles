@@ -34,6 +34,13 @@ public record VehicleSpec(
          * {@code 0.0} for every vehicle that has not opted in &mdash; the multiplier is then exactly 1.0, so
          * {@code SableCarBody.tick} is unchanged for them. Only the Indy Car sets this nonzero. */
         double downforceGripPerSpeed,
+        /** Per-vehicle anti-roll bar stiffness multiplier (MINECRAFT-212/214): {@link SableCarBody#tick}
+         * computes {@code barRate = springRate() * CarConfig.ANTI_ROLL.get() * antiRollScale()}, so a
+         * vehicle can get a stiffer anti-roll bar without changing {@code CarConfig.ANTI_ROLL}, which is
+         * one global value shared by every vehicle. {@code 1.0} (identity, no extra scale) for every
+         * vehicle that has not opted in &mdash; only {@link #ROCK_CRAWLER} and {@link #TROPHY} set this
+         * above {@code 1.0}. */
+        double antiRollScale,
         /**
          * Every seat this vehicle has, in boarding order; seat 0 is always the driver (MINECRAFT-172).
          * Supports any number of seats (an 8-seat bus included) &mdash; {@code CAR}, {@code TRUCK},
@@ -42,7 +49,34 @@ public record VehicleSpec(
          * behave byte-for-byte as before (see {@code VehicleSeating}, which gates multi-seat boarding on
          * speed and never gates a one-seat vehicle at all).
          */
-        List<Seat> seats) {
+        List<Seat> seats,
+        /** This vehicle's per-vehicle tuning dials (MINECRAFT-227/245): LSD lock, front/rear torque split,
+         * torque-vectoring gain, camber and toe. {@link VehicleTuning#IDENTITY} for every vehicle that has
+         * not opted in &mdash; today that is every vehicle on the roster, since this story is data and
+         * plumbing only (no LSD/vectoring/camber/toe behaviour yet). See {@link VehicleTuning} for why these
+         * five fields are grouped into their own small type rather than folded into {@link TireTuning} or
+         * left as bare fields on this record. */
+        VehicleTuning vehicleTuning) {
+
+    /** As the full (canonical) constructor above, minus the trailing {@link #vehicleTuning} (MINECRAFT-227/245):
+     * exactly the field list every vehicle spec used before this ticket. {@code CAR}, {@code TRUCK},
+     * {@code TROPHY}, {@code DRIFT}, {@code BUS} and {@code CARGO_TRUCK} all still call this constructor
+     * unedited, with {@link #vehicleTuning} defaulted to {@link VehicleTuning#IDENTITY}. */
+    public VehicleSpec(double halfX, double halfY, double halfZ,
+            double[][] mounts, double wheelRadius, double wheelWidth,
+            double rideHeight, double restLength,
+            double massKg, double springRate, double dampingRate, double maxSpringForce,
+            double wheelbase, double maxSpeed,
+            double forceScale, double enginePitch,
+            double seatY, double seatZ,
+            double looseGrip, double rollingScale,
+            TireTuning tireTuning, double downforceGripPerSpeed, double antiRollScale,
+            List<Seat> seats) {
+        this(halfX, halfY, halfZ, mounts, wheelRadius, wheelWidth, rideHeight, restLength,
+                massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
+                forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
+                downforceGripPerSpeed, antiRollScale, seats, VehicleTuning.IDENTITY);
+    }
 
     /**
      * Legacy shape (MINECRAFT-172): exactly the field list every vehicle spec used before multi-seat
@@ -62,12 +96,14 @@ public record VehicleSpec(
             TireTuning tireTuning) {
         this(halfX, halfY, halfZ, mounts, wheelRadius, wheelWidth, rideHeight, restLength,
                 massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
-                forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning, 0.0);
+                forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
+                0.0, 1.0, List.of(new Seat(0.0, seatY, seatZ)));
     }
 
     /** As the legacy constructor above, plus an explicit {@link #downforceGripPerSpeed} (MINECRAFT-184) for
      * a single-seat vehicle that opts into speed-dependent grip, deriving its one-seat {@link #seats} list
-     * from {@code seatY}/{@code seatZ} exactly as the legacy constructor does. */
+     * from {@code seatY}/{@code seatZ} exactly as the legacy constructor does. {@link #antiRollScale}
+     * defaults to {@code 1.0} (identity), same as the legacy constructor. */
     public VehicleSpec(double halfX, double halfY, double halfZ,
             double[][] mounts, double wheelRadius, double wheelWidth,
             double rideHeight, double restLength,
@@ -80,7 +116,44 @@ public record VehicleSpec(
         this(halfX, halfY, halfZ, mounts, wheelRadius, wheelWidth, rideHeight, restLength,
                 massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
                 forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
-                downforceGripPerSpeed, List.of(new Seat(0.0, seatY, seatZ)));
+                downforceGripPerSpeed, 1.0, List.of(new Seat(0.0, seatY, seatZ)));
+    }
+
+    /** As the legacy constructor above, plus an explicit {@link #antiRollScale} (MINECRAFT-212/214) for a
+     * single-seat vehicle that needs a stiffer anti-roll bar than the shared global {@code
+     * CarConfig.ANTI_ROLL}, deriving its one-seat {@link #seats} list from {@code seatY}/{@code seatZ}
+     * exactly as the legacy constructor does. {@link #downforceGripPerSpeed} defaults to {@code 0.0}
+     * (identity), same as the legacy constructor; only {@link #ROCK_CRAWLER} uses this constructor. */
+    public VehicleSpec(double halfX, double halfY, double halfZ,
+            double[][] mounts, double wheelRadius, double wheelWidth,
+            double rideHeight, double restLength,
+            double massKg, double springRate, double dampingRate, double maxSpringForce,
+            double wheelbase, double maxSpeed,
+            double forceScale, double enginePitch,
+            double seatY, double seatZ,
+            double looseGrip, double rollingScale,
+            TireTuning tireTuning, double downforceGripPerSpeed, double antiRollScale) {
+        this(halfX, halfY, halfZ, mounts, wheelRadius, wheelWidth, rideHeight, restLength,
+                massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
+                forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
+                downforceGripPerSpeed, antiRollScale, List.of(new Seat(0.0, seatY, seatZ)));
+    }
+
+    /** As above, with an explicit per-vehicle tuning bundle for a single-seat vehicle. */
+    public VehicleSpec(double halfX, double halfY, double halfZ,
+            double[][] mounts, double wheelRadius, double wheelWidth,
+            double rideHeight, double restLength,
+            double massKg, double springRate, double dampingRate, double maxSpringForce,
+            double wheelbase, double maxSpeed,
+            double forceScale, double enginePitch,
+            double seatY, double seatZ,
+            double looseGrip, double rollingScale,
+            TireTuning tireTuning, double downforceGripPerSpeed, double antiRollScale,
+            VehicleTuning vehicleTuning) {
+        this(halfX, halfY, halfZ, mounts, wheelRadius, wheelWidth, rideHeight, restLength,
+                massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
+                forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
+                downforceGripPerSpeed, antiRollScale, List.of(new Seat(0.0, seatY, seatZ)), vehicleTuning);
     }
 
     /**
@@ -140,6 +213,43 @@ public record VehicleSpec(
     }
 
     /**
+     * Per-vehicle tuning dials (MINECRAFT-227/245), foundation for the sibling stories that implement LSD,
+     * torque distribution/vectoring and camber/toe. Torque-split and vectoring are read by
+     * {@link TorqueDistribution}; camber and toe are read by {@link CamberToeGripModel} through
+     * {@code WheelMath.tire}; the remaining fields are read by their respective models. {@link #IDENTITY}
+     * is the value every field must take for a vehicle's handling to stay exactly as it is today.
+     *
+     * <p>Grouped into their own small type rather than added to {@link TireTuning} or left as bare fields
+     * on {@link VehicleSpec} directly: they are a different physical domain from {@link TireTuning} (which
+     * is entirely about {@link DriftTireModel}'s cornering-slip curve), and the epic's later stories will
+     * each extend or read this same bundle together, exactly the way {@link TireTuning} already groups
+     * {@link DriftTireModel}'s six knobs for the same reason.
+     *
+     * @param lsdLockPercent limited-slip differential lock, 0 (open, no lock) to 1 (fully locked); 0 = no
+     *        lock at all (identity) &mdash; a later story reads this to resist one driven wheel of an axle
+     *        spinning faster than its partner
+     * @param frontTorqueSplit front axle's share of total drive torque, 0 (all rear) to 1 (all front); 0.5 =
+     *        an even 50/50 split (identity), preserving the historical per-wheel drive command
+     * @param vectoringGain fraction of a torque-vectoring correction (shifting drive torque side to side
+     *        across an axle to help the car turn) applied at each wheel; 0 = no vectoring at all (identity)
+     * @param camberDeg static camber angle, degrees (negative: top of the wheel tilted in toward the car);
+     *        0 = upright, no camber (identity)
+     * @param toeDeg static toe angle, degrees (positive: toe-in, the front of the wheel angled toward the
+     *        car's centreline); 0 = parallel to the car's own forward axis, no toe (identity)
+     */
+    public record VehicleTuning(double lsdLockPercent, double frontTorqueSplit, double vectoringGain,
+            double camberDeg, double toeDeg) {
+
+        /** No LSD lock, an even front/rear torque split, no vectoring, no camber, no toe. */
+        public static final VehicleTuning IDENTITY = new VehicleTuning(0.0, 0.5, 0.0, 0.0, 0.0);
+
+        /** Whether this tuning is exactly {@link #IDENTITY}. */
+        public boolean isIdentity() {
+            return this.equals(IDENTITY);
+        }
+    }
+
+    /**
      * MINECRAFT-182: 2+2 seating &mdash; the driver (seat 0, unmoved at x = 0) and a front passenger beside
      * it, each at {@code seatZ}; two rear passengers side by side 0.9 m further back. Every x offset (0.5 m)
      * sits well inside {@code halfX} (0.95 m), and the rear row (z = -1.0) well inside {@code halfZ} (1.5 m).
@@ -151,7 +261,7 @@ public record VehicleSpec(
             CarGeometry.HALF_X, CarGeometry.HALF_Y, CarGeometry.HALF_Z,
             CarGeometry.MOUNTS, CarGeometry.WHEEL_RADIUS, CarGeometry.WHEEL_WIDTH, CarGeometry.RIDE_HEIGHT,
             WheelMath.REST_LENGTH, 1200.0, WheelMath.SPRING_RATE, WheelMath.DAMPING_RATE, WheelMath.MAX_FORCE,
-            CarPhysics.WHEELBASE, 32.0, 1.0, 1.0, 0.55, -0.1, 1.0, 1.0, TireTuning.IDENTITY, 0.0,
+            CarPhysics.WHEELBASE, 32.0, 1.0, 1.0, 0.55, -0.1, 1.0, 1.0, TireTuning.IDENTITY, 0.0, 1.0,
             List.of(
                     new Seat(0.0, 0.55, -0.1),
                     new Seat(-0.5, 0.55, -0.1),
@@ -175,7 +285,7 @@ public record VehicleSpec(
             new double[][] {{-0.95, -0.5, 1.5}, {0.95, -0.5, 1.5}, {-0.95, -0.5, -1.5}, {0.95, -0.5, -1.5}},
             0.5, 0.4, 1.3,
             1.0, 2200.0, 26_980.0, 5_390.0, 73_000.0,
-            3.0, 26.0, 2200.0 / 1200.0, 0.75, 0.75, 0.3, 1.0, 1.0, TireTuning.IDENTITY, 0.0,
+            3.0, 26.0, 2200.0 / 1200.0, 0.75, 0.75, 0.3, 1.0, 1.0, TireTuning.IDENTITY, 0.0, 1.0,
             List.of(
                     new Seat(0.0, 0.75, 0.3),
                     new Seat(-0.55, 0.75, 0.3),
@@ -192,13 +302,24 @@ public record VehicleSpec(
      * the same {@code seatZ}, on the opposite side (x &lt; 0) so the passenger's dismount point (left) never
      * collides with the driver's default one (right, see {@link VehicleSeating#dismountOffset}). The 0.65 m
      * offset sits well inside {@code halfX} (1.3 m).
+     *
+     * <p>MINECRAFT-208/223: unlike {@link #ROCK_CRAWLER}, this vehicle's geometry is not the problem (track
+     * 2.5 m over a 1.6 m ride height, static stability factor &asymp;0.78, comfortably above the crawler's
+     * &asymp;0.50) &mdash; this is a stability/feel TUNING change for landings and rough terrain, not a
+     * rollover-defect fix. Its {@code springRate} (12,260) is weaker in absolute N/m than the car's
+     * ({@link WheelMath#SPRING_RATE}, 19,620) or the crawler's (31,065), so its sway-bar-style anti-roll
+     * coupling is softer too.
+     * {@code antiRollScale} 1.5 (half again the roster's shared 1.0 identity default, more modest than the
+     * crawler's 2.0 since this vehicle's geometry needed far less help to begin with) stiffens that coupling
+     * without touching geometry or springRate &mdash; see {@code VehicleSpecTrophyAntiRollTest} for the
+     * roll-stability-margin test this value is tuned against.
      */
     public static final VehicleSpec TROPHY = new VehicleSpec(
             1.3, 0.5, 1.9,
             new double[][] {{-1.25, -0.3, 1.4}, {1.25, -0.3, 1.4}, {-1.25, -0.3, -1.4}, {1.25, -0.3, -1.4}},
             0.6, 0.5, 1.6,
             1.6, 1500.0, 12_260.0, 2_570.0, 50_000.0,
-            2.8, 40.0, 1.8, 1.25, 0.5, 0.1, 1.35, 0.6, TireTuning.IDENTITY, 0.0,
+            2.8, 40.0, 1.8, 1.25, 0.5, 0.1, 1.35, 0.6, TireTuning.IDENTITY, 0.0, 1.5,
             List.of(
                     new Seat(0.0, 0.5, 0.1),
                     new Seat(-0.65, 0.5, 0.1)));
@@ -238,7 +359,7 @@ public record VehicleSpec(
             new double[][] {{-0.75, -0.35, 1.2}, {0.75, -0.35, 1.2}, {-0.75, -0.35, -1.2}, {0.75, -0.35, -1.2}},
             0.35, 0.3, 0.75,
             0.6, 1100.0, 17_985.0, 3_117.0, 36_667.0,
-            2.4, 32.0, 1.0, 1.0, 0.5, -0.1, 1.0, 1.0, TIRE_TUNING, 0.0,
+            2.4, 32.0, 1.0, 1.0, 0.5, -0.1, 1.0, 1.0, TIRE_TUNING, 0.0, 1.0,
             List.of(
                     new Seat(0.0, 0.5, -0.1),
                     new Seat(-0.45, 0.5, -0.1)));
@@ -277,14 +398,25 @@ public record VehicleSpec(
      * tire tuning: the climbing character comes from the base spec's own suspension and grip fields, not
      * from {@link DriftTireModel}, so {@code tireTuning()} stays {@link TireTuning#IDENTITY} and this
      * vehicle routes through the plain {@code WheelMath} tire path exactly like {@code CAR}/{@code
-     * TRUCK}/{@code TROPHY}/{@code MUSCLE}.
+     * TRUCK}/{@code TROPHY}/{@code MUSCLE}. MINECRAFT-296 gives it a 65% limited-slip lock: this is the
+     * roster's purpose-built slow technical climber, where moving torque away from an unloaded spinning
+     * wheel toward its planted partner should make uneven-ground climbs feel more controlled without
+     * changing the open-differential default for the rest of the roster.
+     *
+     * <p>MINECRAFT-208/212/214: this vehicle's narrow track relative to its tall ride height (static
+     * stability factor {@code track/(2*rideHeight)} &asymp; 0.50, against the car's &asymp; 0.89) made it
+     * tip over sideways far too easily, and {@code CarConfig.ANTI_ROLL} is one value every vehicle shares,
+     * so it could not be stiffened for this vehicle alone. {@code antiRollScale} 2.0 (double the roster's
+     * shared default) fixes that without touching geometry/CG &mdash; see {@code
+     * VehicleSpecRockCrawlerAntiRollTest} for the roll-stability-margin test this value is tuned against.
      */
     public static final VehicleSpec ROCK_CRAWLER = new VehicleSpec(
             1.0, 0.6, 1.6,
             new double[][] {{-0.95, -0.5, 1.1}, {0.95, -0.5, 1.1}, {-0.95, -0.5, -1.1}, {0.95, -0.5, -1.1}},
             0.65, 0.55, 1.9,
             2.0, 1900.0, 31_065.0, 5_383.33, 63_333.33,
-            2.2, 18.0, 2.0, 0.6, 0.6, -0.2, 1.6, 0.5, TireTuning.IDENTITY);
+            2.2, 18.0, 2.0, 0.6, 0.6, -0.2, 1.6, 0.5, TireTuning.IDENTITY, 0.0, 2.0,
+            new VehicleTuning(0.65, 0.5, 0.0, 0.0, 0.0));
 
     /**
      * A monster truck (MINECRAFT-180, story MINECRAFT-160): the roster's biggest wheels (0.9 m radius,
@@ -389,7 +521,7 @@ public record VehicleSpec(
             new double[][] {{-1.0, -0.6, 2.3}, {1.0, -0.6, 2.3}, {-1.0, -0.6, -2.3}, {1.0, -0.6, -2.3}},
             0.55, 0.45, 1.0,
             1.0, 4200.0, 68_670.0, 11_900.0, 140_000.0,
-            4.6, 20.0, 3.0, 0.6, 0.95, 3.0, 0.9, 0.8, TireTuning.IDENTITY, 0.0,
+            4.6, 20.0, 3.0, 0.6, 0.95, 3.0, 0.9, 0.8, TireTuning.IDENTITY, 0.0, 1.0,
             List.of(
                     new Seat(0.0, 0.95, 3.0),
                     new Seat(-0.6, 0.95, 3.0),
@@ -441,7 +573,7 @@ public record VehicleSpec(
             new double[][] {{-1.0, -0.55, 2.0}, {1.0, -0.55, 2.0}, {-1.0, -0.55, -2.0}, {1.0, -0.55, -2.0}},
             0.55, 0.45, 1.1,
             1.2, 4800.0, 78_480.0, 13_600.0, 160_000.0,
-            4.0, 16.0, 2.8, 0.45, 0.95, 1.3, 1.0, 0.7, TireTuning.IDENTITY, 0.0,
+            4.0, 16.0, 2.8, 0.45, 0.95, 1.3, 1.0, 0.7, TireTuning.IDENTITY, 0.0, 1.0,
             List.of(
                     new Seat(0.0, 0.95, 1.3),
                     new Seat(-0.65, 0.95, 1.3)));

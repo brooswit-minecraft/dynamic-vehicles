@@ -11,6 +11,7 @@ public final class ClientConfig {
     public static final ModConfigSpec.DoubleValue SOUND_VOLUME;
     public static final ModConfigSpec.BooleanValue HEADLIGHTS;
     public static final ModConfigSpec.DoubleValue HEADLIGHT_BEAM;
+    public static final ModConfigSpec.BooleanValue SHOW_LEGACY_CONTRACT_HUD;
     public static final ModConfigSpec.BooleanValue WHEEL_ENABLED;
     public static final ModConfigSpec.IntValue WHEEL_DEVICE;
     public static final ModConfigSpec.ConfigValue<String> WHEEL_NAME_CONTAINS;
@@ -29,6 +30,10 @@ public final class ClientConfig {
     public static final ModConfigSpec.DoubleValue WHEEL_PEDAL_DEADZONE;
     public static final ModConfigSpec.IntValue WHEEL_HANDBRAKE_BUTTON;
     public static final ModConfigSpec.IntValue WHEEL_HONK_BUTTON;
+    public static final ModConfigSpec.BooleanValue WHEEL_SHIFTER_ENABLED;
+    public static final ModConfigSpec.IntValue WHEEL_SHIFTER_NEUTRAL_BUTTON;
+    public static final ModConfigSpec.IntValue WHEEL_SHIFTER_REVERSE_BUTTON;
+    public static final ModConfigSpec.IntValue[] WHEEL_SHIFTER_FORWARD_BUTTONS = new ModConfigSpec.IntValue[6];
 
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
@@ -50,6 +55,11 @@ public final class ClientConfig {
         HEADLIGHT_BEAM = builder
                 .comment("Beam length in blocks; 0 draws the lamps only.")
                 .defineInRange("headlightBeamLength", 9.0, 0.0, 24.0);
+        builder.push("delivery");
+        SHOW_LEGACY_CONTRACT_HUD = builder
+                .comment("Show the legacy contract HUD overlay alongside the waypoint marker. Disabled by default because the waypoint marker is the primary contract destination display.")
+                .define("showLegacyContractHud", false);
+        builder.pop();
         builder.push("wheel");
         WHEEL_ENABLED = builder
                 .comment("Drive the car with a steering wheel and pedals (any joystick-class device GLFW sees). The keyboard keeps working alongside it.")
@@ -94,9 +104,23 @@ public final class ClientConfig {
                         + "Default 4 is an UNVERIFIED guess (common left-paddle index on G29-class wheels in community mappings, not measured on real hardware) "
                         + "-- confirm with /dvwheel's pressed-button list and correct if wrong.")
                 .defineInRange("honkButton", 4, -1, 31);
+        builder.push("physicalShifter");
+        WHEEL_SHIFTER_ENABLED = builder.comment("Read a physical H-pattern or sequential shifter through GLFW buttons. Disabled by default so existing keyboard/gamepad and wheel behavior is unchanged.")
+                .define("enabled", false);
+        WHEEL_SHIFTER_NEUTRAL_BUTTON = shifterButton(builder, "neutralButton", "neutral");
+        WHEEL_SHIFTER_REVERSE_BUTTON = shifterButton(builder, "reverseButton", "reverse");
+        for (int gear = 1; gear <= 6; gear++) {
+            WHEEL_SHIFTER_FORWARD_BUTTONS[gear - 1] = shifterButton(builder, "d" + gear + "Button", "D" + gear);
+        }
+        builder.pop();
         builder.pop();
         SPEC = builder.build();
     }
 
     private ClientConfig() {}
+
+    private static ModConfigSpec.IntValue shifterButton(ModConfigSpec.Builder builder, String key, String gear) {
+        return builder.comment("GLFW button index for " + gear + ", or -1 to leave it unmapped. Use /dvwheel's pressed-button list; no model-specific index is assumed.")
+                .defineInRange(key, -1, -1, 31);
+    }
 }

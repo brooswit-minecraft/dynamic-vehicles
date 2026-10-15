@@ -102,7 +102,8 @@ final class SableCarBody {
     }
 
     /** Apply this tick's wheel forces, then move the entity to where the body is. */
-    void tick(CarEntity car, double throttle, double steer, boolean handbrake, double dt) {
+    void tick(CarEntity car, double throttle, double steer, boolean handbrake, CarPhysics.Gear gear, double dt) {
+        VehicleSpec.VehicleTuning tuning = car.vehicleTuning();
         box.updatePose();
         Pose3d pose = new Pose3d(box.getPose());
         Vector3d position = pose.position();
@@ -197,7 +198,7 @@ final class SableCarBody {
         // and every other N reads off the same scale.
         int subSteps = Math.max(1, Math.min(4, CarConfig.WHEEL_SUB_STEPS.get()));
         double subDt = dt / subSteps;
-        double barRate = spec.springRate() * CarConfig.ANTI_ROLL.get();
+        double barRate = spec.springRate() * CarConfig.ANTI_ROLL.get() * spec.antiRollScale();
         Vector3d subLinear = new Vector3d(linear);
         Vector3d subAngular = new Vector3d(angular);
         double[] wearSlipMax = new double[wheelCount];
@@ -220,6 +221,16 @@ final class SableCarBody {
                 subSuspension[wheel] = WheelMath.suspensionForce(compressions[wheel], rate, spec.springRate(), spec.dampingRate(), spec.maxSpringForce());
             }
             double[] forces = WheelSubStepper.afterAntiRoll(subSuspension, compressions, partners, barRate);
+            double[] gripForces = new double[wheelCount];
+            for (int wheel = 0; wheel < wheelCount; wheel++) {
+                if (wheelHits[wheel].getType() == HitResult.Type.MISS || !(forces[wheel] > 0.0)) {
+                    continue;
+                }
+                SurfaceProperties surface = Surfaces.at(level, wheelHits[wheel].getBlockPos());
+                double gripMu = WheelMath.BASE_FRICTION * Math.min(1.0, surface.grip() * spec.looseGrip())
+                        * spec.downforceGripMultiplier(forwardSpeed);
+                gripForces[wheel] = gripMu * forces[wheel];
+            }
 
             // Pass 2 of this sub-step: suspension and tire forces from this sub-step's forces[].
             for (int wheel = 0; wheel < wheelCount; wheel++) {
@@ -282,9 +293,12 @@ final class SableCarBody {
                 } else if (throttle < 0) {
                     if (forwardSpeed > 0.5) {
                         brake = -throttle * BRAKE_FORCE * spec.forceScale();
-                    } else {
+                    } else if (gear == CarPhysics.Gear.REVERSE) {
                         drive = throttle * REVERSE_FORCE * spec.forceScale() * Math.max(0.0, 1.0 - Math.abs(forwardSpeed) / 8.0);
                     }
+                    // gear is NEUTRAL or a forward gear and the car is near a standstill: holding brake must
+                    // never reverse it (MINECRAFT-228 hard acceptance criterion) -- only an explicit REVERSE
+                    // gear lets throttle < 0 drive the car backward.
                 }
                 double brakeGain = 1.0;
                 if (throttle == 0 && Math.abs(forwardSpeed) < 1.5) {
@@ -295,6 +309,44 @@ final class SableCarBody {
                     brake = HANDBRAKE_FORCE * spec.forceScale();
                     drive = 0.0;
                     lateralScale = 0.35;
+                }
+                int partner = partners[wheel];
+                boolean torqueDistributionActive = tuning.frontTorqueSplit() != 0.5
+                        || tuning.vectoringGain() != 0.0;
+                if (torqueDistributionActive) {
+                    drive = TorqueDistribution.distribute(drive, front, mount[0] < 0.0, tuning, steer);
+                }
+                if (drive != 0.0 && partner >= 0 && !torqueDistributionActive) {
+                    // The zero-lock path in distribute returns drive unchanged exactly, preserving the
+                    // existing open-differential path for every vehicle that has not opted in.
+                    LimitedSlipDifferential.DrivePair axleDrive = LimitedSlipDifferential.distribute(
+                            drive, drive, wheelSpin[wheel] * spec.wheelRadius(),
+                            wheelSpin[partner] * spec.wheelRadius(), gripForces[wheel], gripForces[partner],
+                            tuning.lsdLockPercent());
+                    drive = axleDrive.left();
+                } else if (drive != 0.0 && partner >= 0) {
+                    // Split/vectoring chooses the axle's requested drive first; LSD then makes its one
+                    // traction-based transfer across that already-distributed pair, rather than applying
+                    // either correction twice.
+                    double[] partnerMount = spec.mounts()[partner];
+                    boolean left = mount[0] < 0.0;
+                    double partnerDrive = TorqueDistribution.distribute(
+                            throttle > 0
+                                    ? throttle * DRIVE_FORCE * spec.forceScale()
+                                            * Math.max(0.0, 1.0 - Math.abs(forwardSpeed) / spec.maxSpeed())
+                                    : throttle < 0 && forwardSpeed <= 0.5 && gear == CarPhysics.Gear.REVERSE
+                                            ? throttle * REVERSE_FORCE * spec.forceScale()
+                                                    * Math.max(0.0, 1.0 - Math.abs(forwardSpeed) / 8.0)
+                                            : 0.0,
+                            partnerMount[2] > 0.0, partnerMount[0] < 0.0, tuning, steer);
+                    LimitedSlipDifferential.DrivePair axleDrive = left
+                            ? LimitedSlipDifferential.distribute(drive, partnerDrive,
+                                    wheelSpin[wheel] * spec.wheelRadius(), wheelSpin[partner] * spec.wheelRadius(),
+                                    gripForces[wheel], gripForces[partner], tuning.lsdLockPercent())
+                            : LimitedSlipDifferential.distribute(partnerDrive, drive,
+                                    wheelSpin[partner] * spec.wheelRadius(), wheelSpin[wheel] * spec.wheelRadius(),
+                                    gripForces[partner], gripForces[wheel], tuning.lsdLockPercent());
+                    drive = left ? axleDrive.left() : axleDrive.right();
                 }
                 // What the tire feels comes from the block it is on (grip, rolling resistance), via Dynamic Terrain.
                 SurfaceProperties surface = Surfaces.at(level, hit.getBlockPos());
@@ -311,9 +363,13 @@ final class SableCarBody {
                 // already opted in does the actual tuning VALUES come from config (CarConfig.driftTireTuning(),
                 // live-reloadable) rather than the spec's own numbers, which exist only to mark the opt-in.
                 boolean driftTuned = !spec.tireTuning().isIdentity();
+                // MINECRAFT-317: this entity's persisted tuning (LSD lock, front/rear torque split, torque-
+                // vectoring gain, camber, toe) is threaded through to the owning physics model. WheelMath
+                // applies the static alignment grip modifiers; the differential and torque-distribution
+                // models consume their respective values above.
                 WheelMath.Tire tire = !driftTuned
                         ? WheelMath.tire(vLong, vLat, force, gripMu, rollingCoefficient, lateralScale,
-                                drive, brake, brakeGain, effectiveMass, subDt)
+                                drive, brake, brakeGain, effectiveMass, subDt, tuning)
                         : DriftTireModel.tire(vLong, vLat, force, gripMu, rollingCoefficient, lateralScale,
                                 drive, brake, brakeGain, effectiveMass, subDt, CarConfig.driftTireTuning(),
                                 front, handbrake, steer);

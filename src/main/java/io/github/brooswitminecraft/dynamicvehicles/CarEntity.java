@@ -6,15 +6,20 @@ import net.minecraft.nbt.FloatTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
 import net.minecraft.network.syncher.SynchedEntityData;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
-import net.minecraft.world.entity.MoverType;
+import net.minecraft.world.entity.monster.Creeper;
+import net.minecraft.world.entity.monster.Enemy;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.StainedGlassPaneBlock;
+import net.minecraft.world.level.block.TransparentBlock;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.function.Consumer;
@@ -22,16 +27,15 @@ import java.util.function.Predicate;
 
 /**
  * The first vehicle: a 4-wheel car. Server-authoritative. The rider's
- * forward/strafe input drives {@link CarPhysics}; each tick every wheel
- * reports its slip to Dynamic Terrain for the block beneath it, and the car
- * never modifies terrain itself.
+ * forward/strafe input drives a Sable rigid body ({@link SableCarBody}); each
+ * tick every wheel reports its slip to Dynamic Terrain for the block beneath
+ * it, and the car never modifies terrain itself.
  */
 public class CarEntity extends Entity {
     /** Wheel offsets from the car centre: x = right, z = forward, in metres. */
-    static final double[][] WHEELS = {{-0.8, 1.2}, {0.8, 1.2}, {-0.8, -1.2}, {0.8, -1.2}}; // x, z; same as CarGeometry.MOUNTS
     static final double MASS_KG = 1200.0;
+    private static final int WHEEL_COUNT = 4;
     private static final double DT = 1.0 / 20.0;
-    private static final double GRAVITY = 0.08;
 
     /** The body's orientation, synced every tick so clients can draw pitch and roll. */
     private static final net.minecraft.network.syncher.EntityDataAccessor<org.joml.Quaternionf> DATA_ORIENTATION =
@@ -71,6 +75,9 @@ public class CarEntity extends Entity {
     private float[] currentWheels = new float[0];
     /** Client: horizontal speed in m/s from the movement actually shown, and the sound loops for this car. */
     private double clientSpeed;
+    /** Client: smoothed 0..1 "rev" that chases throttle input (see {@link CarSoundMath#nextRev}), so the
+     * engine sound reads throttle immediately instead of waiting on speed to catch up. */
+    private double clientRev;
     private Object clientSounds;
     private double lastTickSpeed;
     private int impactCooldown;
@@ -78,23 +85,31 @@ public class CarEntity extends Entity {
     /** Wheel shifter-paddle state (MINECRAFT-167), reported by {@link WheelPaddlesPayload}; independent of jump. */
     private boolean wheelHonk;
     private boolean wheelHandbrake;
+    /** Explicit drivetrain gear (MINECRAFT-228): which direction the throttle may drive the car from a
+     * standstill. Starts in the default forward gear so a driver who never touches the new reverse input
+     * sees no change. */
+    private CarPhysics.Gear gear = CarPhysics.Gear.DEFAULT_FORWARD;
     /** Server: unit horizontal direction of recent travel, and the headlamp light block this car holds. */
     private net.minecraft.world.phys.Vec3 heading;
     private net.minecraft.core.BlockPos lampBlock;
 
-    private double speed;
+    /** Server: remaining health, 0..{@link CarHealth#MAX}; see {@link CarHealth} for the thresholds. */
+    private float health = CarHealth.MAX;
+
     private org.joml.Quaternionf savedOrientation;
     /** The Sable rigid body, as Object so this class never loads Sable types (see SableCompat). */
     private Object sableBody;
-    private double forcedSlip;
     private double forcedThrottle;
     private double forcedSteer;
     private int forcedDriveTicks;
-    private int forcedSlipTicks;
 
     private final VehicleSpec spec;
+    /** Per-entity tuning, initialized from the immutable vehicle type then retained in this entity's NBT. */
+    private VehicleSpec.VehicleTuning vehicleTuning;
     /** Which seat each current passenger sits in (MINECRAFT-172); seat 0 is always the driver. */
     private final SeatAssignment<Entity> seats;
+    /** Saved UUID-to-seat assignments, consumed as vanilla reconstructs passenger entities on load. */
+    private final java.util.Map<java.util.UUID, Integer> savedSeatAssignments = new java.util.HashMap<>();
     /** A departing passenger's own dismount point, frozen by {@link #removePassenger} for the
      * {@link #getDismountLocationForPassenger} lookup that follows it moments later (see that method's
      * javadoc) -- entries are consumed (removed) as soon as that lookup reads them. */
@@ -115,12 +130,45 @@ public class CarEntity extends Entity {
                 : DynamicVehiclesMod.INDY.isBound() && type == DynamicVehiclesMod.INDY.get() ? VehicleSpec.INDY
                 : DynamicVehiclesMod.BUS.isBound() && type == DynamicVehiclesMod.BUS.get() ? VehicleSpec.BUS
                 : DynamicVehiclesMod.CARGO_TRUCK.isBound() && type == DynamicVehiclesMod.CARGO_TRUCK.get() ? VehicleSpec.CARGO_TRUCK : VehicleSpec.CAR;
+        this.vehicleTuning = spec.vehicleTuning();
         this.seats = new SeatAssignment<>(spec.seatCount());
     }
 
     /** This vehicle's shape and drivetrain: the car's or the truck's. */
     public VehicleSpec spec() {
         return spec;
+    }
+
+    /** The current, per-instance tuning used by the server-side wheel physics. */
+    VehicleSpec.VehicleTuning vehicleTuning() {
+        return vehicleTuning;
+    }
+
+    /**
+     * Applies one driver-configurable tuning dial to this particular entity. Values are always clamped before
+     * they can reach physics, including values received through a command or loaded from old/corrupt save data.
+     *
+     * @return whether {@code setting} was a supported dial
+     */
+    boolean setVehicleTuning(String setting, double value) {
+        double lsd = vehicleTuning.lsdLockPercent();
+        double split = vehicleTuning.frontTorqueSplit();
+        double vectoring = vehicleTuning.vectoringGain();
+        double camber = vehicleTuning.camberDeg();
+        double toe = vehicleTuning.toeDeg();
+        switch (setting) {
+            case "lsd_lock_percent" -> lsd = value;
+            case "front_torque_split" -> split = value;
+            case "vectoring_gain" -> vectoring = value;
+            case "camber_deg" -> camber = value;
+            case "toe_deg" -> toe = value;
+            default -> {
+                return false;
+            }
+        }
+        vehicleTuning = VehicleTuningLimits.clamp(new VehicleSpec.VehicleTuning(lsd, split, vectoring, camber, toe),
+                spec.vehicleTuning());
+        return true;
     }
 
     @Override
@@ -179,6 +227,10 @@ public class CarEntity extends Entity {
 
     public double clientSpeed() {
         return clientSpeed;
+    }
+
+    public double clientRev() {
+        return clientRev;
     }
 
     public double clientThrottle() {
@@ -276,6 +328,24 @@ public class CarEntity extends Entity {
     }
 
     /**
+     * Server: the rider pressed the explicit reverse-gear input (MINECRAFT-228: keyboard or gamepad, sent
+     * by {@link GearTogglePayload}). Toggles between reverse and the default forward gear -- keyboard and
+     * gamepad never need to pick a specific one of the six forward gears, only whether they're reversing --
+     * and never anything the brake alone can trigger: see {@link CarPhysics.Gear} for the invariant this
+     * protects.
+     */
+    String toggleGear() {
+        gear = gear == CarPhysics.Gear.REVERSE ? CarPhysics.Gear.DEFAULT_FORWARD : CarPhysics.Gear.REVERSE;
+        return gear == CarPhysics.Gear.REVERSE ? "reverse" : "forward";
+    }
+
+    /** Server: selects one state from the explicit MINECRAFT-228 gear interface. */
+    String selectGear(CarPhysics.Gear selected) {
+        gear = selected;
+        return selected == CarPhysics.Gear.REVERSE ? "reverse" : selected == CarPhysics.Gear.NEUTRAL ? "neutral" : selected.name().toLowerCase(java.util.Locale.ROOT);
+    }
+
+    /**
      * Server: play an impact when the car has just lost a lot of speed at once.
      *
      * <p>MINECRAFT-249 (review round 2): a real crash shows up here as a sudden speed LOSS, which {@link
@@ -292,6 +362,7 @@ public class CarEntity extends Entity {
         int severity = CarSoundMath.impactSeverity(lastTickSpeed - currentSpeed);
         double speedBefore = lastTickSpeed;
         lastTickSpeed = currentSpeed;
+        damage(CarHealth.crashDamage(speedBefore - currentSpeed));
         if (ImpactEjectionTrigger.shouldEject(severity, impactCooldown)) {
             impactCooldown = 10;
             level().playSound(null, getX(), getY() + 0.5, getZ(), ModSounds.impact(severity),
@@ -302,6 +373,11 @@ public class CarEntity extends Entity {
         }
     }
 
+    /** A collision reports like one wheel taking the hit (a quarter of the car), at a capped slip speed. */
+    private void reportImpact(net.minecraft.server.level.ServerLevel serverLevel, net.minecraft.core.BlockPos pos, double speedBefore) {
+        SlipReporter.report(serverLevel, pos, ImpactRules.impactSlip(speedBefore), MASS_KG / WHEEL_COUNT);
+    }
+
     /** Server: a hard hit may break the block ahead (soft and fast is likely), otherwise it erodes it. At most one block. */
     private void hitBlockAhead(double speedBefore) {
         if (!CarConfig.COLLISION_BREAKING.get() || heading == null || !(level() instanceof net.minecraft.server.level.ServerLevel serverLevel)) {
@@ -310,9 +386,36 @@ public class CarEntity extends Entity {
         double reach = spec.halfZ() + 0.6;
         for (double dy : new double[] {0.4, 1.0}) {
             net.minecraft.core.BlockPos pos = net.minecraft.core.BlockPos.containing(getX() + heading.x * reach, getY() + dy, getZ() + heading.z * reach);
-            net.minecraft.world.level.block.state.BlockState state = serverLevel.getBlockState(pos);
+            BlockState state = serverLevel.getBlockState(pos);
             if (state.isAir() || !state.getFluidState().isEmpty()) {
                 continue;
+            }
+            boolean breakable = !state.hasBlockEntity() && state.getDestroySpeed(serverLevel, pos) >= 0.0;
+            boolean bamboo = state.is(BlockTags.BAMBOO_BLOCKS);
+            boolean dirtOrSand = state.is(BlockTags.DIRT) || state.is(BlockTags.SAND);
+            boolean glass = state.getBlock() instanceof TransparentBlock || state.getBlock() instanceof StainedGlassPaneBlock;
+            ImpactRules.BlockImpactRoute route = ImpactRules.blockImpactRoute(
+                    spec == VehicleSpec.TRUCK, dirtOrSand, bamboo, breakable);
+
+            // Dynamic Terrain is the sole authority for loose terrain; it decides resistance and whether
+            // material shifts downhill or degrades. This is selected before the truck-only return below,
+            // so truck impacts cannot suppress dirt/sand terrain routing.
+            if (route == ImpactRules.BlockImpactRoute.TERRAIN_EROSION) {
+                reportImpact(serverLevel, pos, speedBefore);
+                return;
+            }
+
+            // The truck has a deliberately narrow vegetation interaction. It never gains the generic
+            // block-breaking privilege merely by being heavier than a car.
+            if (spec == VehicleSpec.TRUCK) {
+                if (route == ImpactRules.BlockImpactRoute.TRUCK_BAMBOO) {
+                    serverLevel.destroyBlock(pos, true, this);
+                }
+                return;
+            }
+
+            if (!ImpactRules.glassMayBreak(glass, state.isCollisionShapeFullBlock(serverLevel, pos))) {
+                return;
             }
             double chance = state.hasBlockEntity() ? 0.0
                     : CollisionMath.breakChance(speedBefore, state.getDestroySpeed(serverLevel, pos),
@@ -320,7 +423,7 @@ public class CarEntity extends Entity {
             if (chance > 0.0 && random.nextDouble() < chance) {
                 serverLevel.destroyBlock(pos, true, this);
             } else {
-                SlipReporter.report(serverLevel, pos, speedBefore, MASS_KG);
+                reportImpact(serverLevel, pos, speedBefore);
             }
             return;
         }
@@ -342,7 +445,10 @@ public class CarEntity extends Entity {
         pendingDismounts.remove(passenger);
         // MINECRAFT-211: a non-player (an auto-boarding mob) never takes seat 0, the driver's, even if it
         // is empty -- only a player may ever drive.
-        seats.add(passenger, !(passenger instanceof Player));
+        Integer savedSeat = savedSeatAssignments.remove(passenger.getUUID());
+        if (savedSeat == null || !seats.restore(passenger, savedSeat)) {
+            seats.add(passenger, !(passenger instanceof Player));
+        }
         super.addPassenger(passenger);
         if (!level().isClientSide() && getPassengers().size() == 1) {
             level().playSound(null, getX(), getY() + 0.5, getZ(), ModSounds.ENGINE_START.get(),
@@ -466,6 +572,17 @@ public class CarEntity extends Entity {
         if (orientation != null) {
             savedOrientation = new org.joml.Quaternionf(orientation.x(), orientation.y(), orientation.z(), orientation.w());
         }
+        health = tag.contains("VehicleHealth", Tag.TAG_FLOAT)
+                ? Math.max(0.0f, Math.min(CarHealth.MAX, tag.getFloat("VehicleHealth"))) : CarHealth.MAX;
+        savedSeatAssignments.clear();
+        savedSeatAssignments.putAll(SeatPersistence.read(tag, spec.seatCount()));
+        VehicleSpec.VehicleTuning defaults = spec.vehicleTuning();
+        vehicleTuning = VehicleTuningLimits.clamp(new VehicleSpec.VehicleTuning(
+                tag.contains("TuningLsdLock", Tag.TAG_DOUBLE) ? tag.getDouble("TuningLsdLock") : defaults.lsdLockPercent(),
+                tag.contains("TuningFrontSplit", Tag.TAG_DOUBLE) ? tag.getDouble("TuningFrontSplit") : defaults.frontTorqueSplit(),
+                tag.contains("TuningVectoring", Tag.TAG_DOUBLE) ? tag.getDouble("TuningVectoring") : defaults.vectoringGain(),
+                tag.contains("TuningCamber", Tag.TAG_DOUBLE) ? tag.getDouble("TuningCamber") : defaults.camberDeg(),
+                tag.contains("TuningToe", Tag.TAG_DOUBLE) ? tag.getDouble("TuningToe") : defaults.toeDeg()), defaults);
     }
 
     @Override
@@ -485,6 +602,20 @@ public class CarEntity extends Entity {
             tag.putFloat("OrientationZ", q.z);
             tag.putFloat("OrientationW", q.w);
         }
+        tag.putFloat("VehicleHealth", health);
+        tag.putDouble("TuningLsdLock", vehicleTuning.lsdLockPercent());
+        tag.putDouble("TuningFrontSplit", vehicleTuning.frontTorqueSplit());
+        tag.putDouble("TuningVectoring", vehicleTuning.vectoringGain());
+        tag.putDouble("TuningCamber", vehicleTuning.camberDeg());
+        tag.putDouble("TuningToe", vehicleTuning.toeDeg());
+        java.util.List<SeatAssignments.Assignment> assignments = new java.util.ArrayList<>();
+        for (int index = 0; index < seats.seatCount(); index++) {
+            Entity passenger = seats.at(index);
+            if (passenger != null) {
+                assignments.add(new SeatAssignments.Assignment(passenger.getUUID(), index));
+            }
+        }
+        SeatPersistence.write(tag, assignments);
     }
 
     /** The orientation to restore when the body is recreated after a reload, or null to derive it from the yaw. */
@@ -505,6 +636,12 @@ public class CarEntity extends Entity {
         if (player.isSecondaryUseActive() || VehicleSeating.firstFreeSeat(seats.occupied()) < 0) {
             return InteractionResult.PASS;
         }
+        if (CarHealth.wrecked(health)) {
+            if (!level().isClientSide()) {
+                player.displayClientMessage(net.minecraft.network.chat.Component.literal("This vehicle is too damaged to enter."), true);
+            }
+            return InteractionResult.sidedSuccess(level().isClientSide());
+        }
         if (!level().isClientSide()) {
             player.startRiding(this);
         }
@@ -521,6 +658,29 @@ public class CarEntity extends Entity {
     @Override
     public void push(Entity entity) {
         super.push(entity);
+        if (!level().isClientSide() && entity instanceof Creeper creeper
+                && ImpactRules.creeperExplosionEligible(horizontalSpeed())) {
+            // Use the vanilla mob explosion interaction so gamerules/protection hooks retain authority.
+            // The entity must be removed explicitly because Creeper's own detonation helper is private.
+            level().explode(creeper, creeper.getX(), creeper.getY(), creeper.getZ(), 3.0f, Level.ExplosionInteraction.MOB);
+            creeper.discard();
+        }
+        if (!level().isClientSide() && entity instanceof Enemy && entity instanceof LivingEntity victim
+                && !(entity instanceof Creeper) && !hasPassenger(entity)) {
+            double hitSpeed = horizontalSpeed();
+            if (ImpactRules.hostileMobHitEligible(hitSpeed)) {
+                double yaw = Math.toRadians(getYRot());
+                double fx = -Math.sin(yaw);
+                double fz = Math.cos(yaw);
+                // Fling the mob out of the car's path toward whichever side of the car it is more on.
+                int side = ImpactRules.lateralSide(fx, fz, victim.getX() - getX(), victim.getZ() - getZ());
+                double strength = ImpactRules.hostileMobKnockback(hitSpeed);
+                if (victim.hurt(damageSources().generic(), ImpactRules.hostileMobHitDamage(hitSpeed))) {
+                    victim.setDeltaMovement(victim.getDeltaMovement().add(-fz * side * strength, 0.25, fx * side * strength));
+                    victim.hurtMarked = true;
+                }
+            }
+        }
         if (!level().isClientSide() && entity instanceof Mob mob && !crashEjectionLatch.isLatched()
                 && impactCooldown == 0
                 && MobBoardingRules.canAutoBoard(mob, spec, stoppedTimer.isLatched())) {
@@ -540,15 +700,12 @@ public class CarEntity extends Entity {
      * {@code MobBoardingRules.canAutoBoard} also refuses while {@link #stoppedTimer} is latched, so a mob
      * that just auto-dismounted (or any mob touching an already-long-stopped bus) cannot immediately
      * re-board.
-     *
-     * <p>MINECRAFT-249: a mob is also refused outright while {@link #crashEjectionLatch} is latched (this
-     * vehicle is too fast -- see {@link CrashEjectionLatch}) or while {@link #impactCooldown} is still
-     * running (a real crash just ejected it -- see {@link #checkImpact}/{@link ImpactEjectionTrigger}), so
-     * a mob just ejected for either reason cannot immediately re-board through the same contact that would
-     * otherwise trigger it again next tick.
      */
     @Override
     protected boolean canAddPassenger(Entity passenger) {
+        if (CarHealth.wrecked(health)) {
+            return false;
+        }
         if (passenger instanceof Mob mob) {
             return !crashEjectionLatch.isLatched() && impactCooldown == 0
                     && MobBoardingRules.canAutoBoard(mob, spec, stoppedTimer.isLatched())
@@ -624,9 +781,11 @@ public class CarEntity extends Entity {
         if (level().isClientSide()) {
             consumeClientStates();
             clientSpeed = Math.hypot(getX() - xo, getZ() - zo) * 20.0;
+            clientRev = CarSoundMath.nextRev(clientRev, clientThrottle(), DT);
             if (clientSounds == null) {
                 clientSounds = CarSoundsClient.start(this);
             }
+            SkidMarksClient.tick(this);
             return;
         }
         double travelled = Math.hypot(getX() - xo, getZ() - zo);
@@ -638,55 +797,81 @@ public class CarEntity extends Entity {
         }
         LivingEntity rider = getControllingPassenger();
         if (rider == null) {
-            // No one is driving: a wheel paddle from a previous rider must never linger (MINECRAFT-167).
+            // No one is driving: a wheel paddle from a previous rider must never linger (MINECRAFT-167),
+            // and the next driver always starts in forward gear rather than inheriting the last one's.
             wheelHonk = false;
             wheelHandbrake = false;
+            gear = CarPhysics.Gear.DEFAULT_FORWARD;
         }
-        if (level() instanceof net.minecraft.server.level.ServerLevel serverLevel && SableCompat.usable()) {
+        if (level() instanceof net.minecraft.server.level.ServerLevel serverLevel) {
             tickSable(serverLevel, rider);
             if (!checkCrashEjection()) {
                 checkAutoDismount();
             }
+            tickHealth();
             return;
         }
-        double throttle = rider == null ? 0.0 : Math.max(-1.0, Math.min(1.0, rider.zza));
-        double steer = rider == null ? 0.0 : Math.max(-1.0, Math.min(1.0, rider.xxa));
-        // Sneak is vanilla's dismount key, so without a wheel active the handbrake is the jump key (space).
-        // With a wheel active, the client forces jumping false and reports the paddles separately instead
-        // (MINECRAFT-167), so honk and handbrake are independent signals rather than both riding on jump.
-        boolean jumpPressed = rider != null && rider.jumping;
-        WheelMapping.Paddles paddles = WheelMapping.resolve(jumpPressed, new WheelMapping.Paddles(wheelHonk, wheelHandbrake));
-        boolean handbrake = paddles.handbrake();
-        honkOnPress(paddles.honk());
-
-        // Minecraft yaw 0 faces +Z; the physics heading is the entity's yaw in radians.
-        CarPhysics.Step step = CarPhysics.step(new CarPhysics.State(speed, Math.toRadians(getYRot())),
-                throttle, steer, handbrake, DT);
-        speed = step.state().speed();
-        setYRot((float) Math.toDegrees(step.state().heading()));
-        double yaw = Math.toRadians(getYRot());
-        Vec3 forward = new Vec3(-Math.sin(yaw), 0.0, Math.cos(yaw));
-        double vy = onGround() ? -0.01 : getDeltaMovement().y - GRAVITY;
-        setDeltaMovement(forward.x * speed * DT, vy, forward.z * speed * DT);
-        move(MoverType.SELF, getDeltaMovement());
-        if (horizontalCollision) {
-            speed *= 0.3;
-        }
-        double slip = step.slipSpeed();
-        if (forcedSlipTicks > 0) {
-            forcedSlipTicks--;
-            slip = Math.max(slip, forcedSlip);
-        }
-        if (tickCount % 20 == 0 && Math.abs(speed) > 0.1) {
-            DynamicVehiclesMod.LOGGER.debug("car {} speed {} m/s at {} {} {}", getUUID(), String.format("%.2f", speed),
-                    String.format("%.1f", getX()), String.format("%.1f", getY()), String.format("%.1f", getZ()));
-        }
-        reportSlip(CarConfig.WEAR_ENABLED.get() ? CarEffectsMath.wearSlip(throttle, speed, slip, CarConfig.WEAR_STRENGTH.get()) : slip);
-        publishSoundState(Math.abs(throttle), slip);
-        emitEffects(throttle, speed, slip);
-        checkImpact(Math.abs(speed));
         if (!checkCrashEjection()) {
             checkAutoDismount();
+        }
+    }
+
+    /** Explosions (creepers, TNT, another car blowing up) damage the car; the explosion itself comes next tick via {@link #tickHealth}. */
+    @Override
+    public boolean hurt(net.minecraft.world.damagesource.DamageSource source, float amount) {
+        if (source.is(net.minecraft.tags.DamageTypeTags.IS_EXPLOSION)) {
+            damage(amount);
+            return true;
+        }
+        return super.hurt(source, amount);
+    }
+
+    /** Server: take damage after the Sable body has been initialized. */
+    private void damage(float amount) {
+        if (amount <= 0.0f || sableBody == null || isRemoved() || level().isClientSide()) {
+            return;
+        }
+        health = Math.max(0.0f, health - amount);
+    }
+
+    /** Server: smoke, fire, flip and wreck handling for this tick, then explosion if health ran out. */
+    private void tickHealth() {
+        if (isRemoved() || !(level() instanceof net.minecraft.server.level.ServerLevel serverLevel)) {
+            return;
+        }
+        if (sableBody != null) {
+            try {
+                org.joml.Vector3f up = SableCompat.orientation(sableBody).transform(new org.joml.Vector3f(0, 1, 0));
+                if (CarHealth.flipped(up.y)) {
+                    damage(CarHealth.flippedDamage(DT));
+                }
+            } catch (RuntimeException gone) {
+                // Sable has released the body; no orientation to judge this tick.
+            }
+        }
+        boolean burning = CarHealth.burning(health) && !isInWater();
+        if (burning) {
+            damage(CarHealth.burnDamage(DT));
+            setRemainingFireTicks(40);
+            if (tickCount % 20 == 0) {
+                for (Entity passenger : getPassengers()) {
+                    passenger.igniteForSeconds(2.0f);
+                }
+            }
+        }
+        if (CarHealth.smoking(health) && tickCount % 3 == 0) {
+            serverLevel.sendParticles(burning ? net.minecraft.core.particles.ParticleTypes.LARGE_SMOKE
+                    : net.minecraft.core.particles.ParticleTypes.SMOKE,
+                    getX(), getY() + 1.0, getZ(), burning ? 4 : 2, 0.4, 0.2, 0.4, 0.02);
+        }
+        if (health <= 0.0f) {
+            ejectPassengers();
+            serverLevel.explode(this, getX(), getY() + 0.5, getZ(), 4.0f, Level.ExplosionInteraction.TNT);
+            discard();
+            return;
+        }
+        if (CarHealth.wrecked(health) && !getPassengers().isEmpty()) {
+            ejectPassengers();
         }
     }
 
@@ -713,20 +898,37 @@ public class CarEntity extends Entity {
     /**
      * MINECRAFT-249: once this vehicle's speed crosses {@link CrashEjectionLatch#CRASH_EJECT_SPEED_THRESHOLD},
      * every mob passenger is ejected to a safe nearby position immediately, in place of (never alongside)
-     * the normal stop-based {@link #checkAutoDismount} for that tick -- a vehicle this fast can never also
-     * be "stopped past threshold" in the same tick anyway, so the two never actually compete, but the
-     * caller skips the other check regardless so the priority is explicit rather than incidental. Returns
-     * whether the vehicle is currently latched too-fast, so the caller knows whether to run the normal
-     * check at all. The latch (see {@link CrashEjectionLatch}) also blocks {@link #canAddPassenger} from
-     * letting any mob board while the vehicle stays this fast, so ejection never churns with
-     * contact-triggered boarding.
+     * the normal stop-based {@link #checkAutoDismount} for that tick. Returns whether the vehicle is
+     * currently latched too-fast, so the caller knows whether to run the normal check at all. The latch
+     * (see {@link CrashEjectionLatch}) also blocks {@link #canAddPassenger} from letting any mob board while
+     * the vehicle stays this fast, so ejection never churns with contact-triggered boarding.
+     *
+     * <p>The latch only fires on the rising edge, but an ejection can fail (every candidate position is
+     * blocked, so the mob deliberately stays mounted rather than being placed in a block). While latched
+     * and a mob is still aboard, the bounded safe-position search is therefore retried every tick, so a
+     * mob never stays on a too-fast vehicle once a safe spot opens up.
      */
     private boolean checkCrashEjection() {
         double horizontalSpeed = Math.hypot(getDeltaMovement().x, getDeltaMovement().z);
-        if (crashEjectionLatch.tick(horizontalSpeed)) {
+        boolean risingEdge = crashEjectionLatch.tick(horizontalSpeed);
+        if (shouldAttemptCrashEjection(risingEdge, crashEjectionLatch.isLatched(), hasMobPassenger())) {
             ejectAllMobPassengers();
         }
         return crashEjectionLatch.isLatched();
+    }
+
+    /** Eject on the latch's rising edge, and keep retrying every tick while still latched with a mob aboard. */
+    static boolean shouldAttemptCrashEjection(boolean risingEdge, boolean latched, boolean mobAboard) {
+        return risingEdge || (latched && mobAboard);
+    }
+
+    private boolean hasMobPassenger() {
+        for (Entity passenger : getPassengers()) {
+            if (passenger instanceof Mob) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -796,7 +998,7 @@ public class CarEntity extends Entity {
             steer = forcedSteer;
         }
         try {
-            SableCompat.tick(sableBody, this, throttle, steer, handbrake, DT);
+            SableCompat.tick(sableBody, this, throttle, steer, handbrake, gear, DT);
             SableCompat.syncEntity(sableBody, this);
             publishWheelState(SableCompat.wheelTravel(sableBody), SableCompat.wheelSteerAngles(sableBody), SableCompat.wheelSpinRates(sableBody));
             publishSoundState(Math.abs(throttle), SableCompat.slip(sableBody) + (handbrake || (throttle < 0 && SableCompat.speed(sableBody) > 8.0) ? 2.0 : 0.0));
@@ -818,20 +1020,16 @@ public class CarEntity extends Entity {
         }
     }
 
-    /**
-     * MINECRAFT-249: a vehicle actually DESTROYED ({@link Entity.RemovalReason#shouldDestroy}: killed or
-     * discarded, never simply unloaded or changing dimension) must never leave a mob riding a vehicle
-     * that no longer exists, so every mob passenger is ejected first, while this entity's position is
-     * still valid. Deliberately NOT every removal reason: MINECRAFT-203 requires a parked bus with a mob
-     * aboard to survive a chunk unload (or a dimension change) with the mob still seated, so ejecting on
-     * {@code UNLOADED_TO_CHUNK}/{@code UNLOADED_WITH_PLAYER}/{@code CHANGED_DIMENSION} would both break
-     * that and call {@code setPos} on an entity that is not actually staying loaded to be repositioned. A
-     * player passenger is untouched here, exactly as before this ticket.
-     */
     @Override
     public void remove(Entity.RemovalReason reason) {
+        // MINECRAFT-249: a vehicle actually DESTROYED (killed or discarded, never simply unloaded or changing
+        // dimension -- MINECRAFT-203 needs a parked bus to keep its seated mob across those) must eject its
+        // mob passengers first, while this entity's position is still valid.
         if (reason.shouldDestroy()) {
             ejectAllMobPassengers();
+        }
+        if (level().isClientSide()) {
+            SkidMarksClient.forget(this);
         }
         if (sableBody != null) {
             SableCompat.remove(sableBody);
@@ -860,28 +1058,6 @@ public class CarEntity extends Entity {
         }
     }
 
-    /** Every wheel reports the same slip for the block under it; terrain decides what it does. */
-    private void reportSlip(double slipSpeed) {
-        if (slipSpeed <= 0 || !onGround()) {
-            return;
-        }
-        double yaw = Math.toRadians(getYRot());
-        double sin = Math.sin(yaw);
-        double cos = Math.cos(yaw);
-        for (double[] wheel : WHEELS) {
-            double x = getX() + wheel[0] * cos - wheel[1] * sin;
-            double z = getZ() + wheel[0] * sin + wheel[1] * cos;
-            BlockPos under = BlockPos.containing(x, getY() - 0.05, z);
-            SlipReporter.report(level(), under, slipSpeed, MASS_KG / WHEELS.length);
-        }
-    }
-
-    /** Debug: report at least this slip every tick for a while, to exercise terrain wear without driving. */
-    public void forceSlip(double slipSpeed, int ticks) {
-        forcedSlip = slipSpeed;
-        forcedSlipTicks = ticks;
-    }
-
     /** Debug: drive as if a rider held these inputs, for a while. */
     public void forceDrive(double throttle, double steer, int ticks) {
         forcedThrottle = throttle;
@@ -889,7 +1065,9 @@ public class CarEntity extends Entity {
         forcedDriveTicks = ticks;
     }
 
-    public double speed() {
-        return speed;
+    /** Current server-authoritative horizontal speed, including Sable-synchronised vehicles. */
+    private double horizontalSpeed() {
+        Vec3 motion = getDeltaMovement();
+        return Math.hypot(motion.x, motion.z) * 20.0;
     }
 }

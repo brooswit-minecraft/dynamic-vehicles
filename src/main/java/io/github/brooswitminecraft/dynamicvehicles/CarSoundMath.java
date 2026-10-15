@@ -19,14 +19,61 @@ public final class CarSoundMath {
         return new double[] {idle, mid, high};
     }
 
-    /** Engine pitch: rises with speed and with the throttle held. */
-    public static double enginePitch(double speed, double throttle) {
-        return 0.8 + 0.55 * clamp01(speed / 32.0) + 0.15 * clamp01(throttle);
+    /**
+     * A smoothed "rev" value (0..1) that chases the throttle input: fast up so a stab of the gas reads
+     * as immediate, slower down so it doesn't snap silent the instant the pedal is lifted. Call once per
+     * client tick with the previous rev and the current throttle input to get the next rev.
+     */
+    public static double nextRev(double rev, double throttleInput, double dt) {
+        double target = clamp01(Math.abs(throttleInput));
+        double rate = target > rev ? 14.0 : 4.0;
+        double step = rate * dt;
+        double delta = target - rev;
+        return rev + Math.max(-step, Math.min(step, delta));
     }
 
-    /** Overall engine loudness: louder under throttle. */
-    public static double engineVolume(double throttle) {
-        return 0.55 + 0.45 * clamp01(throttle);
+    /** Speed (m/s) each simulated gear tops out at before the next one takes over. */
+    private static final double[] GEAR_BREAKS = {0.0, 5.0, 10.0, 16.0, 23.0, 31.0, Double.MAX_VALUE};
+
+    /**
+     * Gear-like pitch stepping, as a multiplier layered over the existing speed/throttle cross-fade:
+     * climbs through a gear band as speed rises, then drops back down at the shift point into the next
+     * gear, instead of climbing smoothly and unendingly with speed.
+     */
+    public static double gearPitch(double speed) {
+        double s = Math.max(0.0, speed);
+        int gear = 0;
+        while (gear < GEAR_BREAKS.length - 2 && s >= GEAR_BREAKS[gear + 1]) {
+            gear++;
+        }
+        double lo = GEAR_BREAKS[gear];
+        double hi = Math.min(GEAR_BREAKS[gear + 1], lo + 40.0);
+        double within = clamp01((s - lo) / (hi - lo));
+        return 0.88 + 0.26 * within;
+    }
+
+    /**
+     * 0..1: how hard the engine is straining -- throttle held down without the speed to show for it yet
+     * (climbing, towing, or just flooring it from a stop), which is where a real engine note deepens and
+     * loudens rather than just following speed.
+     */
+    public static double loadFactor(double throttleInput, double speed) {
+        double throttle = clamp01(Math.abs(throttleInput));
+        double unmet = clamp01(1.0 - speed / 10.0);
+        return throttle * unmet;
+    }
+
+    /** Engine pitch: rises with speed, steps through gears, chases the throttle via the smoothed rev
+     * value instead of lagging behind road speed, and dips slightly under load (a straining engine's
+     * note drops before it catches back up). */
+    public static double enginePitch(double speed, double rev, double load) {
+        double base = 0.8 + 0.5 * clamp01(speed / 32.0) + 0.2 * clamp01(rev);
+        return base * gearPitch(speed) - 0.08 * clamp01(load);
+    }
+
+    /** Overall engine loudness: louder under throttle, and louder still under load (straining). */
+    public static double engineVolume(double throttle, double load) {
+        return 0.55 + 0.45 * clamp01(throttle) + 0.25 * clamp01(load);
     }
 
     /** 0 = none (below the threshold), 1 light, 2 medium, 3 hard, 4 severe, from how much speed a crash shed (m/s). */

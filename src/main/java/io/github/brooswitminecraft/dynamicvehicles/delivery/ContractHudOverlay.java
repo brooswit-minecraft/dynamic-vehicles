@@ -12,6 +12,8 @@ import net.minecraft.util.Mth;
 
 import java.util.Locale;
 
+import io.github.brooswitminecraft.dynamicvehicles.ClientConfig;
+
 /**
  * MINECRAFT-110 AC4: the persistent HUD element shown while a contract is
  * active - destination direction, remaining distance, remaining time.
@@ -27,7 +29,7 @@ public final class ContractHudOverlay implements LayeredDraw.Layer {
     @Override
     public void render(GuiGraphics graphics, DeltaTracker deltaTracker) {
         DeliveryHudPayload hud = ClientContractHud.current();
-        if (!hud.active()) {
+        if (!ContractHudVisibility.shouldRender(ClientConfig.SHOW_LEGACY_CONTRACT_HUD.get(), hud.active())) {
             return;
         }
         Minecraft minecraft = Minecraft.getInstance();

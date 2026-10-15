@@ -7,6 +7,12 @@ package io.github.brooswitminecraft.dynamicvehicles;
 public final class CarEffectsMath {
     /** Wear slip speed (m/s, what Dynamic Terrain's TireSlip.report takes) at full throttle from a standstill. */
     public static final double ACCEL_WEAR = 2.0;
+    /**
+     * How much of the acceleration/braking wear term is added on top of the tires' real slip. Small on purpose:
+     * driving normally should only scuff the ground, while burnouts, drifts and locked brakes (real slip) do
+     * the real damage.
+     */
+    public static final double WEAR_SCALE = 0.3;
     /** Speed (m/s) at which acceleration wear has doubled. */
     public static final double ACCEL_WEAR_SPEED = 20.0;
     /** Wear slip speed while braking hard at 10 m/s. */
@@ -19,8 +25,9 @@ public final class CarEffectsMath {
     private CarEffectsMath() {}
 
     /**
-     * The slip speed to report to terrain for the wheels this tick: the larger of the tires' real slip and a
-     * wear term that grows with throttle (and with speed while accelerating) and, less, with braking.
+     * The slip speed to report to terrain for the wheels this tick: the tires' real slip plus a small wear term
+     * ({@link #WEAR_SCALE}) that grows with throttle (and with speed while accelerating) and, less, with braking.
+     * Real slip therefore always adds to the wear instead of being hidden by it.
      *
      * @param throttle -1..1 (negative = brake)
      * @param speed forward speed in m/s (absolute value is used)
@@ -35,7 +42,7 @@ public final class CarEffectsMath {
         } else if (throttle < 0 && v > 3.0) {
             wear = BRAKE_WEAR * -throttle * v / 10.0;
         }
-        return Math.max(slip, wear * Math.max(0.0, strength));
+        return slip + wear * WEAR_SCALE * Math.max(0.0, strength);
     }
 
     /** Exhaust amount for one emission: grows with throttle; 0 when stationary or off the throttle. */

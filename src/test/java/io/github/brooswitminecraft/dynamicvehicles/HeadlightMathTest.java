@@ -15,4 +15,18 @@ class HeadlightMathTest {
         assertTrue(HeadlightMath.isDark(13000L + 24000L * 5, 0f), "dusk on a later day");
         assertFalse(HeadlightMath.isDark(23500L, 0f), "after dawn");
     }
+
+    @Test
+    void duskAndDawnBoundariesAreInclusive() {
+        assertFalse(HeadlightMath.isDark(HeadlightMath.DUSK - 1, 0f), "just before dusk");
+        assertTrue(HeadlightMath.isDark(HeadlightMath.DUSK, 0f), "exactly at dusk");
+        assertTrue(HeadlightMath.isDark(HeadlightMath.DAWN, 0f), "exactly at dawn");
+        assertFalse(HeadlightMath.isDark(HeadlightMath.DAWN + 1, 0f), "just after dawn");
+    }
+
+    @Test
+    void rainBoundaryIsAboveHalf() {
+        assertFalse(HeadlightMath.isDark(6000L, 0.5f), "exactly half rain: not yet dark");
+        assertTrue(HeadlightMath.isDark(6000L, 0.51f), "just past half rain: dark");
+    }
 }

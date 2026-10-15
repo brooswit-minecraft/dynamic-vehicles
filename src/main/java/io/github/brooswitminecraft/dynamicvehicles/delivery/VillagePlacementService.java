@@ -6,27 +6,20 @@ import net.minecraft.core.SectionPos;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
-import net.minecraft.world.level.StructureManager;
-import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.ChunkGeneratorStructureState;
-import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.level.levelgen.structure.BuiltinStructureSets;
 import net.minecraft.world.level.levelgen.structure.Structure;
-import net.minecraft.world.level.levelgen.structure.StructureCheckResult;
 import net.minecraft.world.level.levelgen.structure.StructureSet;
-import net.minecraft.world.level.levelgen.structure.StructureStart;
 import net.minecraft.world.level.levelgen.structure.placement.RandomSpreadStructurePlacement;
-import net.minecraft.world.level.levelgen.structure.placement.StructurePlacement;
 
 import java.util.List;
 
 /**
  * Server-side destination-discovery service: given a level and an origin
- * position, enumerates village structure placement regions outward in
- * distance rings (via {@link RingMath}, randomized per ring) and returns only
- * the ones where a Village structure is confirmed to have actually
- * generated, each with enough information to recover its real start
- * location.
+ * position, enumerates vanilla Village structure-placement regions outward
+ * in distance rings (via {@link RingMath}, randomized per ring) and returns
+ * their predicted placement chunks. It never asks whether those chunks have
+ * generated, loaded, or saved a structure start.
  *
  * <h2>API choices (see PR description for the full rationale)</h2>
  * <ul>
@@ -49,26 +42,11 @@ import java.util.List;
  *   uses to decide where a village CAN go. This is driven purely by the
  *   world seed and the structure-set settings; nothing here scans blocks or
  *   chunks to find candidates.</li>
- *   <li><b>Existence confirmation</b> is two steps, both non-generating:
- *   first {@link StructureManager#checkStructurePresence} (backed by
- *   vanilla's own {@code StructureCheck} — the same machinery the
- *   {@code /locate} command uses) answers from the in-memory loaded-chunk
- *   cache if available, otherwise scans only the structure-starts NBT field
- *   straight off the saved chunk file, without loading or generating the
- *   chunk itself. A result other than {@code START_PRESENT} (including
- *   {@code CHUNK_LOAD_NEEDED}, meaning the chunk was never saved and
- *   answering for real would require generating it) is treated as
- *   "not confirmed" — this service will never pay that generation cost to
- *   resolve it. Only once step one reports {@code START_PRESENT} — i.e. the
- *   save already has this structure's start recorded, so the chunk was
- *   already generated past {@link ChunkStatus#STRUCTURE_STARTS} at some
- *   point, loaded or not right now — does step two call
- *   {@link ServerLevel#getChunk(int, int, ChunkStatus, boolean)} with
- *   {@code requireChunk = true} to obtain the real {@link StructureStart}
- *   object (for its actual bounding box). That call cannot trigger new
- *   world generation here: step one already confirmed the chunk's saved
- *   data is at least at this status, so it only deserializes data that
- *   already exists on disk (or is already loaded).</li>
+ *   <li><b>No generation or confirmation</b>: after deriving the candidate
+ *   chunk from the placement, this service deliberately stops. In
+ *   particular, it does not call {@code checkStructurePresence}, retrieve a
+ *   chunk, inspect a saved structure start, or scan structures. That makes
+ *   offers available for destination regions that do not yet exist on disk.</li>
  * </ul>
  */
 public final class VillagePlacementService {
@@ -82,11 +60,13 @@ public final class VillagePlacementService {
      *                source village)
      * @param maxRing the furthest ring (inclusive) to search before giving up
      * @param slots   how many confirmed villages to return at most
-     * @return confirmed generated villages, nearest ring first; never
-     *         includes the origin's own region; empty if none were found
-     *         within {@code maxRing}
+     * @param orderSeed deterministic Dispatcher UUID + Minecraft-day seed
+     *                  controlling the order within each ring
+     * @return predicted vanilla Village placement chunks, nearest ring first;
+     *         never includes the origin's own region
      */
-    public static List<ConfirmedVillage> findVillages(ServerLevel level, BlockPos origin, int maxRing, int slots) {
+    public static List<PredictedVillage> findPredictedVillages(
+            ServerLevel level, BlockPos origin, int maxRing, int slots, long orderSeed) {
         if (slots <= 0) {
             return List.of();
         }
@@ -116,29 +96,19 @@ public final class VillagePlacementService {
             // biome source — villages simply cannot generate here at all.
             return List.of();
         }
-        List<Structure> villageStructures = villageStructureHolders.stream().map(Holder::value).toList();
-
         long seed = level.getSeed();
         RegionCoord originRegion = toRegion(origin, placement.spacing());
 
-        // destinationRingsUpTo already visits rings nearest-first and regions
-        // within a ring in shuffled (not distance-sorted) order, so the
-        // slot-limited result below is already "ordered by ring, nearest
-        // first" as required, with no extra sort needed.
-        return RingMath.collectUpToSlots(RingMath.destinationRingsUpTo(originRegion, maxRing, seed), slots, region -> {
+        // destinationRingsUpTo visits rings nearest-first and shuffles only
+        // within a ring. Thus level 1 examines exactly its eight adjacent
+        // placement regions, including diagonals and excluding ring 0.
+        return RingMath.collectUpToSlots(RingMath.destinationRingsUpTo(originRegion, maxRing, orderSeed), slots, region -> {
             ChunkPos candidateChunk = placement.getPotentialStructureChunk(
                     seed, region.x() * placement.spacing(), region.z() * placement.spacing());
-            StructureStart start = confirmedVillageStart(level, placement, candidateChunk, villageStructures);
-            if (start == null) {
-                return null;
-            }
-            // The structure's real bounding-box centre, not merely the
-            // candidate chunk's middle at y=0 — a tighter, more useful
-            // "actual start location" for AC1's recoverability requirement.
-            BlockPos startPos = start.getBoundingBox().getCenter();
-            double approxDistance = horizontalDistance(origin, startPos);
+            BlockPos targetPos = new BlockPos(candidateChunk.getMiddleBlockX(), origin.getY(), candidateChunk.getMiddleBlockZ());
+            double approxDistance = horizontalDistance(origin, targetPos);
             int ring = RingMath.ringOf(originRegion, region);
-            return new ConfirmedVillage(new VillageIdentity(region, level.dimension()), ring, approxDistance, startPos);
+            return new PredictedVillage(new VillageIdentity(region, level.dimension()), ring, approxDistance, targetPos);
         });
     }
 
@@ -155,26 +125,4 @@ public final class VillagePlacementService {
         return Math.sqrt(dx * dx + dz * dz);
     }
 
-    /**
-     * Confirms whether a village structure has actually generated at
-     * {@code candidateChunk} and, if so, returns its real
-     * {@link StructureStart} — without ever forcing that chunk to generate.
-     * See the class-level javadoc for why each of these two steps is safe.
-     */
-    private static StructureStart confirmedVillageStart(
-            ServerLevel level, StructurePlacement placement, ChunkPos candidateChunk, List<Structure> villageStructures) {
-        StructureManager structureManager = level.structureManager();
-        for (Structure structure : villageStructures) {
-            StructureCheckResult presence = structureManager.checkStructurePresence(candidateChunk, structure, placement, false);
-            if (presence != StructureCheckResult.START_PRESENT) {
-                continue;
-            }
-            ChunkAccess chunk = level.getChunk(candidateChunk.x, candidateChunk.z, ChunkStatus.STRUCTURE_STARTS, true);
-            StructureStart start = chunk.getStartForStructure(structure);
-            if (start != null && start.isValid()) {
-                return start;
-            }
-        }
-        return null;
-    }
 }

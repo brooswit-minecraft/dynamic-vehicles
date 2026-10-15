@@ -17,9 +17,9 @@ import io.github.brooswitminecraft.dynamicvehicles.DispatcherOfferConfig;
  * online player's active contract against {@link ArrivalPredicate} and the
  * deadline, instead of only checking on interaction. Deliberately never
  * calls {@link DispatcherOfferService#generateOffers} or
- * {@link VillagePlacementService#findVillages} - both do blocking chunk
- * loads, and a contract already carries its own destination and start
- * location, so neither is needed here. Runs every {@link #EVALUATE_INTERVAL_TICKS}
+ * {@link VillagePlacementService#findPredictedVillages}; a contract already
+ * carries its own predicted destination location, so neither is needed here.
+ * Runs every {@link #EVALUATE_INTERVAL_TICKS}
  * ticks per player, not every tick, and skips players with no active
  * contract via {@link ContractBook#evaluate} without touching the book's
  * map otherwise.
@@ -49,7 +49,13 @@ public final class ContractTickHandler {
             String dimension = player.level().dimension().location().toString();
             ContractBook.Evaluation evaluation = storage.book().evaluate(player.getUUID(), dimension, pos.getX(), pos.getZ(), () -> now);
             switch (evaluation.outcome()) {
-                case COMPLETED -> onCompleted(player, evaluation.contract(), storage);
+                case COMPLETED -> {
+                    if (!onCompleted(player, evaluation.contract(), storage)) {
+                        // A constrained, non-destructive site can become safe later. Restore the
+                        // evaluated contract so the normal periodic arrival path retries it.
+                        storage.book().accept(evaluation.contract());
+                    }
+                }
                 case EXPIRED -> onExpired(player, storage);
                 case STILL_ACTIVE -> PillagerAmbushHandler.attemptRoll(player, evaluation.contract(), now);
                 case NO_ACTIVE_CONTRACT -> {
@@ -83,12 +89,16 @@ public final class ContractTickHandler {
         storage.book().active(player.getUUID()).ifPresent(contract -> DeliveryContracts.sendHud(player, contract));
     }
 
-    private static void onCompleted(ServerPlayer player, DeliveryContract contract, DeliveryContractStorage storage) {
+    private static boolean onCompleted(ServerPlayer player, DeliveryContract contract, DeliveryContractStorage storage) {
+        if (!SettlementFounder.onArrival(player, contract, storage)) {
+            return false;
+        }
         storage.setDirty();
         int rewardCount = OfferGenerator.payoutAmount(contract.reward(), DispatcherOfferConfig.REWARD_PAYOUT_FLOOR.get());
         player.getInventory().placeItemBackInInventory(new ItemStack(Items.EMERALD, rewardCount));
         player.sendSystemMessage(Component.translatable("message.dynamicvehicles.dispatcher.completed", rewardCount));
         DeliveryContracts.clearHud(player);
+        return true;
     }
 
     private static void onExpired(ServerPlayer player, DeliveryContractStorage storage) {

@@ -27,4 +27,16 @@ class CollisionMathTest {
         assertTrue(dirtFast >= stoneFast);
         assertTrue(dirtFast <= 1.0 && dirtSlow > 0.0);
     }
+
+    @Test
+    void minSpeedBoundaryIsInclusive() {
+        assertEquals(0.0, CollisionMath.breakChance(7.99, 0.5, 8.0, 3.0), "just under min speed: never breaks");
+        assertTrue(CollisionMath.breakChance(8.0, 0.5, 8.0, 3.0) > 0.0, "exactly at min speed: can break");
+    }
+
+    @Test
+    void maxHardnessBoundaryIsInclusive() {
+        assertTrue(CollisionMath.breakChance(40, 3.0, 8.0, 3.0) > 0.0, "exactly at max hardness: can still break");
+        assertEquals(0.0, CollisionMath.breakChance(40, 3.01, 8.0, 3.0), "just past max hardness: never breaks");
+    }
 }

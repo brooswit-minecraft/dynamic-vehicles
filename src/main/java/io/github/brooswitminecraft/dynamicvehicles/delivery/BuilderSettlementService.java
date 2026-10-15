@@ -85,9 +85,21 @@ public final class BuilderSettlementService {
 
         VillageBuilding buildingVariant = VillageBuilding.from(
                 BuilderSettlementPlan.selectBuildingVariant(level.random.nextInt(VillageBuilding.values().length)));
-        Direction rotation = Direction.Plane.HORIZONTAL.getRandomDirection(level.random);
-        BlockPos building = campfire.relative(rotation, 4);
-        boolean placementIsSafe = isSafeBuildingSite(level, building, rotation);
+        // Rotations are tried in random order; only one that stays in the campfire's chunk and is safe is used.
+        Direction rotation = null;
+        BlockPos building = null;
+        java.util.List<Direction> rotations = new java.util.ArrayList<>(
+                java.util.Arrays.asList(Direction.Plane.HORIZONTAL.stream().toArray(Direction[]::new)));
+        java.util.Collections.shuffle(rotations, new java.util.Random(level.random.nextLong()));
+        for (Direction candidate : rotations) {
+            BlockPos center = campfire.relative(candidate, 4);
+            if (isInCampfireChunk(campfire, center, candidate) && isSafeBuildingSite(level, center, candidate)) {
+                rotation = candidate;
+                building = center;
+                break;
+            }
+        }
+        boolean placementIsSafe = rotation != null;
         if (!BuilderSettlementPlan.shouldCompleteSettlement(level.getBlockState(campfire).is(Blocks.CAMPFIRE), true,
                 placementIsSafe)) return;
 
@@ -131,6 +143,16 @@ public final class BuilderSettlementService {
             }
         }
         return best;
+    }
+
+    /** The footprint and its entrance block must all lie in the campfire's chunk (AC4). */
+    private static boolean isInCampfireChunk(BlockPos campfire, BlockPos center, Direction rotation) {
+        BlockPos entrance = center.relative(rotation, BUILDING_RADIUS + 1);
+        int minX = Math.min(center.getX() - BUILDING_RADIUS, entrance.getX());
+        int maxX = Math.max(center.getX() + BUILDING_RADIUS, entrance.getX());
+        int minZ = Math.min(center.getZ() - BUILDING_RADIUS, entrance.getZ());
+        int maxZ = Math.max(center.getZ() + BUILDING_RADIUS, entrance.getZ());
+        return BuilderSettlementPlan.isWithinCampfireChunk(campfire.getX(), campfire.getZ(), minX, minZ, maxX, maxZ);
     }
 
     private static boolean isSafeBuildingSite(ServerLevel level, BlockPos center, Direction rotation) {

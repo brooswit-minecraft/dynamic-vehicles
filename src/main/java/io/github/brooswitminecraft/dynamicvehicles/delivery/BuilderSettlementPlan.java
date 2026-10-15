@@ -35,6 +35,18 @@ public final class BuilderSettlementPlan {
         return anchorPresent && rollSucceeded && placementIsSafe;
     }
 
+    /**
+     * AC4: the building must stand in the campfire's own chunk. True only when every block column of the
+     * inclusive box (minX..maxX, minZ..maxZ) shares the campfire's chunk; chunks are 16 wide and the
+     * arithmetic shift floors, so negative coordinates are handled.
+     */
+    public static boolean isWithinCampfireChunk(int campfireX, int campfireZ, int minX, int minZ, int maxX, int maxZ) {
+        int chunkX = campfireX >> 4;
+        int chunkZ = campfireZ >> 4;
+        return (minX >> 4) == chunkX && (maxX >> 4) == chunkX
+                && (minZ >> 4) == chunkZ && (maxZ >> 4) == chunkZ;
+    }
+
     /** Vanilla days are 24000 ticks and noon is tick 6000. */
     public static boolean isNoon(long dayTime) {
         return Math.floorMod(dayTime, 24000L) == 6000L;

@@ -83,4 +83,18 @@ class BuilderSettlementPlanTest {
         assertEquals(BuilderSettlementPlan.BuildingVariant.OAK_HUT, BuilderSettlementPlan.selectBuildingVariant(2));
         assertEquals(BuilderSettlementPlan.BuildingVariant.SPRUCE_HUT, BuilderSettlementPlan.selectBuildingVariant(-1));
     }
+
+    @Test
+    void settlementFootprintMustStayInTheCampfireChunk() {
+        // Campfire at x=8,z=8 (chunk 0,0); house centred 4 east spans x 6..10 plus entrance at x=11.
+        assertTrue(BuilderSettlementPlan.isWithinCampfireChunk(8, 8, 6, 6, 11, 10));
+        // Campfire at x=13: house centred 4 east spans 15..19 and crosses into chunk 1.
+        assertFalse(BuilderSettlementPlan.isWithinCampfireChunk(13, 8, 15, 6, 20, 10));
+        // Negative coordinates floor correctly: -1 is chunk -1, 0 is chunk 0.
+        assertFalse(BuilderSettlementPlan.isWithinCampfireChunk(-3, 8, -5, 6, 0, 10));
+        assertTrue(BuilderSettlementPlan.isWithinCampfireChunk(-8, -8, -10, -10, -5, -6));
+        // A rejected chunk placement can never complete the settlement, so the campfire is kept.
+        assertFalse(BuilderSettlementPlan.shouldCompleteSettlement(true, true,
+                BuilderSettlementPlan.isWithinCampfireChunk(13, 8, 15, 6, 20, 10)));
+    }
 }

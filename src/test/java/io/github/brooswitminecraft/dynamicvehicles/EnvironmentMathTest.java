@@ -57,4 +57,29 @@ class EnvironmentMathTest {
                 EnvironmentMath.fluidDragCoefficient(2.0, EnvironmentMath.WATER_DRAG), 0);
         assertEquals(0.0, EnvironmentMath.fluidDragCoefficient(-1.0, EnvironmentMath.WATER_DRAG), 0);
     }
+
+    @Test
+    void submersionFractionIsRawDepthOverVehicleHeight() {
+        assertEquals(0.5, EnvironmentMath.submersionFraction(1.0, 2.0), 1e-9);
+        assertEquals(1.0, EnvironmentMath.submersionFraction(2.0, 2.0), 1e-9);
+    }
+
+    @Test
+    void aShortVehicleReachesFullBuoyancyAtAShallowerAbsoluteDepthThanATallOne() {
+        double depth = 1.0; // one block of fluid above the entity's own Y
+        double shortVehicleHeight = 1.0;
+        double tallVehicleHeight = 4.0;
+        assertEquals(1.0, EnvironmentMath.submersionFraction(depth, shortVehicleHeight), 1e-9);
+        assertTrue(EnvironmentMath.submersionFraction(depth, tallVehicleHeight) < 1.0);
+    }
+
+    @Test
+    void submersionFractionNeverExceedsOneEvenWhenFluidIsDeeperThanTheVehicle() {
+        assertEquals(1.0, EnvironmentMath.submersionFraction(10.0, 2.0), 0);
+    }
+
+    @Test
+    void submersionFractionWithNoVehicleHeightIsZeroNotInfinite() {
+        assertEquals(0.0, EnvironmentMath.submersionFraction(1.0, 0.0), 0);
+    }
 }

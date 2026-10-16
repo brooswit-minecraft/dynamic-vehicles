@@ -38,9 +38,22 @@ public final class EnvironmentMath {
     }
 
     /**
+     * Normalizes vanilla's {@code Entity#getFluidHeight} -- fluid depth in blocks above the entity's own
+     * Y position, NOT a 0..1 fraction of its bounding box -- into the 0..1 submersion fraction the rest of
+     * this class actually wants, against {@code vehicleHeight} (the car's own full height, not half).
+     * Without this, a short vehicle fully submerged under more than one block of fluid would be clamped to
+     * the SAME fraction as a tall one only slightly submerged (both read raw depths above 1.0), which is
+     * exactly backwards: a short vehicle should reach full buoyancy at a shallower absolute depth than a
+     * tall one, not need the same depth to get there (review, MINECRAFT-259 PR #159).
+     */
+    public static double submersionFraction(double fluidHeightBlocks, double vehicleHeight) {
+        return vehicleHeight > 0.0 ? clamp01(fluidHeightBlocks / vehicleHeight) : 0.0;
+    }
+
+    /**
      * Upward force (N) counteracting gravity for a car of {@code massKg}, {@code fraction} submerged
-     * (0..1, vanilla's own fluid height fraction) in a fluid whose full-submersion buoyancy is
-     * {@code buoyancy} times the car's own weight (1.0 = fully counteracts gravity; above 1.0 is net lift).
+     * (0..1, see {@link #submersionFraction}) in a fluid whose full-submersion buoyancy is {@code buoyancy}
+     * times the car's own weight (1.0 = fully counteracts gravity; above 1.0 is net lift).
      */
     public static double buoyantForce(double massKg, double gravity, double fraction, double buoyancy) {
         return massKg * gravity * clamp01(fraction) * buoyancy;

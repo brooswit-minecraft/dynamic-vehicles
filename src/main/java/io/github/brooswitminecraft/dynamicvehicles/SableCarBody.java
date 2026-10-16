@@ -431,11 +431,15 @@ final class SableCarBody {
             }
         }
         // MINECRAFT-259: water/lava buoyancy, independent of speed -- a car sitting still in a flooded
-        // quarry still wants to float (water) or be pushed up harder (lava). getFluidHeight is vanilla's
-        // own fraction of this entity's bounding box submerged in that fluid (0..1); it is already kept
-        // current by super.tick()'s fluid-state bookkeeping in CarEntity.tick, so no extra sampling here.
-        double waterFraction = car.getFluidHeight(FluidTags.WATER);
-        double lavaFraction = car.getFluidHeight(FluidTags.LAVA);
+        // quarry still wants to float (water) or be pushed up harder (lava). getFluidHeight is NOT a 0..1
+        // bounding-box fraction (review, PR #159): it is the fluid's surface height in blocks above this
+        // entity's own Y, so it must be normalized against the car's own full height before it means
+        // "how submerged" -- see EnvironmentMath.submersionFraction's own javadoc for why that matters for
+        // a short vehicle vs. a tall one. It is already kept current by super.tick()'s fluid-state
+        // bookkeeping in CarEntity.tick, so no extra sampling here.
+        double vehicleHeight = 2.0 * spec.halfY();
+        double waterFraction = EnvironmentMath.submersionFraction(car.getFluidHeight(FluidTags.WATER), vehicleHeight);
+        double lavaFraction = EnvironmentMath.submersionFraction(car.getFluidHeight(FluidTags.LAVA), vehicleHeight);
         double fluidScale = CarConfig.FLUID_EFFECTS.get();
         if (fluidScale > 0.0 && (waterFraction > 0.0 || lavaFraction > 0.0)) {
             double buoyancy = fluidScale * (
@@ -450,7 +454,10 @@ final class SableCarBody {
         // ClipContext.Block.COLLIDER, which foliage has none of, so it passes straight through to the
         // real ground beneath). AIR applies none because it never has an empty-but-non-air collision
         // shape; every other pass-through block gets at least EnvironmentMath.FOLIAGE_BASELINE, scaled up
-        // by its own hardness (see EnvironmentMath's own javadoc for why hardness was chosen).
+        // by its own hardness (see EnvironmentMath's own javadoc for why hardness was chosen). Water and
+        // lava also have an empty collision shape and are not air, so they must be excluded explicitly
+        // (review, PR #159) -- otherwise fluidEffects=0 would still add spurious "foliage" drag inside a
+        // fluid, and fluid tiles would double up with the buoyancy/drag handling above.
         double foliageDragTotal = 0.0;
         double foliageScale = CarConfig.FOLIAGE_RESISTANCE.get();
         if (foliageScale > 0.0) {
@@ -458,7 +465,7 @@ final class SableCarBody {
             for (int wheel = 0; wheel < wheelCount; wheel++) {
                 BlockPos pos = BlockPos.containing(position.x + wheelOffsets[wheel].x, feetY + 0.1, position.z + wheelOffsets[wheel].z);
                 BlockState state = level.getBlockState(pos);
-                if (!state.isAir() && state.getCollisionShape(level, pos).isEmpty()) {
+                if (isFoliage(state, level, pos)) {
                     foliageDragTotal += foliageScale * EnvironmentMath.foliageDragCoefficient(state.getDestroySpeed(level, pos));
                 }
             }
@@ -496,6 +503,18 @@ final class SableCarBody {
         car.publishOrientation(new org.joml.Quaternionf((float) orientation.x, (float) orientation.y, (float) orientation.z, (float) orientation.w));
         Vector3d v = body.getLinearVelocity(new Vector3d());
         car.setDeltaMovement(v.x / 20.0, v.y / 20.0, v.z / 20.0);
+    }
+
+    /**
+     * MINECRAFT-259: whether {@code state} is a pass-through foliage block that should add resistance --
+     * not air, not a fluid (water/lava also have an empty collision shape, but the buoyancy/drag block
+     * above already owns them), and no collision shape of its own. Package-private, not private, so
+     * EnvironmentGameTests can exercise this exact production classification directly against real block
+     * states (air, ordinary vegetation, water) instead of only against EnvironmentMath's own pre-normalized
+     * constants (review, PR #159).
+     */
+    static boolean isFoliage(BlockState state, ServerLevel level, BlockPos pos) {
+        return !state.isAir() && state.getFluidState().isEmpty() && state.getCollisionShape(level, pos).isEmpty();
     }
 
     /**

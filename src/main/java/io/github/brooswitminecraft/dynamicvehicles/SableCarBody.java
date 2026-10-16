@@ -14,7 +14,9 @@ import io.github.brooswitminecraft.dynamicterrain.TireContactSampler;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.tags.FluidTags;
 import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
@@ -470,11 +472,55 @@ final class SableCarBody {
                 SlipReporter.report(level, wheelHits[wheel].getBlockPos(), wearSlipMax[wheel], wearSlipForce[wheel] / GRAVITY);
             }
         }
-        // Air drag along the velocity: once per tick in total, at the full dt, not once per sub-step -
-        // using the velocity as it stands after every sub-step's impulses.
+        // MINECRAFT-259: water/lava buoyancy, independent of speed -- a car sitting still in a flooded
+        // quarry still wants to float (water) or be pushed up harder (lava). getFluidHeight is NOT a 0..1
+        // bounding-box fraction (review, PR #159): it is the fluid's surface height in blocks above this
+        // entity's own Y, so it must be normalized against the car's own full height before it means
+        // "how submerged" -- see EnvironmentMath.submersionFraction's own javadoc for why that matters for
+        // a short vehicle vs. a tall one. It is already kept current by super.tick()'s fluid-state
+        // bookkeeping in CarEntity.tick, so no extra sampling here.
+        double vehicleHeight = 2.0 * spec.halfY();
+        double waterFraction = EnvironmentMath.submersionFraction(car.getFluidHeight(FluidTags.WATER), vehicleHeight);
+        double lavaFraction = EnvironmentMath.submersionFraction(car.getFluidHeight(FluidTags.LAVA), vehicleHeight);
+        double fluidScale = CarConfig.FLUID_EFFECTS.get();
+        if (fluidScale > 0.0 && (waterFraction > 0.0 || lavaFraction > 0.0)) {
+            double buoyancy = fluidScale * (
+                    EnvironmentMath.buoyantForce(spec.massKg(), GRAVITY, waterFraction, EnvironmentMath.WATER_BUOYANCY)
+                    + EnvironmentMath.buoyantForce(spec.massKg(), GRAVITY, lavaFraction, EnvironmentMath.LAVA_BUOYANCY));
+            Vector3d buoyantImpulse = inverse.transform(new Vector3d(0, buoyancy * dt, 0));
+            body.applyImpulseAtPoint(new Vector3d(0, 0, 0), buoyantImpulse);
+        }
+        // MINECRAFT-259: pass-through foliage resistance -- sampled at each wheel's own horizontal
+        // position, at the car's feet height, since that is where a block like tall grass actually sits
+        // as a wheel drives over it; the wheel raycast above cannot see these (it casts with
+        // ClipContext.Block.COLLIDER, which foliage has none of, so it passes straight through to the
+        // real ground beneath). AIR applies none because it never has an empty-but-non-air collision
+        // shape; every other pass-through block gets at least EnvironmentMath.FOLIAGE_BASELINE, scaled up
+        // by its own hardness (see EnvironmentMath's own javadoc for why hardness was chosen). Water and
+        // lava also have an empty collision shape and are not air, so they must be excluded explicitly
+        // (review, PR #159) -- otherwise fluidEffects=0 would still add spurious "foliage" drag inside a
+        // fluid, and fluid tiles would double up with the buoyancy/drag handling above.
+        double foliageDragTotal = 0.0;
+        double foliageScale = CarConfig.FOLIAGE_RESISTANCE.get();
+        if (foliageScale > 0.0) {
+            double feetY = position.y - spec.halfY();
+            for (int wheel = 0; wheel < wheelCount; wheel++) {
+                BlockPos pos = BlockPos.containing(position.x + wheelOffsets[wheel].x, feetY + 0.1, position.z + wheelOffsets[wheel].z);
+                BlockState state = level.getBlockState(pos);
+                if (isFoliage(state, level, pos)) {
+                    foliageDragTotal += foliageScale * EnvironmentMath.foliageDragCoefficient(state.getDestroySpeed(level, pos));
+                }
+            }
+        }
+        // Air drag (plus any fluid/foliage drag above) along the velocity: once per tick in total, at the
+        // full dt, not once per sub-step - using the velocity as it stands after every sub-step's impulses.
         double speed = subLinear.length();
         if (speed > 0.5) {
-            Vector3d drag = inverse.transform(new Vector3d(subLinear).mul(-AIR_DRAG * spec.forceScale() * speed * dt));
+            double fluidDrag = fluidScale * (
+                    EnvironmentMath.fluidDragCoefficient(waterFraction, EnvironmentMath.WATER_DRAG)
+                    + EnvironmentMath.fluidDragCoefficient(lavaFraction, EnvironmentMath.LAVA_DRAG));
+            double dragCoeff = AIR_DRAG + fluidDrag + foliageDragTotal;
+            Vector3d drag = inverse.transform(new Vector3d(subLinear).mul(-dragCoeff * spec.forceScale() * speed * dt));
             body.applyImpulseAtPoint(new Vector3d(0, 0, 0), drag);
         }
         lastSlipSpeed = slipThisTick;
@@ -499,6 +545,18 @@ final class SableCarBody {
         car.publishOrientation(new org.joml.Quaternionf((float) orientation.x, (float) orientation.y, (float) orientation.z, (float) orientation.w));
         Vector3d v = body.getLinearVelocity(new Vector3d());
         car.setDeltaMovement(v.x / 20.0, v.y / 20.0, v.z / 20.0);
+    }
+
+    /**
+     * MINECRAFT-259: whether {@code state} is a pass-through foliage block that should add resistance --
+     * not air, not a fluid (water/lava also have an empty collision shape, but the buoyancy/drag block
+     * above already owns them), and no collision shape of its own. Package-private, not private, so
+     * EnvironmentGameTests can exercise this exact production classification directly against real block
+     * states (air, ordinary vegetation, water) instead of only against EnvironmentMath's own pre-normalized
+     * constants (review, PR #159).
+     */
+    static boolean isFoliage(BlockState state, ServerLevel level, BlockPos pos) {
+        return !state.isAir() && state.getFluidState().isEmpty() && state.getCollisionShape(level, pos).isEmpty();
     }
 
     /**

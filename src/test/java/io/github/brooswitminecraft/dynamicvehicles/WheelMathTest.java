@@ -167,6 +167,18 @@ class WheelMathTest {
     }
 
     @Test
+    void deformableSurfacesAddRollingDragOnTopOfTheirOwnRollingResistance() {
+        double pavement = WheelMath.rollingCoefficient(0.02, 0.0, 1.0);
+        assertEquals(0.02, pavement, 1e-9, "zero deformability must not change the surface's own coefficient");
+        double sand = WheelMath.rollingCoefficient(0.16, 0.95, 1.0);
+        assertTrue(sand > 0.16, "a deformable surface must roll harder than its own rollingResistance alone");
+        double softerSand = WheelMath.rollingCoefficient(0.16, 0.5, 1.0);
+        assertTrue(sand > softerSand, "more deformability must add more drag");
+        double scaled = WheelMath.rollingCoefficient(0.16, 0.5, 2.0);
+        assertEquals(2.0 * softerSand, scaled, 1e-9, "the vehicle's rollingScale still applies to the whole coefficient");
+    }
+
+    @Test
     void aParkedBrakeWithGainHoldsHarderAgainstCreep() {
         double normal = WheelMath.tire(0.1, 0, N, 1.1, 0.02, 1, 0, 3000, 1.0, DT).longitudinal();
         double held = WheelMath.tire(0.1, 0, N, 1.1, 0.02, 1, 0, 3000, 6.0, DT).longitudinal();

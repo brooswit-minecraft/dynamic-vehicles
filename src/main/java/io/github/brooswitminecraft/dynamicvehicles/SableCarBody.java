@@ -10,8 +10,11 @@ import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.Pose3d;
 import io.github.brooswitminecraft.dynamicterrain.SurfaceProperties;
 import io.github.brooswitminecraft.dynamicterrain.Surfaces;
+import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.tags.FluidTags;
 import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
@@ -427,11 +430,48 @@ final class SableCarBody {
                 SlipReporter.report(level, wheelHits[wheel].getBlockPos(), wearSlipMax[wheel], wearSlipForce[wheel] / GRAVITY);
             }
         }
-        // Air drag along the velocity: once per tick in total, at the full dt, not once per sub-step -
-        // using the velocity as it stands after every sub-step's impulses.
+        // MINECRAFT-259: water/lava buoyancy, independent of speed -- a car sitting still in a flooded
+        // quarry still wants to float (water) or be pushed up harder (lava). getFluidHeight is vanilla's
+        // own fraction of this entity's bounding box submerged in that fluid (0..1); it is already kept
+        // current by super.tick()'s fluid-state bookkeeping in CarEntity.tick, so no extra sampling here.
+        double waterFraction = car.getFluidHeight(FluidTags.WATER);
+        double lavaFraction = car.getFluidHeight(FluidTags.LAVA);
+        double fluidScale = CarConfig.FLUID_EFFECTS.get();
+        if (fluidScale > 0.0 && (waterFraction > 0.0 || lavaFraction > 0.0)) {
+            double buoyancy = fluidScale * (
+                    EnvironmentMath.buoyantForce(spec.massKg(), GRAVITY, waterFraction, EnvironmentMath.WATER_BUOYANCY)
+                    + EnvironmentMath.buoyantForce(spec.massKg(), GRAVITY, lavaFraction, EnvironmentMath.LAVA_BUOYANCY));
+            Vector3d buoyantImpulse = inverse.transform(new Vector3d(0, buoyancy * dt, 0));
+            body.applyImpulseAtPoint(new Vector3d(0, 0, 0), buoyantImpulse);
+        }
+        // MINECRAFT-259: pass-through foliage resistance -- sampled at each wheel's own horizontal
+        // position, at the car's feet height, since that is where a block like tall grass actually sits
+        // as a wheel drives over it; the wheel raycast above cannot see these (it casts with
+        // ClipContext.Block.COLLIDER, which foliage has none of, so it passes straight through to the
+        // real ground beneath). AIR applies none because it never has an empty-but-non-air collision
+        // shape; every other pass-through block gets at least EnvironmentMath.FOLIAGE_BASELINE, scaled up
+        // by its own hardness (see EnvironmentMath's own javadoc for why hardness was chosen).
+        double foliageDragTotal = 0.0;
+        double foliageScale = CarConfig.FOLIAGE_RESISTANCE.get();
+        if (foliageScale > 0.0) {
+            double feetY = position.y - spec.halfY();
+            for (int wheel = 0; wheel < wheelCount; wheel++) {
+                BlockPos pos = BlockPos.containing(position.x + wheelOffsets[wheel].x, feetY + 0.1, position.z + wheelOffsets[wheel].z);
+                BlockState state = level.getBlockState(pos);
+                if (!state.isAir() && state.getCollisionShape(level, pos).isEmpty()) {
+                    foliageDragTotal += foliageScale * EnvironmentMath.foliageDragCoefficient(state.getDestroySpeed(level, pos));
+                }
+            }
+        }
+        // Air drag (plus any fluid/foliage drag above) along the velocity: once per tick in total, at the
+        // full dt, not once per sub-step - using the velocity as it stands after every sub-step's impulses.
         double speed = subLinear.length();
         if (speed > 0.5) {
-            Vector3d drag = inverse.transform(new Vector3d(subLinear).mul(-AIR_DRAG * spec.forceScale() * speed * dt));
+            double fluidDrag = fluidScale * (
+                    EnvironmentMath.fluidDragCoefficient(waterFraction, EnvironmentMath.WATER_DRAG)
+                    + EnvironmentMath.fluidDragCoefficient(lavaFraction, EnvironmentMath.LAVA_DRAG));
+            double dragCoeff = AIR_DRAG + fluidDrag + foliageDragTotal;
+            Vector3d drag = inverse.transform(new Vector3d(subLinear).mul(-dragCoeff * spec.forceScale() * speed * dt));
             body.applyImpulseAtPoint(new Vector3d(0, 0, 0), drag);
         }
         lastSlipSpeed = slipThisTick;

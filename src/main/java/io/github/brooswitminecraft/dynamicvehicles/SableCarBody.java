@@ -10,6 +10,9 @@ import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.Pose3d;
 import io.github.brooswitminecraft.dynamicterrain.SurfaceProperties;
 import io.github.brooswitminecraft.dynamicterrain.Surfaces;
+import io.github.brooswitminecraft.dynamicterrain.TireContactSampler;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.phys.BlockHitResult;
@@ -58,6 +61,14 @@ final class SableCarBody {
     //    airborne/zero-load/raycast-miss wheel: deliberate, see that guard's own comment.
     private final double[] suspensionTravel;
     private final double[] steerAngle;
+    // Previous tick's contact point per wheel (block, contacted face, and block-local 0..1 position),
+    // null until that wheel has first touched ground. Lets contactPatch() integrate texture evidence
+    // over the texels actually crossed between ticks instead of sampling a single frozen point. Reset to
+    // null whenever a wheel is airborne or lands on a different block/face, so a gap in contact or a jump
+    // across blocks is never read as a texel sweep between two unrelated points.
+    private final BlockPos[] lastContactBlockPos;
+    private final Direction[] lastContactFace;
+    private final Vec3[] lastContactLocal;
 
     private SableCarBody(VehicleSpec spec, ServerLevel level, BoxPhysicsObject box, RigidBodyHandle body) {
         this.spec = spec;
@@ -68,6 +79,9 @@ final class SableCarBody {
         this.wheelSpin = new double[spec.mounts().length];
         this.suspensionTravel = new double[spec.mounts().length];
         this.steerAngle = new double[spec.mounts().length];
+        this.lastContactBlockPos = new BlockPos[spec.mounts().length];
+        this.lastContactFace = new Direction[spec.mounts().length];
+        this.lastContactLocal = new Vec3[spec.mounts().length];
     }
 
     /** Body orientation for a Minecraft yaw: the body's +Z axis points where the entity faces. */
@@ -130,6 +144,15 @@ final class SableCarBody {
         double[] distances = new double[wheelCount];
         double[] compressions = new double[wheelCount];
         int[] partners = new int[wheelCount];
+        // Per-texel texture refinement on top of the block-level grip/rollingResistance (TextureGripMath),
+        // from the texels the contact patch actually crossed since last tick (Surfaces.contactPatch()).
+        // Computed once per tick here, alongside the single raycast per wheel, not per sub-step: the
+        // evidence does not change within a tick any more than the block-level SurfaceProperties does.
+        // 1.0 (no effect) until/unless a same-block-and-face previous contact gives real evidence to sample.
+        double[] textureGrip = new double[wheelCount];
+        double[] textureRolling = new double[wheelCount];
+        java.util.Arrays.fill(textureGrip, 1.0);
+        java.util.Arrays.fill(textureRolling, 1.0);
         for (int wheel = 0; wheel < wheelCount; wheel++) {
             double[] mount = spec.mounts()[wheel];
             Vector3d offset = orientation.transform(new Vector3d(mount[0], mount[1], mount[2]));
@@ -141,12 +164,31 @@ final class SableCarBody {
                     ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, car));
             wheelHits[wheel] = hit;
             if (hit.getType() == HitResult.Type.MISS) {
+                lastContactBlockPos[wheel] = null;
+                lastContactFace[wheel] = null;
+                lastContactLocal[wheel] = null;
                 continue;
             }
             double distance = hit.getLocation().distanceTo(new Vec3(from.x, from.y, from.z));
             distances[wheel] = distance;
             compressions[wheel] = spec.restLength() - distance;
             hits.add(new Vector3d(hit.getLocation().x, hit.getLocation().y, hit.getLocation().z));
+
+            BlockPos blockPos = hit.getBlockPos();
+            Direction face = hit.getDirection();
+            Vec3 local = hit.getLocation().subtract(Vec3.atLowerCornerOf(blockPos));
+            if (blockPos.equals(lastContactBlockPos[wheel]) && face == lastContactFace[wheel]) {
+                Vec3 last = lastContactLocal[wheel];
+                java.util.Optional<TireContactSampler.ContactPatch> patch = Surfaces.contactPatch(
+                        level, blockPos, face, last.x, last.y, last.z, local.x, local.y, local.z);
+                if (patch.isPresent()) {
+                    textureGrip[wheel] = TextureGripMath.gripMultiplier(patch.get().average());
+                    textureRolling[wheel] = TextureGripMath.rollingResistanceMultiplier(patch.get().average());
+                }
+            }
+            lastContactBlockPos[wheel] = blockPos;
+            lastContactFace[wheel] = face;
+            lastContactLocal[wheel] = local;
         }
         // Published to clients as-is: this IS the single per-wheel raycast result above, not a second
         // one. Copied into the final field (not reassigned to the local array itself) so a future write
@@ -228,7 +270,7 @@ final class SableCarBody {
                 }
                 SurfaceProperties surface = Surfaces.at(level, wheelHits[wheel].getBlockPos());
                 double gripMu = WheelMath.BASE_FRICTION * Math.min(1.0, surface.grip() * spec.looseGrip())
-                        * spec.downforceGripMultiplier(forwardSpeed);
+                        * spec.downforceGripMultiplier(forwardSpeed) * textureGrip[wheel];
                 gripForces[wheel] = gripMu * forces[wheel];
             }
 
@@ -354,8 +396,9 @@ final class SableCarBody {
                 // whose downforceGripPerSpeed is 0.0 (every existing vehicle), so this multiply is a no-op
                 // for them - see VehicleSpec.INDY's own javadoc for the one vehicle that sets it nonzero.
                 double gripMu = WheelMath.BASE_FRICTION * Math.min(1.0, surface.grip() * spec.looseGrip())
-                        * spec.downforceGripMultiplier(forwardSpeed);
-                double rollingCoefficient = WheelMath.rollingCoefficient(surface.rollingResistance(), surface.deformability(), spec.rollingScale());
+                        * spec.downforceGripMultiplier(forwardSpeed) * textureGrip[wheel];
+                double rollingCoefficient = WheelMath.rollingCoefficient(surface.rollingResistance(), surface.deformability(), spec.rollingScale())
+                        * textureRolling[wheel];
                 double effectiveMass = spec.massKg() / 4.0;
                 // isIdentity() is checked on the SPEC's own hard-wired tireTuning(), never on config, so
                 // CAR/TRUCK/TROPHY (always IDENTITY in code) can never be routed into DriftTireModel no

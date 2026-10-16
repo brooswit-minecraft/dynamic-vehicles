@@ -23,6 +23,8 @@ public final class WheelMath {
     public static final double ROLLING_RESISTANCE = 0.015;
     /** How much of the correction to a sliding tire is applied per tick; below 1 so it never overshoots. */
     public static final double RELAXATION = 0.6;
+    /** Extra rolling drag a fully deformable surface (sand) adds on top of its own rollingResistance: wheels sink in and push ground ahead of them, not just scuff it. */
+    public static final double DEFORMABILITY_ROLLING_GAIN = 0.5;
 
     /** Rotational inertia of one wheel+tire about its axle, kg*m^2: a plain number for a ~0.35 m wheel, shared by every vehicle (not a per-spec tuning knob; MINECRAFT-75 owns tuning). */
     public static final double WHEEL_INERTIA = 1.2;
@@ -115,6 +117,19 @@ public final class WheelMath {
         return tire(vLong, vLat, normalForce, mu * modifiers.longitudinalMuScale(),
                 rollingCoefficient, lateralScale * modifiers.lateralScale(), driveForce, brakeForce,
                 brakeGain, effectiveMass, dt);
+    }
+
+    /**
+     * The rolling resistance coefficient a wheel feels: the surface's own rollingResistance, scaled
+     * per-vehicle, plus extra drag on a deformable (soft/loose) surface where the wheel sinks in rather
+     * than just scuffing across it.
+     *
+     * @param rollingResistance the surface's {@code SurfaceProperties.rollingResistance()}, 0..1
+     * @param deformability the surface's {@code SurfaceProperties.deformability()}, 0..1
+     * @param rollingScale per-vehicle scale for soft-ground rolling resistance ({@code VehicleSpec.rollingScale})
+     */
+    public static double rollingCoefficient(double rollingResistance, double deformability, double rollingScale) {
+        return rollingResistance * rollingScale * (1.0 + deformability * DEFORMABILITY_ROLLING_GAIN);
     }
 
     /**

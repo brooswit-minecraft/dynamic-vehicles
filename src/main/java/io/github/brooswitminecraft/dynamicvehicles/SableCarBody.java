@@ -355,7 +355,7 @@ final class SableCarBody {
                 // for them - see VehicleSpec.INDY's own javadoc for the one vehicle that sets it nonzero.
                 double gripMu = WheelMath.BASE_FRICTION * Math.min(1.0, surface.grip() * spec.looseGrip())
                         * spec.downforceGripMultiplier(forwardSpeed);
-                double rollingCoefficient = surface.rollingResistance() * spec.rollingScale();
+                double rollingCoefficient = WheelMath.rollingCoefficient(surface.rollingResistance(), surface.deformability(), spec.rollingScale());
                 double effectiveMass = spec.massKg() / 4.0;
                 // isIdentity() is checked on the SPEC's own hard-wired tireTuning(), never on config, so
                 // CAR/TRUCK/TROPHY (always IDENTITY in code) can never be routed into DriftTireModel no

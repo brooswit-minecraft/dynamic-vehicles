@@ -9,3 +9,6 @@ bump: patch
   Builder standing at it, both are excluded from the pre-placement occupancy
   check so settlement can still succeed, and the campfire is only explicitly
   removed afterwards when it fell outside the new house's own footprint.
+- The settling Builder is now relocated to the house's validated-clear
+  entrance the moment settlement succeeds, so it is never left standing
+  inside a wall or corner post the new house just built through it.

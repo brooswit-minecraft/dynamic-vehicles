@@ -14,6 +14,7 @@ import net.minecraft.world.item.trading.MerchantOffer;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.DoorBlock;
 import net.minecraft.world.level.block.BedBlock;
+import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
@@ -132,6 +133,42 @@ public final class BuilderSettlementGameTests {
         helper.assertTrue(helper.getBlockState(center.above()).getBlock() instanceof BedBlock,
                 "house missing after centred settlement");
         helper.assertTrue(villager.getVillagerData().getProfession() == VillagerProfession.NONE, "Builder did not retire");
+        helper.succeed();
+    }
+
+    @GameTest(template = "settlement_test")
+    public static void guaranteedRollRelocatesBuilderClearOfACornerPostItWasStandingIn(GameTestHelper helper) {
+        // The campfire lands inside the footprint near a corner, and the Builder itself stands exactly
+        // where that corner's post gets written -- the collision found on review, now fixed by moving
+        // the villager to the already-validated clear entrance space once settlement is confirmed safe.
+        prepareFixture(helper);
+        BlockPos center = expectedHouseCenter(helper);
+        BlockPos campfireAnchor = center.offset(2, 0, 1);
+        Villager villager = builderAt(helper, campfireAnchor);
+        Vec3 cornerAbs = helper.absoluteVec(new Vec3(center.getX() + 2.5D, center.getY(), center.getZ() + 2.5D));
+        villager.moveTo(cornerAbs.x, cornerAbs.y, cornerAbs.z, 0.0F, 0.0F);
+        var pig = helper.spawn(EntityType.PIG, center.offset(-3, 0, 0));
+        pig.setNoAi(true);
+
+        BuilderSettlementService.attemptDonationSettlement(villager, 5);
+
+        helper.assertTrue(!helper.getBlockState(campfireAnchor).is(Blocks.CAMPFIRE),
+                "overlapping campfire blocked its own replacement");
+        helper.assertTrue(helper.getBlockState(center.above()).getBlock() instanceof BedBlock,
+                "house missing after overlapping settlement");
+        // The corner post the Builder was standing in must actually be solid: proving the build wasn't
+        // silently skipped there just to dodge the Builder's old position.
+        helper.assertTrue(!helper.getBlockState(center.offset(2, 1, 2)).isAir(), "corner post missing at former Builder position");
+        helper.assertTrue(villager.getVillagerData().getProfession() == VillagerProfession.NONE, "Builder did not retire");
+        helper.assertTrue(villager.isAlive(), "Builder died from being entombed in the new house");
+        BlockPos villagerPos = helper.relativePos(villager.blockPosition());
+        helper.assertTrue(!BuilderSettlementPlan.isWithinHouseFootprint(center.getX(), center.getZ(), villagerPos.getX(), villagerPos.getZ()),
+                "Builder was left standing inside its own new house's footprint: " + villagerPos);
+        helper.assertTrue(helper.getBlockState(villagerPos).isAir() && helper.getBlockState(villagerPos.above()).isAir(),
+                "Builder was relocated into a solid block: " + villagerPos);
+        // An unrelated entity well outside the footprint is untouched by the relocation/placement.
+        helper.assertTrue(pig.isAlive() && helper.relativePos(pig.blockPosition()).equals(center.offset(-3, 0, 0)),
+                "unrelated entity was disturbed by settlement");
         helper.succeed();
     }
 

@@ -112,6 +112,15 @@ public final class BuilderSettlementService {
                 center.getX(), center.getZ(), campfire.getX(), campfire.getZ());
         placeBuilding(level, center, rotation, buildingVariant);
         if (!campfireInsideFootprint) level.removeBlock(campfire, false);
+        // The entity-occupancy check excludes the settling villager so standing near its own campfire can
+        // never block its own house, but nothing moves it: the centred footprint can now overlap wherever
+        // it happens to be standing. Relocate it to the entrance tile, whose clearance and sturdy footing
+        // isSafeBuildingSite already validated, so it is never left entombed in a wall or floor it didn't move for.
+        BlockPos entrance = center.relative(rotation, BUILDING_RADIUS + 1);
+        // entrance.above()/above(2) are exactly the headroom isSafeBuildingSite already validated clear;
+        // gravity settles the villager onto whatever is solid below if that's lower than this.
+        villager.moveTo(entrance.getX() + 0.5D, entrance.above().getY(), entrance.getZ() + 0.5D,
+                rotation.getOpposite().toYRot(), 0.0F);
         resetToUnemployed(villager);
         villager.getPersistentData().remove(CAMPFIRE_POS_TAG);
     }

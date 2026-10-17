@@ -147,7 +147,7 @@ public final class BuilderSettlementGameTests {
         Villager villager = builderAt(helper, campfireAnchor);
         Vec3 cornerAbs = helper.absoluteVec(new Vec3(center.getX() + 2.5D, center.getY(), center.getZ() + 2.5D));
         villager.moveTo(cornerAbs.x, cornerAbs.y, cornerAbs.z, 0.0F, 0.0F);
-        var pig = helper.spawn(EntityType.PIG, center.offset(-3, 0, 0));
+        var pig = helper.spawn(EntityType.PIG, center.offset(-3, 0, -3));
         pig.setNoAi(true);
 
         BuilderSettlementService.attemptDonationSettlement(villager, 5);
@@ -167,7 +167,7 @@ public final class BuilderSettlementGameTests {
         helper.assertTrue(helper.getBlockState(villagerPos).isAir() && helper.getBlockState(villagerPos.above()).isAir(),
                 "Builder was relocated into a solid block: " + villagerPos);
         // An unrelated entity well outside the footprint is untouched by the relocation/placement.
-        helper.assertTrue(pig.isAlive() && helper.relativePos(pig.blockPosition()).equals(center.offset(-3, 0, 0)),
+        helper.assertTrue(pig.isAlive() && helper.relativePos(pig.blockPosition()).equals(center.offset(-3, 0, -3)),
                 "unrelated entity was disturbed by settlement");
         helper.succeed();
     }

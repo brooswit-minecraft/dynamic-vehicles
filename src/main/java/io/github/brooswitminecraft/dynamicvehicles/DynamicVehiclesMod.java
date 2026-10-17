@@ -33,6 +33,7 @@ import net.neoforged.neoforge.registries.DeferredRegister;
 
 import io.github.brooswitminecraft.dynamicvehicles.delivery.ContractTickHandler;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.DeliveryHudPayload;
+import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatchBoardBlockEntities;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherBlocks;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherInteractionHandler;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherOfferAcceptPayload;
@@ -117,6 +118,7 @@ public class DynamicVehiclesMod {
         ENTITIES.register(modEventBus);
         ITEMS.register(modEventBus);
         DispatcherBlocks.BLOCKS.register(modEventBus);
+        DispatchBoardBlockEntities.BLOCK_ENTITY_TYPES.register(modEventBus);
         DispatcherPoiTypes.POI_TYPES.register(modEventBus);
         DispatcherProfession.PROFESSIONS.register(modEventBus);
         BuilderPoiTypes.POI_TYPES.register(modEventBus);

@@ -1,18 +1,25 @@
 package io.github.brooswitminecraft.dynamicvehicles.delivery;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.npc.VillagerProfession;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 import net.neoforged.neoforge.network.registration.ChannelAttributes;
+
+import java.util.UUID;
 
 /**
  * MINECRAFT-196 AC: a jobless villager next to the new {@link DispatcherBlocks#DISPATCH_BOARD}
@@ -70,6 +77,55 @@ public final class DispatcherGameTests {
 
         helper.assertTrue(event.isCanceled(), "right-clicking a dispatcher should intercept vanilla's own villager interaction");
         helper.assertTrue(player.containerMenu instanceof DispatcherOfferMenu, "right-clicking a dispatcher should open the offers menu");
+        helper.succeed();
+    }
+
+    /** MINECRAFT-323 AC1/AC2: right-clicking the board itself opens the same offers menu, as a fixed level-one dispatch source. */
+    @GameTest(template = "dispatch_profession")
+    public static void rightClickingTheDispatchBoardOpensTheOffersMenu(GameTestHelper helper) {
+        BlockPos boardPos = new BlockPos(2, 2, 2);
+        helper.setBlock(boardPos, DispatcherBlocks.DISPATCH_BOARD.get());
+
+        ServerPlayer player = GameTestMockPlayers.create(helper);
+        player.moveTo(helper.absolutePos(new BlockPos(2, 2, 3)).getCenter());
+
+        // Same ad-hoc channel declaration rightClickingADispatcherOpensTheOffersMenu needs above -
+        // player.openMenu(...) sends "advanced_open_screen" for a menu with extra client data.
+        ChannelAttributes.getOrCreateAdHocChannels(player.connection.getConnection())
+                .add(ResourceLocation.fromNamespaceAndPath("neoforge", "advanced_open_screen"));
+
+        BlockPos absoluteBoardPos = helper.absolutePos(boardPos);
+        BlockState boardState = helper.getBlockState(boardPos);
+        BlockHitResult hit = new BlockHitResult(Vec3.atCenterOf(absoluteBoardPos), Direction.UP, absoluteBoardPos, false);
+
+        InteractionResult result = DispatcherBlocks.DISPATCH_BOARD.get()
+                .useWithoutItem(boardState, helper.getLevel(), absoluteBoardPos, player, hit);
+
+        helper.assertTrue(result == InteractionResult.CONSUME, "right-clicking the board should consume the interaction");
+        helper.assertTrue(player.containerMenu instanceof DispatcherOfferMenu, "right-clicking the board should open the offers menu");
+        helper.succeed();
+    }
+
+    /** MINECRAFT-323 AC4: a placed board's UUID survives its block entity being reloaded from NBT. */
+    @GameTest(template = "dispatch_profession")
+    public static void dispatchBoardPersistsItsUuidAcrossReload(GameTestHelper helper) {
+        BlockPos boardPos = new BlockPos(2, 2, 2);
+        helper.setBlock(boardPos, DispatcherBlocks.DISPATCH_BOARD.get());
+        BlockPos absoluteBoardPos = helper.absolutePos(boardPos);
+
+        if (!(helper.getLevel().getBlockEntity(absoluteBoardPos) instanceof DispatchBoardBlockEntity boardEntity)) {
+            helper.fail("expected a DispatchBoardBlockEntity at the placed board");
+            return;
+        }
+        UUID firstId = boardEntity.getOrCreateBoardId();
+
+        var registries = helper.getLevel().registryAccess();
+        var saved = boardEntity.saveWithFullMetadata(registries);
+        DispatchBoardBlockEntity reloaded = new DispatchBoardBlockEntity(absoluteBoardPos, boardEntity.getBlockState());
+        reloaded.loadWithComponents(saved, registries);
+
+        helper.assertTrue(reloaded.getOrCreateBoardId().equals(firstId),
+                "the board's UUID must survive a save/reload instead of being regenerated");
         helper.succeed();
     }
 }

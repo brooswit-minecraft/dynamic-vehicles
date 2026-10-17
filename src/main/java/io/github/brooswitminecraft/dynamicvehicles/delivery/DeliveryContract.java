@@ -12,7 +12,9 @@ import java.util.UUID;
  * AC6 arrival target - never the placement region.
  *
  * @param playerId              the contract holder
- * @param sourceVillagerId      the Dispatcher villager's entity id this contract was accepted from (AC1's "source identity")
+ * @param sourceVillagerId      the dispatch source's identifying UUID this contract was accepted from (AC1's "source identity") -
+ *                              a Dispatcher villager's own entity id, or (MINECRAFT-323) a dispatch board's persisted UUID;
+ *                              opaque record-keeping data here, never resolved back into a live entity
  * @param destinationDimension the destination's {@code ResourceKey<Level>} location, as a plain string (e.g. {@code "minecraft:overworld"})
  * @param destinationRegionX   the destination {@link VillageIdentity}'s region X (AC1's "destination identity")
  * @param destinationRegionZ   the destination {@link VillageIdentity}'s region Z

@@ -97,4 +97,23 @@ class BuilderSettlementPlanTest {
         assertFalse(BuilderSettlementPlan.shouldCompleteSettlement(true, true,
                 BuilderSettlementPlan.isWithinCampfireChunk(13, 8, 15, 6, 20, 10)));
     }
+
+    @Test
+    void houseIsCentredOnTheCampfiresChunkRatherThanOffsetFromTheCampfire() {
+        // A campfire anywhere in chunk 0 (0..15) centres on local 8.
+        assertEquals(8, BuilderSettlementPlan.chunkCenterCoordinate(0));
+        assertEquals(8, BuilderSettlementPlan.chunkCenterCoordinate(8));
+        assertEquals(8, BuilderSettlementPlan.chunkCenterCoordinate(15));
+        // Chunk 1 (16..31) centres on 24; a campfire near the edge still centres on its own chunk.
+        assertEquals(24, BuilderSettlementPlan.chunkCenterCoordinate(16));
+        assertEquals(24, BuilderSettlementPlan.chunkCenterCoordinate(29));
+        // Negative coordinates floor to the containing chunk: chunk -1 is -16..-1, centred on -8.
+        assertEquals(-8, BuilderSettlementPlan.chunkCenterCoordinate(-1));
+        assertEquals(-8, BuilderSettlementPlan.chunkCenterCoordinate(-16));
+        assertEquals(-24, BuilderSettlementPlan.chunkCenterCoordinate(-17));
+        // The centred point is always inside the campfire's own chunk.
+        assertTrue(BuilderSettlementPlan.isWithinCampfireChunk(13, -3,
+                BuilderSettlementPlan.chunkCenterCoordinate(13), BuilderSettlementPlan.chunkCenterCoordinate(-3),
+                BuilderSettlementPlan.chunkCenterCoordinate(13), BuilderSettlementPlan.chunkCenterCoordinate(-3)));
+    }
 }

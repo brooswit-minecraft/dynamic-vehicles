@@ -85,17 +85,17 @@ public final class BuilderSettlementService {
 
         VillageBuilding buildingVariant = VillageBuilding.from(
                 BuilderSettlementPlan.selectBuildingVariant(level.random.nextInt(VillageBuilding.values().length)));
-        // Rotations are tried in random order; only one that stays in the campfire's chunk and is safe is used.
+        // The house stands dead centre in the campfire's own chunk; only the door-facing rotation varies,
+        // tried in random order until one is safe.
+        BlockPos center = new BlockPos(BuilderSettlementPlan.chunkCenterCoordinate(campfire.getX()), campfire.getY(),
+                BuilderSettlementPlan.chunkCenterCoordinate(campfire.getZ()));
         Direction rotation = null;
-        BlockPos building = null;
         java.util.List<Direction> rotations = new java.util.ArrayList<>(
                 java.util.Arrays.asList(Direction.Plane.HORIZONTAL.stream().toArray(Direction[]::new)));
         java.util.Collections.shuffle(rotations, new java.util.Random(level.random.nextLong()));
         for (Direction candidate : rotations) {
-            BlockPos center = campfire.relative(candidate, 4);
             if (isInCampfireChunk(campfire, center, candidate) && isSafeBuildingSite(level, center, candidate)) {
                 rotation = candidate;
-                building = center;
                 break;
             }
         }
@@ -104,7 +104,7 @@ public final class BuilderSettlementService {
                 placementIsSafe)) return;
 
         // The full footprint and entity volume were checked before any mutation.
-        placeBuilding(level, building, rotation, buildingVariant);
+        placeBuilding(level, center, rotation, buildingVariant);
         level.removeBlock(campfire, false);
         resetToUnemployed(villager);
         villager.getPersistentData().remove(CAMPFIRE_POS_TAG);

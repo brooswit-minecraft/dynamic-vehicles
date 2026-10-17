@@ -47,6 +47,16 @@ public final class BuilderSettlementPlan {
                 && (minZ >> 4) == chunkZ && (maxZ >> 4) == chunkZ;
     }
 
+    /**
+     * The house is centred on the campfire's own chunk, not offset from the campfire itself: chunks are
+     * 16 blocks wide (0..15 locally), so the dead centre of the chunk containing {@code campfireCoordinate}
+     * is its chunk-floor coordinate times 16 plus 8. The arithmetic shift floors, so this holds for
+     * negative coordinates too.
+     */
+    public static int chunkCenterCoordinate(int campfireCoordinate) {
+        return (campfireCoordinate >> 4) * 16 + 8;
+    }
+
     /** Vanilla days are 24000 ticks and noon is tick 6000. */
     public static boolean isNoon(long dayTime) {
         return Math.floorMod(dayTime, 24000L) == 6000L;

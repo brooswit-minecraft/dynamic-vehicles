@@ -17,3 +17,7 @@ bump: patch
   settlement there the same way an unrelated obstacle in the footprint
   does, rather than relocating the Builder onto a tile that was never
   actually checked.
+- The exit's actual landing support (the block below it, where the Builder
+  settles via gravity) is no longer accepted just for being sturdy: a magma
+  block there now blocks settlement at that exit too, instead of dropping
+  the Builder onto damaging ground.

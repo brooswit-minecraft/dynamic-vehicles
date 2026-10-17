@@ -224,6 +224,35 @@ public final class BuilderSettlementGameTests {
     }
 
     @GameTest(template = "settlement_test")
+    public static void guaranteedRollPreservesCampfireWhenEveryExitHasHazardousLandingSupport(GameTestHelper helper) {
+        // Every exit tile itself stays clear, but the block the Builder would actually land on one tick
+        // after relocation (entrance.below()) is magma at all four exits -- sturdy, so the old sturdy-only
+        // landing check would have accepted it, but still a hazard to stand on. No safe landing exists
+        // anywhere, so settlement must leave the originating campfire and the Builder untouched.
+        prepareFixture(helper);
+        BlockPos center = expectedHouseCenter(helper);
+        BlockPos campfireAnchor = center.offset(-3, 0, -3);
+        Villager villager = builderAt(helper, campfireAnchor);
+        for (Direction direction : Direction.Plane.HORIZONTAL) {
+            helper.setBlock(center.relative(direction, BuilderSettlementPlan.HOUSE_FOOTPRINT_WIDTH / 2 + 1).below(), Blocks.MAGMA_BLOCK);
+        }
+        float healthBeforeSettlement = villager.getHealth();
+
+        BuilderSettlementService.attemptDonationSettlement(villager, 5);
+
+        helper.assertTrue(helper.getBlockState(campfireAnchor).is(Blocks.CAMPFIRE), "unsafe exits still consumed the originating campfire");
+        helper.assertTrue(villager.getVillagerData().getProfession() == BuilderProfession.BUILDER.get(), "unsafe exits still retired the Builder");
+        helper.assertTrue(villager.getHealth() == healthBeforeSettlement, "Builder was harmed by a landing hazard it was never placed on");
+        BlockPos villagerPos = helper.relativePos(villager.blockPosition());
+        helper.assertTrue(villagerPos.equals(campfireAnchor.offset(0, 0, 1)), "Builder was relocated despite settlement failing: " + villagerPos);
+        for (Direction direction : Direction.Plane.HORIZONTAL) {
+            helper.assertTrue(helper.getBlockState(center.relative(direction, BuilderSettlementPlan.HOUSE_FOOTPRINT_WIDTH / 2 + 1).below()).is(Blocks.MAGMA_BLOCK),
+                    "an unrelated hazard landing support was disturbed");
+        }
+        helper.succeed();
+    }
+
+    @GameTest(template = "settlement_test")
     public static void guaranteedRollPreservesCampfireWhenEveryExitIsEntityBlocked(GameTestHelper helper) {
         // A genuinely unrelated entity (not the settling Builder) standing in every possible exit must
         // still block settlement there, the same way an unrelated block obstacle does.

@@ -11,6 +11,7 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.BedBlock;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.DoorBlock;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BedPart;
 import net.minecraft.world.level.block.state.properties.DoubleBlockHalf;
 import net.minecraft.world.phys.AABB;
@@ -188,7 +189,7 @@ public final class BuilderSettlementService {
         if (!level.hasChunkAt(entrance) || !isEmptyOrCampfire(level, entrance, campfire)
                 || !isEmptyOrCampfire(level, entrance.above(), campfire)
                 || !isEmptyOrCampfire(level, entrance.above(2), campfire)
-                || !level.getBlockState(entrance.below()).isFaceSturdy(level, entrance.below(), Direction.UP)) return false;
+                || !isSafeLandingSupport(level, entrance.below())) return false;
         // The entity-occupancy check below only covers the house's own footprint, not the exit path, so an
         // unrelated entity standing in the Builder's landing spot needs its own check.
         AABB landing = new AABB(entrance.getX(), entrance.getY(), entrance.getZ(),
@@ -212,6 +213,16 @@ public final class BuilderSettlementService {
 
     private static boolean isEmptyOrCampfire(ServerLevel level, BlockPos pos, BlockPos campfire) {
         return level.isEmptyBlock(pos) || pos.equals(campfire);
+    }
+
+    /**
+     * The relocated Builder settles onto this block via ordinary gravity, so a merely sturdy top is not
+     * enough: a magma block is sturdy but damages anything standing on it, which would otherwise pass
+     * the old sturdy-only check while still being a hazard to land on.
+     */
+    private static boolean isSafeLandingSupport(ServerLevel level, BlockPos pos) {
+        BlockState state = level.getBlockState(pos);
+        return state.isFaceSturdy(level, pos, Direction.UP) && !state.is(Blocks.MAGMA_BLOCK);
     }
 
     private static void placeBuilding(ServerLevel level, BlockPos center, Direction rotation, VillageBuilding buildingVariant) {

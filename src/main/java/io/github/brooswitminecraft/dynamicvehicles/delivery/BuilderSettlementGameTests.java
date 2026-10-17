@@ -26,9 +26,13 @@ public final class BuilderSettlementGameTests {
 
     private static void prepareFixture(GameTestHelper helper) {
         // Establish an explicit surface and clear the GameTest barrier roof before heightmap checks.
-        // Widened from the original 20x20: the house now centres on the campfire's own absolute chunk,
-        // so its template-relative position shifts with wherever the test happens to land in the world.
-        for (int x = 0; x < 25; x++) for (int z = 0; z < 25; z++)
+        // Bounded to the template's own 24x24 footprint (settlement_test.nbt): the house centres on the
+        // campfire's own absolute chunk, so its template-relative position shifts with wherever the test
+        // happens to land in the world, and the template was grown to 24x24 so that every centre the
+        // chunk-center arithmetic can produce (relative 3..18) still leaves room for the anchor at
+        // centre-3 and the footprint/entrance at centre+3 without depending on GameTest's inter-structure
+        // gap to absorb an out-of-bounds write.
+        for (int x = 0; x < 24; x++) for (int z = 0; z < 24; z++)
             for (int y = 0; y <= 12; y++) helper.setBlock(new BlockPos(x, y, z), y < 2 ? Blocks.DIRT : Blocks.AIR);
     }
 
@@ -45,11 +49,6 @@ public final class BuilderSettlementGameTests {
         return ANCHOR.offset(absCenterX - absAnchor.getX(), 0, absCenterZ - absAnchor.getZ());
     }
 
-    private static Villager builder(GameTestHelper helper) {
-        prepareFixture(helper);
-        return builderAt(helper, ANCHOR);
-    }
-
     /** Spawns a Builder with a recorded campfire anchor at an arbitrary (already-prepared) position. */
     private static Villager builderAt(GameTestHelper helper, BlockPos anchor) {
         helper.setBlock(anchor, Blocks.CAMPFIRE);
@@ -63,8 +62,15 @@ public final class BuilderSettlementGameTests {
 
     @GameTest(template = "settlement_test")
     public static void completedDonationBuildsEnclosedHouseAndRetiresTradedBuilder(GameTestHelper helper) {
-        Villager villager = builder(helper);
+        prepareFixture(helper);
+        // Derive the anchor from the centre (as every other test here does) rather than placing the
+        // campfire at a fixed ANCHOR first: ANCHOR's chunk-relative centre moves with wherever the test
+        // happens to land in the world, and a fixed campfire position can land inside the resulting
+        // footprint for roughly 1 in 10 placements, tripping the "fixture blocks house" check below on
+        // the fixture itself rather than on real behaviour.
         BlockPos center = expectedHouseCenter(helper);
+        BlockPos campfireAnchor = center.offset(-3, 0, -3);
+        Villager villager = builderAt(helper, campfireAnchor);
         var player = GameTestMockPlayers.create(helper);
         villager.setTradingPlayer(player);
         // A plain offer has no custom take() subclass, just like one restored from a saved world.
@@ -76,7 +82,7 @@ public final class BuilderSettlementGameTests {
         for (int x=-2; x<=2; x++) for (int z=-2; z<=2; z++) for(int y=0;y<4;y++)
             helper.assertTrue(helper.getBlockState(center.offset(x,y,z)).isAir(), "fixture blocks house: " + center.offset(x,y,z));
         BuilderSettlementService.processPendingDonations(villager);
-        helper.assertTrue(!helper.getBlockState(ANCHOR).is(Blocks.CAMPFIRE), "guaranteed donation did not settle: anchor=" + helper.absolutePos(ANCHOR) + " center=" + center + " data=" + villager.getPersistentData());
+        helper.assertTrue(!helper.getBlockState(campfireAnchor).is(Blocks.CAMPFIRE), "guaranteed donation did not settle: anchor=" + helper.absolutePos(campfireAnchor) + " center=" + center + " data=" + villager.getPersistentData());
         helper.assertTrue(villager.getVillagerData().getProfession() == VillagerProfession.NONE, "Builder did not retire");
         helper.assertTrue(villager.getVillagerData().getLevel() == 1 && villager.getVillagerXp() == 0, "traded Builder kept progression");
         helper.assertTrue(villager.getOffers().isEmpty(), "retired Builder kept donation offers");
@@ -108,13 +114,18 @@ public final class BuilderSettlementGameTests {
 
     @GameTest(template = "settlement_test")
     public static void guaranteedRollStillPreservesBlockedSite(GameTestHelper helper) {
-        Villager villager = builder(helper);
+        prepareFixture(helper);
+        // Derive the anchor from the centre (see completedDonationBuildsEnclosedHouseAndRetiresTradedBuilder)
+        // instead of a fixed ANCHOR, which can otherwise land inside the centred footprint and have the
+        // CHEST below overwrite the campfire itself before settlement even runs.
+        BlockPos center = expectedHouseCenter(helper);
+        BlockPos campfireAnchor = center.offset(-3, 0, -3);
+        Villager villager = builderAt(helper, campfireAnchor);
         // The centred house footprint no longer depends on rotation, so blocking the single centre
         // point blocks every rotation attempt.
-        BlockPos center = expectedHouseCenter(helper);
         helper.setBlock(center, Blocks.CHEST);
         BuilderSettlementService.attemptDonationSettlement(villager, 5);
-        helper.assertTrue(helper.getBlockState(ANCHOR).is(Blocks.CAMPFIRE), "failed placement consumed anchor");
+        helper.assertTrue(helper.getBlockState(campfireAnchor).is(Blocks.CAMPFIRE), "failed placement consumed anchor");
         helper.assertTrue(villager.getVillagerData().getProfession() == BuilderProfession.BUILDER.get(), "failed placement retired Builder");
         helper.assertTrue(helper.getBlockState(center).is(Blocks.CHEST), "overwrote existing build");
         helper.succeed();

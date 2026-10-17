@@ -1,9 +1,9 @@
 package io.github.brooswitminecraft.dynamicvehicles.delivery;
 
+import net.minecraft.Util;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.npc.VillagerProfession;
 import net.minecraft.world.item.trading.MerchantOffers;
@@ -92,7 +92,7 @@ public final class BuilderSettlementService {
         Direction rotation = null;
         java.util.List<Direction> rotations = new java.util.ArrayList<>(
                 java.util.Arrays.asList(Direction.Plane.HORIZONTAL.stream().toArray(Direction[]::new)));
-        java.util.Collections.shuffle(rotations, new java.util.Random(level.random.nextLong()));
+        Util.shuffle(rotations, level.random);
         for (Direction candidate : rotations) {
             if (isInCampfireChunk(campfire, center, candidate)
                     && isSafeBuildingSite(level, campfire, villager, center, candidate)) {

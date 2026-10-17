@@ -53,8 +53,15 @@ public final class DispatcherInteractionHandler {
         double dangerMax = DispatcherOfferConfig.DANGER_MAX.get();
         List<DispatcherOfferRow> rows = DispatcherOfferMenu.toRows(offers);
 
+        DispatcherMenuAnchor anchor = openingPlayer -> {
+            boolean sameLevel = villager.level() == openingPlayer.level();
+            boolean hasProfession = villager.getVillagerData().getProfession() == DispatcherProfession.DISPATCHER.get();
+            double distanceSquared = sameLevel ? villager.distanceToSqr(openingPlayer) : Double.MAX_VALUE;
+            return DispatcherMenuValidity.isValid(villager.isAlive(), hasProfession, sameLevel, distanceSquared);
+        };
+
         player.openMenu(
-                new DispatcherOfferMenuProvider(offers, villager.getDisplayName(), dangerMin, dangerMax, villager),
+                new DispatcherOfferMenuProvider(offers, villager.getDisplayName(), dangerMin, dangerMax, villager.getUUID(), anchor),
                 buf -> DispatcherOfferMenu.writeExtraData(buf, dangerMin, dangerMax, rows));
 
         ProfessionInteraction.consume(event);

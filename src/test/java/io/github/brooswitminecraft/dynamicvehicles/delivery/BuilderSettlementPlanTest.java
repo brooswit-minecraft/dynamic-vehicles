@@ -14,6 +14,12 @@ class BuilderSettlementPlanTest {
         assertEquals(0.25D, BuilderSettlementPlan.donationSettlementChance(3, 3));
         assertEquals(0.5625D, BuilderSettlementPlan.donationSettlementChance(4, 4));
         assertEquals(1.0D, BuilderSettlementPlan.donationSettlementChance(5, 5));
+        // AC3's required example (5/3=50%): every case above is symmetric (level == tier), so a
+        // regression that drops the tradeTier factor entirely (e.g. squaring only the level term) would
+        // still pass all of them while this case silently became guaranteed (1.0) instead of 50%.
+        assertEquals(0.5D, BuilderSettlementPlan.donationSettlementChance(5, 3));
+        assertEquals(0.5D, BuilderSettlementPlan.donationSettlementChance(3, 5));
+        assertEquals(0.25D, BuilderSettlementPlan.donationSettlementChance(5, 2));
         assertEquals(0.0D, BuilderSettlementPlan.passiveSettlementChance(1));
         assertEquals(0.0002D, BuilderSettlementPlan.passiveSettlementChance(2));
         assertEquals(0.0004D, BuilderSettlementPlan.passiveSettlementChance(3));

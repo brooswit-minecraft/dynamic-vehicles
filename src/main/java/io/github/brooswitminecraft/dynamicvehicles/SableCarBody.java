@@ -10,8 +10,13 @@ import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.Pose3d;
 import io.github.brooswitminecraft.dynamicterrain.SurfaceProperties;
 import io.github.brooswitminecraft.dynamicterrain.Surfaces;
+import io.github.brooswitminecraft.dynamicterrain.TireContactSampler;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.tags.FluidTags;
 import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
@@ -58,6 +63,14 @@ final class SableCarBody {
     //    airborne/zero-load/raycast-miss wheel: deliberate, see that guard's own comment.
     private final double[] suspensionTravel;
     private final double[] steerAngle;
+    // Previous tick's contact point per wheel (block, contacted face, and block-local 0..1 position),
+    // null until that wheel has first touched ground. Lets contactPatch() integrate texture evidence
+    // over the texels actually crossed between ticks instead of sampling a single frozen point. Reset to
+    // null whenever a wheel is airborne or lands on a different block/face, so a gap in contact or a jump
+    // across blocks is never read as a texel sweep between two unrelated points.
+    private final BlockPos[] lastContactBlockPos;
+    private final Direction[] lastContactFace;
+    private final Vec3[] lastContactLocal;
 
     private SableCarBody(VehicleSpec spec, ServerLevel level, BoxPhysicsObject box, RigidBodyHandle body) {
         this.spec = spec;
@@ -68,6 +81,9 @@ final class SableCarBody {
         this.wheelSpin = new double[spec.mounts().length];
         this.suspensionTravel = new double[spec.mounts().length];
         this.steerAngle = new double[spec.mounts().length];
+        this.lastContactBlockPos = new BlockPos[spec.mounts().length];
+        this.lastContactFace = new Direction[spec.mounts().length];
+        this.lastContactLocal = new Vec3[spec.mounts().length];
     }
 
     /** Body orientation for a Minecraft yaw: the body's +Z axis points where the entity faces. */
@@ -130,6 +146,15 @@ final class SableCarBody {
         double[] distances = new double[wheelCount];
         double[] compressions = new double[wheelCount];
         int[] partners = new int[wheelCount];
+        // Per-texel texture refinement on top of the block-level grip/rollingResistance (TextureGripMath),
+        // from the texels the contact patch actually crossed since last tick (Surfaces.contactPatch()).
+        // Computed once per tick here, alongside the single raycast per wheel, not per sub-step: the
+        // evidence does not change within a tick any more than the block-level SurfaceProperties does.
+        // 1.0 (no effect) until/unless a same-block-and-face previous contact gives real evidence to sample.
+        double[] textureGrip = new double[wheelCount];
+        double[] textureRolling = new double[wheelCount];
+        java.util.Arrays.fill(textureGrip, 1.0);
+        java.util.Arrays.fill(textureRolling, 1.0);
         for (int wheel = 0; wheel < wheelCount; wheel++) {
             double[] mount = spec.mounts()[wheel];
             Vector3d offset = orientation.transform(new Vector3d(mount[0], mount[1], mount[2]));
@@ -141,12 +166,31 @@ final class SableCarBody {
                     ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, car));
             wheelHits[wheel] = hit;
             if (hit.getType() == HitResult.Type.MISS) {
+                lastContactBlockPos[wheel] = null;
+                lastContactFace[wheel] = null;
+                lastContactLocal[wheel] = null;
                 continue;
             }
             double distance = hit.getLocation().distanceTo(new Vec3(from.x, from.y, from.z));
             distances[wheel] = distance;
             compressions[wheel] = spec.restLength() - distance;
             hits.add(new Vector3d(hit.getLocation().x, hit.getLocation().y, hit.getLocation().z));
+
+            BlockPos blockPos = hit.getBlockPos();
+            Direction face = hit.getDirection();
+            Vec3 local = hit.getLocation().subtract(Vec3.atLowerCornerOf(blockPos));
+            if (blockPos.equals(lastContactBlockPos[wheel]) && face == lastContactFace[wheel]) {
+                Vec3 last = lastContactLocal[wheel];
+                java.util.Optional<TireContactSampler.ContactPatch> patch = Surfaces.contactPatch(
+                        level, blockPos, face, last.x, last.y, last.z, local.x, local.y, local.z);
+                if (patch.isPresent()) {
+                    textureGrip[wheel] = TextureGripMath.gripMultiplier(patch.get().average());
+                    textureRolling[wheel] = TextureGripMath.rollingResistanceMultiplier(patch.get().average());
+                }
+            }
+            lastContactBlockPos[wheel] = blockPos;
+            lastContactFace[wheel] = face;
+            lastContactLocal[wheel] = local;
         }
         // Published to clients as-is: this IS the single per-wheel raycast result above, not a second
         // one. Copied into the final field (not reassigned to the local array itself) so a future write
@@ -228,7 +272,7 @@ final class SableCarBody {
                 }
                 SurfaceProperties surface = Surfaces.at(level, wheelHits[wheel].getBlockPos());
                 double gripMu = WheelMath.BASE_FRICTION * Math.min(1.0, surface.grip() * spec.looseGrip())
-                        * spec.downforceGripMultiplier(forwardSpeed);
+                        * spec.downforceGripMultiplier(forwardSpeed) * textureGrip[wheel];
                 gripForces[wheel] = gripMu * forces[wheel];
             }
 
@@ -354,8 +398,9 @@ final class SableCarBody {
                 // whose downforceGripPerSpeed is 0.0 (every existing vehicle), so this multiply is a no-op
                 // for them - see VehicleSpec.INDY's own javadoc for the one vehicle that sets it nonzero.
                 double gripMu = WheelMath.BASE_FRICTION * Math.min(1.0, surface.grip() * spec.looseGrip())
-                        * spec.downforceGripMultiplier(forwardSpeed);
-                double rollingCoefficient = surface.rollingResistance() * spec.rollingScale();
+                        * spec.downforceGripMultiplier(forwardSpeed) * textureGrip[wheel];
+                double rollingCoefficient = WheelMath.rollingCoefficient(surface.rollingResistance(), surface.deformability(), spec.rollingScale())
+                        * textureRolling[wheel];
                 double effectiveMass = spec.massKg() / 4.0;
                 // isIdentity() is checked on the SPEC's own hard-wired tireTuning(), never on config, so
                 // CAR/TRUCK/TROPHY (always IDENTITY in code) can never be routed into DriftTireModel no
@@ -427,11 +472,55 @@ final class SableCarBody {
                 SlipReporter.report(level, wheelHits[wheel].getBlockPos(), wearSlipMax[wheel], wearSlipForce[wheel] / GRAVITY);
             }
         }
-        // Air drag along the velocity: once per tick in total, at the full dt, not once per sub-step -
-        // using the velocity as it stands after every sub-step's impulses.
+        // MINECRAFT-259: water/lava buoyancy, independent of speed -- a car sitting still in a flooded
+        // quarry still wants to float (water) or be pushed up harder (lava). getFluidHeight is NOT a 0..1
+        // bounding-box fraction (review, PR #159): it is the fluid's surface height in blocks above this
+        // entity's own Y, so it must be normalized against the car's own full height before it means
+        // "how submerged" -- see EnvironmentMath.submersionFraction's own javadoc for why that matters for
+        // a short vehicle vs. a tall one. It is already kept current by super.tick()'s fluid-state
+        // bookkeeping in CarEntity.tick, so no extra sampling here.
+        double vehicleHeight = 2.0 * spec.halfY();
+        double waterFraction = EnvironmentMath.submersionFraction(car.getFluidHeight(FluidTags.WATER), vehicleHeight);
+        double lavaFraction = EnvironmentMath.submersionFraction(car.getFluidHeight(FluidTags.LAVA), vehicleHeight);
+        double fluidScale = CarConfig.FLUID_EFFECTS.get();
+        if (fluidScale > 0.0 && (waterFraction > 0.0 || lavaFraction > 0.0)) {
+            double buoyancy = fluidScale * (
+                    EnvironmentMath.buoyantForce(spec.massKg(), GRAVITY, waterFraction, EnvironmentMath.WATER_BUOYANCY)
+                    + EnvironmentMath.buoyantForce(spec.massKg(), GRAVITY, lavaFraction, EnvironmentMath.LAVA_BUOYANCY));
+            Vector3d buoyantImpulse = inverse.transform(new Vector3d(0, buoyancy * dt, 0));
+            body.applyImpulseAtPoint(new Vector3d(0, 0, 0), buoyantImpulse);
+        }
+        // MINECRAFT-259: pass-through foliage resistance -- sampled at each wheel's own horizontal
+        // position, at the car's feet height, since that is where a block like tall grass actually sits
+        // as a wheel drives over it; the wheel raycast above cannot see these (it casts with
+        // ClipContext.Block.COLLIDER, which foliage has none of, so it passes straight through to the
+        // real ground beneath). AIR applies none because it never has an empty-but-non-air collision
+        // shape; every other pass-through block gets at least EnvironmentMath.FOLIAGE_BASELINE, scaled up
+        // by its own hardness (see EnvironmentMath's own javadoc for why hardness was chosen). Water and
+        // lava also have an empty collision shape and are not air, so they must be excluded explicitly
+        // (review, PR #159) -- otherwise fluidEffects=0 would still add spurious "foliage" drag inside a
+        // fluid, and fluid tiles would double up with the buoyancy/drag handling above.
+        double foliageDragTotal = 0.0;
+        double foliageScale = CarConfig.FOLIAGE_RESISTANCE.get();
+        if (foliageScale > 0.0) {
+            double feetY = position.y - spec.halfY();
+            for (int wheel = 0; wheel < wheelCount; wheel++) {
+                BlockPos pos = BlockPos.containing(position.x + wheelOffsets[wheel].x, feetY + 0.1, position.z + wheelOffsets[wheel].z);
+                BlockState state = level.getBlockState(pos);
+                if (isFoliage(state, level, pos)) {
+                    foliageDragTotal += foliageScale * EnvironmentMath.foliageDragCoefficient(state.getDestroySpeed(level, pos));
+                }
+            }
+        }
+        // Air drag (plus any fluid/foliage drag above) along the velocity: once per tick in total, at the
+        // full dt, not once per sub-step - using the velocity as it stands after every sub-step's impulses.
         double speed = subLinear.length();
         if (speed > 0.5) {
-            Vector3d drag = inverse.transform(new Vector3d(subLinear).mul(-AIR_DRAG * spec.forceScale() * speed * dt));
+            double fluidDrag = fluidScale * (
+                    EnvironmentMath.fluidDragCoefficient(waterFraction, EnvironmentMath.WATER_DRAG)
+                    + EnvironmentMath.fluidDragCoefficient(lavaFraction, EnvironmentMath.LAVA_DRAG));
+            double dragCoeff = AIR_DRAG + fluidDrag + foliageDragTotal;
+            Vector3d drag = inverse.transform(new Vector3d(subLinear).mul(-dragCoeff * spec.forceScale() * speed * dt));
             body.applyImpulseAtPoint(new Vector3d(0, 0, 0), drag);
         }
         lastSlipSpeed = slipThisTick;
@@ -456,6 +545,18 @@ final class SableCarBody {
         car.publishOrientation(new org.joml.Quaternionf((float) orientation.x, (float) orientation.y, (float) orientation.z, (float) orientation.w));
         Vector3d v = body.getLinearVelocity(new Vector3d());
         car.setDeltaMovement(v.x / 20.0, v.y / 20.0, v.z / 20.0);
+    }
+
+    /**
+     * MINECRAFT-259: whether {@code state} is a pass-through foliage block that should add resistance --
+     * not air, not a fluid (water/lava also have an empty collision shape, but the buoyancy/drag block
+     * above already owns them), and no collision shape of its own. Package-private, not private, so
+     * EnvironmentGameTests can exercise this exact production classification directly against real block
+     * states (air, ordinary vegetation, water) instead of only against EnvironmentMath's own pre-normalized
+     * constants (review, PR #159).
+     */
+    static boolean isFoliage(BlockState state, ServerLevel level, BlockPos pos) {
+        return !state.isAir() && state.getFluidState().isEmpty() && state.getCollisionShape(level, pos).isEmpty();
     }
 
     /**

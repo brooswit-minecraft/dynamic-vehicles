@@ -5,7 +5,6 @@ import net.neoforged.neoforge.common.ModConfigSpec;
 /** Server config for the car. */
 public final class CarConfig {
     public static final ModConfigSpec SPEC;
-    public static final ModConfigSpec.BooleanValue USE_SABLE_PHYSICS;
     public static final ModConfigSpec.BooleanValue WEAR_ENABLED;
     public static final ModConfigSpec.DoubleValue WEAR_STRENGTH;
     public static final ModConfigSpec.BooleanValue SMOKE_ENABLED;
@@ -24,19 +23,17 @@ public final class CarConfig {
     public static final ModConfigSpec.DoubleValue DRIFT_HANDBRAKE_REAR_GRIP_CUT;
     public static final ModConfigSpec.DoubleValue DRIFT_THROTTLE_BITE;
     public static final ModConfigSpec.DoubleValue DRIFT_COUNTER_STEER_ASSIST;
+    public static final ModConfigSpec.DoubleValue FOLIAGE_RESISTANCE;
+    public static final ModConfigSpec.DoubleValue FLUID_EFFECTS;
 
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
-        USE_SABLE_PHYSICS = builder
-                .comment("Drive the car with Sable rigid-body physics (per-wheel suspension) instead of the simple "
-                        + "kinematic model. Needs the Sable mod; without it the simple model is used regardless.")
-                .define("useSablePhysics", true);
         WEAR_ENABLED = builder
-                .comment("Cars wear the ground under their wheels, more while accelerating (needs Dynamic Terrain's vehicleErosion, default on; world erosion can stay off).")
+                .comment("Cars wear the ground under their wheels: real tire slip (burnouts, drifts, locked braking) plus a little extra while accelerating (needs Dynamic Terrain's vehicleErosion, default on; world erosion can stay off).")
                 .define("wearEnabled", true);
         WEAR_STRENGTH = builder
-                .comment("Multiplier on the acceleration/braking wear (0 = only real tire slip wears the ground).")
-                .defineInRange("wearMultiplier", 2.5, 0.0, 10.0);
+                .comment("Multiplier on the acceleration/braking wear that is added to real tire slip (0 = only real tire slip wears the ground).")
+                .defineInRange("wearMultiplier", 5.0, 0.0, 10.0);
         SMOKE_ENABLED = builder
                 .comment("Cars emit Dynamic Atmosphere exhaust (while on the throttle and moving) and dust (at speed or sliding). Needs Dynamic Atmosphere.")
                 .define("smokeEnabled", true);
@@ -97,6 +94,12 @@ public final class CarConfig {
         DRIFT_COUNTER_STEER_ASSIST = builder
                 .comment("Fraction of a drift-tuned tire's grip lost to driftGripFalloff restored when the driver steers into the slide, i.e. countersteers (0 = no recovery assist, 1 = a full countersteer fully restores grip).")
                 .defineInRange("driftCounterSteerAssist", 0.8, 0.0, 1.0);
+        FOLIAGE_RESISTANCE = builder
+                .comment("Multiplier on the slight drag every pass-through block (short/tall grass, ferns, vines, etc. -- anything with no collision shape that is not air) adds while a wheel is over it. 0 = off.")
+                .defineInRange("foliageResistance", 1.0, 0.0, 10.0);
+        FLUID_EFFECTS = builder
+                .comment("Multiplier on water/lava buoyancy (substantially counteracts gravity; lava more than water) and the extra drag they add on top of air drag (lava more than water). 0 = cars sink and drive through fluids unaffected, same as before this existed.")
+                .defineInRange("fluidEffects", 1.0, 0.0, 10.0);
         SPEC = builder.build();
     }
 

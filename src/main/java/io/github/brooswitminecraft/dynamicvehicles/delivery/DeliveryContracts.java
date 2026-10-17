@@ -2,8 +2,9 @@ package io.github.brooswitminecraft.dynamicvehicles.delivery;
 
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.entity.npc.Villager;
 import net.neoforged.neoforge.network.PacketDistributor;
+
+import java.util.UUID;
 
 import io.github.brooswitminecraft.dynamicvehicles.DispatcherOfferConfig;
 
@@ -32,15 +33,18 @@ public final class DeliveryContracts {
      * with player-visible feedback if one is already active (defense in
      * depth alongside {@link DispatcherInteractionHandler}'s own check,
      * for the same-tick race a stale menu could otherwise exploit).
+     *
+     * @param dispatcherId the UUID identifying the dispatch source the offer came from — a
+     *                      Dispatcher villager's own UUID, or a dispatch board's persisted UUID
      */
-    public static void tryAccept(ServerPlayer player, Villager dispatcher, DestinationOffer offer) {
+    public static void tryAccept(ServerPlayer player, UUID dispatcherId, DestinationOffer offer) {
         DeliveryContractStorage storage = DeliveryContractStorage.of(player.server);
         long now = player.server.overworld().getGameTime();
         PredictedVillage village = offer.village();
 
         DeliveryContract contract = new DeliveryContract(
                 player.getUUID(),
-                dispatcher.getUUID(),
+                dispatcherId,
                 village.identity().dimension().location().toString(),
                 village.identity().region().x(),
                 village.identity().region().z(),

@@ -33,6 +33,7 @@ import net.neoforged.neoforge.registries.DeferredRegister;
 
 import io.github.brooswitminecraft.dynamicvehicles.delivery.ContractTickHandler;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.DeliveryHudPayload;
+import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatchBoardBlockEntities;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherBlocks;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherInteractionHandler;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherOfferAcceptPayload;
@@ -117,6 +118,7 @@ public class DynamicVehiclesMod {
         ENTITIES.register(modEventBus);
         ITEMS.register(modEventBus);
         DispatcherBlocks.BLOCKS.register(modEventBus);
+        DispatchBoardBlockEntities.BLOCK_ENTITY_TYPES.register(modEventBus);
         DispatcherPoiTypes.POI_TYPES.register(modEventBus);
         DispatcherProfession.PROFESSIONS.register(modEventBus);
         BuilderPoiTypes.POI_TYPES.register(modEventBus);
@@ -154,7 +156,6 @@ public class DynamicVehiclesMod {
         LOGGER.info("Dynamic Vehicles loaded");
     }
 
-    /** Debug entry point: /dvspin <slipSpeed> <ticks> makes every loaded car's wheels report that slip, to exercise terrain wear. */
     private void registerCommands(RegisterCommandsEvent event) {
         // /dtcar debug on|off: draws each car's physics box (red) and where its suspension rays hit the ground (green).
         var dtcar = Commands.literal("dtcar").requires(source -> source.hasPermission(2));
@@ -195,20 +196,6 @@ public class DynamicVehiclesMod {
                                     context.getSource().sendSuccess(() -> Component.literal("driving " + count + " car(s)"), true);
                                     return count;
                                 })))));
-        event.getDispatcher().register(Commands.literal("dvspin").requires(source -> source.hasPermission(2))
-                .then(Commands.argument("slip", DoubleArgumentType.doubleArg(0))
-                        .then(Commands.argument("ticks", IntegerArgumentType.integer(1, 24000)).executes(context -> {
-                            int cars = 0;
-                            for (net.minecraft.world.entity.Entity entity : context.getSource().getLevel().getAllEntities()) {
-                                if (entity instanceof CarEntity car) {
-                                    car.forceSlip(DoubleArgumentType.getDouble(context, "slip"), IntegerArgumentType.getInteger(context, "ticks"));
-                                    cars++;
-                                }
-                            }
-                            int count = cars;
-                            context.getSource().sendSuccess(() -> Component.literal("forced slip on " + count + " car(s)"), true);
-                            return count;
-                        }))));
     }
 
     private static int tuneDrivenVehicle(com.mojang.brigadier.context.CommandContext<net.minecraft.commands.CommandSourceStack> context,

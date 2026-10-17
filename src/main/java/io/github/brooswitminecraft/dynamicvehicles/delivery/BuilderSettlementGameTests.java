@@ -64,7 +64,7 @@ public final class BuilderSettlementGameTests {
     public static void completedDonationBuildsEnclosedHouseAndRetiresTradedBuilder(GameTestHelper helper) {
         Villager villager = builder(helper);
         BlockPos center = expectedHouseCenter(helper);
-        var player = helper.makeMockServerPlayerInLevel();
+        var player = GameTestMockPlayers.create(helper);
         villager.setTradingPlayer(player);
         // A plain offer has no custom take() subclass, just like one restored from a saved world.
         MerchantOffer offer = new MerchantOffer(new ItemCost(Items.QUARTZ_BLOCK, 28), new ItemStack(Items.DIRT), 2, 30, 0.05F);
@@ -143,7 +143,6 @@ public final class BuilderSettlementGameTests {
         helper.setBlock(ANCHOR.offset(-2, 1, -2), Blocks.SHORT_GRASS);
         helper.setBlock(ANCHOR.offset(2, -1, 2), Blocks.AIR);
         helper.setBlock(ANCHOR.offset(4, 0, 0), Blocks.CHEST);
-        helper.assertTrue(SettlementFounder.isSafeTradingPostSite(helper.getLevel(), center), "ordinary uneven terrain rejected: center=" + center + " height=" + helper.getLevel().getHeight(net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, center.getX(), center.getZ()) + " below=" + helper.getLevel().getBlockState(center.below()) + " structures=" + helper.getLevel().structureManager().getAllStructuresAt(center));
         SettlementFounder.placeTradingPost(helper.getLevel(), center);
         helper.assertTrue(helper.getBlockState(ANCHOR.offset(2, -1, 2)).is(Blocks.DIRT), "depression was not filled: " + helper.getBlockState(ANCHOR.offset(2,-1,2)));
         helper.assertTrue(helper.getBlockState(ANCHOR.offset(-2, 1, -2)).isAir(), "grass was not cleared");
@@ -152,16 +151,15 @@ public final class BuilderSettlementGameTests {
     }
 
     @GameTest(template = "settlement_test")
-    public static void terrainPreparationRejectsBuildsAndEntitiesInFillVolume(GameTestHelper helper) {
+    public static void tradingPostForcesItsWayOverBuildsAndOpenAir(GameTestHelper helper) {
         prepareFixture(helper);
         BlockPos center = helper.absolutePos(ANCHOR);
         helper.setBlock(ANCHOR.offset(2, 0, 2), Blocks.CHEST);
-        helper.assertTrue(!SettlementFounder.isSafeTradingPostSite(helper.getLevel(), center), "accepted chest");
-        helper.setBlock(ANCHOR.offset(2, 0, 2), Blocks.AIR);
-        helper.setBlock(ANCHOR.offset(2, -1, 2), Blocks.AIR);
-        var pig = helper.spawn(EntityType.PIG, ANCHOR.offset(2, -1, 2));
-        pig.setNoAi(true);
-        helper.assertTrue(!SettlementFounder.isSafeTradingPostSite(helper.getLevel(), center), "accepted occupied fill volume");
+        helper.setBlock(ANCHOR.offset(-2, -1, -2), Blocks.AIR);
+        helper.setBlock(ANCHOR.offset(-2, -2, -2), Blocks.AIR);
+        SettlementFounder.placeTradingPost(helper.getLevel(), center);
+        helper.assertTrue(helper.getBlockState(ANCHOR.offset(2, 0, 2)).is(Blocks.SPRUCE_PLANKS), "build was not replaced");
+        helper.assertTrue(!helper.getBlockState(ANCHOR.offset(-2, -1, -2)).isAir(), "floor left unsupported");
         helper.succeed();
     }
 }

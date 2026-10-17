@@ -25,8 +25,23 @@ public final class BuilderSettlementGameTests {
 
     private static void prepareFixture(GameTestHelper helper) {
         // Establish an explicit surface and clear the GameTest barrier roof before heightmap checks.
-        for (int x = 0; x < 20; x++) for (int z = 0; z < 20; z++)
+        // Widened from the original 20x20: the house now centres on the campfire's own absolute chunk,
+        // so its template-relative position shifts with wherever the test happens to land in the world.
+        for (int x = 0; x < 25; x++) for (int z = 0; z < 25; z++)
             for (int y = 0; y <= 12; y++) helper.setBlock(new BlockPos(x, y, z), y < 2 ? Blocks.DIRT : Blocks.AIR);
+    }
+
+    /**
+     * The house now centres on the campfire's own chunk (an absolute-coordinate computation), not a
+     * fixed offset from ANCHOR, so where it lands relative to this template depends on where the test
+     * happens to be placed in the world. Translate the absolute chunk centre back into template-relative
+     * space so assertions below can keep using helper's relative-position methods.
+     */
+    private static BlockPos expectedHouseCenter(GameTestHelper helper) {
+        BlockPos absAnchor = helper.absolutePos(ANCHOR);
+        int absCenterX = BuilderSettlementPlan.chunkCenterCoordinate(absAnchor.getX());
+        int absCenterZ = BuilderSettlementPlan.chunkCenterCoordinate(absAnchor.getZ());
+        return ANCHOR.offset(absCenterX - absAnchor.getX(), 0, absCenterZ - absAnchor.getZ());
     }
 
     private static Villager builder(GameTestHelper helper) {
@@ -43,6 +58,7 @@ public final class BuilderSettlementGameTests {
     @GameTest(template = "settlement_test")
     public static void completedDonationBuildsEnclosedHouseAndRetiresTradedBuilder(GameTestHelper helper) {
         Villager villager = builder(helper);
+        BlockPos center = expectedHouseCenter(helper);
         var player = helper.makeMockServerPlayerInLevel();
         villager.setTradingPlayer(player);
         // A plain offer has no custom take() subclass, just like one restored from a saved world.
@@ -51,26 +67,21 @@ public final class BuilderSettlementGameTests {
         helper.assertTrue(villager.getPersistentData().getIntArray("dynamicvehicles.pendingBuilderDonations").length == 2,
                 "completed-trade listener did not queue the donation");
         villager.setVillagerXp(villager.getVillagerXp() + offer.getXp());
-        for (Direction d : Direction.Plane.HORIZONTAL) {
-            BlockPos c = helper.absolutePos(ANCHOR.relative(d, 4));
-            for (int x=-2; x<=2; x++) for (int z=-2; z<=2; z++) for(int y=0;y<4;y++)
-                helper.assertTrue(helper.getLevel().isEmptyBlock(c.offset(x,y,z)), "fixture blocks house: " + c.offset(x,y,z) + " " + helper.getLevel().getBlockState(c.offset(x,y,z)));
-        }
+        for (int x=-2; x<=2; x++) for (int z=-2; z<=2; z++) for(int y=0;y<4;y++)
+            helper.assertTrue(helper.getBlockState(center.offset(x,y,z)).isAir(), "fixture blocks house: " + center.offset(x,y,z));
         BuilderSettlementService.processPendingDonations(villager);
-        helper.assertTrue(!helper.getBlockState(ANCHOR).is(Blocks.CAMPFIRE), "guaranteed donation did not settle: anchor=" + helper.absolutePos(ANCHOR) + " support=" + helper.getBlockState(ANCHOR.offset(4, -1, 0)) + " data=" + villager.getPersistentData());
+        helper.assertTrue(!helper.getBlockState(ANCHOR).is(Blocks.CAMPFIRE), "guaranteed donation did not settle: anchor=" + helper.absolutePos(ANCHOR) + " center=" + center + " data=" + villager.getPersistentData());
         helper.assertTrue(villager.getVillagerData().getProfession() == VillagerProfession.NONE, "Builder did not retire");
         helper.assertTrue(villager.getVillagerData().getLevel() == 1 && villager.getVillagerXp() == 0, "traded Builder kept progression");
         helper.assertTrue(villager.getOffers().isEmpty(), "retired Builder kept donation offers");
-        BlockPos center = null;
+        helper.assertTrue(helper.getBlockState(center.above()).getBlock() instanceof BedBlock, "house has no bed head");
         Direction facing = null;
         for (Direction direction : Direction.Plane.HORIZONTAL) {
-            BlockPos candidate = ANCHOR.relative(direction, 4);
-            if (helper.getBlockState(candidate.above()).getBlock() instanceof BedBlock) {
-                center = candidate;
+            if (helper.getBlockState(center.relative(direction.getOpposite()).above()).getBlock() instanceof BedBlock) {
                 facing = direction;
             }
         }
-        helper.assertTrue(center != null, "house has no bed head");
+        helper.assertTrue(facing != null, "house has no bed foot to determine facing");
         int doors = 0;
         for (int x = -2; x <= 2; x++) for (int z = -2; z <= 2; z++) {
             helper.assertTrue(!helper.getBlockState(center.offset(x, 0, z)).isAir(), "missing floor");
@@ -92,11 +103,14 @@ public final class BuilderSettlementGameTests {
     @GameTest(template = "settlement_test")
     public static void guaranteedRollStillPreservesBlockedSite(GameTestHelper helper) {
         Villager villager = builder(helper);
-        for (Direction direction : Direction.Plane.HORIZONTAL) helper.setBlock(ANCHOR.relative(direction, 4), Blocks.CHEST);
+        // The centred house footprint no longer depends on rotation, so blocking the single centre
+        // point blocks every rotation attempt.
+        BlockPos center = expectedHouseCenter(helper);
+        helper.setBlock(center, Blocks.CHEST);
         BuilderSettlementService.attemptDonationSettlement(villager, 5);
         helper.assertTrue(helper.getBlockState(ANCHOR).is(Blocks.CAMPFIRE), "failed placement consumed anchor");
         helper.assertTrue(villager.getVillagerData().getProfession() == BuilderProfession.BUILDER.get(), "failed placement retired Builder");
-        for (Direction direction : Direction.Plane.HORIZONTAL) helper.assertTrue(helper.getBlockState(ANCHOR.relative(direction, 4)).is(Blocks.CHEST), "overwrote existing build");
+        helper.assertTrue(helper.getBlockState(center).is(Blocks.CHEST), "overwrote existing build");
         helper.succeed();
     }
 

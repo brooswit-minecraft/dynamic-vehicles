@@ -237,14 +237,19 @@ public final class BuilderSettlementGameTests {
             helper.setBlock(center.relative(direction, BuilderSettlementPlan.HOUSE_FOOTPRINT_WIDTH / 2 + 1).below(), Blocks.MAGMA_BLOCK);
         }
         float healthBeforeSettlement = villager.getHealth();
+        // Snapshot empirically rather than recomputing an expected coordinate: round-tripping an entity's
+        // position through the GameTest relative/absolute transform is lossy for fractional (spawn-style)
+        // positions under some test rotations (see the pig snapshot above), which isn't what this
+        // assertion means to exercise.
+        Vec3 villagerPosBefore = villager.position();
 
         BuilderSettlementService.attemptDonationSettlement(villager, 5);
 
         helper.assertTrue(helper.getBlockState(campfireAnchor).is(Blocks.CAMPFIRE), "unsafe exits still consumed the originating campfire");
         helper.assertTrue(villager.getVillagerData().getProfession() == BuilderProfession.BUILDER.get(), "unsafe exits still retired the Builder");
         helper.assertTrue(villager.getHealth() == healthBeforeSettlement, "Builder was harmed by a landing hazard it was never placed on");
-        BlockPos villagerPos = helper.relativePos(villager.blockPosition());
-        helper.assertTrue(villagerPos.equals(campfireAnchor.offset(0, 0, 1)), "Builder was relocated despite settlement failing: " + villagerPos);
+        helper.assertTrue(villager.position().equals(villagerPosBefore),
+                "Builder was relocated despite settlement failing: was " + villagerPosBefore + ", now " + villager.position());
         for (Direction direction : Direction.Plane.HORIZONTAL) {
             helper.assertTrue(helper.getBlockState(center.relative(direction, BuilderSettlementPlan.HOUSE_FOOTPRINT_WIDTH / 2 + 1).below()).is(Blocks.MAGMA_BLOCK),
                     "an unrelated hazard landing support was disturbed");

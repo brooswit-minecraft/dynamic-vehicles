@@ -5,3 +5,7 @@ bump: patch
   chunk instead of offsetting it a fixed 4 blocks from the campfire, so the
   house always sits in the chunk's dead centre rather than merely staying
   inside the chunk boundary.
+- Since the centred house can now contain the originating campfire and the
+  Builder standing at it, both are excluded from the pre-placement occupancy
+  check so settlement can still succeed, and the campfire is only explicitly
+  removed afterwards when it fell outside the new house's own footprint.

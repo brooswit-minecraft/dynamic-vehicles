@@ -116,4 +116,17 @@ class BuilderSettlementPlanTest {
                 BuilderSettlementPlan.chunkCenterCoordinate(13), BuilderSettlementPlan.chunkCenterCoordinate(-3),
                 BuilderSettlementPlan.chunkCenterCoordinate(13), BuilderSettlementPlan.chunkCenterCoordinate(-3)));
     }
+
+    @Test
+    void theOriginatingCampfireCanNowLandInsideTheCentredHouseFootprint() {
+        // Dead centre and every corner of the 5x5 footprint (radius 2) are inside.
+        assertTrue(BuilderSettlementPlan.isWithinHouseFootprint(8, 8, 8, 8));
+        assertTrue(BuilderSettlementPlan.isWithinHouseFootprint(8, 8, 6, 6));
+        assertTrue(BuilderSettlementPlan.isWithinHouseFootprint(8, 8, 10, 10));
+        assertTrue(BuilderSettlementPlan.isWithinHouseFootprint(8, 8, 6, 10));
+        // One block past the radius on either axis is outside.
+        assertFalse(BuilderSettlementPlan.isWithinHouseFootprint(8, 8, 11, 8));
+        assertFalse(BuilderSettlementPlan.isWithinHouseFootprint(8, 8, 8, 5));
+        assertFalse(BuilderSettlementPlan.isWithinHouseFootprint(8, 8, 11, 11));
+    }
 }

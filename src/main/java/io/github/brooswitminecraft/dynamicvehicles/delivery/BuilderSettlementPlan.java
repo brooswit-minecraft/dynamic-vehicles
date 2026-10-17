@@ -57,6 +57,16 @@ public final class BuilderSettlementPlan {
         return (campfireCoordinate >> 4) * 16 + 8;
     }
 
+    /**
+     * Since the house is centred on the chunk rather than offset away from the campfire, the originating
+     * campfire itself can now land inside the house's own footprint (for example when it already sits at
+     * the chunk's centre). True when (x, z) is within HOUSE_FOOTPRINT_WIDTH's radius of (centerX, centerZ).
+     */
+    public static boolean isWithinHouseFootprint(int centerX, int centerZ, int x, int z) {
+        int radius = (HOUSE_FOOTPRINT_WIDTH - 1) / 2;
+        return Math.abs(x - centerX) <= radius && Math.abs(z - centerZ) <= radius;
+    }
+
     /** Vanilla days are 24000 ticks and noon is tick 6000. */
     public static boolean isNoon(long dayTime) {
         return Math.floorMod(dayTime, 24000L) == 6000L;

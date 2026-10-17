@@ -94,7 +94,8 @@ public final class BuilderSettlementService {
                 java.util.Arrays.asList(Direction.Plane.HORIZONTAL.stream().toArray(Direction[]::new)));
         java.util.Collections.shuffle(rotations, new java.util.Random(level.random.nextLong()));
         for (Direction candidate : rotations) {
-            if (isInCampfireChunk(campfire, center, candidate) && isSafeBuildingSite(level, center, candidate)) {
+            if (isInCampfireChunk(campfire, center, candidate)
+                    && isSafeBuildingSite(level, campfire, villager, center, candidate)) {
                 rotation = candidate;
                 break;
             }
@@ -103,9 +104,14 @@ public final class BuilderSettlementService {
         if (!BuilderSettlementPlan.shouldCompleteSettlement(level.getBlockState(campfire).is(Blocks.CAMPFIRE), true,
                 placementIsSafe)) return;
 
-        // The full footprint and entity volume were checked before any mutation.
+        // The full footprint and entity volume were checked before any mutation. The centred footprint can
+        // now contain the originating campfire itself (the house is no longer offset away from it); when it
+        // does, placeBuilding already overwrites that block as part of the floor, so removing it afterwards
+        // would just punch a hole back into the finished house.
+        boolean campfireInsideFootprint = BuilderSettlementPlan.isWithinHouseFootprint(
+                center.getX(), center.getZ(), campfire.getX(), campfire.getZ());
         placeBuilding(level, center, rotation, buildingVariant);
-        level.removeBlock(campfire, false);
+        if (!campfireInsideFootprint) level.removeBlock(campfire, false);
         resetToUnemployed(villager);
         villager.getPersistentData().remove(CAMPFIRE_POS_TAG);
     }
@@ -155,25 +161,36 @@ public final class BuilderSettlementService {
         return BuilderSettlementPlan.isWithinCampfireChunk(campfire.getX(), campfire.getZ(), minX, minZ, maxX, maxZ);
     }
 
-    private static boolean isSafeBuildingSite(ServerLevel level, BlockPos center, Direction rotation) {
+    /**
+     * The centred footprint can now contain the originating campfire and the Builder standing at it
+     * (previously the fixed 4-block offset always kept the house away from both). Settlement is explicitly
+     * meant to replace that exact campfire, so it and the settling villager are excluded from the
+     * occupancy checks below; every other block and entity is still a strict blocker.
+     */
+    private static boolean isSafeBuildingSite(ServerLevel level, BlockPos campfire, Villager villager,
+            BlockPos center, Direction rotation) {
         BlockPos entrance = center.relative(rotation, BUILDING_RADIUS + 1);
-        if (!level.hasChunkAt(entrance) || !level.isEmptyBlock(entrance.above())
-                || !level.isEmptyBlock(entrance.above(2))
+        if (!level.hasChunkAt(entrance) || !isEmptyOrCampfire(level, entrance.above(), campfire)
+                || !isEmptyOrCampfire(level, entrance.above(2), campfire)
                 || !level.getBlockState(entrance.below()).isFaceSturdy(level, entrance.below(), Direction.UP)) return false;
         AABB bounds = new AABB(center.getX() - BUILDING_RADIUS, center.getY(), center.getZ() - BUILDING_RADIUS,
                 center.getX() + BUILDING_RADIUS + 1, center.getY() + BUILDING_HEIGHT, center.getZ() + BUILDING_RADIUS + 1);
-        if (!level.getEntities((Entity) null, bounds).isEmpty()) return false;
+        if (!level.getEntities(villager, bounds).isEmpty()) return false;
         for (int x = -BUILDING_RADIUS; x <= BUILDING_RADIUS; x++) {
             for (int z = -BUILDING_RADIUS; z <= BUILDING_RADIUS; z++) {
                 BlockPos floor = center.offset(x, 0, z);
                 if (!level.hasChunkAt(floor) || !level.getWorldBorder().isWithinBounds(floor)
                         || !level.getBlockState(floor.below()).isFaceSturdy(level, floor.below(), Direction.UP)) return false;
                 for (int y = 0; y < BUILDING_HEIGHT; y++) {
-                    if (!level.isEmptyBlock(center.offset(x, y, z))) return false;
+                    if (!isEmptyOrCampfire(level, center.offset(x, y, z), campfire)) return false;
                 }
             }
         }
         return true;
+    }
+
+    private static boolean isEmptyOrCampfire(ServerLevel level, BlockPos pos, BlockPos campfire) {
+        return level.isEmptyBlock(pos) || pos.equals(campfire);
     }
 
     private static void placeBuilding(ServerLevel level, BlockPos center, Direction rotation, VillageBuilding buildingVariant) {

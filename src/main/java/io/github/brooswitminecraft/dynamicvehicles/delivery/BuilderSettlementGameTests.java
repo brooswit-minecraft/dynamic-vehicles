@@ -46,12 +46,17 @@ public final class BuilderSettlementGameTests {
 
     private static Villager builder(GameTestHelper helper) {
         prepareFixture(helper);
-        helper.setBlock(ANCHOR, Blocks.CAMPFIRE);
-        Villager villager = helper.spawn(EntityType.VILLAGER, ANCHOR.offset(0, 0, 1));
+        return builderAt(helper, ANCHOR);
+    }
+
+    /** Spawns a Builder with a recorded campfire anchor at an arbitrary (already-prepared) position. */
+    private static Villager builderAt(GameTestHelper helper, BlockPos anchor) {
+        helper.setBlock(anchor, Blocks.CAMPFIRE);
+        Villager villager = helper.spawn(EntityType.VILLAGER, anchor.offset(0, 0, 1));
         villager.setNoAi(true);
         villager.setVillagerData(villager.getVillagerData().setProfession(BuilderProfession.BUILDER.get()).setLevel(5));
         villager.setVillagerXp(250);
-        villager.getPersistentData().putLong(BuilderSettlementService.CAMPFIRE_POS_TAG, helper.absolutePos(ANCHOR).asLong());
+        villager.getPersistentData().putLong(BuilderSettlementService.CAMPFIRE_POS_TAG, helper.absolutePos(anchor).asLong());
         return villager;
     }
 
@@ -111,6 +116,22 @@ public final class BuilderSettlementGameTests {
         helper.assertTrue(helper.getBlockState(ANCHOR).is(Blocks.CAMPFIRE), "failed placement consumed anchor");
         helper.assertTrue(villager.getVillagerData().getProfession() == BuilderProfession.BUILDER.get(), "failed placement retired Builder");
         helper.assertTrue(helper.getBlockState(center).is(Blocks.CHEST), "overwrote existing build");
+        helper.succeed();
+    }
+
+    @GameTest(template = "settlement_test")
+    public static void guaranteedRollSettlesWhenCampfireItselfSitsInTheCentredFootprint(GameTestHelper helper) {
+        // Put the campfire exactly where the centred house will land, so the only "obstacle" in the
+        // footprint and the only entity nearby is the campfire and its own Builder.
+        prepareFixture(helper);
+        BlockPos center = expectedHouseCenter(helper);
+        Villager villager = builderAt(helper, center);
+        BuilderSettlementService.attemptDonationSettlement(villager, 5);
+        helper.assertTrue(!helper.getBlockState(center).is(Blocks.CAMPFIRE),
+                "centred campfire blocked its own replacement");
+        helper.assertTrue(helper.getBlockState(center.above()).getBlock() instanceof BedBlock,
+                "house missing after centred settlement");
+        helper.assertTrue(villager.getVillagerData().getProfession() == VillagerProfession.NONE, "Builder did not retire");
         helper.succeed();
     }
 

@@ -1,9 +1,9 @@
 package io.github.brooswitminecraft.dynamicvehicles.delivery;
 
+import net.minecraft.Util;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.npc.VillagerProfession;
 import net.minecraft.world.item.trading.MerchantOffers;
@@ -11,6 +11,7 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.BedBlock;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.DoorBlock;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BedPart;
 import net.minecraft.world.level.block.state.properties.DoubleBlockHalf;
 import net.minecraft.world.phys.AABB;
@@ -85,15 +86,42 @@ public final class BuilderSettlementService {
 
         VillageBuilding buildingVariant = VillageBuilding.from(
                 BuilderSettlementPlan.selectBuildingVariant(level.random.nextInt(VillageBuilding.values().length)));
-        Direction rotation = Direction.Plane.HORIZONTAL.getRandomDirection(level.random);
-        BlockPos building = campfire.relative(rotation, 4);
-        boolean placementIsSafe = isSafeBuildingSite(level, building, rotation);
+        // The house stands dead centre in the campfire's own chunk; only the door-facing rotation varies,
+        // tried in random order until one is safe.
+        BlockPos center = new BlockPos(BuilderSettlementPlan.chunkCenterCoordinate(campfire.getX()), campfire.getY(),
+                BuilderSettlementPlan.chunkCenterCoordinate(campfire.getZ()));
+        Direction rotation = null;
+        java.util.List<Direction> rotations = new java.util.ArrayList<>(
+                java.util.Arrays.asList(Direction.Plane.HORIZONTAL.stream().toArray(Direction[]::new)));
+        Util.shuffle(rotations, level.random);
+        for (Direction candidate : rotations) {
+            if (isInCampfireChunk(campfire, center, candidate)
+                    && isSafeBuildingSite(level, campfire, villager, center, candidate)) {
+                rotation = candidate;
+                break;
+            }
+        }
+        boolean placementIsSafe = rotation != null;
         if (!BuilderSettlementPlan.shouldCompleteSettlement(level.getBlockState(campfire).is(Blocks.CAMPFIRE), true,
                 placementIsSafe)) return;
 
-        // The full footprint and entity volume were checked before any mutation.
-        placeBuilding(level, building, rotation, buildingVariant);
-        level.removeBlock(campfire, false);
+        // The full footprint and entity volume were checked before any mutation. The centred footprint can
+        // now contain the originating campfire itself (the house is no longer offset away from it); when it
+        // does, placeBuilding already overwrites that block as part of the floor, so removing it afterwards
+        // would just punch a hole back into the finished house.
+        boolean campfireInsideFootprint = BuilderSettlementPlan.isWithinHouseFootprint(
+                center.getX(), center.getZ(), campfire.getX(), campfire.getZ());
+        placeBuilding(level, center, rotation, buildingVariant);
+        if (!campfireInsideFootprint) level.removeBlock(campfire, false);
+        // The entity-occupancy check excludes the settling villager so standing near its own campfire can
+        // never block its own house, but nothing moves it: the centred footprint can now overlap wherever
+        // it happens to be standing. Relocate it to the entrance tile, whose clearance and sturdy footing
+        // isSafeBuildingSite already validated, so it is never left entombed in a wall or floor it didn't move for.
+        BlockPos entrance = center.relative(rotation, BUILDING_RADIUS + 1);
+        // entrance.above()/above(2) are exactly the headroom isSafeBuildingSite already validated clear;
+        // gravity settles the villager onto whatever is solid below if that's lower than this.
+        villager.moveTo(entrance.getX() + 0.5D, entrance.above().getY(), entrance.getZ() + 0.5D,
+                rotation.getOpposite().toYRot(), 0.0F);
         resetToUnemployed(villager);
         villager.getPersistentData().remove(CAMPFIRE_POS_TAG);
     }
@@ -133,25 +161,68 @@ public final class BuilderSettlementService {
         return best;
     }
 
-    private static boolean isSafeBuildingSite(ServerLevel level, BlockPos center, Direction rotation) {
+    /** The footprint and its entrance block must all lie in the campfire's chunk (AC4). */
+    private static boolean isInCampfireChunk(BlockPos campfire, BlockPos center, Direction rotation) {
         BlockPos entrance = center.relative(rotation, BUILDING_RADIUS + 1);
-        if (!level.hasChunkAt(entrance) || !level.isEmptyBlock(entrance.above())
-                || !level.isEmptyBlock(entrance.above(2))
-                || !level.getBlockState(entrance.below()).isFaceSturdy(level, entrance.below(), Direction.UP)) return false;
+        int minX = Math.min(center.getX() - BUILDING_RADIUS, entrance.getX());
+        int maxX = Math.max(center.getX() + BUILDING_RADIUS, entrance.getX());
+        int minZ = Math.min(center.getZ() - BUILDING_RADIUS, entrance.getZ());
+        int maxZ = Math.max(center.getZ() + BUILDING_RADIUS, entrance.getZ());
+        return BuilderSettlementPlan.isWithinCampfireChunk(campfire.getX(), campfire.getZ(), minX, minZ, maxX, maxZ);
+    }
+
+    /**
+     * The centred footprint can now contain the originating campfire and the Builder standing at it
+     * (previously the fixed 4-block offset always kept the house away from both). Settlement is explicitly
+     * meant to replace that exact campfire, so it and the settling villager are excluded from the
+     * occupancy checks below; every other block and entity is still a strict blocker.
+     */
+    private static boolean isSafeBuildingSite(ServerLevel level, BlockPos campfire, Villager villager,
+            BlockPos center, Direction rotation) {
+        BlockPos entrance = center.relative(rotation, BUILDING_RADIUS + 1);
+        // The settling Builder is relocated to entrance.above() once settlement completes, free-falling
+        // the one block down to natural ground exactly like everywhere else outdoors (entrance.below() is
+        // the checked solid support). So entrance itself must stay part of that same clear, safe path out:
+        // folded into the same emptyOrCampfire check as the headroom above it, a hazard sitting right at
+        // ground level there (a lit campfire) is rejected the same way fire or lava already are by not
+        // being empty, while the ordinary open ground every other test already relies on still passes.
+        if (!level.hasChunkAt(entrance) || !isEmptyOrCampfire(level, entrance, campfire)
+                || !isEmptyOrCampfire(level, entrance.above(), campfire)
+                || !isEmptyOrCampfire(level, entrance.above(2), campfire)
+                || !isSafeLandingSupport(level, entrance.below())) return false;
+        // The entity-occupancy check below only covers the house's own footprint, not the exit path, so an
+        // unrelated entity standing in the Builder's landing spot needs its own check.
+        AABB landing = new AABB(entrance.getX(), entrance.getY(), entrance.getZ(),
+                entrance.getX() + 1, entrance.above(2).getY() + 1, entrance.getZ() + 1);
+        if (!level.getEntities(villager, landing).isEmpty()) return false;
         AABB bounds = new AABB(center.getX() - BUILDING_RADIUS, center.getY(), center.getZ() - BUILDING_RADIUS,
                 center.getX() + BUILDING_RADIUS + 1, center.getY() + BUILDING_HEIGHT, center.getZ() + BUILDING_RADIUS + 1);
-        if (!level.getEntities((Entity) null, bounds).isEmpty()) return false;
+        if (!level.getEntities(villager, bounds).isEmpty()) return false;
         for (int x = -BUILDING_RADIUS; x <= BUILDING_RADIUS; x++) {
             for (int z = -BUILDING_RADIUS; z <= BUILDING_RADIUS; z++) {
                 BlockPos floor = center.offset(x, 0, z);
                 if (!level.hasChunkAt(floor) || !level.getWorldBorder().isWithinBounds(floor)
                         || !level.getBlockState(floor.below()).isFaceSturdy(level, floor.below(), Direction.UP)) return false;
                 for (int y = 0; y < BUILDING_HEIGHT; y++) {
-                    if (!level.isEmptyBlock(center.offset(x, y, z))) return false;
+                    if (!isEmptyOrCampfire(level, center.offset(x, y, z), campfire)) return false;
                 }
             }
         }
         return true;
+    }
+
+    private static boolean isEmptyOrCampfire(ServerLevel level, BlockPos pos, BlockPos campfire) {
+        return level.isEmptyBlock(pos) || pos.equals(campfire);
+    }
+
+    /**
+     * The relocated Builder settles onto this block via ordinary gravity, so a merely sturdy top is not
+     * enough: a magma block is sturdy but damages anything standing on it, which would otherwise pass
+     * the old sturdy-only check while still being a hazard to land on.
+     */
+    private static boolean isSafeLandingSupport(ServerLevel level, BlockPos pos) {
+        BlockState state = level.getBlockState(pos);
+        return state.isFaceSturdy(level, pos, Direction.UP) && !state.is(Blocks.MAGMA_BLOCK);
     }
 
     private static void placeBuilding(ServerLevel level, BlockPos center, Direction rotation, VillageBuilding buildingVariant) {

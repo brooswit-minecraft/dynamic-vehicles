@@ -14,6 +14,12 @@ class BuilderSettlementPlanTest {
         assertEquals(0.25D, BuilderSettlementPlan.donationSettlementChance(3, 3));
         assertEquals(0.5625D, BuilderSettlementPlan.donationSettlementChance(4, 4));
         assertEquals(1.0D, BuilderSettlementPlan.donationSettlementChance(5, 5));
+        // AC3's required example (5/3=50%): every case above is symmetric (level == tier), so a
+        // regression that drops the tradeTier factor entirely (e.g. squaring only the level term) would
+        // still pass all of them while this case silently became guaranteed (1.0) instead of 50%.
+        assertEquals(0.5D, BuilderSettlementPlan.donationSettlementChance(5, 3));
+        assertEquals(0.5D, BuilderSettlementPlan.donationSettlementChance(3, 5));
+        assertEquals(0.25D, BuilderSettlementPlan.donationSettlementChance(5, 2));
         assertEquals(0.0D, BuilderSettlementPlan.passiveSettlementChance(1));
         assertEquals(0.0002D, BuilderSettlementPlan.passiveSettlementChance(2));
         assertEquals(0.0004D, BuilderSettlementPlan.passiveSettlementChance(3));
@@ -82,5 +88,51 @@ class BuilderSettlementPlanTest {
         assertEquals(BuilderSettlementPlan.BuildingVariant.SPRUCE_HUT, BuilderSettlementPlan.selectBuildingVariant(1));
         assertEquals(BuilderSettlementPlan.BuildingVariant.OAK_HUT, BuilderSettlementPlan.selectBuildingVariant(2));
         assertEquals(BuilderSettlementPlan.BuildingVariant.SPRUCE_HUT, BuilderSettlementPlan.selectBuildingVariant(-1));
+    }
+
+    @Test
+    void settlementFootprintMustStayInTheCampfireChunk() {
+        // Campfire at x=8,z=8 (chunk 0,0); house centred 4 east spans x 6..10 plus entrance at x=11.
+        assertTrue(BuilderSettlementPlan.isWithinCampfireChunk(8, 8, 6, 6, 11, 10));
+        // Campfire at x=13: house centred 4 east spans 15..19 and crosses into chunk 1.
+        assertFalse(BuilderSettlementPlan.isWithinCampfireChunk(13, 8, 15, 6, 20, 10));
+        // Negative coordinates floor correctly: -1 is chunk -1, 0 is chunk 0.
+        assertFalse(BuilderSettlementPlan.isWithinCampfireChunk(-3, 8, -5, 6, 0, 10));
+        assertTrue(BuilderSettlementPlan.isWithinCampfireChunk(-8, -8, -10, -10, -5, -6));
+        // A rejected chunk placement can never complete the settlement, so the campfire is kept.
+        assertFalse(BuilderSettlementPlan.shouldCompleteSettlement(true, true,
+                BuilderSettlementPlan.isWithinCampfireChunk(13, 8, 15, 6, 20, 10)));
+    }
+
+    @Test
+    void houseIsCentredOnTheCampfiresChunkRatherThanOffsetFromTheCampfire() {
+        // A campfire anywhere in chunk 0 (0..15) centres on local 8.
+        assertEquals(8, BuilderSettlementPlan.chunkCenterCoordinate(0));
+        assertEquals(8, BuilderSettlementPlan.chunkCenterCoordinate(8));
+        assertEquals(8, BuilderSettlementPlan.chunkCenterCoordinate(15));
+        // Chunk 1 (16..31) centres on 24; a campfire near the edge still centres on its own chunk.
+        assertEquals(24, BuilderSettlementPlan.chunkCenterCoordinate(16));
+        assertEquals(24, BuilderSettlementPlan.chunkCenterCoordinate(29));
+        // Negative coordinates floor to the containing chunk: chunk -1 is -16..-1, centred on -8.
+        assertEquals(-8, BuilderSettlementPlan.chunkCenterCoordinate(-1));
+        assertEquals(-8, BuilderSettlementPlan.chunkCenterCoordinate(-16));
+        assertEquals(-24, BuilderSettlementPlan.chunkCenterCoordinate(-17));
+        // The centred point is always inside the campfire's own chunk.
+        assertTrue(BuilderSettlementPlan.isWithinCampfireChunk(13, -3,
+                BuilderSettlementPlan.chunkCenterCoordinate(13), BuilderSettlementPlan.chunkCenterCoordinate(-3),
+                BuilderSettlementPlan.chunkCenterCoordinate(13), BuilderSettlementPlan.chunkCenterCoordinate(-3)));
+    }
+
+    @Test
+    void theOriginatingCampfireCanNowLandInsideTheCentredHouseFootprint() {
+        // Dead centre and every corner of the 5x5 footprint (radius 2) are inside.
+        assertTrue(BuilderSettlementPlan.isWithinHouseFootprint(8, 8, 8, 8));
+        assertTrue(BuilderSettlementPlan.isWithinHouseFootprint(8, 8, 6, 6));
+        assertTrue(BuilderSettlementPlan.isWithinHouseFootprint(8, 8, 10, 10));
+        assertTrue(BuilderSettlementPlan.isWithinHouseFootprint(8, 8, 6, 10));
+        // One block past the radius on either axis is outside.
+        assertFalse(BuilderSettlementPlan.isWithinHouseFootprint(8, 8, 11, 8));
+        assertFalse(BuilderSettlementPlan.isWithinHouseFootprint(8, 8, 8, 5));
+        assertFalse(BuilderSettlementPlan.isWithinHouseFootprint(8, 8, 11, 11));
     }
 }

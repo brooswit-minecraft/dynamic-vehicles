@@ -35,6 +35,38 @@ public final class BuilderSettlementPlan {
         return anchorPresent && rollSucceeded && placementIsSafe;
     }
 
+    /**
+     * AC4: the building must stand in the campfire's own chunk. True only when every block column of the
+     * inclusive box (minX..maxX, minZ..maxZ) shares the campfire's chunk; chunks are 16 wide and the
+     * arithmetic shift floors, so negative coordinates are handled.
+     */
+    public static boolean isWithinCampfireChunk(int campfireX, int campfireZ, int minX, int minZ, int maxX, int maxZ) {
+        int chunkX = campfireX >> 4;
+        int chunkZ = campfireZ >> 4;
+        return (minX >> 4) == chunkX && (maxX >> 4) == chunkX
+                && (minZ >> 4) == chunkZ && (maxZ >> 4) == chunkZ;
+    }
+
+    /**
+     * The house is centred on the campfire's own chunk, not offset from the campfire itself: chunks are
+     * 16 blocks wide (0..15 locally), so the dead centre of the chunk containing {@code campfireCoordinate}
+     * is its chunk-floor coordinate times 16 plus 8. The arithmetic shift floors, so this holds for
+     * negative coordinates too.
+     */
+    public static int chunkCenterCoordinate(int campfireCoordinate) {
+        return (campfireCoordinate >> 4) * 16 + 8;
+    }
+
+    /**
+     * Since the house is centred on the chunk rather than offset away from the campfire, the originating
+     * campfire itself can now land inside the house's own footprint (for example when it already sits at
+     * the chunk's centre). True when (x, z) is within HOUSE_FOOTPRINT_WIDTH's radius of (centerX, centerZ).
+     */
+    public static boolean isWithinHouseFootprint(int centerX, int centerZ, int x, int z) {
+        int radius = (HOUSE_FOOTPRINT_WIDTH - 1) / 2;
+        return Math.abs(x - centerX) <= radius && Math.abs(z - centerZ) <= radius;
+    }
+
     /** Vanilla days are 24000 ticks and noon is tick 6000. */
     public static boolean isNoon(long dayTime) {
         return Math.floorMod(dayTime, 24000L) == 6000L;

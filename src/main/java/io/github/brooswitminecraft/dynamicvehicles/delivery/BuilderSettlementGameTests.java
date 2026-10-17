@@ -149,6 +149,10 @@ public final class BuilderSettlementGameTests {
         villager.moveTo(cornerAbs.x, cornerAbs.y, cornerAbs.z, 0.0F, 0.0F);
         var pig = helper.spawn(EntityType.PIG, center.offset(-3, 0, -3));
         pig.setNoAi(true);
+        // Snapshot empirically rather than recomputing expected coordinates: round-tripping an entity's
+        // position through the GameTest relative/absolute transform is lossy for fractional (spawn-style)
+        // positions under some test rotations, which isn't what this assertion means to exercise.
+        Vec3 pigPosBefore = pig.position();
 
         BuilderSettlementService.attemptDonationSettlement(villager, 5);
 
@@ -159,6 +163,9 @@ public final class BuilderSettlementGameTests {
         // The corner post the Builder was standing in must actually be solid: proving the build wasn't
         // silently skipped there just to dodge the Builder's old position.
         helper.assertTrue(!helper.getBlockState(center.offset(2, 1, 2)).isAir(), "corner post missing at former Builder position");
+        // The floor must be intact exactly where the campfire used to be, not left as a hole because
+        // placement special-cased that one tile to avoid the campfire.
+        helper.assertTrue(!helper.getBlockState(campfireAnchor).isAir(), "floor hole left at former campfire position");
         helper.assertTrue(villager.getVillagerData().getProfession() == VillagerProfession.NONE, "Builder did not retire");
         helper.assertTrue(villager.isAlive(), "Builder died from being entombed in the new house");
         BlockPos villagerPos = helper.relativePos(villager.blockPosition());
@@ -167,8 +174,64 @@ public final class BuilderSettlementGameTests {
         helper.assertTrue(helper.getBlockState(villagerPos).isAir() && helper.getBlockState(villagerPos.above()).isAir(),
                 "Builder was relocated into a solid block: " + villagerPos);
         // An unrelated entity well outside the footprint is untouched by the relocation/placement.
-        helper.assertTrue(pig.isAlive() && helper.relativePos(pig.blockPosition()).equals(center.offset(-3, 0, -3)),
-                "unrelated entity was disturbed by settlement");
+        helper.assertTrue(pig.isAlive(), "unrelated entity died during settlement");
+        helper.assertTrue(pig.position().equals(pigPosBefore),
+                "unrelated entity moved during settlement: was " + pigPosBefore + ", now " + pig.position());
+        // A synchronous check proves the Builder wasn't placed inside a solid block; it can't prove no
+        // damage-over-time hazard (fire, drowning) started ticking against it. Let a few ticks actually
+        // pass and confirm it is still alive and undamaged before declaring it safe.
+        float healthAfterSettlement = villager.getHealth();
+        helper.runAfterDelay(5L, () -> {
+            helper.assertTrue(villager.isAlive(), "Builder died in the few ticks after relocation");
+            helper.assertTrue(villager.getHealth() >= healthAfterSettlement, "Builder took damage after relocation");
+            helper.succeed();
+        });
+    }
+
+    @GameTest(template = "settlement_test")
+    public static void guaranteedRollPreservesCampfireWhenEveryExitIsHazardous(GameTestHelper helper) {
+        // Every one of the four possible exits sits on a lit campfire -- a sturdy but dangerous block the
+        // old sturdy-only check would have accepted. No safe landing exists anywhere, so settlement must
+        // leave the originating campfire and the Builder untouched rather than commit the house anyway.
+        prepareFixture(helper);
+        BlockPos center = expectedHouseCenter(helper);
+        BlockPos campfireAnchor = center.offset(-3, 0, -3);
+        Villager villager = builderAt(helper, campfireAnchor);
+        for (Direction direction : Direction.Plane.HORIZONTAL) {
+            helper.setBlock(center.relative(direction, BuilderSettlementPlan.HOUSE_FOOTPRINT_WIDTH / 2 + 1), Blocks.CAMPFIRE);
+        }
+
+        BuilderSettlementService.attemptDonationSettlement(villager, 5);
+
+        helper.assertTrue(helper.getBlockState(campfireAnchor).is(Blocks.CAMPFIRE), "unsafe exits still consumed the originating campfire");
+        helper.assertTrue(villager.getVillagerData().getProfession() == BuilderProfession.BUILDER.get(), "unsafe exits still retired the Builder");
+        for (Direction direction : Direction.Plane.HORIZONTAL) {
+            helper.assertTrue(helper.getBlockState(center.relative(direction, BuilderSettlementPlan.HOUSE_FOOTPRINT_WIDTH / 2 + 1)).is(Blocks.CAMPFIRE),
+                    "an unrelated hazard campfire was disturbed");
+        }
+        helper.succeed();
+    }
+
+    @GameTest(template = "settlement_test")
+    public static void guaranteedRollPreservesCampfireWhenEveryExitIsEntityBlocked(GameTestHelper helper) {
+        // A genuinely unrelated entity (not the settling Builder) standing in every possible exit must
+        // still block settlement there, the same way an unrelated block obstacle does.
+        prepareFixture(helper);
+        BlockPos center = expectedHouseCenter(helper);
+        BlockPos campfireAnchor = center.offset(-3, 0, -3);
+        Villager villager = builderAt(helper, campfireAnchor);
+        java.util.List<net.minecraft.world.entity.animal.Pig> blockers = new java.util.ArrayList<>();
+        for (Direction direction : Direction.Plane.HORIZONTAL) {
+            var blocker = helper.spawn(EntityType.PIG, center.relative(direction, BuilderSettlementPlan.HOUSE_FOOTPRINT_WIDTH / 2 + 1).above());
+            blocker.setNoAi(true);
+            blockers.add(blocker);
+        }
+
+        BuilderSettlementService.attemptDonationSettlement(villager, 5);
+
+        helper.assertTrue(helper.getBlockState(campfireAnchor).is(Blocks.CAMPFIRE), "entity-blocked exits still consumed the originating campfire");
+        helper.assertTrue(villager.getVillagerData().getProfession() == BuilderProfession.BUILDER.get(), "entity-blocked exits still retired the Builder");
+        for (var blocker : blockers) helper.assertTrue(blocker.isAlive(), "a blocking entity was harmed");
         helper.succeed();
     }
 

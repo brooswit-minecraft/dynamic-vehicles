@@ -182,6 +182,19 @@ public final class BuilderSettlementService {
         if (!level.hasChunkAt(entrance) || !isEmptyOrCampfire(level, entrance.above(), campfire)
                 || !isEmptyOrCampfire(level, entrance.above(2), campfire)
                 || !level.getBlockState(entrance.below()).isFaceSturdy(level, entrance.below(), Direction.UP)) return false;
+        // The settling Builder is relocated to stand at entrance.above() once settlement completes: that
+        // destination must itself be preflighted, not just assumed safe because the house's own footprint
+        // checked out. entrance (its support underfoot) must be solid ground and not another hazard --
+        // fire and lava already fail the sturdy check below, but a lit campfire is sturdy AND dangerous, so
+        // it needs an explicit exception -- and the landing cells must hold no other entity.
+        if (!entrance.equals(campfire)) {
+            var supportState = level.getBlockState(entrance);
+            if (supportState.is(Blocks.CAMPFIRE) || supportState.is(Blocks.SOUL_CAMPFIRE)) return false;
+            if (!supportState.isFaceSturdy(level, entrance, Direction.UP)) return false;
+        }
+        AABB landing = new AABB(entrance.getX(), entrance.above().getY(), entrance.getZ(),
+                entrance.getX() + 1, entrance.above(2).getY() + 1, entrance.getZ() + 1);
+        if (!level.getEntities(villager, landing).isEmpty()) return false;
         AABB bounds = new AABB(center.getX() - BUILDING_RADIUS, center.getY(), center.getZ() - BUILDING_RADIUS,
                 center.getX() + BUILDING_RADIUS + 1, center.getY() + BUILDING_HEIGHT, center.getZ() + BUILDING_RADIUS + 1);
         if (!level.getEntities(villager, bounds).isEmpty()) return false;

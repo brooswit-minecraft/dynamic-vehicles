@@ -1,0 +1,4 @@
+bump: patch
+
+### Fixed
+- Pathfinder `PathfinderTickHandler`'s durability checks (`forceSaveAndVerifyAbsent`, `forceSaveAndVerifyProgressDurable`) could crash the server instead of failing closed: `IOUtilities#waitUntilIOWorkerComplete` sat outside their try blocks, so NeoForge's own asynchronous temp-file cleanup racing a failed write's target path could surface an unchecked `CompletionException`/`UncheckedIOException` that escaped `evaluate`, then `onServerTick`, then NeoForge's event bus entirely. The whole save-then-verify sequence is now one try block catching `RuntimeException` alongside `IOException`, so any such failure means "not yet durably confirmed, retry later" like every other failure path here, never an uncaught crash. Also hardened the fault-injection `GameTest`s to drain the IO worker before removing their own injected fault directory, reducing how often the test side manufactures this exact race.

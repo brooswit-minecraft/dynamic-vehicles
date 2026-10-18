@@ -39,6 +39,16 @@ public final class SettlementFounderGameTests {
         }
     }
 
+    /**
+     * A fresh, practically-never-repeated destination region, so DeliveryContractStorage's
+     * founded-settlement persistence (world/data/dynamicvehicles_contracts.dat, which outlives a
+     * single GameTest server run) can never make a once-successful test see ALREADY_FOUNDED on a
+     * later rerun against a reused world and silently skip its own placement.
+     */
+    private static int[] freshDestinationRegion(GameTestHelper helper) {
+        return new int[] {helper.getLevel().random.nextInt(), helper.getLevel().random.nextInt()};
+    }
+
     @GameTest(template = "settlement_test")
     public static void arrivalPlacesExactlyOneBoardAndOneDispatcherOnTheSurface(GameTestHelper helper) {
         prepareFlatGround(helper);
@@ -46,8 +56,9 @@ public final class SettlementFounderGameTests {
 
         ServerPlayer player = GameTestMockPlayers.create(helper);
         DeliveryContractStorage storage = DeliveryContractStorage.of(helper.getLevel().getServer());
+        int[] region = freshDestinationRegion(helper);
         DeliveryContract contract = new DeliveryContract(
-                player.getUUID(), UUID.randomUUID(), "minecraft:overworld", 0, 0,
+                player.getUUID(), UUID.randomUUID(), "minecraft:overworld", region[0], region[1],
                 absoluteAnchor.getX(), absoluteAnchor.getY(), absoluteAnchor.getZ(),
                 0.0D, 0.0D, 0L, 1L);
 
@@ -87,8 +98,9 @@ public final class SettlementFounderGameTests {
 
         ServerPlayer player = GameTestMockPlayers.create(helper);
         DeliveryContractStorage storage = DeliveryContractStorage.of(helper.getLevel().getServer());
+        int[] region = freshDestinationRegion(helper);
         DeliveryContract contract = new DeliveryContract(
-                player.getUUID(), UUID.randomUUID(), "minecraft:overworld", 0, 1,
+                player.getUUID(), UUID.randomUUID(), "minecraft:overworld", region[0], region[1],
                 absoluteAnchor.getX(), absoluteAnchor.getY(), absoluteAnchor.getZ(),
                 0.0D, 0.0D, 0L, 1L);
 
@@ -122,8 +134,9 @@ public final class SettlementFounderGameTests {
 
         ServerPlayer player = GameTestMockPlayers.create(helper);
         DeliveryContractStorage storage = DeliveryContractStorage.of(helper.getLevel().getServer());
+        int[] region = freshDestinationRegion(helper);
         DeliveryContract contract = new DeliveryContract(
-                player.getUUID(), UUID.randomUUID(), "minecraft:overworld", 0, 2,
+                player.getUUID(), UUID.randomUUID(), "minecraft:overworld", region[0], region[1],
                 absoluteAnchor.getX(), absoluteAnchor.getY(), absoluteAnchor.getZ(),
                 0.0D, 0.0D, 0L, 1L);
 
@@ -139,6 +152,37 @@ public final class SettlementFounderGameTests {
                 helper.absolutePos(new BlockPos(0, 0, 0)), helper.absolutePos(new BlockPos(9, 12, 9)));
         helper.assertTrue(helper.getLevel().getEntitiesOfClass(Villager.class, footprint).isEmpty(),
                 "a deferred arrival must not spawn a villager");
+        helper.succeed();
+    }
+
+    /**
+     * The one-way settlement claim (ALREADY_FOUNDED) must survive a second arrival at the same
+     * destination within a single run: repeated arrival, reconnect, and restart paths must not
+     * place a second board or a second villager.
+     */
+    @GameTest(template = "settlement_test")
+    public static void repeatedArrivalAtTheSameDestinationDoesNotDuplicatePlacement(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos absoluteAnchor = helper.absolutePos(ANCHOR);
+
+        ServerPlayer player = GameTestMockPlayers.create(helper);
+        DeliveryContractStorage storage = DeliveryContractStorage.of(helper.getLevel().getServer());
+        int[] region = freshDestinationRegion(helper);
+        DeliveryContract contract = new DeliveryContract(
+                player.getUUID(), UUID.randomUUID(), "minecraft:overworld", region[0], region[1],
+                absoluteAnchor.getX(), absoluteAnchor.getY(), absoluteAnchor.getZ(),
+                0.0D, 0.0D, 0L, 1L);
+
+        boolean firstArrival = SettlementFounder.onArrival(player, contract, storage);
+        boolean secondArrival = SettlementFounder.onArrival(player, contract, storage);
+
+        helper.assertTrue(firstArrival, "the first arrival should complete and found the settlement");
+        helper.assertTrue(secondArrival, "a repeated arrival at an already-founded destination should still complete");
+
+        AABB footprint = AABB.encapsulatingFullBlocks(
+                helper.absolutePos(new BlockPos(0, 0, 0)), helper.absolutePos(new BlockPos(9, 12, 9)));
+        List<Villager> villagers = helper.getLevel().getEntitiesOfClass(Villager.class, footprint);
+        helper.assertTrue(villagers.size() == 1, "a repeated arrival must not spawn a second villager, found " + villagers.size());
         helper.succeed();
     }
 }

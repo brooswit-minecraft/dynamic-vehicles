@@ -10,9 +10,9 @@ import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.Mth;
 
-import java.util.Locale;
-
 import io.github.brooswitminecraft.dynamicvehicles.ClientConfig;
+import io.github.brooswitminecraft.dynamicvehicles.hud.CountdownFormat;
+import io.github.brooswitminecraft.dynamicvehicles.hud.LegacyHudVisibility;
 
 /**
  * MINECRAFT-110 AC4: the persistent HUD element shown while a contract is
@@ -29,7 +29,7 @@ public final class ContractHudOverlay implements LayeredDraw.Layer {
     @Override
     public void render(GuiGraphics graphics, DeltaTracker deltaTracker) {
         DeliveryHudPayload hud = ClientContractHud.current();
-        if (!ContractHudVisibility.shouldRender(ClientConfig.SHOW_LEGACY_CONTRACT_HUD.get(), hud.active())) {
+        if (!LegacyHudVisibility.shouldRender(ClientConfig.SHOW_LEGACY_CONTRACT_HUD.get(), hud.active())) {
             return;
         }
         Minecraft minecraft = Minecraft.getInstance();
@@ -43,7 +43,7 @@ public final class ContractHudOverlay implements LayeredDraw.Layer {
         double distanceBlocks = Math.sqrt(dx * dx + dz * dz);
 
         long remainingTicks = hud.deadlineTick() - minecraft.level.getGameTime();
-        String timeText = formatRemaining(remainingTicks);
+        String timeText = CountdownFormat.format(remainingTicks);
 
         DangerGauge.Category category = DangerGauge.categoryFor(hud.danger(), hud.dangerMin(), hud.dangerMax());
         int swatchColor = DangerGauge.colorArgb(hud.danger(), hud.dangerMin(), hud.dangerMax());
@@ -69,15 +69,5 @@ public final class ContractHudOverlay implements LayeredDraw.Layer {
         graphics.drawString(minecraft.font, timeText, x + 16, y + 10, 0xFFFFFF);
         graphics.fill(x + 16, y + 21, x + 28, y + 29, swatchColor);
         graphics.drawString(minecraft.font, dangerText, x + 32, y + 20, 0xFFFFFF);
-    }
-
-    private static String formatRemaining(long remainingTicks) {
-        if (remainingTicks <= 0) {
-            return "0:00";
-        }
-        long totalSeconds = remainingTicks / 20L;
-        long minutes = totalSeconds / 60L;
-        long seconds = totalSeconds % 60L;
-        return String.format(Locale.ROOT, "%d:%02d", minutes, seconds);
     }
 }

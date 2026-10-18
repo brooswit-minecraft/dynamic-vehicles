@@ -1,11 +1,15 @@
-package io.github.brooswitminecraft.dynamicvehicles.delivery;
+package io.github.brooswitminecraft.dynamicvehicles.hud;
 
 import org.junit.jupiter.api.Test;
+
+import io.github.brooswitminecraft.dynamicvehicles.delivery.DangerGauge;
+import io.github.brooswitminecraft.dynamicvehicles.delivery.OfferDistanceFormat;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+/** MINECRAFT-411: moved here (unchanged) from {@code delivery.WaypointMarkerLayoutTest} alongside the projection/clamping it tests. */
 class WaypointMarkerLayoutTest {
     private static WaypointMarkerLayout.Point project(double x, double y, double z) {
         return WaypointMarkerLayout.project(x, y, z,
@@ -61,6 +65,9 @@ class WaypointMarkerLayoutTest {
 
     @Test
     void usesExistingDistanceFormatAndThreatPalette() {
+        // This projection is shared by both Dispatcher and Pathfinder mission waypoints
+        // (MINECRAFT-411); it stays agnostic of the delivery-specific formatting/colour classes
+        // callers apply on top, which this just confirms are unaffected by the move.
         assertEquals("1.2 km", OfferDistanceFormat.format(1234.0));
         assertEquals(DangerGauge.colorArgb(0.0, 0.0, 1.0), DangerGauge.colorArgb(-1.0, 0.0, 1.0));
         assertEquals(DangerGauge.colorArgb(1.0, 0.0, 1.0), DangerGauge.colorArgb(2.0, 0.0, 1.0));

@@ -9,20 +9,28 @@ import net.minecraft.client.gui.LayeredDraw;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.network.chat.Component;
 
-import java.util.Locale;
+import io.github.brooswitminecraft.dynamicvehicles.ClientConfig;
+import io.github.brooswitminecraft.dynamicvehicles.hud.CountdownFormat;
+import io.github.brooswitminecraft.dynamicvehicles.hud.LegacyHudVisibility;
+import io.github.brooswitminecraft.dynamicvehicles.hud.ProgressFormat;
 
 /**
- * The persistent HUD element shown while a Pathfinder attempt is active - next-checkpoint
+ * The legacy fixed-corner HUD element shown while a Pathfinder attempt is active - next-checkpoint
  * direction and remaining time, mirroring {@code delivery.ContractHudOverlay}'s approach
  * (direction/remaining-time computed every frame client-side from the payload's static position
  * and deadline, never resynced from the server except on actual state changes).
+ *
+ * <p>MINECRAFT-411: {@link PathfinderWaypointOverlay}'s shared world-projected marker is now the
+ * primary Pathfinder presentation; this corner HUD is gated behind {@code
+ * ClientConfig#SHOW_LEGACY_PATHFINDER_HUD} (default off), exactly mirroring how {@code
+ * delivery.ContractHudOverlay} is gated behind {@code SHOW_LEGACY_CONTRACT_HUD}.
  */
 public final class PathfinderHudOverlay implements LayeredDraw.Layer {
 
     @Override
     public void render(GuiGraphics graphics, DeltaTracker deltaTracker) {
         PathfinderHudPayload hud = PathfinderClientHud.current();
-        if (!hud.active()) {
+        if (!LegacyHudVisibility.shouldRender(ClientConfig.SHOW_LEGACY_PATHFINDER_HUD.get(), hud.active())) {
             return;
         }
         Minecraft minecraft = Minecraft.getInstance();
@@ -32,8 +40,8 @@ public final class PathfinderHudOverlay implements LayeredDraw.Layer {
         }
 
         long remainingTicks = hud.deadlineTick() - minecraft.level.getGameTime();
-        String timeText = formatRemaining(remainingTicks);
-        String progressText = hud.reachedCount() + "/" + hud.totalCheckpoints();
+        String timeText = CountdownFormat.format(remainingTicks);
+        String progressText = ProgressFormat.format(hud.reachedCount(), hud.totalCheckpoints());
         String playerDimension = minecraft.level.dimension().location().toString();
 
         int x = 8;
@@ -70,15 +78,5 @@ public final class PathfinderHudOverlay implements LayeredDraw.Layer {
 
         graphics.drawString(minecraft.font, progressText, x + 16, y, 0xFFFFFF);
         graphics.drawString(minecraft.font, timeText, x + 16, y + 10, 0xFFFFFF);
-    }
-
-    private static String formatRemaining(long remainingTicks) {
-        if (remainingTicks <= 0) {
-            return "0:00";
-        }
-        long totalSeconds = remainingTicks / 20L;
-        long minutes = totalSeconds / 60L;
-        long seconds = totalSeconds % 60L;
-        return String.format(Locale.ROOT, "%d:%02d", minutes, seconds);
     }
 }

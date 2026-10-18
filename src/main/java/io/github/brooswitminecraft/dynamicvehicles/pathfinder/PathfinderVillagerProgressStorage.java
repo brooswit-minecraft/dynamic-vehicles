@@ -8,7 +8,9 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.level.saveddata.SavedData;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -37,15 +39,27 @@ import java.util.UUID;
  * write landing durably) where a crash could cause {@code recordCompletion} to be invoked a
  * second time for the SAME attempt after a restart (reloaded from disk with {@code
  * progressionCredited} still false even though the credit already truly landed) — {@code
- * attemptKey} closes that: the LAST attempt credited per villager is tracked and persisted here,
- * so a second call for that exact same attempt is a safe no-op rather than a double count.
+ * attemptKey} closes that: a credited-but-not-yet-fully-settled attempt's key is tracked and
+ * persisted here, so a second call for that exact same attempt is a safe no-op rather than a
+ * double count.
+ *
+ * <p>Review follow-up (round 8): tracking only the SINGLE most-recently-credited key per villager
+ * (rather than every still-retryable one) suppressed a repeat for the same attempt (A, A) but not
+ * an interleaving of two different players' pending attempts on the same villager (A, B, A) - B's
+ * credit overwrote A's remembered key, so A's own retry (still legitimately pending, since its
+ * OWN verification never confirmed) no longer matched anything and was wrongly credited a second
+ * time. {@code creditedAttempts} now keeps every attempt key that has been credited in memory but
+ * whose durable confirmation + attempt-clear has not yet fully succeeded; {@link
+ * #forgetCreditedAttempt} removes one once that attempt is fully, durably settled (reward
+ * granted, attempt cleared for good), keeping this bounded to attempts that are still actually
+ * retryable rather than growing forever.
  */
 public final class PathfinderVillagerProgressStorage extends SavedData {
     /** Package-visible so {@code PathfinderTickHandler} can read this exact file back from disk to verify a save actually landed. */
     static final String NAME = "dynamicvehicles_pathfinder_villager_progress";
 
     private final Map<UUID, PathfinderVillagerProgress.State> progress = new HashMap<>();
-    private final Map<UUID, String> lastCreditedAttempt = new HashMap<>();
+    private final Map<UUID, Set<String>> creditedAttempts = new HashMap<>();
 
     public static PathfinderVillagerProgressStorage of(MinecraftServer server) {
         return server.overworld().getDataStorage()
@@ -87,12 +101,27 @@ public final class PathfinderVillagerProgressStorage extends SavedData {
         if (completedLevel != current.level()) {
             return;
         }
-        if (attemptKey.equals(lastCreditedAttempt.get(villagerId))) {
+        Set<String> credited = creditedAttempts.computeIfAbsent(villagerId, key -> new HashSet<>());
+        if (credited.contains(attemptKey)) {
             return;
         }
         progress.put(villagerId, PathfinderVillagerProgress.onCompletion(current, completionsToAdvance));
-        lastCreditedAttempt.put(villagerId, attemptKey);
+        credited.add(attemptKey);
         setDirty();
+    }
+
+    /**
+     * Package-visible so {@code PathfinderTickHandler} can drop {@code attemptKey} once its
+     * attempt is fully, durably settled (reward granted, attempt cleared for good) - see the
+     * class javadoc on why this set must stay bounded to attempts that are still actually
+     * retryable, not grow forever. Safe to drop at that point: a cleared attempt is never
+     * evaluated again, so {@link #recordCompletion} can never be called for this key again.
+     */
+    void forgetCreditedAttempt(UUID villagerId, String attemptKey) {
+        Set<String> credited = creditedAttempts.get(villagerId);
+        if (credited != null && credited.remove(attemptKey)) {
+            setDirty();
+        }
     }
 
     /**
@@ -118,11 +147,11 @@ public final class PathfinderVillagerProgressStorage extends SavedData {
             UUID villagerId = new UUID(entry.getLong("VillagerIdHi"), entry.getLong("VillagerIdLo"));
             storage.progress.put(villagerId, new PathfinderVillagerProgress.State(entry.getInt("Level"), entry.getInt("CompletionsAtLevel")));
         }
-        ListTag creditedList = tag.getList("LastCreditedAttempts", Tag.TAG_COMPOUND);
+        ListTag creditedList = tag.getList("CreditedAttempts", Tag.TAG_COMPOUND);
         for (int i = 0; i < creditedList.size(); i++) {
             CompoundTag entry = creditedList.getCompound(i);
             UUID villagerId = new UUID(entry.getLong("VillagerIdHi"), entry.getLong("VillagerIdLo"));
-            storage.lastCreditedAttempt.put(villagerId, entry.getString("AttemptKey"));
+            storage.creditedAttempts.computeIfAbsent(villagerId, key -> new HashSet<>()).add(entry.getString("AttemptKey"));
         }
         return storage;
     }
@@ -140,14 +169,16 @@ public final class PathfinderVillagerProgressStorage extends SavedData {
         }
         tag.put("Villagers", list);
         ListTag creditedList = new ListTag();
-        for (Map.Entry<UUID, String> entry : lastCreditedAttempt.entrySet()) {
-            CompoundTag villagerTag = new CompoundTag();
-            villagerTag.putLong("VillagerIdHi", entry.getKey().getMostSignificantBits());
-            villagerTag.putLong("VillagerIdLo", entry.getKey().getLeastSignificantBits());
-            villagerTag.putString("AttemptKey", entry.getValue());
-            creditedList.add(villagerTag);
+        for (Map.Entry<UUID, Set<String>> entry : creditedAttempts.entrySet()) {
+            for (String attemptKey : entry.getValue()) {
+                CompoundTag villagerTag = new CompoundTag();
+                villagerTag.putLong("VillagerIdHi", entry.getKey().getMostSignificantBits());
+                villagerTag.putLong("VillagerIdLo", entry.getKey().getLeastSignificantBits());
+                villagerTag.putString("AttemptKey", attemptKey);
+                creditedList.add(villagerTag);
+            }
         }
-        tag.put("LastCreditedAttempts", creditedList);
+        tag.put("CreditedAttempts", creditedList);
         return tag;
     }
 }

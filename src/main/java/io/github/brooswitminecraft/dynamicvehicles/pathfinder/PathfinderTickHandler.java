@@ -218,6 +218,12 @@ public final class PathfinderTickHandler {
             storage.update(current);
             return;
         }
+        // This attempt is now fully, durably settled (reward about to be granted, attempt
+        // cleared for good) and will never be evaluated again - safe to drop its key from the
+        // still-retryable set (see PathfinderVillagerProgressStorage's class javadoc on round 8's
+        // A,B,A interleaving bug: an unbounded-but-never-shrinking set isn't wrong, just wasteful,
+        // so this keeps it bounded to attempts that are still actually pending).
+        PathfinderVillagerProgressStorage.of(server).forgetCreditedAttempt(current.villagerId(), PathfinderAttempts.attemptKey(current));
         int rewardedEmeralds = PathfinderAttempts.grantReward(player, current.level());
         player.sendSystemMessage(Component.translatable("message.dynamicvehicles.pathfinder.completed", rewardedEmeralds));
         PathfinderAttempts.clearHud(player);

@@ -856,6 +856,105 @@ public final class PathfinderGameTests {
     }
 
     /**
+     * Review follow-up (round 8): tracking only the single most-recently-credited attempt key per
+     * villager suppressed a retry for the SAME attempt (A, A) but not an interleaving of two
+     * DIFFERENT players' pending completions on the same villager (A, B, A) - crediting B
+     * overwrote A's remembered key, so A's own still-legitimately-pending retry (its own
+     * verification never confirmed) no longer matched anything and was credited a second time,
+     * advancing progression from two real completions to three. Two distinct players both finish
+     * a circuit against the SAME villager while the progression write is failing, so both
+     * attempts' retries interleave for real through the normal {@code onServerTick} loop (which
+     * evaluates every active attempt each cycle) - once writes recover, both players must be
+     * rewarded and the villager must show EXACTLY two credited completions, never three, and must
+     * not have unlocked level 2 at the default threshold of 3.
+     */
+    @GameTest(template = "dispatch_profession", timeoutTicks = 200, batch = "pathfinder_fault_progression_write_two_players")
+    public static void twoInterleavedPendingCompletionsOnSameVillagerCreditExactlyOnceEach(GameTestHelper helper) {
+        Villager villager = helper.spawn(EntityType.VILLAGER, new BlockPos(2, 2, 2));
+        villager.setVillagerData(villager.getVillagerData().setProfession(PathfinderProfession.PATHFINDER.get()));
+        seedLevel1RouteForTest(helper, villager);
+
+        ServerPlayer playerA = GameTestMockPlayers.create(helper);
+        playerA.moveTo(helper.absolutePos(new BlockPos(2, 2, 3)).getCenter());
+        declarePathfinderHudChannel(playerA);
+        PathfinderInteractionHandler.onEntityInteract(new PlayerInteractEvent.EntityInteract(playerA, InteractionHand.MAIN_HAND, villager));
+
+        ServerPlayer playerB = GameTestMockPlayers.create(helper);
+        playerB.moveTo(helper.absolutePos(new BlockPos(2, 2, 3)).getCenter());
+        declarePathfinderHudChannel(playerB);
+        PathfinderInteractionHandler.onEntityInteract(new PlayerInteractEvent.EntityInteract(playerB, InteractionHand.MAIN_HAND, villager));
+
+        MinecraftServer server = helper.getLevel().getServer();
+        PathfinderAttemptStorage storage = PathfinderAttemptStorage.of(server);
+        PathfinderAttemptRecord recordA = storage.active(playerA.getUUID()).orElseThrow();
+        PathfinderAttemptRecord recordB = storage.active(playerB.getUUID()).orElseThrow();
+        ServerLevel dimension = helper.getLevel();
+        PathfinderRoute route = PathfinderRouteStorage.of(server).routeFor(dimension, recordA.origin(), recordA.level()).orElseThrow();
+        int lastIndex = route.checkpoints().size() - 1;
+        storage.update(new PathfinderAttemptRecord(recordA.playerId(), recordA.villagerId(), recordA.dimensionId(), recordA.origin(), recordA.level(),
+                recordA.startTick(), recordA.timeLimitTicks(), lastIndex, false, false, false, false));
+        storage.update(new PathfinderAttemptRecord(recordB.playerId(), recordB.villagerId(), recordB.dimensionId(), recordB.origin(), recordB.level(),
+                recordB.startTick(), recordB.timeLimitTicks(), lastIndex, false, false, false, false));
+
+        server.overworld().getDataStorage().save();
+        net.neoforged.neoforge.common.IOUtilities.waitUntilIOWorkerComplete();
+        java.io.File dataDir = server.getWorldPath(net.minecraft.world.level.storage.LevelResource.ROOT).resolve("data").toFile();
+        helper.assertTrue(dataDir.isDirectory(), "sanity: the world's data directory must exist by now");
+        java.io.File progressFile = new java.io.File(dataDir, PathfinderVillagerProgressStorage.NAME + ".dat");
+        if (progressFile.isFile()) {
+            helper.assertTrue(progressFile.delete(), "sanity: must be able to remove the pre-existing progression file to inject the fault");
+        }
+        helper.assertTrue(!progressFile.exists(), "sanity: the progression path must be clear before injecting the fault");
+        helper.assertTrue(progressFile.mkdir(), "sanity: must be able to pre-create the progression path as a directory");
+
+        PathfinderCheckpoint last = route.checkpoints().get(lastIndex);
+        PathfinderCheckpoint first = route.checkpoints().get(0);
+        playerA.teleportTo(last.position().x(), last.position().y(), last.position().z());
+        playerB.teleportTo(last.position().x(), last.position().y(), last.position().z());
+
+        helper.runAfterDelay(170L, () -> deleteIfEmptyDirectory(progressFile));
+
+        boolean[] restoredWritable = {false};
+        boolean[] movedToClosingLeg = {false};
+        helper.succeedWhen(() -> {
+            if (!movedToClosingLeg[0]) {
+                int reachedA = storage.active(playerA.getUUID()).map(PathfinderAttemptRecord::reachedCount).orElse(-1);
+                int reachedB = storage.active(playerB.getUUID()).map(PathfinderAttemptRecord::reachedCount).orElse(-1);
+                helper.assertTrue(reachedA == route.checkpoints().size() && reachedB == route.checkpoints().size(),
+                        "expected both players' last checkpoint to register first");
+                playerA.teleportTo(first.position().x(), first.position().y(), first.position().z());
+                playerB.teleportTo(first.position().x(), first.position().y(), first.position().z());
+                movedToClosingLeg[0] = true;
+                helper.fail("moved both players to the closing leg - wait for interleaved evaluation to hit the injected progression-only write failure");
+            }
+            if (!restoredWritable[0]) {
+                PathfinderAttemptRecord pendingA = storage.active(playerA.getUUID()).orElse(null);
+                PathfinderAttemptRecord pendingB = storage.active(playerB.getUUID()).orElse(null);
+                helper.assertTrue(pendingA != null && pendingA.finished() && !pendingA.progressionCredited(),
+                        "player A's completion must still be pending while the progression write fails");
+                helper.assertTrue(pendingB != null && pendingB.finished() && !pendingB.progressionCredited(),
+                        "player B's completion must still be pending while the progression write fails");
+                helper.assertTrue(playerA.getInventory().countItem(Items.EMERALD) == 0 && playerB.getInventory().countItem(Items.EMERALD) == 0,
+                        "reward must be withheld for both players while the progression credit cannot be confirmed durable");
+                helper.assertTrue(deleteIfEmptyDirectory(progressFile), "must be able to remove the fault directory to let the real file be written");
+                restoredWritable[0] = true;
+                helper.fail("removed the fault directory - wait for both retries to confirm and pay out");
+            }
+            helper.assertTrue(storage.active(playerA.getUUID()).isEmpty() && storage.active(playerB.getUUID()).isEmpty(),
+                    "once the progression write succeeds, both retried payouts should clear their attempts");
+            int expected = PathfinderConfig.rewardEmeralds(recordA.level());
+            helper.assertTrue(playerA.getInventory().countItem(Items.EMERALD) == expected,
+                    "expected player A to receive exactly " + expected + " emerald(s)");
+            helper.assertTrue(playerB.getInventory().countItem(Items.EMERALD) == expected,
+                    "expected player B to receive exactly " + expected + " emerald(s)");
+            PathfinderVillagerProgress.State villagerState = PathfinderVillagerLevel.stateOf(server, villager.getUUID());
+            helper.assertTrue(villagerState.level() == 1 && villagerState.completionsAtLevel() == 2,
+                    "exactly two real completions (one each for A and B) must be credited, never three, and the villager must not have unlocked "
+                            + "level 2 at the default threshold of 3");
+        });
+    }
+
+    /**
      * Review follow-up: a failed death-clear previously put the ORIGINAL, still-"live" record
      * back into storage (every terminal flag false) - letting a later tick, by then past respawn,
      * treat it as a normal in-progress attempt and advance/complete it off whatever movement

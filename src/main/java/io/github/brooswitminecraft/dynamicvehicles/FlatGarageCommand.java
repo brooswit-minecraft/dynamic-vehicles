@@ -12,6 +12,7 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.tags.FluidTags;
 
 import java.util.OptionalLong;
 import java.util.Set;
@@ -117,16 +118,27 @@ final class FlatGarageCommand {
     }
 
     /**
-     * Finds a nearby column position at which both {@code target} and the block above it are
-     * unobstructed, searching outward vertically via {@link SafeLandingSearch} - the
-     * Minecraft-free algorithm this method is a thin, untested wrapper around (mirrored exactly;
-     * see that class's javadoc for why the split exists). Returns {@code null} if none was found.
+     * Finds a nearby column position with a solid floor and a clear, non-hazardous feet/head gap,
+     * searching outward vertically via {@link SafeLandingSearch} - the Minecraft-free algorithm
+     * this method is a thin, untested wrapper around (mirrored exactly; see that class's javadoc
+     * for why the split exists). Returns {@code null} if none was found.
      */
     private static BlockPos findSafeLanding(ServerLevel level, BlockPos target) {
         int minY = level.getMinBuildHeight();
         int maxY = level.getMaxBuildHeight() - 1;
-        OptionalLong safeY = SafeLandingSearch.findSafeY(target.getY(), minY, maxY,
-                y -> level.getBlockState(new BlockPos(target.getX(), y, target.getZ())).blocksMotion());
-        return safeY.isPresent() ? new BlockPos(target.getX(), (int) safeY.getAsLong(), target.getZ()) : null;
+        int x = target.getX();
+        int z = target.getZ();
+        OptionalLong safeY = SafeLandingSearch.findSafeY(target.getY(), minY, maxY, new SafeLandingSearch.ColumnQuery() {
+            @Override
+            public boolean isObstructed(int y) {
+                return level.getBlockState(new BlockPos(x, y, z)).blocksMotion();
+            }
+
+            @Override
+            public boolean isHazardous(int y) {
+                return level.getFluidState(new BlockPos(x, y, z)).is(FluidTags.LAVA);
+            }
+        });
+        return safeY.isPresent() ? new BlockPos(x, (int) safeY.getAsLong(), z) : null;
     }
 }

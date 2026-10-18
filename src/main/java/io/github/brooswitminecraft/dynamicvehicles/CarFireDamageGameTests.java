@@ -53,52 +53,117 @@ public final class CarFireDamageGameTests {
         });
     }
 
-    /** AC2 (continued burning after leaving lava): a vehicle ignited by lava keeps taking fire damage once
-     * it has driven off the lava and onto dry ground. */
+    /** Review (PR #166): a healthy vehicle's short external ignition (a flame arrow, not a standing fire)
+     * must expire on its own, under vanilla's own fire-tick countdown, instead of the burning branch
+     * re-arming the timer every tick and keeping a merely-ignited car on fire (and taking damage)
+     * forever. */
     @GameTest(template = "settlement_test", timeoutTicks = 100)
-    public static void burningContinuesAfterLeavingLava(GameTestHelper helper) {
-        helper.setBlock(new BlockPos(5, 2, 5), Blocks.LAVA);
+    public static void healthyCarsShortExternalIgnitionExpiresOnItsOwnAndStopsDamage(GameTestHelper helper) {
+        helper.setBlock(new BlockPos(5, 2, 5), Blocks.STONE);
         helper.setBlock(new BlockPos(5, 3, 5), Blocks.AIR);
-        helper.setBlock(new BlockPos(8, 2, 5), Blocks.STONE);
-        helper.setBlock(new BlockPos(8, 3, 5), Blocks.AIR);
-        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 2, 5));
-        helper.runAfterDelay(5L, () -> {
-            helper.assertTrue(car.isOnFire(), "car did not ignite after sitting in lava");
-            BlockPos stoneAbs = helper.absolutePos(new BlockPos(8, 2, 5));
-            car.setPos(stoneAbs.getX() + 0.5, stoneAbs.getY() + car.spec().rideHeight() - car.spec().halfY(), stoneAbs.getZ() + 0.5);
-            float healthJustAfterLeaving = car.health();
+        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
+        car.igniteForSeconds(1.0f); // a short, one-off ignition, not sustained standing fire.
+        helper.runAfterDelay(30L, () -> {
+            helper.assertTrue(!car.isOnFire(),
+                    "a healthy vehicle's short external ignition never expired on its own; "
+                            + "the burning branch must not keep re-arming the fire timer for a merely-ignited car");
+            float healthAfterExpiry = car.health();
             helper.runAfterDelay(20L, () -> {
-                helper.assertTrue(car.health() < healthJustAfterLeaving,
-                        "car stopped taking fire damage after leaving lava onto dry ground: "
-                                + car.health() + " vs " + healthJustAfterLeaving);
+                helper.assertTrue(car.health() == healthAfterExpiry,
+                        "a healthy vehicle kept taking fire damage after its short external ignition expired: "
+                                + healthAfterExpiry + " -> " + car.health());
                 helper.succeed();
             });
         });
     }
 
-    /** AC5: entering water extinguishes the fire and stops ongoing external-fire damage, under the game's
-     * established extinguishing rule -- and does not leave a stale fire/damage state once dry again is
-     * exercised implicitly here by the damage staying stopped across further ticks while still submerged. */
-    @GameTest(template = "settlement_test", timeoutTicks = 100)
-    public static void enteringWaterExtinguishesFireAndStopsOngoingDamage(GameTestHelper helper) {
-        helper.setBlock(new BlockPos(5, 2, 5), Blocks.STONE);
-        helper.setBlock(new BlockPos(5, 3, 5), Blocks.AIR);
-        helper.setBlock(new BlockPos(8, 2, 5), Blocks.WATER);
-        helper.setBlock(new BlockPos(8, 3, 5), Blocks.WATER);
-        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
-        car.igniteForSeconds(10.0f);
-        helper.runAfterDelay(10L, () -> {
-            helper.assertTrue(car.health() < CarHealth.MAX, "externally ignited car took no fire damage before reaching water");
-            BlockPos waterAbs = helper.absolutePos(new BlockPos(8, 2, 5));
-            car.setPos(waterAbs.getX() + 0.5, waterAbs.getY() + 0.5, waterAbs.getZ() + 0.5);
-            helper.runAfterDelay(3L, () -> {
-                helper.assertTrue(!car.isOnFire(), "car stayed on fire after entering water");
-                float healthAfterExtinguish = car.health();
+    /** AC2 (continued burning after leaving lava): a vehicle ignited by lava keeps taking fire damage once
+     * the lava is gone from under it (a real block-level fluid exit, the same production {@code isInLava}
+     * query a real drive-away would hit) with the SAME Sable physics body staying attached and ticking
+     * throughout -- never recreated, never manually repositioned.
+     *
+     * <p>This does not drive the car there with {@code forceDrive}: {@code NewVehicleGameTests}'
+     * {@code existingCarStillMountsAndDismountsAfterTheseChanges} documents a pre-existing Sable/GameTest
+     * coordinate bug (confirmed again while writing this test -- the same "Aborting entity get for
+     * abnormally large AABB" Sable error, and zero net travel after 100 forced-drive ticks) that caps any
+     * forced drive at roughly zero to half a block regardless of ticks given, unrelated to this ticket's
+     * own CarEntity/SableCarBody changes. */
+    @GameTest(template = "settlement_test", timeoutTicks = 60)
+    public static void burningContinuesAfterLeavingLava(GameTestHelper helper) {
+        BlockPos floor = new BlockPos(5, 2, 5);
+        BlockPos cell = new BlockPos(5, 3, 5);
+        helper.setBlock(floor, Blocks.STONE);
+        helper.setBlock(cell, Blocks.LAVA);
+        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), cell);
+        helper.runAfterDelay(5L, () -> {
+            helper.assertTrue(car.isInLava(), "test setup did not actually submerge the car in lava");
+            helper.assertTrue(car.isOnFire(), "car did not ignite after sitting in lava");
+            helper.setBlock(cell, Blocks.AIR); // the lava recedes; the car and its Sable body never move.
+            helper.runAfterDelay(2L, () -> {
+                helper.assertTrue(!car.isInLava(), "test setup did not actually clear the lava out from under the car");
+                float healthJustAfterLeaving = car.health();
                 helper.runAfterDelay(20L, () -> {
-                    helper.assertTrue(car.health() == healthAfterExtinguish,
-                            "car kept taking fire damage after being extinguished by water: "
-                                    + healthAfterExtinguish + " -> " + car.health());
+                    helper.assertTrue(!car.isRemoved(), "car was removed/crashed after the lava receded");
+                    helper.assertTrue(car.health() < healthJustAfterLeaving,
+                            "car stopped taking fire damage after the lava receded from under it, still on fire: "
+                                    + healthJustAfterLeaving + " -> " + car.health());
                     helper.succeed();
+                });
+            });
+        });
+    }
+
+    /** AC5: entering water extinguishes the fire and stops ongoing external-fire damage, under the game's
+     * established extinguishing rule -- and, per review (PR #166), actually clears the water back out
+     * afterward (a real block-level fluid exit through the same production {@code isInWater} query, with
+     * the SAME Sable physics body staying attached and ticking throughout -- never recreated, never
+     * manually repositioned) to confirm fire and damage both stay stopped rather than merely "stopped
+     * while still submerged," which could hide a bug that only reignites on dry land.
+     *
+     * <p>This does not drive the car out with {@code forceDrive} either -- see
+     * {@link #burningContinuesAfterLeavingLava}'s javadoc for the pre-existing drive-distance cap that
+     * rules that out in this harness. */
+    @GameTest(template = "settlement_test", timeoutTicks = 60)
+    public static void enteringWaterExtinguishesFireAndStaysStoppedOnceDryAgain(GameTestHelper helper) {
+        helper.setBlock(new BlockPos(5, 2, 5), Blocks.STONE);
+        BlockPos cell = new BlockPos(5, 3, 5);
+        helper.setBlock(cell, Blocks.AIR);
+        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), cell);
+        car.igniteForSeconds(10.0f);
+        helper.runAfterDelay(5L, () -> {
+            helper.assertTrue(car.health() < CarHealth.MAX, "externally ignited car took no fire damage before reaching water");
+            helper.setBlock(cell, Blocks.WATER); // the car's own cell floods; the car and its body never move.
+            helper.runAfterDelay(3L, () -> {
+                helper.assertTrue(car.isInWater(), "test setup did not actually flood the car's own cell with water");
+                helper.assertTrue(!car.isOnFire(), "car stayed on fire after its cell flooded with water");
+                float healthWhileSubmerged = car.health();
+                // Short submersion, not a long one: a lone water source left for many ticks spreads
+                // sideways into the template's own open neighboring space, and draining only the one cell
+                // afterward then has that spread flowing water seep straight back in on the next fluid
+                // update -- exactly what an earlier version of this test hit (observed: the drained cell
+                // reads back as minecraft:water[level=2], a flowing remnant, not the source we placed).
+                helper.runAfterDelay(3L, () -> {
+                    helper.assertTrue(car.health() == healthWhileSubmerged,
+                            "car kept taking fire damage while submerged and extinguished: "
+                                    + healthWhileSubmerged + " -> " + car.health());
+                    // Drain a small area around the cell, not just the cell itself, to also clear out any
+                    // start of that sideways spread before it can seep back into the cell we care about.
+                    for (int dx = -1; dx <= 1; dx++) {
+                        for (int dz = -1; dz <= 1; dz++) {
+                            helper.setBlock(cell.offset(dx, 0, dz), Blocks.AIR);
+                        }
+                    }
+                    helper.runAfterDelay(3L, () -> {
+                        helper.assertTrue(!car.isRemoved(), "car was removed/crashed after the water receded");
+                        helper.assertTrue(!car.isInWater(), "test setup did not actually dry the car's own cell back out: y="
+                                + car.getY() + " fluidHeight=" + car.getFluidHeight(net.minecraft.tags.FluidTags.WATER)
+                                + " block@car=" + helper.getLevel().getBlockState(BlockPos.containing(car.getX(), car.getY() + 0.1, car.getZ())));
+                        helper.assertTrue(!car.isOnFire(), "car reignited on its own once dry again");
+                        helper.assertTrue(car.health() == healthWhileSubmerged,
+                                "car took fire damage again once dry again: "
+                                        + healthWhileSubmerged + " -> " + car.health());
+                        helper.succeed();
+                    });
                 });
             });
         });
@@ -132,11 +197,11 @@ public final class CarFireDamageGameTests {
         });
     }
 
-    /** AC6/AC7: burning all the way to zero health still goes through the existing single
-     * explode-and-discard path exactly once, and the destroyed vehicle does not come back or re-trigger
-     * destruction on later ticks. */
+    /** AC6: burning all the way to zero health removes the vehicle through the existing explode-and-discard
+     * path, and it stays removed on later ticks instead of coming back. This does not assert an explosion
+     * count -- only removal, and that removal sticks (see review, PR #166). */
     @GameTest(template = "settlement_test", timeoutTicks = 60)
-    public static void burningToZeroHealthDestroysTheVehicleExactlyOnce(GameTestHelper helper) {
+    public static void burningToZeroHealthRemovesTheVehicleAndItStaysRemoved(GameTestHelper helper) {
         helper.setBlock(new BlockPos(5, 2, 5), Blocks.LAVA);
         helper.setBlock(new BlockPos(5, 3, 5), Blocks.AIR);
         CarEntity car = DynamicVehiclesMod.CAR.get().create(helper.getLevel());

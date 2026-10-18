@@ -864,10 +864,18 @@ public class CarEntity extends Entity {
         // stacking into double damage on the same tick; vanilla's own lava hurt() call is swallowed by
         // this class's hurt() override (non-explosion sources fall through to Entity.hurt, a no-op), so
         // it never adds a second hit on top of this one.
-        boolean burning = (CarHealth.burning(health) || isOnFire()) && !isInWater();
+        boolean selfBurning = CarHealth.burning(health);
+        boolean burning = (selfBurning || isOnFire()) && !isInWater();
         if (burning) {
             damage(CarHealth.burnDamage(DT));
-            setRemainingFireTicks(40);
+            if (selfBurning) {
+                // Only the intentional low-health self-burn keeps re-arming its own fire display
+                // indefinitely (unchanged from before this ticket). A merely-ignited healthy vehicle
+                // must NOT get this refresh (review, PR #166): vanilla's own fire-tick countdown, left
+                // alone, already clears isOnFire() -- and with it this damage -- once a short external
+                // ignition (a flame arrow, a fire charge) runs out, instead of the car burning forever.
+                setRemainingFireTicks(40);
+            }
             if (tickCount % 20 == 0) {
                 for (Entity passenger : getPassengers()) {
                     passenger.igniteForSeconds(2.0f);

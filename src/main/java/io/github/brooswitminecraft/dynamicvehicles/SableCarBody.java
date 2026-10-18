@@ -60,6 +60,14 @@ final class SableCarBody {
     // itself produces, the same lag every other "fixed for the whole tick" value in this method already has.
     private int automaticGearIndex;
     private double engineRpm = DrivetrainMath.IDLE_RPM;
+    private double gearRatio = DrivetrainMath.ratioFor(DrivetrainMath.GEAR_RATIOS.length - 1);
+    // Per-wheel telemetry for /dtcar debug (MINECRAFT-401 review: the ticket's own acceptance criteria
+    // calls these out by name -- contact speed, slip, applied force/torque -- not just gear/RPM). Written
+    // alongside wheelSpin, below the same force<=0 guard, so they freeze with it for an
+    // airborne/zero-load/raycast-miss wheel rather than reading as live for a wheel nothing is touching.
+    private final double[] wheelContactSpeed;
+    private final double[] wheelSlip;
+    private final double[] wheelForce;
     // Per-wheel values published to clients for rendering (MINECRAFT-122). Airborne/zero-load/raycast-miss
     // behaviour differs per value, each deliberate:
     //  - suspensionTravel is replaced wholesale every tick from pass 1's own compressions[] (the single
@@ -88,6 +96,9 @@ final class SableCarBody {
         this.box = box;
         this.body = body;
         this.wheelSpin = new double[spec.mounts().length];
+        this.wheelContactSpeed = new double[spec.mounts().length];
+        this.wheelSlip = new double[spec.mounts().length];
+        this.wheelForce = new double[spec.mounts().length];
         this.suspensionTravel = new double[spec.mounts().length];
         this.steerAngle = new double[spec.mounts().length];
         this.lastContactBlockPos = new BlockPos[spec.mounts().length];
@@ -152,12 +163,18 @@ final class SableCarBody {
             drivenWheelSpin += Math.abs(wheelSpin[w]);
         }
         drivenWheelSpin /= wheelCountForDrivetrain;
-        double gearRatio;
+        // The RAW (unclamped) RPM the engaged ratio implies -- read by limiterTorqueFactor below, never
+        // the display-clamped engineRpm field, so a wheel spinning well past the limiter actually loses
+        // torque instead of merely reading as "at the limiter" forever while still receiving full force
+        // (MINECRAFT-401 review).
+        double forwardRawRpm;
         if (gear == CarPhysics.Gear.NEUTRAL) {
             gearRatio = 0.0;
+            forwardRawRpm = 0.0;
             engineRpm = DrivetrainMath.freeRevRpm(throttle);
         } else if (gear == CarPhysics.Gear.REVERSE) {
             gearRatio = DrivetrainMath.REVERSE_RATIO;
+            forwardRawRpm = DrivetrainMath.rawRpm(drivenWheelSpin, gearRatio);
             engineRpm = DrivetrainMath.engineRpm(drivenWheelSpin, gearRatio);
         } else {
             if (gear == CarPhysics.Gear.AUTOMATIC) {
@@ -166,9 +183,17 @@ final class SableCarBody {
             } else {
                 gearRatio = DrivetrainMath.ratioFor(gear.manualIndex());
             }
+            forwardRawRpm = DrivetrainMath.rawRpm(drivenWheelSpin, gearRatio);
             engineRpm = DrivetrainMath.engineRpm(drivenWheelSpin, gearRatio);
         }
-        double driveForceMultiplier = DrivetrainMath.forceMultiplier(gearRatio);
+        // Couples the rev limiter to delivered torque, not just to the displayed RPM number: a forward/
+        // automatic gear's own ratio multiplier is cut toward 0 as its RAW RPM reaches the limiter, and
+        // REVERSE's own fixed force is cut the same way against its own REVERSE_RATIO -- so a low gear
+        // cannot keep injecting full force into a wheel that has already outrun what the ratio/limiter
+        // can carry (a sustained burnout, or a manual gear held well past its own governed speed).
+        double driveForceMultiplier = DrivetrainMath.forceMultiplier(gearRatio) * DrivetrainMath.limiterTorqueFactor(forwardRawRpm);
+        double reverseRawRpm = DrivetrainMath.rawRpm(drivenWheelSpin, DrivetrainMath.REVERSE_RATIO);
+        double effectiveReverseForce = REVERSE_FORCE * DrivetrainMath.limiterTorqueFactor(reverseRawRpm);
 
         boolean touching = false;
         double slipThisTick = 0.0;
@@ -371,7 +396,7 @@ final class SableCarBody {
 
                 // Accelerator direction follows the selected gear, and the brake always just brakes --
                 // see GearDrive's own javadoc (MINECRAFT-382).
-                double drive = GearDrive.drive(throttle, forwardSpeed, gear, driveForceMultiplier, DRIVE_FORCE, REVERSE_FORCE, spec.forceScale(), spec.maxSpeed());
+                double drive = GearDrive.drive(throttle, forwardSpeed, gear, driveForceMultiplier, DRIVE_FORCE, effectiveReverseForce, spec.forceScale(), spec.maxSpeed());
                 double brake = GearDrive.brake(throttle, forwardSpeed, BRAKE_FORCE, spec.forceScale());
                 double lateralScale = 1.0;
                 double brakeGain = 1.0;
@@ -405,7 +430,7 @@ final class SableCarBody {
                     double[] partnerMount = spec.mounts()[partner];
                     boolean left = mount[0] < 0.0;
                     double partnerDrive = TorqueDistribution.distribute(
-                            GearDrive.drive(throttle, forwardSpeed, gear, driveForceMultiplier, DRIVE_FORCE, REVERSE_FORCE, spec.forceScale(), spec.maxSpeed()),
+                            GearDrive.drive(throttle, forwardSpeed, gear, driveForceMultiplier, DRIVE_FORCE, effectiveReverseForce, spec.forceScale(), spec.maxSpeed()),
                             partnerMount[2] > 0.0, partnerMount[0] < 0.0, tuning, steer);
                     LimitedSlipDifferential.DrivePair axleDrive = left
                             ? LimitedSlipDifferential.distribute(drive, partnerDrive,
@@ -463,6 +488,12 @@ final class SableCarBody {
                 double reportedSlip = WheelSubStepper.subStepSlipSpeed(vLong, vLat, force, gripMu, rollingCoefficient,
                         lateralScale, drive, brake, brakeGain, effectiveMass, dt);
                 slipThisTick = Math.max(slipThisTick, reportedSlip);
+                // MINECRAFT-401 review: debug telemetry naming contact speed, per-wheel slip and applied
+                // force explicitly. Last-sub-step-wins, same as every other per-wheel value below this
+                // force<=0 guard -- these are a snapshot for /dtcar debug, not integrated state.
+                wheelContactSpeed[wheel] = vLong;
+                wheelSlip[wheel] = reportedSlip;
+                wheelForce[wheel] = tire.longitudinal();
                 // SlipReporter must fire at most once per wheel per tick (not once per sub-step), so we only
                 // track the worst wearSlip seen across this tick's sub-steps here, paired with the force at
                 // the sub-step that produced it (so the reported load matches the reported slip), and report
@@ -648,6 +679,12 @@ final class SableCarBody {
         return automaticGearIndex;
     }
 
+    /** The gear ratio actually engaged this tick (the manual gear's own ratio, automatic mode's current
+     * pick, or {@link DrivetrainMath#REVERSE_RATIO}); 0.0 in NEUTRAL. */
+    double gearRatio() {
+        return gearRatio;
+    }
+
     /** The body's speed, m/s. */
     double speed() {
         return body.getLinearVelocity(new Vector3d()).length();
@@ -670,21 +707,27 @@ final class SableCarBody {
         double pitch = Math.toDegrees(Math.asin(Math.max(-1, Math.min(1, fwd.y))));
         double roll = Math.toDegrees(Math.atan2(q.transform(new Vector3d(1, 0, 0)).y, up.y));
         Vector3d v = body.getLinearVelocity(new Vector3d());
-        // MINECRAFT-401: requested mode/gear, the effective gear/ratio it resolves to (AUTOMATIC's own
-        // current pick, or the manual gear itself), engine RPM, throttle, and every wheel's own
-        // spin/linear/slip so a Trophy Truck playtest report can distinguish exactly what the ticket asked
-        // for -- see the class javadoc for which values are "fixed for the whole tick" versus live.
+        // MINECRAFT-401 (review: complete the telemetry the ticket's own acceptance criteria names):
+        // requested mode/gear, the effective gear/ratio it resolves to (AUTOMATIC's own current pick, or
+        // the manual gear itself), engine RPM, throttle/brake, and every wheel's own angular (spin) and
+        // linear speed, this tick's contact-patch speed, slip and applied force/torque -- see the class
+        // javadoc for which values are "fixed for the whole tick" versus live.
         String effective = gear == CarPhysics.Gear.AUTOMATIC
                 ? "D" + (automaticGearIndex + 1) + "(auto)"
                 : gear.name();
+        double brakeInput = Math.max(0.0, -throttle);
+        double throttleInput = Math.max(0.0, throttle);
         StringBuilder wheels = new StringBuilder();
         for (int wheel = 0; wheel < wheelSpin.length; wheel++) {
             double wheelLinear = wheelSpin[wheel] * spec.wheelRadius();
-            wheels.append(String.format(" w%d(spin=%.2f linear=%.2f)", wheel, wheelSpin[wheel], wheelLinear));
+            double torque = wheelForce[wheel] * spec.wheelRadius();
+            wheels.append(String.format(" w%d(spin=%.2f linear=%.2f contact=%.2f slip=%.2f force=%.0f torque=%.0f)",
+                    wheel, wheelSpin[wheel], wheelLinear, wheelContactSpeed[wheel], wheelSlip[wheel],
+                    wheelForce[wheel], torque));
         }
         return String.format("body y=%.3f pitch=%.2f roll=%.2f speed=%.2f spinSlip=%.2f slip=%.2f "
-                + "requestedGear=%s effectiveGear=%s rpm=%.0f throttle=%.2f%s",
+                + "requestedGear=%s effectiveGear=%s ratio=%.2f rpm=%.0f throttle=%.2f brake=%.2f%s",
                 pose.position().y, pitch, roll, v.length(), lastSpinSlip, lastSlipSpeed,
-                gear.name(), effective, engineRpm, throttle, wheels);
+                gear.name(), effective, gearRatio, engineRpm, throttleInput, brakeInput, wheels);
     }
 }

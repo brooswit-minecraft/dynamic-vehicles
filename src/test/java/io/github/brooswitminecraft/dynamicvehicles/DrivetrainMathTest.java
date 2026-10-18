@@ -56,6 +56,43 @@ class DrivetrainMathTest {
     }
 
     @Test
+    void freeRevRpmNeverRevsFromTheBrakeInNeutral() {
+        // MINECRAFT-401 review: SableCarBody passes the car's SIGNED throttle (accelerator minus brake)
+        // straight through. Full brake with no accelerator is a negative value and must read as idle,
+        // never as a demand to rev toward the limiter.
+        assertEquals(DrivetrainMath.IDLE_RPM, DrivetrainMath.freeRevRpm(-1.0), 1e-9,
+                "full brake alone in neutral must not free-rev the engine");
+        assertEquals(DrivetrainMath.IDLE_RPM, DrivetrainMath.freeRevRpm(-0.3), 1e-9);
+    }
+
+    @Test
+    void rawRpmIsNotClampedButEngineRpmIs() {
+        double huge = DrivetrainMath.rawRpm(10_000.0, DrivetrainMath.ratioFor(0));
+        assertTrue(huge > DrivetrainMath.LIMITER_RPM, "rawRpm must keep climbing past the limiter, unclamped");
+        assertEquals(DrivetrainMath.LIMITER_RPM, DrivetrainMath.engineRpm(10_000.0, DrivetrainMath.ratioFor(0)), 1e-9,
+                "engineRpm's own display clamp must still cap at the limiter");
+    }
+
+    @Test
+    void limiterTorqueFactorTapersToZeroAtAndPastTheLimiterButNotBelowIt() {
+        assertEquals(1.0, DrivetrainMath.limiterTorqueFactor(DrivetrainMath.IDLE_RPM), 1e-9);
+        assertEquals(0.0, DrivetrainMath.limiterTorqueFactor(DrivetrainMath.LIMITER_RPM), 1e-9);
+        assertEquals(0.0, DrivetrainMath.limiterTorqueFactor(DrivetrainMath.LIMITER_RPM + 5000.0), 1e-9,
+                "torque must stay cut off well past the limiter, not resume");
+        double midTaper = DrivetrainMath.limiterTorqueFactor(DrivetrainMath.LIMITER_RPM - DrivetrainMath.LIMITER_TAPER_RPM / 2.0);
+        assertTrue(midTaper > 0.0 && midTaper < 1.0, "mid-taper factor must be strictly between 0 and 1");
+    }
+
+    @Test
+    void automaticShiftLogicReadsUnclampedRpmSoAPinnedWheelStillUpshifts() {
+        // A wheel spinning so fast that D1's own RAW rpm is already an order of magnitude past the
+        // limiter must still trigger an upshift -- it must not look identical to "merely at the limiter"
+        // the way reading the clamped engineRpm would.
+        int shifted = DrivetrainMath.automaticGearIndex(0, 50_000.0);
+        assertTrue(shifted > 0, "an absurdly fast driven wheel in D1 must upshift, not stay pinned");
+    }
+
+    @Test
     void automaticUpshiftsWhenRpmWouldExceedTheUpshiftThreshold() {
         // A wheel speed whose current-gear RPM is at the limiter must upshift at least one gear.
         double fastWheelSpeed = DrivetrainMath.LIMITER_RPM * 2.0 * Math.PI / 60.0 / (DrivetrainMath.ratioFor(0) * DrivetrainMath.FINAL_DRIVE);

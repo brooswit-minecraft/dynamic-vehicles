@@ -22,6 +22,8 @@ public final class DrivetrainMath {
     /** Automatic mode downshifts once the current gear's implied RPM drops below this -- comfortably
      * below {@link #UPSHIFT_RPM} so a steady speed near either threshold does not hunt between gears. */
     public static final double DOWNSHIFT_RPM = 2200.0;
+    /** How far below {@link #LIMITER_RPM} {@link #limiterTorqueFactor} starts tapering torque. */
+    public static final double LIMITER_TAPER_RPM = 400.0;
 
     private DrivetrainMath() {}
 
@@ -35,41 +37,78 @@ public final class DrivetrainMath {
     }
 
     /**
-     * The engine RPM a driven wheel's own angular speed implies through {@code ratio} and
-     * {@link #FINAL_DRIVE}, clamped to {@link #IDLE_RPM}..{@link #LIMITER_RPM} -- an idling engine never
-     * reads as stalled, and a wheel spinning well past what the ratio can carry never reads as revving
-     * past the limiter the engine itself enforces.
+     * The RAW engine RPM a driven wheel's own angular speed implies through {@code ratio} and
+     * {@link #FINAL_DRIVE} -- NOT clamped to the idle/limiter band, unlike {@link #engineRpm}. This is the
+     * value {@link #limiterTorqueFactor} and the automatic shift logic must read: a wheel spinning well
+     * past what the ratio/limiter can carry has to actually lose torque, not just stop climbing in the
+     * number displayed to the player while the driveline keeps injecting the same force into it forever
+     * (MINECRAFT-401 review).
      *
      * @param wheelAngularSpeed the driven wheel's own spin rate, rad/s (sign ignored: both directions spin
      *        the engine the same way through a fixed ratio)
      */
-    public static double engineRpm(double wheelAngularSpeed, double ratio) {
-        double rpm = Math.abs(wheelAngularSpeed) * ratio * FINAL_DRIVE * 60.0 / (2.0 * Math.PI);
-        return Math.max(IDLE_RPM, Math.min(LIMITER_RPM, rpm));
+    public static double rawRpm(double wheelAngularSpeed, double ratio) {
+        return Math.abs(wheelAngularSpeed) * ratio * FINAL_DRIVE * 60.0 / (2.0 * Math.PI);
     }
 
-    /** Engine RPM in {@link #NEUTRAL}, where nothing couples the engine to the wheels: a free rev from
-     * idle to the limiter purely as a function of throttle. */
+    /**
+     * The engine RPM a driven wheel's own angular speed implies, clamped to {@link #IDLE_RPM}..
+     * {@link #LIMITER_RPM} for DISPLAY/AUDIO purposes only -- an idling engine never reads as stalled, and
+     * a wheel spinning past what the ratio can carry never reads as revving past the limiter. This clamp
+     * is cosmetic: the torque actually delivered is governed separately by {@link #limiterTorqueFactor}
+     * against the UNCLAMPED {@link #rawRpm}, so a coupled caller must read both, not just this one.
+     */
+    public static double engineRpm(double wheelAngularSpeed, double ratio) {
+        return Math.max(IDLE_RPM, Math.min(LIMITER_RPM, rawRpm(wheelAngularSpeed, ratio)));
+    }
+
+    /**
+     * 1.0 while comfortably under the limiter, tapering linearly to 0.0 as {@code rawRpm} (the UNCLAMPED
+     * value -- see {@link #rawRpm}) crosses into the last {@link #LIMITER_TAPER_RPM} below
+     * {@link #LIMITER_RPM}, and staying 0.0 past it. A real rev limiter cuts torque near redline; it does
+     * not merely cap the number shown on the gauge while the engine keeps shoving the car just as hard
+     * (MINECRAFT-401 review) -- multiply this into the drive force a caller is about to apply so a wheel
+     * pinned above the limiter (e.g. mid-burnout in a low gear) stops gaining speed/spin instead of
+     * accelerating forever.
+     */
+    public static double limiterTorqueFactor(double rawRpm) {
+        double start = LIMITER_RPM - LIMITER_TAPER_RPM;
+        if (rawRpm <= start) {
+            return 1.0;
+        }
+        if (rawRpm >= LIMITER_RPM) {
+            return 0.0;
+        }
+        return (LIMITER_RPM - rawRpm) / LIMITER_TAPER_RPM;
+    }
+
+    /** Engine RPM in {@link CarPhysics.Gear#NEUTRAL}, where nothing couples the engine to the wheels: a
+     * free rev from idle to the limiter purely as a function of the ACCELERATOR -- never the brake, whose
+     * negative throttle sign must read as zero here, not as a demand to rev (MINECRAFT-401 review: a
+     * caller passing the car's signed throttle -- accelerator minus brake -- straight through must not
+     * free-rev the engine while only the brake is held). */
     public static double freeRevRpm(double throttle) {
-        double t = Math.max(0.0, Math.min(1.0, Math.abs(throttle)));
-        return IDLE_RPM + t * (LIMITER_RPM - IDLE_RPM);
+        double accelerator = Math.max(0.0, Math.min(1.0, throttle));
+        return IDLE_RPM + accelerator * (LIMITER_RPM - IDLE_RPM);
     }
 
     /**
      * Automatic mode's own next gear index from the one it is already in and the driven wheel's current
-     * angular speed: upshifts while even the current gear's implied RPM is still above
+     * angular speed: upshifts while even the current gear's implied RAW RPM is still above
      * {@link #UPSHIFT_RPM} (so a hard launch can skip more than one gear in a single call rather than
      * waiting one shift at a time to catch up), then downshifts while it is below
      * {@link #DOWNSHIFT_RPM} -- never both in the same call, and the gap between the two thresholds is
-     * what keeps a steady speed near either one from hunting back and forth every tick.
+     * what keeps a steady speed near either one from hunting back and forth every tick. Reads the
+     * UNCLAMPED {@link #rawRpm}, not the display-clamped {@link #engineRpm}, so a wheel spinning well past
+     * the limiter in the current gear still reliably triggers the upshift that would relieve it.
      */
     public static int automaticGearIndex(int currentIndex, double wheelAngularSpeed) {
         int index = clampGearIndex(currentIndex);
         double speed = Math.abs(wheelAngularSpeed);
-        while (index < GEAR_RATIOS.length - 1 && engineRpm(speed, ratioFor(index)) >= UPSHIFT_RPM) {
+        while (index < GEAR_RATIOS.length - 1 && rawRpm(speed, ratioFor(index)) >= UPSHIFT_RPM) {
             index++;
         }
-        while (index > 0 && engineRpm(speed, ratioFor(index)) <= DOWNSHIFT_RPM) {
+        while (index > 0 && rawRpm(speed, ratioFor(index)) <= DOWNSHIFT_RPM) {
             index--;
         }
         return index;

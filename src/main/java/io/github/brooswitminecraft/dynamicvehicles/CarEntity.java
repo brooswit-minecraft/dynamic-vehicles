@@ -284,6 +284,23 @@ public class CarEntity extends Entity {
         return entityData.get(DATA_SLIP);
     }
 
+    /** Server test support only (MINECRAFT-401 production-path regressions): the gear ratio and automatic
+     * gear index the drivetrain actually engaged on the last real tick, or 0.0/-1 before the physics body
+     * exists. Package-private -- not part of the client-facing API. */
+    double debugGearRatio() {
+        return sableBody == null ? 0.0 : SableCompat.gearRatio(sableBody);
+    }
+
+    int debugAutomaticGearIndex() {
+        return sableBody == null ? -1 : SableCompat.automaticGearIndex(sableBody);
+    }
+
+    /** Server-authoritative speed, m/s -- unlike {@link #clientSpeed()}, which is only ever updated
+     * inside this entity's client-side tick branch and so always reads 0 from a server-side test. */
+    double debugSpeed() {
+        return sableBody == null ? 0.0 : SableCompat.speed(sableBody);
+    }
+
     /** Client: engine RPM fraction 0..1 between idle and the limiter, for the drivetrain-derived engine
      * sound (MINECRAFT-401). */
     public double clientEngineRpmFraction() {

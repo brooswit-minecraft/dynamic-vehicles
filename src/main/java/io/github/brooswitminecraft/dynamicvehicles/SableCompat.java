@@ -44,6 +44,11 @@ final class SableCompat {
         return ((SableCarBody) body).automaticGearIndex();
     }
 
+    /** The gear ratio actually engaged this tick; see {@link SableCarBody#gearRatio()}. */
+    static double gearRatio(Object body) {
+        return ((SableCarBody) body).gearRatio();
+    }
+
     static double speed(Object body) {
         return ((SableCarBody) body).speed();
     }

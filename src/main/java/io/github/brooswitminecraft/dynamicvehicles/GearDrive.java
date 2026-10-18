@@ -31,8 +31,14 @@ public final class GearDrive {
                 : 0.0;
     }
 
-    /** The brake pedal's force for this wheel: always decelerates the car's actual motion, any gear. */
+    /**
+     * The brake pedal's force for this wheel: always decelerates the car's actual motion, any gear, any
+     * speed (MINECRAFT-382) -- including holding it near a standstill, forward or backward, rather than
+     * releasing the car to roll once it drops below some speed threshold. WheelMath.tire()'s own stop
+     * target already scales down smoothly as forwardSpeed approaches zero, so handing it a full brakeForce
+     * here never overshoots into driving the car the other way.
+     */
     public static double brake(double throttle, double forwardSpeed, double brakeForce, double forceScale) {
-        return throttle < 0 && Math.abs(forwardSpeed) > 0.5 ? -throttle * brakeForce * forceScale : 0.0;
+        return throttle < 0 ? -throttle * brakeForce * forceScale : 0.0;
     }
 }

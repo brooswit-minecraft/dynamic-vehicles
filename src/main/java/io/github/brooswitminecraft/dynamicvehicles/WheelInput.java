@@ -131,7 +131,7 @@ public final class WheelInput {
             PacketDistributor.sendToServer(new WheelPaddlesPayload(paddles.honk(), paddles.handbrake()));
         }
         if (wheelActive && ClientConfig.WHEEL_SHIFTER_ENABLED.get()) {
-            CarPhysics.Gear shifterGear = WheelMapping.shifterGear(true, readButtons(device), shifterButtons());
+            CarPhysics.Gear shifterGear = WheelMapping.shifterGear(true, readButtons(device), shifterButtons(), ClientConfig.WHEEL_SHIFTER_MODE.get());
             if (shifterGear != null && shifterGear != lastSentShifterGear) {
                 lastSentShifterGear = shifterGear;
                 PacketDistributor.sendToServer(new GearSelectPayload(shifterGear));

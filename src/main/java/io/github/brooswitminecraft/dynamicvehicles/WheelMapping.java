@@ -152,17 +152,39 @@ public final class WheelMapping {
     public record ShifterButtons(int neutral, int reverse, int d1, int d2, int d3, int d4, int d5, int d6) {}
 
     /**
-     * Resolves an H-pattern/sequential button sample to the existing explicit gear state. Conflicting
-     * simultaneous presses resolve deterministically by this fixed priority: reverse, then the dedicated
-     * neutral button (if mapped), then D1..D6 in order.
-     *
-     * <p>When no mapped gear button is down, a released H-pattern lever really is sitting in neutral
-     * (MINECRAFT-382) -- but only once the sample can be trusted: {@code null} (no gear decision, leave
-     * the car's current gear alone) when nothing is actually mapped ({@link #shifterConfigured}), or when
-     * {@code buttons} does not even reach every mapped index, which reads as a disconnected device or a
-     * short/invalid sample rather than a genuine release of every gear button.
+     * How a released shifter (no mapped gear button down) is read, because the two hardware classes this
+     * method serves disagree on what "released" means (MINECRAFT-382):
+     * <ul>
+     * <li>{@link #H_PATTERN}: every lever position, including neutral, is a latched button that stays down
+     * while the lever sits there. Releasing every mapped button is itself a real, intentional sample --
+     * neutral -- never a leftover of whatever was selected before.
+     * <li>{@link #SEQUENTIAL}: the gear buttons are momentary (an upshift/downshift paddle, or a push that
+     * springs back), so "released" only ever means "not being pushed right now", not "neutral selected".
+     * Releasing one must retain whatever gear was already selected, exactly like the pre-MINECRAFT-382
+     * direct-button path did for every caller.
+     * </ul>
      */
-    public static CarPhysics.Gear shifterGear(byte[] buttons, ShifterButtons mapping) {
+    public enum ShifterMode { H_PATTERN, SEQUENTIAL }
+
+    /**
+     * Resolves a shifter button sample to the existing explicit gear state. Conflicting simultaneous
+     * presses resolve deterministically by this fixed priority: reverse, then the dedicated neutral
+     * button (if mapped), then D1..D6 in order.
+     *
+     * <p>The sample is validated FIRST, before any individual button is trusted: {@code null} (no gear
+     * decision, leave the car's current gear alone) when nothing is actually mapped
+     * ({@link #shifterConfigured}), or when {@code buttons} does not reach every mapped index -- not even
+     * the highest one, which a sample that only covers a lower pressed button could otherwise slip past --
+     * since that reads as a disconnected device or a short/invalid sample, never a trustworthy read of any
+     * button, pressed or released.
+     *
+     * <p>Once the sample is trusted and no mapped button is down, the result depends on {@code mode}: see
+     * {@link ShifterMode}.
+     */
+    public static CarPhysics.Gear shifterGear(byte[] buttons, ShifterButtons mapping, ShifterMode mode) {
+        if (!shifterConfigured(mapping) || !shifterSampleCovers(buttons, mapping)) {
+            return null;
+        }
         if (buttonDown(buttons, mapping.reverse())) return CarPhysics.Gear.REVERSE;
         if (buttonDown(buttons, mapping.neutral())) return CarPhysics.Gear.NEUTRAL;
         if (buttonDown(buttons, mapping.d1())) return CarPhysics.Gear.D1;
@@ -171,7 +193,12 @@ public final class WheelMapping {
         if (buttonDown(buttons, mapping.d4())) return CarPhysics.Gear.D4;
         if (buttonDown(buttons, mapping.d5())) return CarPhysics.Gear.D5;
         if (buttonDown(buttons, mapping.d6())) return CarPhysics.Gear.D6;
-        return shifterConfigured(mapping) && shifterSampleCovers(buttons, mapping) ? CarPhysics.Gear.NEUTRAL : null;
+        return mode == ShifterMode.H_PATTERN ? CarPhysics.Gear.NEUTRAL : null;
+    }
+
+    /** {@link #shifterGear(byte[], ShifterButtons, ShifterMode)} defaulting to the measured G29's H_PATTERN. */
+    public static CarPhysics.Gear shifterGear(byte[] buttons, ShifterButtons mapping) {
+        return shifterGear(buttons, mapping, ShifterMode.H_PATTERN);
     }
 
     /** Whether at least one gear button is actually mapped; an unconfigured shifter never claims NEUTRAL. */
@@ -190,5 +217,10 @@ public final class WheelMapping {
     /** The feature gate is deliberately outside all normal input mapping: disabled means no gear selection. */
     public static CarPhysics.Gear shifterGear(boolean enabled, byte[] buttons, ShifterButtons mapping) {
         return enabled ? shifterGear(buttons, mapping) : null;
+    }
+
+    /** As above, with an explicit {@link ShifterMode} instead of the G29's default H_PATTERN. */
+    public static CarPhysics.Gear shifterGear(boolean enabled, byte[] buttons, ShifterButtons mapping, ShifterMode mode) {
+        return enabled ? shifterGear(buttons, mapping, mode) : null;
     }
 }

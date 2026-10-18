@@ -185,6 +185,34 @@ class WheelMappingTest {
     }
 
     @Test
+    void shifterRejectsAShortSampleEvenWhenALowerButtonHappensToBePressed() {
+        // MINECRAFT-382: the sample must be validated BEFORE trusting any individual button. A 13-button
+        // read cannot see the measured mapping's reverse button (index 18), so even though it clearly
+        // shows D1 (index 12) pressed, the sample as a whole is untrustworthy and must not be accepted --
+        // a short read could just as easily be hiding reverse actually being held.
+        var mapping = new WheelMapping.ShifterButtons(-1, 18, 12, 13, 14, 15, 16, 17);
+        byte[] shortButPressed = new byte[13];
+        shortButPressed[12] = 1;
+        assertEquals(null, WheelMapping.shifterGear(shortButPressed, mapping));
+    }
+
+    @Test
+    void sequentialModeRetainsTheSelectedGearOnReleaseInsteadOfGoingToNeutral() {
+        // SEQUENTIAL (momentary paddle) hardware (MINECRAFT-382): releasing the button must not report
+        // neutral -- that would falsely override whatever gear is actually still engaged -- so it reports
+        // null (no gear decision) exactly like the pre-fix direct-button path did for every caller.
+        var mapping = new WheelMapping.ShifterButtons(-1, -1, 0, 1, 2, 3, 4, 5);
+        byte[] released = new byte[6];
+        assertEquals(null, WheelMapping.shifterGear(released, mapping, WheelMapping.ShifterMode.SEQUENTIAL));
+        byte[] d3 = new byte[6];
+        d3[2] = 1;
+        assertEquals(CarPhysics.Gear.D3, WheelMapping.shifterGear(d3, mapping, WheelMapping.ShifterMode.SEQUENTIAL),
+                "a momentary press still selects its gear");
+        // The same released sample under H_PATTERN is a genuine neutral -- the two modes must disagree here.
+        assertEquals(CarPhysics.Gear.NEUTRAL, WheelMapping.shifterGear(released, mapping, WheelMapping.ShifterMode.H_PATTERN));
+    }
+
+    @Test
     void shifterReverseWinsOverEveryOtherSimultaneousGearButton() {
         // Deterministic conflict resolution (MINECRAFT-382): reverse first, then the dedicated neutral
         // button, then D1..D6 in order, regardless of what else is held at the same time.

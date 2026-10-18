@@ -48,9 +48,18 @@ class GearDriveTest {
     }
 
     @Test
-    void brakeNeverFiresFromTheAcceleratorOrBelowItsSpeedThreshold() {
+    void brakeNeverFiresFromTheAccelerator() {
         assertEquals(0.0, GearDrive.brake(1.0, 10.0, BRAKE_FORCE, 1.0), 0.0, "positive throttle is the accelerator, never the brake");
-        assertEquals(0.0, GearDrive.brake(-1.0, 0.2, BRAKE_FORCE, 1.0), 0.0, "near-standstill parking hold is handled separately, not here");
+        assertEquals(0.0, GearDrive.brake(0.0, 10.0, BRAKE_FORCE, 1.0), 0.0, "zero throttle is neither pedal");
+    }
+
+    @Test
+    void brakeHoldsEvenNearAStandstillInsteadOfReleasingTheCar() {
+        // MINECRAFT-382: holding the brake at low speed, forward or backward, must still brake/hold the
+        // car (e.g. on a slope) rather than silently doing nothing below some speed threshold.
+        assertTrue(GearDrive.brake(-1.0, 0.2, BRAKE_FORCE, 1.0) > 0, "low-speed forward brake must still apply force");
+        assertTrue(GearDrive.brake(-1.0, -0.2, BRAKE_FORCE, 1.0) > 0, "low-speed reverse brake must still apply force");
+        assertTrue(GearDrive.brake(-1.0, 0.0, BRAKE_FORCE, 1.0) > 0, "braking from a dead stop must still hold, not release");
     }
 
     @Test

@@ -13,6 +13,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.tags.FluidTags;
+import net.minecraft.world.phys.AABB;
 
 import java.util.OptionalLong;
 import java.util.Set;
@@ -122,8 +123,20 @@ final class FlatGarageCommand {
      * searching outward vertically via {@link SafeLandingSearch} - the Minecraft-free algorithm
      * this method is a thin, untested wrapper around (mirrored exactly; see that class's javadoc
      * for why the split exists). Returns {@code null} if none was found.
+     *
+     * <p>Obstruction is tested with a real per-cell collision query ({@link ServerLevel#noCollision})
+     * against the full 1x1x1 cell at each Y, not the deprecated {@code BlockState#blocksMotion()} -
+     * review fix, MINECRAFT-397: {@code blocksMotion()} answers for the block's own nominal grid cell
+     * only, so a fence or wall (whose actual collision shape reaches up to 1.5 blocks tall, into the
+     * cell above its own) would still read that cell above as clear and let a player land embedded in
+     * it. A real collision query against the cell's own volume catches that spill-over wherever it
+     * actually falls.
+     *
+     * <p>Package-private, not private, so {@code FlatGarageCommandGameTests} can exercise this exact
+     * production path against real blocks (a plain unit test cannot: this repo's test sourceSet has
+     * no path to {@code BlockState}/{@code ServerLevel} outside a running mod loader).
      */
-    private static BlockPos findSafeLanding(ServerLevel level, BlockPos target) {
+    static BlockPos findSafeLanding(ServerLevel level, BlockPos target) {
         int minY = level.getMinBuildHeight();
         int maxY = level.getMaxBuildHeight() - 1;
         int x = target.getX();
@@ -131,7 +144,7 @@ final class FlatGarageCommand {
         OptionalLong safeY = SafeLandingSearch.findSafeY(target.getY(), minY, maxY, new SafeLandingSearch.ColumnQuery() {
             @Override
             public boolean isObstructed(int y) {
-                return level.getBlockState(new BlockPos(x, y, z)).blocksMotion();
+                return !level.noCollision(new AABB(x, y, z, x + 1, y + 1, z + 1));
             }
 
             @Override

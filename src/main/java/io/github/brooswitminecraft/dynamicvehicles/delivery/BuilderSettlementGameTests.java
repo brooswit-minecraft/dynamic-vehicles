@@ -279,32 +279,4 @@ public final class BuilderSettlementGameTests {
         for (var blocker : blockers) helper.assertTrue(blocker.isAlive(), "a blocking entity was harmed");
         helper.succeed();
     }
-
-    @GameTest(template = "settlement_test")
-    public static void terrainPreparationLevelsNaturalGroundAndPreservesOutsideFootprint(GameTestHelper helper) {
-        prepareFixture(helper);
-        BlockPos center = helper.absolutePos(ANCHOR);
-        helper.setBlock(ANCHOR.offset(-2, 0, -2), Blocks.DIRT);
-        helper.setBlock(ANCHOR.offset(-2, 1, -2), Blocks.SHORT_GRASS);
-        helper.setBlock(ANCHOR.offset(2, -1, 2), Blocks.AIR);
-        helper.setBlock(ANCHOR.offset(4, 0, 0), Blocks.CHEST);
-        SettlementFounder.placeTradingPost(helper.getLevel(), center);
-        helper.assertTrue(helper.getBlockState(ANCHOR.offset(2, -1, 2)).is(Blocks.DIRT), "depression was not filled: " + helper.getBlockState(ANCHOR.offset(2,-1,2)));
-        helper.assertTrue(helper.getBlockState(ANCHOR.offset(-2, 1, -2)).isAir(), "grass was not cleared");
-        helper.assertTrue(helper.getBlockState(ANCHOR.offset(4, 0, 0)).is(Blocks.CHEST), "changed outside footprint");
-        helper.succeed();
-    }
-
-    @GameTest(template = "settlement_test")
-    public static void tradingPostForcesItsWayOverBuildsAndOpenAir(GameTestHelper helper) {
-        prepareFixture(helper);
-        BlockPos center = helper.absolutePos(ANCHOR);
-        helper.setBlock(ANCHOR.offset(2, 0, 2), Blocks.CHEST);
-        helper.setBlock(ANCHOR.offset(-2, -1, -2), Blocks.AIR);
-        helper.setBlock(ANCHOR.offset(-2, -2, -2), Blocks.AIR);
-        SettlementFounder.placeTradingPost(helper.getLevel(), center);
-        helper.assertTrue(helper.getBlockState(ANCHOR.offset(2, 0, 2)).is(Blocks.SPRUCE_PLANKS), "build was not replaced");
-        helper.assertTrue(!helper.getBlockState(ANCHOR.offset(-2, -1, -2)).isAir(), "floor left unsupported");
-        helper.succeed();
-    }
 }

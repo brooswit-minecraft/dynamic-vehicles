@@ -249,13 +249,24 @@ public final class PathfinderTickHandler {
      * actually absent there. See {@link PathfinderAttemptStorage}'s class javadoc for why the
      * join alone is not sufficient: a failed write is caught and logged inside the queued task,
      * never surfaced to the joining thread.
+     *
+     * <p>Review follow-up (post-merge): {@code waitUntilIOWorkerComplete} itself can throw - a
+     * failed write's OWN async temp-file cleanup ({@code IOUtilities#tryCleanupTempFiles}) can
+     * race the write's target path changing underneath it and surface an unchecked {@code
+     * CompletionException}/{@code UncheckedIOException}, not the plain {@code IOException} a
+     * failed write alone produces. That used to sit outside this method's try block entirely,
+     * so it escaped {@code evaluate}, then {@code onServerTick}, then NeoForge's own event bus -
+     * crashing the tick handler instead of leaving the pending attempt safely retryable. The
+     * whole sequence is now one try block catching both: this method's entire contract is
+     * "durably confirmed or not", so ANY failure reaching it - expected or not - must mean "not
+     * yet confirmed, retry later," never an uncaught crash.
      */
     private static boolean forceSaveAndVerifyAbsent(MinecraftServer server, UUID playerId) {
-        server.overworld().getDataStorage().save();
-        IOUtilities.waitUntilIOWorkerComplete();
         try {
+            server.overworld().getDataStorage().save();
+            IOUtilities.waitUntilIOWorkerComplete();
             return readAttemptsFromDisk(server).active(playerId).isEmpty();
-        } catch (IOException e) {
+        } catch (IOException | RuntimeException e) {
             return false;
         }
     }
@@ -264,14 +275,16 @@ public final class PathfinderTickHandler {
      * Same save-then-read-back-off-disk shape as {@link #forceSaveAndVerifyAbsent}, but confirms
      * {@code villagerId}'s progression credit alone - deliberately NOT the attempt file (see
      * {@link #attemptDurablePayout}'s javadoc for why the two must be confirmed as separate,
-     * ordered phases rather than one combined check).
+     * ordered phases rather than one combined check). See {@link #forceSaveAndVerifyAbsent}'s
+     * javadoc for why {@code waitUntilIOWorkerComplete} must be inside this same catch, covering
+     * {@code RuntimeException} too, not just {@code IOException}.
      */
     private static boolean forceSaveAndVerifyProgressDurable(MinecraftServer server, UUID villagerId, PathfinderVillagerProgress.State expectedProgress) {
-        server.overworld().getDataStorage().save();
-        IOUtilities.waitUntilIOWorkerComplete();
         try {
+            server.overworld().getDataStorage().save();
+            IOUtilities.waitUntilIOWorkerComplete();
             return readVillagerProgressFromDisk(server).stateOf(villagerId).equals(expectedProgress);
-        } catch (IOException e) {
+        } catch (IOException | RuntimeException e) {
             return false;
         }
     }

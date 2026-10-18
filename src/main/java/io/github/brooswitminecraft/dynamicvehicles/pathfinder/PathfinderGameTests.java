@@ -851,7 +851,24 @@ public final class PathfinderGameTests {
         });
     }
 
+    /**
+     * Review follow-up (post-merge CI failure): draining NeoForge's IO worker FIRST, before
+     * removing the fault directory, matters here specifically - its own asynchronous temp-file
+     * cleanup ({@code IOUtilities#tryCleanupTempFiles}) can otherwise still be scanning this
+     * exact directory when this test code deletes it out from under that scan, racing a
+     * NoSuchFileException into an unrelated later IO-worker task. {@code
+     * PathfinderTickHandler}'s own durability checks are now hardened against that regardless
+     * (any such failure there must fail closed, not crash), but draining first avoids
+     * manufacturing the race from the test side at all.
+     */
     private static boolean deleteIfEmptyDirectory(java.io.File dir) {
+        try {
+            net.neoforged.neoforge.common.IOUtilities.waitUntilIOWorkerComplete();
+        } catch (RuntimeException e) {
+            // Best-effort drain only - see this method's javadoc. Proceeding either way is fine:
+            // worst case the directory removal below still races a cleanup task, which
+            // PathfinderTickHandler's own durability checks are hardened to fail closed against.
+        }
         return !dir.isDirectory() || dir.delete();
     }
 

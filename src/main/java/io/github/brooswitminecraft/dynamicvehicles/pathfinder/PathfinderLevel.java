@@ -11,12 +11,13 @@ package io.github.brooswitminecraft.dynamicvehicles.pathfinder;
  * the design specifies for levels 2-5.
  *
  * <p>Level 1 is the one case NOT modeled as a ring of regions: its circuit
- * runs entirely inside the origin region, so {@link #ring} is 0 and
- * {@link #checkpointCount} is a placeholder, not a settled count — see the
- * class-level caveat on {@link PathfinderRouteGenerator}.
+ * runs entirely inside the origin region ({@link #ring} is 0), as an
+ * eight-checkpoint local loop — John approved this count/layout on
+ * 2026-10-18, so it is a settled count, not a placeholder (see git log /
+ * ticket comments for the approval).
  */
 public enum PathfinderLevel {
-    LEVEL_1(1, 0, 1),
+    LEVEL_1(1, 0, 8),
     LEVEL_2(2, 1, 8),
     LEVEL_3(3, 2, 16),
     LEVEL_4(4, 3, 24),

@@ -1,0 +1,7 @@
+{
+  "variants": {
+    "": {
+      "model": "dynamicvehicles:block/route_board"
+    }
+  }
+}

@@ -47,6 +47,9 @@ import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderTradeHandler;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderCampfireHandler;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderPassiveSettlementHandler;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.VillagerNoonProgressionHandler;
+import io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderBlocks;
+import io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderPoiTypes;
+import io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderProfession;
 
 /** Entry point and registry for the first vehicle, a 4-wheel car (MINECRAFT-63). */
 @Mod(DynamicVehiclesMod.MODID)
@@ -123,6 +126,9 @@ public class DynamicVehiclesMod {
         DispatcherProfession.PROFESSIONS.register(modEventBus);
         BuilderPoiTypes.POI_TYPES.register(modEventBus);
         BuilderProfession.PROFESSIONS.register(modEventBus);
+        PathfinderBlocks.BLOCKS.register(modEventBus);
+        PathfinderPoiTypes.POI_TYPES.register(modEventBus);
+        PathfinderProfession.PROFESSIONS.register(modEventBus);
         DispatcherOfferMenus.MENUS.register(modEventBus);
         modEventBus.addListener(this::commonSetup);
         modEventBus.addListener(this::addCreative);
@@ -237,6 +243,7 @@ public class DynamicVehiclesMod {
             event.accept(BUS_ITEM);
             event.accept(CARGO_TRUCK_ITEM);
             event.accept(DispatcherBlocks.DISPATCH_BOARD_ITEM);
+            event.accept(PathfinderBlocks.ROUTE_BOARD_ITEM);
         }
     }
 

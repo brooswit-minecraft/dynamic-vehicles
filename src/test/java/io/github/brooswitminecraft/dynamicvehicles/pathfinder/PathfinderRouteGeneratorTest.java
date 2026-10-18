@@ -2,8 +2,6 @@ package io.github.brooswitminecraft.dynamicvehicles.pathfinder;
 
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -12,9 +10,19 @@ class PathfinderRouteGeneratorTest {
     private static final PathfinderRegion ORIGIN = new PathfinderRegion(5, -9);
 
     @Test
-    void level1StaysConfinedToTheOriginRegion() {
+    void level1IsAnEightCheckpointLoopEntirelyInsideTheOriginRegion() {
         PathfinderRoute route = PathfinderRouteGenerator.generate(ORIGIN, PathfinderLevel.LEVEL_1);
-        assertEquals(List.of(ORIGIN), route.checkpoints());
+        assertEquals(8, route.checkpoints().size());
+        for (PathfinderCheckpoint checkpoint : route.checkpoints()) {
+            assertEquals(ORIGIN, checkpoint.region());
+        }
+    }
+
+    @Test
+    void level1ChecksCheckpointsAreDistinctPositionsNotJustTheRegionCenter() {
+        PathfinderRoute route = PathfinderRouteGenerator.generate(ORIGIN, PathfinderLevel.LEVEL_1);
+        long distinctPositions = route.checkpoints().stream().map(PathfinderCheckpoint::position).distinct().count();
+        assertEquals(8, distinctPositions, "an 8-checkpoint local loop needs 8 distinct points, not one repeated");
     }
 
     @Test
@@ -26,12 +34,23 @@ class PathfinderRouteGeneratorTest {
     }
 
     @Test
+    void level2Through5GiveEachRingRegionExactlyOneCheckpoint() {
+        PathfinderRoute route = PathfinderRouteGenerator.generate(ORIGIN, PathfinderLevel.LEVEL_3);
+        long distinctRegions = route.checkpoints().stream().map(PathfinderCheckpoint::region).distinct().count();
+        assertEquals(route.checkpoints().size(), distinctRegions);
+    }
+
+    @Test
     void sameOriginAndLevelAlwaysProducesAnEqualRoute_acrossVillagersRetriesAndReload() {
         // "Across villagers/retries/reload" all collapse to "call this pure function again" -
         // there is no villager/player/session identity anywhere in its input.
         PathfinderRoute first = PathfinderRouteGenerator.generate(ORIGIN, PathfinderLevel.LEVEL_3);
         PathfinderRoute second = PathfinderRouteGenerator.generate(ORIGIN, PathfinderLevel.LEVEL_3);
         assertEquals(first, second);
+
+        PathfinderRoute firstLevel1 = PathfinderRouteGenerator.generate(ORIGIN, PathfinderLevel.LEVEL_1);
+        PathfinderRoute secondLevel1 = PathfinderRouteGenerator.generate(ORIGIN, PathfinderLevel.LEVEL_1);
+        assertEquals(firstLevel1, secondLevel1);
     }
 
     @Test

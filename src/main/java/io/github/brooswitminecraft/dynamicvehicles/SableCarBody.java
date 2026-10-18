@@ -329,21 +329,11 @@ final class SableCarBody {
                 double vLong = pointVelocity.dot(forward);
                 double vLat = pointVelocity.dot(lateral);
 
-                double drive = 0.0;
-                double brake = 0.0;
+                // Accelerator direction follows the selected gear, and the brake always just brakes --
+                // see GearDrive's own javadoc (MINECRAFT-382).
+                double drive = GearDrive.drive(throttle, forwardSpeed, gear, DRIVE_FORCE, REVERSE_FORCE, spec.forceScale(), spec.maxSpeed());
+                double brake = GearDrive.brake(throttle, forwardSpeed, BRAKE_FORCE, spec.forceScale());
                 double lateralScale = 1.0;
-                if (throttle > 0) {
-                    drive = throttle * DRIVE_FORCE * spec.forceScale() * Math.max(0.0, 1.0 - Math.abs(forwardSpeed) / spec.maxSpeed());
-                } else if (throttle < 0) {
-                    if (forwardSpeed > 0.5) {
-                        brake = -throttle * BRAKE_FORCE * spec.forceScale();
-                    } else if (gear == CarPhysics.Gear.REVERSE) {
-                        drive = throttle * REVERSE_FORCE * spec.forceScale() * Math.max(0.0, 1.0 - Math.abs(forwardSpeed) / 8.0);
-                    }
-                    // gear is NEUTRAL or a forward gear and the car is near a standstill: holding brake must
-                    // never reverse it (MINECRAFT-228 hard acceptance criterion) -- only an explicit REVERSE
-                    // gear lets throttle < 0 drive the car backward.
-                }
                 double brakeGain = 1.0;
                 if (throttle == 0 && Math.abs(forwardSpeed) < 1.5) {
                     brake = BRAKE_FORCE * spec.forceScale(); // parked: hold on a slope instead of rolling away
@@ -375,13 +365,7 @@ final class SableCarBody {
                     double[] partnerMount = spec.mounts()[partner];
                     boolean left = mount[0] < 0.0;
                     double partnerDrive = TorqueDistribution.distribute(
-                            throttle > 0
-                                    ? throttle * DRIVE_FORCE * spec.forceScale()
-                                            * Math.max(0.0, 1.0 - Math.abs(forwardSpeed) / spec.maxSpeed())
-                                    : throttle < 0 && forwardSpeed <= 0.5 && gear == CarPhysics.Gear.REVERSE
-                                            ? throttle * REVERSE_FORCE * spec.forceScale()
-                                                    * Math.max(0.0, 1.0 - Math.abs(forwardSpeed) / 8.0)
-                                            : 0.0,
+                            GearDrive.drive(throttle, forwardSpeed, gear, DRIVE_FORCE, REVERSE_FORCE, spec.forceScale(), spec.maxSpeed()),
                             partnerMount[2] > 0.0, partnerMount[0] < 0.0, tuning, steer);
                     LimitedSlipDifferential.DrivePair axleDrive = left
                             ? LimitedSlipDifferential.distribute(drive, partnerDrive,

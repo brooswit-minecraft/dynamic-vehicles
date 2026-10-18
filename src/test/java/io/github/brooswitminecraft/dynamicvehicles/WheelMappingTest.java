@@ -149,8 +149,79 @@ class WheelMappingTest {
             byte[] sample = new byte[8]; sample[button] = 1;
             assertEquals(expected[button], WheelMapping.shifterGear(sample, mapping));
         }
-        assertEquals(null, WheelMapping.shifterGear(new byte[8], mapping));
-        assertEquals(null, WheelMapping.shifterGear(new byte[] {1}, new WheelMapping.ShifterButtons(-1, -1, -1, -1, -1, -1, -1, -1)));
+        assertEquals(CarPhysics.Gear.NEUTRAL, WheelMapping.shifterGear(new byte[8], mapping),
+                "a released H-pattern lever, all mapped buttons up, is a genuine neutral sample (MINECRAFT-382)");
+        assertEquals(null, WheelMapping.shifterGear(new byte[] {1}, new WheelMapping.ShifterButtons(-1, -1, -1, -1, -1, -1, -1, -1)),
+                "nothing mapped at all is an unconfigured shifter, not neutral");
         assertEquals(null, WheelMapping.shifterGear(false, new byte[] {0, 1}, mapping), "off by default leaves a physical reverse button entirely inert");
+    }
+
+    @Test
+    void measuredG29ShifterMapsForwardReverseAndNeutralRelease() {
+        // Measured live on the user's G29 (MINECRAFT-382): forward 1-6 = buttons 12-17, reverse = 18, no
+        // dedicated neutral button -- releasing every gear button is the device's own neutral.
+        var mapping = new WheelMapping.ShifterButtons(-1, 18, 12, 13, 14, 15, 16, 17);
+        byte[] sample = new byte[19];
+        assertEquals(CarPhysics.Gear.NEUTRAL, WheelMapping.shifterGear(sample, mapping));
+        sample[18] = 1;
+        assertEquals(CarPhysics.Gear.REVERSE, WheelMapping.shifterGear(sample, mapping));
+        sample[18] = 0;
+        sample[12] = 1;
+        assertEquals(CarPhysics.Gear.D1, WheelMapping.shifterGear(sample, mapping));
+        sample[12] = 0;
+        sample[17] = 1;
+        assertEquals(CarPhysics.Gear.D6, WheelMapping.shifterGear(sample, mapping));
+        sample[17] = 0;
+        assertEquals(CarPhysics.Gear.NEUTRAL, WheelMapping.shifterGear(sample, mapping), "releasing a gear button returns to neutral, not the stale gear");
+    }
+
+    @Test
+    void shifterNeutralOnlyWhenTheSampleActuallyCoversEveryMappedButton() {
+        var mapping = new WheelMapping.ShifterButtons(0, 1, 2, 3, 4, 5, 6, 7);
+        assertEquals(null, WheelMapping.shifterGear(new byte[0], mapping), "an empty sample reads as disconnected/invalid, never neutral");
+        assertEquals(null, WheelMapping.shifterGear(new byte[] {0, 0, 0}, mapping),
+                "a sample too short to even hold the mapped buttons is invalid, not a trustworthy release");
+        assertEquals(CarPhysics.Gear.NEUTRAL, WheelMapping.shifterGear(new byte[8], mapping));
+    }
+
+    @Test
+    void shifterRejectsAShortSampleEvenWhenALowerButtonHappensToBePressed() {
+        // MINECRAFT-382: the sample must be validated BEFORE trusting any individual button. A 13-button
+        // read cannot see the measured mapping's reverse button (index 18), so even though it clearly
+        // shows D1 (index 12) pressed, the sample as a whole is untrustworthy and must not be accepted --
+        // a short read could just as easily be hiding reverse actually being held.
+        var mapping = new WheelMapping.ShifterButtons(-1, 18, 12, 13, 14, 15, 16, 17);
+        byte[] shortButPressed = new byte[13];
+        shortButPressed[12] = 1;
+        assertEquals(null, WheelMapping.shifterGear(shortButPressed, mapping));
+    }
+
+    @Test
+    void sequentialModeRetainsTheSelectedGearOnReleaseInsteadOfGoingToNeutral() {
+        // SEQUENTIAL (momentary paddle) hardware (MINECRAFT-382): releasing the button must not report
+        // neutral -- that would falsely override whatever gear is actually still engaged -- so it reports
+        // null (no gear decision) exactly like the pre-fix direct-button path did for every caller.
+        var mapping = new WheelMapping.ShifterButtons(-1, -1, 0, 1, 2, 3, 4, 5);
+        byte[] released = new byte[6];
+        assertEquals(null, WheelMapping.shifterGear(released, mapping, WheelMapping.ShifterMode.SEQUENTIAL));
+        byte[] d3 = new byte[6];
+        d3[2] = 1;
+        assertEquals(CarPhysics.Gear.D3, WheelMapping.shifterGear(d3, mapping, WheelMapping.ShifterMode.SEQUENTIAL),
+                "a momentary press still selects its gear");
+        // The same released sample under H_PATTERN is a genuine neutral -- the two modes must disagree here.
+        assertEquals(CarPhysics.Gear.NEUTRAL, WheelMapping.shifterGear(released, mapping, WheelMapping.ShifterMode.H_PATTERN));
+    }
+
+    @Test
+    void shifterReverseWinsOverEveryOtherSimultaneousGearButton() {
+        // Deterministic conflict resolution (MINECRAFT-382): reverse first, then the dedicated neutral
+        // button, then D1..D6 in order, regardless of what else is held at the same time.
+        var mapping = new WheelMapping.ShifterButtons(0, 1, 2, 3, 4, 5, 6, 7);
+        byte[] everythingDown = {1, 1, 1, 1, 1, 1, 1, 1};
+        assertEquals(CarPhysics.Gear.REVERSE, WheelMapping.shifterGear(everythingDown, mapping));
+        byte[] neutralAndD1 = {1, 0, 1, 0, 0, 0, 0, 0};
+        assertEquals(CarPhysics.Gear.NEUTRAL, WheelMapping.shifterGear(neutralAndD1, mapping));
+        byte[] d2AndD6 = {0, 0, 0, 1, 0, 0, 0, 1};
+        assertEquals(CarPhysics.Gear.D2, WheelMapping.shifterGear(d2AndD6, mapping));
     }
 }

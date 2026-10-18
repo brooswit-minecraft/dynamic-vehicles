@@ -31,6 +31,7 @@ public final class ClientConfig {
     public static final ModConfigSpec.IntValue WHEEL_HANDBRAKE_BUTTON;
     public static final ModConfigSpec.IntValue WHEEL_HONK_BUTTON;
     public static final ModConfigSpec.BooleanValue WHEEL_SHIFTER_ENABLED;
+    public static final ModConfigSpec.EnumValue<WheelMapping.ShifterMode> WHEEL_SHIFTER_MODE;
     public static final ModConfigSpec.IntValue WHEEL_SHIFTER_NEUTRAL_BUTTON;
     public static final ModConfigSpec.IntValue WHEEL_SHIFTER_REVERSE_BUTTON;
     public static final ModConfigSpec.IntValue[] WHEEL_SHIFTER_FORWARD_BUTTONS = new ModConfigSpec.IntValue[6];
@@ -107,6 +108,9 @@ public final class ClientConfig {
         builder.push("physicalShifter");
         WHEEL_SHIFTER_ENABLED = builder.comment("Read a physical H-pattern or sequential shifter through GLFW buttons. Disabled by default so existing keyboard/gamepad and wheel behavior is unchanged.")
                 .define("enabled", false);
+        WHEEL_SHIFTER_MODE = builder.comment("H_PATTERN (most shifters, including the G29's): every lever position, neutral included, is a latched button, so releasing all of them IS neutral. "
+                        + "SEQUENTIAL: the gear buttons are momentary (an upshift/downshift paddle), so releasing one retains whatever gear was already selected instead of going to neutral.")
+                .defineEnum("mode", WheelMapping.ShifterMode.H_PATTERN);
         WHEEL_SHIFTER_NEUTRAL_BUTTON = shifterButton(builder, "neutralButton", "neutral");
         WHEEL_SHIFTER_REVERSE_BUTTON = shifterButton(builder, "reverseButton", "reverse");
         for (int gear = 1; gear <= 6; gear++) {

@@ -4,24 +4,39 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * The producer/consumer buffer and mono-downmix math behind {@link RadioAudioStream#read} (MINECRAFT-394
- * PR #168 review findings #1-3) -- deliberately has no Minecraft/LWJGL imports at all, so it can be unit
- * tested directly without the client classpath those pull in (this repo's plain unit tests, unlike its
- * GameTests, run without one -- {@code net.minecraft.client.sounds.AudioStream} is not resolvable there).
+ * PR #168 review findings #1-3, plus the second-round non-blocking-read fix below) -- deliberately has no
+ * Minecraft/LWJGL imports at all, so it can be unit tested directly without the client classpath those
+ * pull in (this repo's plain unit tests, unlike its GameTests, run without one -- {@code
+ * net.minecraft.client.sounds.AudioStream} is not resolvable there).
  *
  * <p>One background decode thread calls {@link #put} (blocking itself, never a reader) to push decoded
  * PCM chunks in; whoever is pumping the stream (vanilla's shared sound executor, for the real {@link
  * RadioAudioStream}) calls {@link #drain} to pull bytes out, which never blocks -- it returns whatever is
- * already queued immediately, even a short/empty read, and signals real end-of-stream (decode thread
- * finished via {@link #markEndOfStream} and every queued chunk has been drained) by returning a buffer
- * with nothing left to extend, see {@link #drain}'s own return-value contract spelled out there.
+ * already queued immediately, or {@code null} if nothing is queued right now, see {@link #drain}'s own
+ * return-value contract spelled out there.
+ *
+ * <p>There used to be an {@code endOfStream} flag here distinguishing "decode thread finished" from "queue
+ * is merely momentarily empty" (set via a since-removed {@code markEndOfStream}), with {@link #drain}
+ * returning a non-null <em>empty</em> buffer for the latter and only {@code null} for the former. That
+ * distinction is gone (MINECRAFT-394 PR #168 second review round, finding #1): {@code
+ * com.mojang.blaze3d.audio.Channel.pumpBuffers} queues <strong>any</strong> non-null {@code read()} result
+ * -- including a zero-byte one -- as a real (zero-duration) OpenAL buffer via {@code
+ * AL10.alSourceQueueBuffers}, and {@code ChannelAccess.scheduleTick} permanently releases and stops
+ * tracking any channel whose OpenAL source naturally reaches {@code AL_STOPPED} (which an artificially
+ * injected zero-duration buffer helps bring about sooner than real playback would). Vanilla's {@code
+ * Channel} has no notion of "try again later" versus "stream actually ended" in the first place -- both
+ * just mean "nothing to queue this pump cycle" to it, and it naturally calls {@link #drain} again on a
+ * later tick for as long as the already-queued real buffers keep the AL source out of {@code AL_STOPPED}.
+ * So the only contract that matters to vanilla, and the only one {@link #drain} now implements, is: zero
+ * bytes available right now = {@code null}, full stop; one or more bytes available = a buffer with that
+ * many bytes. Whether the decode thread is done, mid-frame, or merely between network packets is no longer
+ * caller-visible, because nothing downstream ever needed that distinction.
  */
 final class PcmChunkPipe {
     private final BlockingQueue<byte[]> chunks;
-    private final AtomicBoolean endOfStream = new AtomicBoolean(false);
 
     /** Chunk {@link #drain} is currently partway through handing out, and how far into it. Only ever
      * touched by whatever single thread calls {@link #drain} -- never concurrently for one pipe. */
@@ -44,22 +59,17 @@ final class PcmChunkPipe {
         chunks.put(chunk);
     }
 
-    /** Called only by the background decode thread, once, when it is done (clean end of stream, a decode
-     * error, or interrupted by {@link RadioAudioStream#close}) -- the real end-of-stream signal for
-     * {@link #drain}, as opposed to the queue merely being momentarily empty. */
-    void markEndOfStream() {
-        endOfStream.set(true);
-    }
-
     /**
      * Returns up to {@code size} bytes of already-queued PCM as a <strong>direct</strong> little-endian
      * {@link ByteBuffer} (direct because the real caller, {@code Channel.pumpBuffers}, passes this
      * straight into a native {@code AL10.alBufferData} call that requires one), without ever blocking.
      *
-     * <p>If nothing is queued right now but {@link #markEndOfStream} has not been called, this returns a
-     * zero-length buffer -- a valid short/partial read, not end of stream, since the decode thread may
-     * simply not have produced anything yet. Only once {@link #markEndOfStream} has been called AND every
-     * already-queued chunk has been fully drained does this return {@code null} -- genuine end of stream.
+     * <p>Returns {@code null} -- never a non-null empty buffer -- whenever zero bytes are available right
+     * now, regardless of whether the decode thread is still running: see this class's own javadoc for why
+     * collapsing that distinction is required, not optional, for correctness against vanilla's {@code
+     * Channel}/{@code ChannelAccess}. Otherwise returns a buffer with between 1 and {@code size} bytes,
+     * assembled from however many already-queued chunks are needed to satisfy the request (or fewer, if
+     * the queue runs dry partway through).
      */
     ByteBuffer drain(int size) {
         ByteBuffer out = ByteBuffer.allocateDirect(size).order(ByteOrder.LITTLE_ENDIAN);
@@ -79,10 +89,7 @@ final class PcmChunkPipe {
             remaining -= toCopy;
         }
         out.flip();
-        if (out.remaining() == 0 && endOfStream.get() && chunks.isEmpty()) {
-            return null;
-        }
-        return out;
+        return out.remaining() == 0 ? null : out;
     }
 
     /**

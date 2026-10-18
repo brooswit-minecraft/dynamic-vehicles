@@ -139,11 +139,11 @@ final class RadioAudioStream implements AudioStream {
         } catch (BitstreamException | javazoom.jl.decoder.DecoderException | RuntimeException e) {
             // Connection dropped, timed out, or the stream stopped parsing as MP3 mid-way (a transcoder
             // hiccup, an Icecast metadata block we don't expect, the station going offline). Logged once
-            // here; read() then reports a clean end of stream to whatever is consuming this AudioStream
-            // (once it has drained whatever is already queued), instead of this thread retrying forever.
+            // here; this thread simply stops producing -- once whatever is already queued in the pipe is
+            // drained, read() naturally starts returning null every time (see PcmChunkPipe's javadoc),
+            // which is all vanilla's Channel ever needs to eventually let this station's channel stop.
             DynamicVehiclesMod.LOGGER.info("Radio stream {} ended: {}", url, e.toString());
         } finally {
-            pipe.markEndOfStream();
             closeQuietly(in);
         }
     }
@@ -165,9 +165,10 @@ final class RadioAudioStream implements AudioStream {
     }
 
     /**
-     * Returns up to {@code size} bytes of already-decoded PCM as a direct {@link ByteBuffer} -- see
-     * {@link PcmChunkPipe#drain} for the exact non-blocking/end-of-stream contract this delegates to
-     * wholesale (MINECRAFT-394 review findings #1 and #3).
+     * Returns up to {@code size} bytes of already-decoded PCM as a direct {@link ByteBuffer}, or
+     * {@code null} if zero bytes are available right now -- see {@link PcmChunkPipe#drain} for the exact
+     * non-blocking contract this delegates to wholesale (MINECRAFT-394 review round 1 findings #1 and #3;
+     * round 2 finding #1 for why {@code null} is the only non-data outcome).
      */
     @Override
     public ByteBuffer read(int size) throws IOException {

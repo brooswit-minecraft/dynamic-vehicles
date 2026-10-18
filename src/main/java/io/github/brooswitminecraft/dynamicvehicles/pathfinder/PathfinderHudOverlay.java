@@ -8,7 +8,6 @@ import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.LayeredDraw;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.network.chat.Component;
-import net.minecraft.util.Mth;
 
 import java.util.Locale;
 
@@ -47,8 +46,15 @@ public final class PathfinderHudOverlay implements LayeredDraw.Layer {
             int arrowCenterX = x + 6;
             int arrowCenterY = y + 6;
 
-            double absoluteBearing = Mth.atan2(dz, dx) * (180.0 / Math.PI) - 90.0;
-            double relativeBearing = Mth.wrapDegrees(absoluteBearing - player.getYRot());
+            // MINECRAFT-409 review follow-up: the arrow is a screen-space overlay, rotated to
+            // match what is actually rendered - so it must follow the real render camera's yaw,
+            // not the player entity's own getYRot(). A fixed-angle camera mode (installed by a
+            // different mod) can hold the rendered camera at a constant yaw independent of the
+            // player's own facing; reading the camera directly picks that up with no dependency
+            // on whatever sets it, while an ordinary perspective's camera yaw already equals the
+            // player's, so this changes nothing there. See PathfinderHudPresentation#relativeBearing.
+            float cameraYaw = minecraft.gameRenderer.getMainCamera().getYRot();
+            double relativeBearing = PathfinderHudPresentation.relativeBearing(dx, dz, cameraYaw);
 
             PoseStack pose = graphics.pose();
             pose.pushPose();

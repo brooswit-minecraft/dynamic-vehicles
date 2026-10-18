@@ -29,13 +29,26 @@ import java.util.UUID;
  * samples is never seen in it at all, so credit is simply missed, not merely delayed. No fixed
  * entity moves anywhere close to a 16-block chunk width in a single tick, so evaluating every
  * tick (rather than every {@code EVALUATE_INTERVAL_TICKS}) is what actually closes that gap,
- * at a cost of a cheap, already-cached-route chunk comparison per online attempt per tick — the
- * expensive, durability-checked I/O below only runs on an actual state transition, exactly as
- * before.
+ * at a cost of a cheap, already-cached-route chunk comparison per online attempt per tick. The
+ * expensive, durability-checked I/O below runs immediately the first time a state actually
+ * transitions, same as before; see {@link #TERMINAL_RETRY_INTERVAL_TICKS} for why RETRYING a
+ * save that is still failing is deliberately not also raised to every tick.
  */
 public final class PathfinderTickHandler {
 
     static final int EVALUATE_INTERVAL_TICKS = 1;
+
+    /**
+     * MINECRAFT-409 review follow-up: {@link #EVALUATE_INTERVAL_TICKS} = 1 is right for live
+     * arrival detection (missing a crossing is a real correctness gap - see the class javadoc),
+     * but it is the wrong cadence for RETRYING an already-terminal attempt's durable clear/payout
+     * once that save has started failing: that path blocks on {@code
+     * DimensionDataStorage#save}/{@code IOUtilities#waitUntilIOWorkerComplete} plus a disk
+     * readback every time it runs, and a persistently failing save gains nothing from retrying 20x
+     * more often - it only pays 20x the synchronous I/O cost for the same stuck outcome. Keeps the
+     * old 20-tick cadence for that one case.
+     */
+    static final int TERMINAL_RETRY_INTERVAL_TICKS = 20;
 
     private PathfinderTickHandler() {
     }
@@ -124,17 +137,25 @@ public final class PathfinderTickHandler {
         // confirm the clear; retry only that clear/verify/(pay) step - do not re-evaluate
         // checkpoints or re-credit progression (see PathfinderAttemptRecord#progressionCredited).
         // died is checked first and unconditionally: a dead player must never fall through to
-        // normal checkpoint evaluation below, even on a tick landing after respawn.
-        if (record.died()) {
-            attemptDurableClear(server, player, storage, record, "message.dynamicvehicles.pathfinder.died");
-            return;
-        }
-        if (record.finished()) {
-            attemptDurablePayout(server, player, storage, record);
-            return;
-        }
-        if (record.expired()) {
-            attemptDurableClear(server, player, storage, record, "message.dynamicvehicles.pathfinder.expired");
+        // normal checkpoint evaluation below, even on a tick landing after respawn - but the
+        // retry ITSELF (the synchronous dataStorage.save/waitUntilIOWorkerComplete/readback below)
+        // is throttled to TERMINAL_RETRY_INTERVAL_TICKS (review follow-up: raising
+        // EVALUATE_INTERVAL_TICKS to 1 for live arrival detection must not also raise a
+        // persistently-failing save's retry rate 20x; unlike arrival, which needs every tick to
+        // not miss a crossing, re-attempting a stuck save a few ticks later costs nothing). On a
+        // skipped tick this simply returns without touching the record - never falls through to
+        // live checkpoint evaluation, so the terminal state is never at risk of un-terminating.
+        if (record.died() || record.finished() || record.expired()) {
+            if (server.getTickCount() % TERMINAL_RETRY_INTERVAL_TICKS != 0) {
+                return;
+            }
+            if (record.died()) {
+                attemptDurableClear(server, player, storage, record, "message.dynamicvehicles.pathfinder.died");
+            } else if (record.finished()) {
+                attemptDurablePayout(server, player, storage, record);
+            } else {
+                attemptDurableClear(server, player, storage, record, "message.dynamicvehicles.pathfinder.expired");
+            }
             return;
         }
 

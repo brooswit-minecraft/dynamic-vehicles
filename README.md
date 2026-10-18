@@ -49,6 +49,15 @@ redistributing anything built on it.
 ## Sounds
 
 The car has an engine (start and stop sounds, idle, mid and high loops faded and pitched by speed and throttle), impact sounds chosen by how much speed a crash sheds, and tire sounds (rolling noise rough or smooth by surface, a snow loop on snow and ice, light and hard skid loops on slip and hard braking). All are positional, so nearby players hear the car. The client config `soundVolume` scales the looping sounds. Space also sounds the horn. The car sounds were provided by the repository owner; `scripts/convert_sounds.sh` converts the source WAV files to the mono OGG files in `src/main/resources/assets/dynamicvehicles/sounds/car/`.
+
+## Radio
+
+Vehicles have a radio: press **N** (or your rebound `key.dynamicvehicles.radio`) while driving to cycle through **Off**, then every station in the server's configured list, in order, then back to **Off**. A steering wheel or gamepad reaches the same action through its own configurable button -- see `wheel.radioButton` in the client config (`-1` by default, disabled; a PlayStation-style pad's Triangle is a common choice once you find its real GLFW button index with `/dvwheel`). Unlike the honk/handbrake paddles, the radio button is edge-triggered: one press cycles one step, holding it down does not repeat. There is no volume control for the radio, by design -- it uses the same sound sliders as every other sound.
+
+The station list is **server-configured**: `radioStations`, an ordered list of internet radio streaming URLs, in the server config (`CarConfig`/`dynamicvehicles-server.toml`). "Off" is always available and is never one of these URLs -- an empty list simply means the radio only ever offers Off. The one default entry is a verified working OC ReMix Icecast stream (`http://ocremixstream.rainwave.cc:8000/ocremix.mp3`; plain HTTP, since that host's HTTPS certificate does not match its hostname).
+
+Playback is entirely **client-side and per-client**: each player's own client connects directly to the selected station's URL and decodes/plays it itself (MP3 over HTTP, via the bundled JLayer decoder) -- the Minecraft server never touches the audio bytes, proxies the stream, or stores anything beyond the URL list and each vehicle's current selection. The selected station and on/off state are synced per vehicle, so everyone nearby hears the *same* vehicle playing the *same* station (shared vehicle audio, not driver-only headphones), each from their own direct connection to that URL. The sound is vehicle-positioned, like the engine and tire sounds above, and stops the instant the vehicle has no driver -- turning the vehicle off never leaves an orphaned stream playing. A station that fails to connect, times out, or is not valid MP3 is logged and silently skipped (no sound, no crash, no leftover thread or socket) rather than retried forever.
+
 # Builder donation trades
 
 The Builder uses a campfire workstation. Its donation trades scale by tier:

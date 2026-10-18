@@ -30,6 +30,7 @@ public final class ClientConfig {
     public static final ModConfigSpec.DoubleValue WHEEL_PEDAL_DEADZONE;
     public static final ModConfigSpec.IntValue WHEEL_HANDBRAKE_BUTTON;
     public static final ModConfigSpec.IntValue WHEEL_HONK_BUTTON;
+    public static final ModConfigSpec.IntValue WHEEL_RADIO_BUTTON;
     public static final ModConfigSpec.BooleanValue WHEEL_SHIFTER_ENABLED;
     public static final ModConfigSpec.EnumValue<WheelMapping.ShifterMode> WHEEL_SHIFTER_MODE;
     public static final ModConfigSpec.IntValue WHEEL_SHIFTER_NEUTRAL_BUTTON;
@@ -105,6 +106,9 @@ public final class ClientConfig {
                         + "Default 4 is an UNVERIFIED guess (common left-paddle index on G29-class wheels in community mappings, not measured on real hardware) "
                         + "-- confirm with /dvwheel's pressed-button list and correct if wrong.")
                 .defineInRange("honkButton", 4, -1, 31);
+        WHEEL_RADIO_BUTTON = builder.comment("GLFW button index that cycles the car radio (MINECRAFT-394; e.g. a PlayStation-style pad's Triangle, which is commonly a specific GLFW joystick button index on game-controller-class devices, but it varies by device/driver, hence configurable here rather than assumed), or -1 to disable. "
+                        + "Unlike the honk/handbrake paddles above, this is read edge-triggered (fires once per press, not continuously while held) -- confirm the real index with /dvwheel's pressed-button list.")
+                .defineInRange("radioButton", -1, -1, 31);
         builder.push("physicalShifter");
         WHEEL_SHIFTER_ENABLED = builder.comment("Read a physical H-pattern or sequential shifter through GLFW buttons. Disabled by default so existing keyboard/gamepad and wheel behavior is unchanged.")
                 .define("enabled", false);

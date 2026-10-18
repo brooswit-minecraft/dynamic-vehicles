@@ -58,6 +58,11 @@ public class CarEntity extends Entity {
     /** Headlight mode: 0 auto (on at night and in rain), 1 on, 2 off. */
     private static final net.minecraft.network.syncher.EntityDataAccessor<Byte> DATA_LIGHTS =
             net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.BYTE);
+    /** MINECRAFT-394: the radio's currently selected station URL, or "" for Off. Every client connects
+     * directly to this URL itself and plays it locally, positioned on this car; the server never touches
+     * the audio. See {@link #cycleRadio()} for how this is chosen. */
+    private static final net.minecraft.network.syncher.EntityDataAccessor<String> DATA_RADIO_URL =
+            net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.STRING);
     private static final net.minecraft.network.syncher.EntityDataAccessor<Float> DATA_THROTTLE =
             net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
     private static final net.minecraft.network.syncher.EntityDataAccessor<Float> DATA_SLIP =
@@ -76,6 +81,12 @@ public class CarEntity extends Entity {
      * engine sound reads throttle immediately instead of waiting on speed to catch up. */
     private double clientRev;
     private Object clientSounds;
+    /** Client: this car's radio audio, started/stopped as the synced station and on/off state change; see
+     * {@link CarRadioClient}. */
+    private Object clientRadio;
+    /** Server: which station is selected -- {@link RadioStationIndex#OFF} or an index into the live
+     * {@code CarConfig.RADIO_STATIONS} list, as of the last {@link #cycleRadio()} call. */
+    private int radioIndex = RadioStationIndex.OFF;
     private double lastTickSpeed;
     private int impactCooldown;
     private boolean wasHonking;
@@ -174,6 +185,7 @@ public class CarEntity extends Entity {
         builder.define(DATA_RIGID_BODY, false);
         builder.define(DATA_THROTTLE, 0.0f);
         builder.define(DATA_LIGHTS, (byte) 0);
+        builder.define(DATA_RADIO_URL, "");
         builder.define(DATA_SLIP, 0.0f);
         builder.define(DATA_WHEELS, new CompoundTag());
     }
@@ -207,6 +219,34 @@ public class CarEntity extends Entity {
         level().playSound(null, getX(), getY(), getZ(), net.minecraft.sounds.SoundEvents.LEVER_CLICK,
                 net.minecraft.sounds.SoundSource.NEUTRAL, 0.6F, next == 1 ? 1.3F : next == 2 ? 0.8F : 1.0F);
         return next == 0 ? "auto" : next == 1 ? "on" : "off";
+    }
+
+    /**
+     * Server: cycles the radio -- Off, then every station in {@code CarConfig.RADIO_STATIONS} in order,
+     * then back to Off (MINECRAFT-394) -- and publishes the newly selected URL ("" for Off) so every
+     * nearby client, not just the driver, hears the same station change. Returns a label for the driver's
+     * HUD message. Only meaningful to call while this car has a controlling passenger; see
+     * {@link RadioTogglePayload#handle} for that gate.
+     */
+    String cycleRadio() {
+        java.util.List<? extends String> stations = CarConfig.RADIO_STATIONS.get();
+        radioIndex = RadioStationIndex.next(radioIndex, stations.size());
+        entityData.set(DATA_RADIO_URL, RadioStationIndex.isOff(radioIndex) ? "" : stations.get(radioIndex));
+        level().playSound(null, getX(), getY(), getZ(), net.minecraft.sounds.SoundEvents.LEVER_CLICK,
+                net.minecraft.sounds.SoundSource.NEUTRAL, 0.6F, RadioStationIndex.isOff(radioIndex) ? 0.8F : 1.2F);
+        return RadioStationIndex.label(radioIndex, stations.size());
+    }
+
+    /** The currently selected station's streaming URL, or "" while Off. Synced to every client. */
+    public String radioUrl() {
+        return entityData.get(DATA_RADIO_URL);
+    }
+
+    /** Whether the radio should be audible right now: a station is selected AND the vehicle is driven
+     * (MINECRAFT-394) -- mirrors {@code CarSoundsClient}'s own engine-on check, so the radio falls silent
+     * the instant the driver leaves exactly like the engine does, never left as an orphaned stream. */
+    public boolean radioOn() {
+        return !radioUrl().isEmpty() && getControllingPassenger() != null;
     }
 
     /** Whether the headlights are lit: on, or auto and dark (night or rain) in the car's world. */
@@ -571,6 +611,12 @@ public class CarEntity extends Entity {
         }
         health = tag.contains("VehicleHealth", Tag.TAG_FLOAT)
                 ? Math.max(0.0f, Math.min(CarHealth.MAX, tag.getFloat("VehicleHealth"))) : CarHealth.MAX;
+        // MINECRAFT-394: re-clamp against the CURRENT station list, not whatever list produced this saved
+        // index -- an operator who shortened CarConfig.RADIO_STATIONS between server starts must never
+        // reload a car pointed at a station index that no longer exists.
+        int savedRadioIndex = tag.contains("RadioIndex", Tag.TAG_INT) ? tag.getInt("RadioIndex") : RadioStationIndex.OFF;
+        radioIndex = RadioStationIndex.clamp(savedRadioIndex, CarConfig.RADIO_STATIONS.get().size());
+        entityData.set(DATA_RADIO_URL, RadioStationIndex.isOff(radioIndex) ? "" : CarConfig.RADIO_STATIONS.get().get(radioIndex));
         savedSeatAssignments.clear();
         savedSeatAssignments.putAll(SeatPersistence.read(tag, spec.seatCount()));
         VehicleSpec.VehicleTuning defaults = spec.vehicleTuning();
@@ -600,6 +646,7 @@ public class CarEntity extends Entity {
             tag.putFloat("OrientationW", q.w);
         }
         tag.putFloat("VehicleHealth", health);
+        tag.putInt("RadioIndex", radioIndex);
         tag.putDouble("TuningLsdLock", vehicleTuning.lsdLockPercent());
         tag.putDouble("TuningFrontSplit", vehicleTuning.frontTorqueSplit());
         tag.putDouble("TuningVectoring", vehicleTuning.vectoringGain());
@@ -780,6 +827,7 @@ public class CarEntity extends Entity {
             if (clientSounds == null) {
                 clientSounds = CarSoundsClient.start(this);
             }
+            clientRadio = CarRadioClient.tick(this, clientRadio);
             SkidMarksClient.tick(this);
             return;
         }
@@ -1033,6 +1081,8 @@ public class CarEntity extends Entity {
         }
         if (level().isClientSide()) {
             SkidMarksClient.forget(this);
+            CarRadioClient.stop(clientRadio);
+            clientRadio = null;
         }
         if (sableBody != null) {
             SableCompat.remove(sableBody);

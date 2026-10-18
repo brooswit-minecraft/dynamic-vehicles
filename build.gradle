@@ -23,6 +23,10 @@ sourceSets.main.resources {
 
 repositories {
     // The terrain jar is fetched by downloadTerrain below, not from a maven repo.
+    // MINECRAFT-394: needed to resolve the jlayer MP3 decoder below (javazoom:jlayer, on Maven Central).
+    // Additive only -- the NeoForge moddev plugin manages its own repositories for the Minecraft/NeoForge
+    // artifacts themselves, so this never competes with or replaces anything it already wires up.
+    mavenCentral()
 }
 
 // dynamic-terrain is not on a maven repository, so build against the jar from
@@ -165,6 +169,17 @@ dependencies {
     // bundled into this mod's own shipped jar.
     runtimeOnly files(terrainJar).builtBy("downloadTerrain")
     testCompileOnly files(terrainJar).builtBy("downloadTerrain")
+    // MINECRAFT-394: decodes the vehicle radio's MP3 streams client-side. Unlike Sable/Atmosphere/Terrain
+    // above, this one actually ships inside this mod's own jar -- it is a small, LGPL, pure-Java library,
+    // not a separate mod players install -- so it goes through ModDevGradle's jarJar wrapper, which embeds
+    // it (jar-in-jar) in the built mod jar rather than just putting it on the dev/compile classpath the
+    // way a plain `implementation` dependency would.
+    jarJar(implementation("javazoom:jlayer:1.0.1")) {
+        version {
+            strictly "[1.0.1,1.1)"
+            prefer "1.0.1"
+        }
+    }
     testImplementation platform("org.junit:junit-bom:5.11.4")
     testImplementation "org.junit.jupiter:junit-jupiter"
     testRuntimeOnly "org.junit.platform:junit-platform-launcher"

@@ -7,5 +7,9 @@ bump: minor
   height stay normal), and running it again sends the player back to exactly where they left from. Each
   player's departure dimension and position/facing is remembered server-side and per player, so
   multiplayer return state never crosses players; if the remembered location or its dimension is gone,
-  the player lands at the overworld's spawn point instead of being trapped or placed inside terrain. The
-  Overworld and all existing worlds, dimensions and player data are untouched.
+  the player lands at the overworld's spawn point instead of being trapped or placed inside terrain. Both
+  the garage arrival spot and the return/fallback spot are re-checked against actual current terrain at
+  teleport time and relocated to the nearest clear two-block gap if a block has since been placed there;
+  if no safe spot can be found at all, the teleport fails outright and (for a return trip) the stored
+  return location is kept rather than consumed. The Overworld and all existing worlds, dimensions and
+  player data are untouched.

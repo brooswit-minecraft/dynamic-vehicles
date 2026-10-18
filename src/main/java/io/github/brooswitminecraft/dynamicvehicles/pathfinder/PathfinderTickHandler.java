@@ -1,6 +1,7 @@
 package io.github.brooswitminecraft.dynamicvehicles.pathfinder;
 
 import net.minecraft.SharedConstants;
+import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
@@ -152,9 +153,14 @@ public final class PathfinderTickHandler {
                 record.reachedCount(), record.finished(), record.expired());
 
         long now = server.overworld().getGameTime();
-        var pos = player.position();
+        // MINECRAFT-409 review follow-up: acquires the player's block position the same way
+        // delivery.ContractTickHandler does (ServerPlayer#blockPosition(), not the continuous
+        // player.position() this used to read) - same production position-acquisition shape as
+        // the other tick handler that evaluates arrival, even though the two can never diverge in
+        // outcome (blockPosition() is itself Mth.floor of the same coordinates sameChunkAs floors).
+        BlockPos pos = player.blockPosition();
         String playerDimension = player.level().dimension().location().toString();
-        PathfinderPosition playerPosition = new PathfinderPosition(playerDimension, pos.x, pos.y, pos.z);
+        PathfinderPosition playerPosition = new PathfinderPosition(playerDimension, pos.getX(), pos.getY(), pos.getZ());
 
         boolean advanced = progress.onReach(playerPosition, now);
 

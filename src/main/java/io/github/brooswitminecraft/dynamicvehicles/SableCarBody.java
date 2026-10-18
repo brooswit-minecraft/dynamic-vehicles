@@ -60,6 +60,12 @@ final class SableCarBody {
     // itself produces, the same lag every other "fixed for the whole tick" value in this method already has.
     private int automaticGearIndex;
     private double engineRpm = DrivetrainMath.IDLE_RPM;
+    // The engine's own rotational inertia (MINECRAFT-401 review, round 2), persisted tick to tick like
+    // wheelSpin and engineRpm above: see DrivetrainMath.smoothedRpm's own javadoc for why this must NOT be
+    // derived fresh from wheelSpin every tick the way engineRpm's display clamp is. This is the value
+    // limiterTorqueFactor actually reads; engineRpm (display/audio) is clamped from THIS, not from the raw
+    // per-tick target, so the two never disagree about what "RPM" currently means.
+    private double smoothedEngineRpm = DrivetrainMath.IDLE_RPM;
     private double gearRatio = DrivetrainMath.ratioFor(DrivetrainMath.GEAR_RATIOS.length - 1);
     // Per-wheel telemetry for /dtcar debug (MINECRAFT-401 review: the ticket's own acceptance criteria
     // calls these out by name -- contact speed, slip, applied force/torque -- not just gear/RPM). Written
@@ -163,37 +169,39 @@ final class SableCarBody {
             drivenWheelSpin += Math.abs(wheelSpin[w]);
         }
         drivenWheelSpin /= wheelCountForDrivetrain;
-        // The RAW (unclamped) RPM the engaged ratio implies -- read by limiterTorqueFactor below, never
-        // the display-clamped engineRpm field, so a wheel spinning well past the limiter actually loses
-        // torque instead of merely reading as "at the limiter" forever while still receiving full force
-        // (MINECRAFT-401 review).
-        double forwardRawRpm;
+        // There is exactly one engine regardless of gear, so exactly one smoothedEngineRpm state feeds
+        // the limiter below -- computed from whichever ratio is actually engaged this tick (REVERSE's own
+        // ratio, the resolved manual/automatic ratio, or NEUTRAL's decoupled free-rev, which bypasses the
+        // engine's rotational inertia entirely since nothing couples it to a wheel to have inertia against).
         if (gear == CarPhysics.Gear.NEUTRAL) {
             gearRatio = 0.0;
-            forwardRawRpm = 0.0;
-            engineRpm = DrivetrainMath.freeRevRpm(throttle);
-        } else if (gear == CarPhysics.Gear.REVERSE) {
-            gearRatio = DrivetrainMath.REVERSE_RATIO;
-            forwardRawRpm = DrivetrainMath.rawRpm(drivenWheelSpin, gearRatio);
-            engineRpm = DrivetrainMath.engineRpm(drivenWheelSpin, gearRatio);
+            smoothedEngineRpm = DrivetrainMath.freeRevRpm(throttle);
         } else {
-            if (gear == CarPhysics.Gear.AUTOMATIC) {
+            if (gear == CarPhysics.Gear.REVERSE) {
+                gearRatio = DrivetrainMath.REVERSE_RATIO;
+            } else if (gear == CarPhysics.Gear.AUTOMATIC) {
                 automaticGearIndex = DrivetrainMath.automaticGearIndex(automaticGearIndex, drivenWheelSpin);
                 gearRatio = DrivetrainMath.ratioFor(automaticGearIndex);
             } else {
                 gearRatio = DrivetrainMath.ratioFor(gear.manualIndex());
             }
-            forwardRawRpm = DrivetrainMath.rawRpm(drivenWheelSpin, gearRatio);
-            engineRpm = DrivetrainMath.engineRpm(drivenWheelSpin, gearRatio);
+            // The instantaneous, tire-model-derived target -- NOT what the limiter reads directly (see
+            // DrivetrainMath.smoothedRpm's own javadoc for why: wheelSpin itself can snap discontinuously
+            // the instant the tire regrips, and reading that snap as the engine's own RPM would mean the
+            // engine has no rotational inertia of its own).
+            double rawTarget = DrivetrainMath.rawRpm(drivenWheelSpin, gearRatio);
+            smoothedEngineRpm = DrivetrainMath.smoothedRpm(smoothedEngineRpm, rawTarget);
         }
-        // Couples the rev limiter to delivered torque, not just to the displayed RPM number: a forward/
-        // automatic gear's own ratio multiplier is cut toward 0 as its RAW RPM reaches the limiter, and
-        // REVERSE's own fixed force is cut the same way against its own REVERSE_RATIO -- so a low gear
-        // cannot keep injecting full force into a wheel that has already outrun what the ratio/limiter
-        // can carry (a sustained burnout, or a manual gear held well past its own governed speed).
-        double driveForceMultiplier = DrivetrainMath.forceMultiplier(gearRatio) * DrivetrainMath.limiterTorqueFactor(forwardRawRpm);
-        double reverseRawRpm = DrivetrainMath.rawRpm(drivenWheelSpin, DrivetrainMath.REVERSE_RATIO);
-        double effectiveReverseForce = REVERSE_FORCE * DrivetrainMath.limiterTorqueFactor(reverseRawRpm);
+        engineRpm = DrivetrainMath.clampRpm(smoothedEngineRpm);
+        // Couples the rev limiter to delivered torque, not just to the displayed RPM number, AND preserves
+        // the engine's own momentum through a torque cut (both review rounds): forceMultiplier scales the
+        // engaged ratio's own force, limiterTorqueFactor cuts it toward 0 as the SMOOTHED (inertia-bearing)
+        // RPM nears the limiter -- never instantly, because smoothedEngineRpm itself cannot jump. Reverse's
+        // own fixed force is cut by the exact same factor; harmless when not actually in REVERSE, since
+        // GearDrive.drive only ever reads whichever of the two its own gear branch applies.
+        double limiterTorqueFactor = DrivetrainMath.limiterTorqueFactor(smoothedEngineRpm);
+        double driveForceMultiplier = DrivetrainMath.forceMultiplier(gearRatio) * limiterTorqueFactor;
+        double effectiveReverseForce = REVERSE_FORCE * limiterTorqueFactor;
 
         boolean touching = false;
         double slipThisTick = 0.0;

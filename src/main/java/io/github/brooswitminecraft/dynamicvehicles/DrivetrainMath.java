@@ -24,6 +24,20 @@ public final class DrivetrainMath {
     public static final double DOWNSHIFT_RPM = 2200.0;
     /** How far below {@link #LIMITER_RPM} {@link #limiterTorqueFactor} starts tapering torque. */
     public static final double LIMITER_TAPER_RPM = 400.0;
+    /**
+     * Maximum RPM {@link #smoothedRpm} may change by in one tick -- the engine's own rotational inertia
+     * (review, round 2): {@link WheelMath#spinRate} legitimately snaps a wheel's own spin straight to
+     * {@code groundSpeed/radius} the instant it detects grip ({@code excessForce == 0}), which includes
+     * the instant the limiter cuts drive force to (near) zero -- that snap is correct for the TIRE's own
+     * contact state, but reading it directly as the engine's RPM would mean the engine itself has zero
+     * rotational inertia: it would lose all its spin in a single tick, the limiter would see RPM already
+     * back under the taper band next tick, torque would resume at full, the wheel would spin back up and
+     * trip the limiter again next tick, forever -- an on/off reset, not limiter hunting. A real engine (and
+     * the driveline between it and the wheel) keeps turning under its own momentum for a while after
+     * torque is cut; {@link #smoothedRpm} models exactly that missing inertia, decoupling what the limiter
+     * reads from the tire model's own instant snap.
+     */
+    public static final double MAX_RPM_CHANGE_PER_TICK = 500.0;
 
     private DrivetrainMath() {}
 
@@ -59,7 +73,29 @@ public final class DrivetrainMath {
      * against the UNCLAMPED {@link #rawRpm}, so a coupled caller must read both, not just this one.
      */
     public static double engineRpm(double wheelAngularSpeed, double ratio) {
-        return Math.max(IDLE_RPM, Math.min(LIMITER_RPM, rawRpm(wheelAngularSpeed, ratio)));
+        return clampRpm(rawRpm(wheelAngularSpeed, ratio));
+    }
+
+    /** {@link #IDLE_RPM}..{@link #LIMITER_RPM}, clamping an already-computed RPM value (raw or smoothed)
+     * rather than recomputing it from a wheel speed -- the display-only clamp {@link #engineRpm} applies
+     * to {@link #rawRpm}, factored out so a caller tracking {@link #smoothedRpm} can clamp that instead. */
+    public static double clampRpm(double rpm) {
+        return Math.max(IDLE_RPM, Math.min(LIMITER_RPM, rpm));
+    }
+
+    /**
+     * One tick's worth of the engine's own rotational inertia (see {@link #MAX_RPM_CHANGE_PER_TICK}):
+     * {@code currentRpm} moves toward {@code targetRawRpm} (this tick's instantaneous, tire-model-derived
+     * {@link #rawRpm}) by at most that many RPM, in either direction. Call once per tick with the previous
+     * call's own return value as {@code currentRpm} (persisted state, like {@link WheelMath#spinRate}'s
+     * own {@code spin} parameter) -- never recomputed from scratch, or the inertia this models vanishes.
+     */
+    public static double smoothedRpm(double currentRpm, double targetRawRpm) {
+        double delta = targetRawRpm - currentRpm;
+        if (Math.abs(delta) <= MAX_RPM_CHANGE_PER_TICK) {
+            return targetRawRpm;
+        }
+        return currentRpm + Math.copySign(MAX_RPM_CHANGE_PER_TICK, delta);
     }
 
     /**

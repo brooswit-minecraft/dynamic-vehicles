@@ -301,6 +301,15 @@ public class CarEntity extends Entity {
         return sableBody == null ? 0.0 : SableCompat.speed(sableBody);
     }
 
+    /** Server-authoritative RAW tire slip speed, m/s -- the exact value {@link SlipReporter}/erosion gate
+     * on (&gt; 0.3). Unlike this, {@link #clientSlip()} is the NORMALIZED 0..1 audio signal
+     * ({@link CarSoundMath#slipLevel}, {@code slipSpeed / 4.0} clamped) plus a handbrake/reverse-at-speed
+     * bonus for the skid sound alone -- comparing it against the erosion threshold is a unit mismatch
+     * (MINECRAFT-401 review, round 2). */
+    double debugSlipSpeed() {
+        return sableBody == null ? 0.0 : SableCompat.slip(sableBody);
+    }
+
     /** Client: engine RPM fraction 0..1 between idle and the limiter, for the drivetrain-derived engine
      * sound (MINECRAFT-401). */
     public double clientEngineRpmFraction() {

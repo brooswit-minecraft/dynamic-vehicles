@@ -124,4 +124,44 @@ class DrivetrainMathTest {
                     "a gear just shifted into must not immediately read as needing a downshift");
         }
     }
+
+    @Test
+    void smoothedRpmNeverJumpsMoreThanTheMaxChangePerTick() {
+        double result = DrivetrainMath.smoothedRpm(DrivetrainMath.IDLE_RPM, DrivetrainMath.LIMITER_RPM);
+        assertEquals(DrivetrainMath.IDLE_RPM + DrivetrainMath.MAX_RPM_CHANGE_PER_TICK, result, 1e-9,
+                "a target far above the current value must only move by the max change per tick, not jump straight to it");
+    }
+
+    @Test
+    void smoothedRpmReachesTheTargetExactlyOnceCloseEnough() {
+        double small = DrivetrainMath.MAX_RPM_CHANGE_PER_TICK / 2.0;
+        double result = DrivetrainMath.smoothedRpm(1000.0, 1000.0 + small);
+        assertEquals(1000.0 + small, result, 1e-9, "a target already within one tick's reach must be met exactly, not overshot or approached forever");
+    }
+
+    @Test
+    void smoothedRpmTracksDownwardAtTheSameBoundedRate() {
+        // MINECRAFT-401 review (round 2): the whole point of this function is that a wheel's own spin can
+        // snap to a much LOWER value instantly (WheelMath.spinRate's grip snap) without the engine's RPM
+        // following it in a single tick -- downward must be bounded exactly like upward.
+        double result = DrivetrainMath.smoothedRpm(DrivetrainMath.LIMITER_RPM, 0.0);
+        assertEquals(DrivetrainMath.LIMITER_RPM - DrivetrainMath.MAX_RPM_CHANGE_PER_TICK, result, 1e-9,
+                "a target far below the current value must decay at the bounded rate, not snap straight down");
+    }
+
+    @Test
+    void smoothedRpmConvergesToASustainedTargetOverSeveralTicks() {
+        double rpm = DrivetrainMath.IDLE_RPM;
+        for (int i = 0; i < 50; i++) {
+            rpm = DrivetrainMath.smoothedRpm(rpm, DrivetrainMath.LIMITER_RPM);
+        }
+        assertEquals(DrivetrainMath.LIMITER_RPM, rpm, 1e-9, "a sustained target must eventually be reached exactly");
+    }
+
+    @Test
+    void clampRpmMatchesEngineRpmsOwnClamp() {
+        assertEquals(DrivetrainMath.IDLE_RPM, DrivetrainMath.clampRpm(0.0), 1e-9);
+        assertEquals(DrivetrainMath.LIMITER_RPM, DrivetrainMath.clampRpm(50_000.0), 1e-9);
+        assertEquals(3000.0, DrivetrainMath.clampRpm(3000.0), 1e-9);
+    }
 }

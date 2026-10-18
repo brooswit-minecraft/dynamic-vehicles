@@ -119,6 +119,7 @@ public class DynamicVehiclesMod {
         // Explicit file name: the default ("dynamicvehicles-server.toml") is already claimed by
         // CarConfig.SPEC above, and ConfigTracker throws on a second SERVER config reusing it.
         modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.SERVER, DispatcherOfferConfig.SPEC, "dynamicvehicles-dispatcher-server.toml");
+        modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.SERVER, PathfinderServerConfig.SPEC, "dynamicvehicles-pathfinder-server.toml");
         modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.CLIENT, ClientConfig.SPEC);
         ModSounds.SOUNDS.register(modEventBus);
         ENTITIES.register(modEventBus);
@@ -152,6 +153,7 @@ public class DynamicVehiclesMod {
         NeoForge.EVENT_BUS.addListener(PathfinderInteractionHandler::onEntityInteract);
         NeoForge.EVENT_BUS.addListener(PathfinderTickHandler::onServerTick);
         NeoForge.EVENT_BUS.addListener(PathfinderTickHandler::onPlayerLoggedIn);
+        NeoForge.EVENT_BUS.addListener(PathfinderTickHandler::onPlayerRespawn);
     }
 
     private void registerPayloads(net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent event) {

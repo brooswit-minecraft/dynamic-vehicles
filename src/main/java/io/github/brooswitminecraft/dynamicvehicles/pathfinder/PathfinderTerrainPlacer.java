@@ -1,20 +1,28 @@
 package io.github.brooswitminecraft.dynamicvehicles.pathfinder;
 
+import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.util.Mth;
 import net.minecraft.world.level.levelgen.Heightmap;
+import net.minecraft.world.level.material.Fluids;
 
 /**
  * The real, terrain-safe seam for {@link PathfinderCheckpointPlacer} (MINECRAFT-379 review
  * follow-up: {@code DEFAULT_UNPLACED}'s fixed y=0/"unplaced" dimension were explicitly
- * scaffolding, not playable placement). X/Z are the same deterministic region-center/circle
- * layout {@code DEFAULT_UNPLACED} uses (a pure function of the region + index/count, no RNG);
- * the only thing this class adds is reading the real world's surface height for that X/Z so the
- * checkpoint actually sits on the ground.
+ * scaffolding, not playable placement). The candidate X/Z is the same deterministic
+ * region-center/circle layout {@code DEFAULT_UNPLACED} uses (a pure function of the region +
+ * index/count, no RNG); from there this class searches a small, bounded, deterministic set of
+ * nearby columns ({@link PathfinderTerrainSearch#offsets()}) for one that is actually safe to stand on — world-
+ * height bounds, no lava underfoot, two blocks of headroom — falling back to the unmodified
+ * candidate (still bounded/deterministic, just not guaranteed safe) only if every offset fails.
  *
- * <p>Read-only: {@link ServerLevel#getHeight} queries the already-generated heightmap and
- * modifies nothing, per the design's "do not generate roads, pave tracks or automatically
- * reshape terrain" — the same {@code Heightmap.Types.MOTION_BLOCKING_NO_LEAVES} type {@code
+ * <p>A second independent-review follow-up: the first version of this class sampled exactly one
+ * heightmap column and accepted it unconditionally, with no passable-space, footing, or
+ * world-height check at all.
+ *
+ * <p>Read-only: never calls {@link ServerLevel#setBlock} or anything else that mutates the
+ * world, per the design's "do not generate roads, pave tracks or automatically reshape terrain"
+ * — the same {@code Heightmap.Types.MOTION_BLOCKING_NO_LEAVES} type {@code
  * delivery.SettlementFounder} uses to pick its own board's Y (that class clears/fills terrain
  * for the Dispatcher; this one deliberately does not, since Pathfinder checkpoints are not
  * built structures).
@@ -42,11 +50,41 @@ public final class PathfinderTerrainPlacer implements PathfinderCheckpointPlacer
             x += PathfinderCheckpointPlacer.DEFAULT_LOOP_RADIUS_BLOCKS * Math.cos(angle);
             z += PathfinderCheckpointPlacer.DEFAULT_LOOP_RADIUS_BLOCKS * Math.sin(angle);
         }
-        int blockX = Mth.floor(x);
-        int blockZ = Mth.floor(z);
-        int surfaceY = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, blockX, blockZ);
+        int candidateX = Mth.floor(x);
+        int candidateZ = Mth.floor(z);
+
+        // Falls back to the unmodified candidate (bounded, deterministic, just not guaranteed safe)
+        // if every searched offset fails.
+        int[] chosen = {candidateX, candidateZ};
+        int chosenY = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, candidateX, candidateZ);
+        for (int[] offset : PathfinderTerrainSearch.offsets()) {
+            int blockX = candidateX + offset[0];
+            int blockZ = candidateZ + offset[1];
+            int surfaceY = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, blockX, blockZ);
+            if (isSafeColumn(blockX, blockZ, surfaceY)) {
+                chosen = new int[] {blockX, blockZ};
+                chosenY = surfaceY;
+                break;
+            }
+        }
+
         String dimensionId = level.dimension().location().toString();
-        PathfinderPosition position = new PathfinderPosition(dimensionId, blockX + 0.5, surfaceY, blockZ + 0.5);
-        return new PathfinderCheckpoint(region, position, PathfinderCheckpointPlacer.DEFAULT_REACH_RADIUS);
+        PathfinderPosition position = new PathfinderPosition(dimensionId, chosen[0] + 0.5, chosenY, chosen[1] + 0.5);
+        double reachRadius = io.github.brooswitminecraft.dynamicvehicles.PathfinderServerConfig.REACH_RADIUS.get();
+        return new PathfinderCheckpoint(region, position, reachRadius);
+    }
+
+    /** Package-visible for direct GameTest coverage of just the safety predicate. */
+    boolean isSafeColumn(int blockX, int blockZ, int surfaceY) {
+        if (surfaceY <= level.getMinBuildHeight() || surfaceY >= level.getMaxBuildHeight() - 2) {
+            return false;
+        }
+        BlockPos footing = new BlockPos(blockX, surfaceY - 1, blockZ);
+        if (level.getBlockState(footing).getFluidState().is(Fluids.LAVA)) {
+            return false;
+        }
+        BlockPos headA = new BlockPos(blockX, surfaceY, blockZ);
+        BlockPos headB = new BlockPos(blockX, surfaceY + 1, blockZ);
+        return level.isEmptyBlock(headA) && level.isEmptyBlock(headB);
     }
 }

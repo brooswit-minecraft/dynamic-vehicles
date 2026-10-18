@@ -8,9 +8,14 @@ import java.util.UUID;
  * identity ({@code dimensionId}/{@code origin}/{@code level}) to re-resolve
  * the shared, cached {@link PathfinderRoute} via {@link
  * PathfinderRouteStorage} rather than persisting the checkpoints twice.
+ *
+ * <p>{@code villagerId} identifies the specific villager this attempt was started at, so a
+ * completion can award {@link PathfinderVillagerLevel} progression to that villager — not to
+ * "whichever Pathfinder villager is nearby" when the attempt finishes.
  */
 public record PathfinderAttemptRecord(
         UUID playerId,
+        UUID villagerId,
         String dimensionId,
         PathfinderRegion origin,
         PathfinderLevel level,
@@ -21,7 +26,7 @@ public record PathfinderAttemptRecord(
         boolean expired) {
 
     public PathfinderAttemptRecord withProgress(PathfinderProgress progress) {
-        return new PathfinderAttemptRecord(playerId, dimensionId, origin, level, startTick, timeLimitTicks,
+        return new PathfinderAttemptRecord(playerId, villagerId, dimensionId, origin, level, startTick, timeLimitTicks,
                 progress.reachedCount(), progress.isFinished(), progress.isExpired());
     }
 }

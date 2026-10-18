@@ -7,6 +7,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.LayeredDraw;
 import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.network.chat.Component;
 import net.minecraft.util.Mth;
 
 import java.util.Locale;
@@ -31,27 +32,35 @@ public final class PathfinderHudOverlay implements LayeredDraw.Layer {
             return;
         }
 
-        double dx = hud.nextX() - player.getX();
-        double dz = hud.nextZ() - player.getZ();
-
         long remainingTicks = hud.deadlineTick() - minecraft.level.getGameTime();
         String timeText = formatRemaining(remainingTicks);
         String progressText = hud.reachedCount() + "/" + hud.totalCheckpoints();
+        String playerDimension = minecraft.level.dimension().location().toString();
 
         int x = 8;
         int y = 44;
-        int arrowCenterX = x + 6;
-        int arrowCenterY = y + 6;
 
-        double absoluteBearing = Mth.atan2(dz, dx) * (180.0 / Math.PI) - 90.0;
-        double relativeBearing = Mth.wrapDegrees(absoluteBearing - player.getYRot());
+        PathfinderHudPresentation.Mode mode = PathfinderHudPresentation.decide(hud.dimension(), playerDimension);
+        if (mode == PathfinderHudPresentation.Mode.ARROW) {
+            double dx = hud.nextX() - player.getX();
+            double dz = hud.nextZ() - player.getZ();
+            int arrowCenterX = x + 6;
+            int arrowCenterY = y + 6;
 
-        PoseStack pose = graphics.pose();
-        pose.pushPose();
-        pose.translate(arrowCenterX, arrowCenterY, 0);
-        pose.mulPose(com.mojang.math.Axis.ZP.rotationDegrees((float) relativeBearing));
-        graphics.drawCenteredString(minecraft.font, "^", 0, -4, 0xFFFFFF);
-        pose.popPose();
+            double absoluteBearing = Mth.atan2(dz, dx) * (180.0 / Math.PI) - 90.0;
+            double relativeBearing = Mth.wrapDegrees(absoluteBearing - player.getYRot());
+
+            PoseStack pose = graphics.pose();
+            pose.pushPose();
+            pose.translate(arrowCenterX, arrowCenterY, 0);
+            pose.mulPose(com.mojang.math.Axis.ZP.rotationDegrees((float) relativeBearing));
+            graphics.drawCenteredString(minecraft.font, "^", 0, -4, 0xFFFFFF);
+            pose.popPose();
+        } else {
+            // Wrong dimension: an arrow computed in a different coordinate space would be meaningless.
+            String wrongDimensionText = Component.translatable("gui.dynamicvehicles.pathfinder.wrong_dimension").getString();
+            graphics.drawString(minecraft.font, wrongDimensionText, x, y - 10, 0xFFFF55);
+        }
 
         graphics.drawString(minecraft.font, progressText, x + 16, y, 0xFFFFFF);
         graphics.drawString(minecraft.font, timeText, x + 16, y + 10, 0xFFFFFF);

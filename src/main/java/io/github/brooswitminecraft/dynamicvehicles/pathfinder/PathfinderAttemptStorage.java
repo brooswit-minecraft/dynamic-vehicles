@@ -20,6 +20,19 @@ import java.util.UUID;
  * {@code delivery.DeliveryContractStorage}, because an attempt is a
  * per-player, server-wide concept, not tied to whichever dimension the
  * player happens to be in right now.
+ *
+ * <p>Review follow-up on reward-payout crash safety: {@link #clear} only marks this {@code
+ * SavedData} dirty, same as every other {@code SavedData} in this codebase ({@code
+ * delivery.DeliveryContractStorage} included) — {@code setDirty()} alone schedules a write for
+ * the next periodic autosave/shutdown, it does not flush to disk. {@link
+ * PathfinderTickHandler#onFinished}/{@code #onExpired} additionally call {@link
+ * MinecraftServer#overworld()}{@code .getDataStorage().save()} immediately after {@link #clear},
+ * BEFORE granting the reward, forcing that write to be queued right away instead of waiting for
+ * the next autosave — narrowing, not eliminating, the crash window NeoForge's own async IO
+ * worker still has to actually finish writing the file. A true zero-window guarantee would need
+ * blocking on that worker's completion, which NeoForge does not expose; this is a real,
+ * concrete improvement over the prior "whenever the next autosave happens" window, not a claim
+ * of absolute durability no code in this codebase actually provides.
  */
 public final class PathfinderAttemptStorage extends SavedData {
     private static final String NAME = "dynamicvehicles_pathfinder_attempts";
@@ -52,10 +65,8 @@ public final class PathfinderAttemptStorage extends SavedData {
 
     /**
      * Removes the attempt. Callers finishing an attempt (reward) or failing it (expiry) must call
-     * this BEFORE granting any reward/sending any message, exactly as {@code
-     * delivery.ContractTickHandler} does with {@code storage.setDirty()} before the payout — so a
-     * crash between the two leaves, at worst, an unpaid completion to resolve by hand, never a
-     * re-claimable one that could be reloaded and finished again for a duplicate reward.
+     * this BEFORE granting any reward/sending any message — see the class javadoc for the forced
+     * save that should accompany this call on the real completion/expiry path.
      */
     public void clear(UUID playerId) {
         if (attempts.remove(playerId) != null) {
@@ -63,7 +74,8 @@ public final class PathfinderAttemptStorage extends SavedData {
         }
     }
 
-    private static PathfinderAttemptStorage load(CompoundTag tag, HolderLookup.Provider registries) {
+    /** Package-visible for direct round-trip unit testing without a registry/server. */
+    static PathfinderAttemptStorage load(CompoundTag tag, HolderLookup.Provider registries) {
         PathfinderAttemptStorage storage = new PathfinderAttemptStorage();
         ListTag list = tag.getList("Attempts", Tag.TAG_COMPOUND);
         for (int i = 0; i < list.size(); i++) {
@@ -71,6 +83,7 @@ public final class PathfinderAttemptStorage extends SavedData {
             UUID playerId = new UUID(entry.getLong("PlayerIdHi"), entry.getLong("PlayerIdLo"));
             PathfinderAttemptRecord record = new PathfinderAttemptRecord(
                     playerId,
+                    new UUID(entry.getLong("VillagerIdHi"), entry.getLong("VillagerIdLo")),
                     entry.getString("Dimension"),
                     new PathfinderRegion(entry.getInt("OriginX"), entry.getInt("OriginZ")),
                     PathfinderLevel.values()[entry.getInt("Level") - 1],
@@ -91,6 +104,8 @@ public final class PathfinderAttemptStorage extends SavedData {
             CompoundTag entry = new CompoundTag();
             entry.putLong("PlayerIdHi", record.playerId().getMostSignificantBits());
             entry.putLong("PlayerIdLo", record.playerId().getLeastSignificantBits());
+            entry.putLong("VillagerIdHi", record.villagerId().getMostSignificantBits());
+            entry.putLong("VillagerIdLo", record.villagerId().getLeastSignificantBits());
             entry.putString("Dimension", record.dimensionId());
             entry.putInt("OriginX", record.origin().x());
             entry.putInt("OriginZ", record.origin().z());

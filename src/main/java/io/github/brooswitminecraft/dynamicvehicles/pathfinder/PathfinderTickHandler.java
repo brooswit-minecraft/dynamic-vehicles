@@ -55,6 +55,28 @@ public final class PathfinderTickHandler {
         });
     }
 
+    /**
+     * The selected death policy (MINECRAFT-379 review follow-up): death fails the attempt
+     * outright, no partial credit. {@code PlayerRespawnEvent} fires once the respawn actually
+     * happens, which is the point a dead player's attempt should be cleared; {@code
+     * isEndConquered()} distinguishes an actual death-respawn from an end-portal "respawn" at the
+     * same event, which must NOT fail an attempt.
+     */
+    @SubscribeEvent
+    public static void onPlayerRespawn(net.neoforged.neoforge.event.entity.player.PlayerEvent.PlayerRespawnEvent event) {
+        if (event.isEndConquered() || !(event.getEntity() instanceof ServerPlayer player)) {
+            return;
+        }
+        PathfinderAttemptStorage storage = PathfinderAttemptStorage.of(player.server);
+        if (storage.active(player.getUUID()).isEmpty()) {
+            return;
+        }
+        storage.clear(player.getUUID());
+        forceSave(player.server);
+        player.sendSystemMessage(Component.translatable("message.dynamicvehicles.pathfinder.died"));
+        PathfinderAttempts.clearHud(player);
+    }
+
     private static void evaluate(MinecraftServer server, PathfinderAttemptStorage storage, ServerPlayer player, PathfinderAttemptRecord record) {
         ServerLevel dimension = server.getLevel(dimensionKey(record.dimensionId()));
         if (dimension == null) {
@@ -72,9 +94,9 @@ public final class PathfinderTickHandler {
         boolean advanced = progress.onReach(playerPosition, now);
 
         if (progress.isFinished()) {
-            onFinished(player, storage, record);
+            onFinished(server, dimension, player, storage, record);
         } else if (progress.isExpired()) {
-            onExpired(player, storage);
+            onExpired(server, player, storage);
         } else if (advanced) {
             PathfinderAttemptRecord updated = record.withProgress(progress);
             storage.update(updated);
@@ -82,19 +104,27 @@ public final class PathfinderTickHandler {
         }
     }
 
-    private static void onFinished(ServerPlayer player, PathfinderAttemptStorage storage, PathfinderAttemptRecord record) {
-        // Clear (and persist the removal) BEFORE granting the reward - see PathfinderAttemptStorage#clear.
+    private static void onFinished(MinecraftServer server, ServerLevel dimension, ServerPlayer player,
+                                    PathfinderAttemptStorage storage, PathfinderAttemptRecord record) {
+        // Clear and force-save BEFORE granting the reward - see PathfinderAttemptStorage's class javadoc.
         storage.clear(player.getUUID());
-        PathfinderAttempts.grantReward(player, record.level());
-        player.sendSystemMessage(Component.translatable("message.dynamicvehicles.pathfinder.completed",
-                PathfinderConfig.rewardEmeralds(record.level())));
+        forceSave(server);
+        PathfinderAttempts.recordVillagerCompletion(dimension, record);
+        int rewardedEmeralds = PathfinderAttempts.grantReward(player, record.level());
+        player.sendSystemMessage(Component.translatable("message.dynamicvehicles.pathfinder.completed", rewardedEmeralds));
         PathfinderAttempts.clearHud(player);
     }
 
-    private static void onExpired(ServerPlayer player, PathfinderAttemptStorage storage) {
+    private static void onExpired(MinecraftServer server, ServerPlayer player, PathfinderAttemptStorage storage) {
         storage.clear(player.getUUID());
+        forceSave(server);
         player.sendSystemMessage(Component.translatable("message.dynamicvehicles.pathfinder.expired"));
         PathfinderAttempts.clearHud(player);
+    }
+
+    /** See {@link PathfinderAttemptStorage}'s class javadoc: narrows, does not eliminate, the reward-duplication crash window. */
+    private static void forceSave(MinecraftServer server) {
+        server.overworld().getDataStorage().save();
     }
 
     private static net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dimensionKey(String dimensionId) {

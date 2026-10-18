@@ -31,7 +31,11 @@ class BiplanePhysicsTest {
             vy = r.vy();
             vz = r.vz();
             yaw = r.yawDeg();
-            assertEquals(0.0, vy, 1e-9, "grounded taxi must not pick up vertical speed, tick " + tick);
+            // Not exactly 0: grounded targets a small constant sink (BiplaneEntity's own post-move clamp
+            // is what keeps the actually-visible vy at 0 once collision resolves it each tick) -- see
+            // GROUND_GRAVITY's own javadoc for why pinning this to exactly 0 here broke vanilla's onGround
+            // detection in an actual game-test run.
+            assertEquals(-BiplanePhysics.GROUND_GRAVITY, vy, 1e-9, "grounded taxi should hold a constant small sink target, not drift, tick " + tick);
             assertTrue(Math.hypot(vx, vz) <= BiplanePhysics.MAX_SPEED + 1e-9, "tick " + tick + ": exceeded MAX_SPEED while taxiing");
         }
     }
@@ -95,8 +99,13 @@ class BiplanePhysicsTest {
     }
 
     @Test
-    void landingZeroesVerticalSpeedImmediately() {
+    void landingSnapsToAGroundedSinkInsteadOfKeepingTheOldAscentOrDescent() {
+        // Grounded targets a small constant sink (GROUND_GRAVITY), not exactly 0: a real game-test run
+        // showed vanilla's own onGround flag needs a per-tick downward attempt to stay confirmed (see
+        // BiplanePhysics' own javadoc on GROUND_GRAVITY). BiplaneEntity's post-move clamp is what zeroes
+        // the actually-visible vy once collision has resolved that attempt each tick.
         BiplanePhysics.Result r = BiplanePhysics.step(BiplanePhysics.TAKEOFF_SPEED, -BiplanePhysics.MAX_FALL_SPEED, 0, 0, 0.0, 0.0, 0.0, true, true);
-        assertEquals(0.0, r.vy(), 1e-9, "touching down (grounded) should snap vy to 0 immediately, not ramp down over several ticks");
+        assertEquals(-BiplanePhysics.GROUND_GRAVITY, r.vy(), 1e-9,
+                "touching down (grounded) should snap vy to the grounded sink target immediately, not keep the old descent rate");
     }
 }

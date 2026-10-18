@@ -26,8 +26,17 @@ final class BiplanePhysics {
     static final double MAX_CLIMB_SPEED = 0.25;
     static final double MAX_FALL_SPEED = 0.35;
     static final double VERTICAL_ACCEL = 0.03;
-    /** Grounded vy snaps to its 0 target immediately rather than ramping at {@link #VERTICAL_ACCEL}. */
+    /** Grounded vy snaps to its target immediately rather than ramping at {@link #VERTICAL_ACCEL}. */
     private static final double GROUND_SNAP = Double.MAX_VALUE;
+    /** Vanilla's own per-tick gravity constant: grounded vy targets a small constant SINK, not exactly 0.
+     * A real game-test run (not just the pure-function tests) caught why this matters: vanilla's own
+     * {@code onGround} flag is only reconfirmed when an entity actually ATTEMPTS a downward move that
+     * collision then clamps back to the surface it is resting on. Pinning vy to exactly 0 while grounded
+     * makes no such attempt, so {@code onGround} can go stale (read false) a tick or two later even though
+     * the plane never actually left the ground -- {@link BiplaneEntity}'s own post-move clamp zeroes the
+     * actual delta movement back out each tick anyway, so this constant sink never visibly moves the
+     * plane, it just keeps the resting contact honest every tick. */
+    static final double GROUND_GRAVITY = 0.08;
 
     record Result(double vx, double vy, double vz, double yawDeg) {}
 
@@ -46,7 +55,7 @@ final class BiplanePhysics {
         double targetVy;
         double verticalAccel;
         if (grounded) {
-            targetVy = 0.0;
+            targetVy = -GROUND_GRAVITY;
             verticalAccel = GROUND_SNAP;
         } else if (hasRider && speed >= TAKEOFF_SPEED) {
             targetVy = -Math.sin(Math.toRadians(pitchDeg)) * MAX_CLIMB_SPEED;

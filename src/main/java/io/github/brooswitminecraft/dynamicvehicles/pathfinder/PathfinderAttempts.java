@@ -145,6 +145,19 @@ public final class PathfinderAttempts {
      * in the normal case, not a rare edge case).
      */
     static void recordVillagerCompletion(PathfinderAttemptRecord record, net.minecraft.server.MinecraftServer server) {
-        PathfinderVillagerLevel.recordCompletion(server, record.villagerId(), record.level().level(), PathfinderServerConfig.COMPLETIONS_TO_ADVANCE.get());
+        PathfinderVillagerLevel.recordCompletion(server, record.villagerId(), record.level().level(),
+                PathfinderServerConfig.COMPLETIONS_TO_ADVANCE.get(), attemptKey(record));
+    }
+
+    /**
+     * Stable per-attempt identity, surviving a restart: {@code playerId} identifies which
+     * player's attempt this is, {@code startTick} is snapshotted once at attempt creation and
+     * never changes — review follow-up: lets {@link PathfinderVillagerProgressStorage} recognize
+     * (and skip) a second credit attempt for the exact same completion after a crash/restart
+     * between the progression write landing durably and the attempt's own {@code
+     * progressionCredited} flag catching up to reflect that.
+     */
+    static String attemptKey(PathfinderAttemptRecord record) {
+        return record.playerId() + ":" + record.startTick();
     }
 }

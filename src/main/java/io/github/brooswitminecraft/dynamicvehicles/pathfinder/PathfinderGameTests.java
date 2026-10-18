@@ -814,10 +814,29 @@ public final class PathfinderGameTests {
             }
             if (!restoredWritable[0]) {
                 PathfinderAttemptRecord pending = storage.active(player.getUUID()).orElse(null);
-                helper.assertTrue(pending != null && pending.finished(),
-                        "a failed progression write must retain the finished-but-unpaid attempt for retry, even though the attempt file's own write succeeded");
+                helper.assertTrue(pending != null && pending.finished() && !pending.progressionCredited(),
+                        "a failed progression write must retain the finished-but-uncredited attempt for retry, even though the attempt file's own write succeeded");
                 helper.assertTrue(player.getInventory().countItem(Items.EMERALD) == 0,
                         "reward must be withheld while the villager's progression credit cannot be confirmed durable");
+
+                // Review follow-up: prove a REAL restart right now (progression write still
+                // failing) would not lose the completed run or falsely settle it as credited -
+                // read the attempt file straight back off disk, bypassing the live in-memory
+                // singleton entirely, exactly as PathfinderTickHandler's own verification does.
+                PathfinderAttemptRecord onDiskRecord;
+                try {
+                    net.minecraft.nbt.CompoundTag attemptRoot = server.overworld().getDataStorage().readTagFromDisk(
+                            PathfinderAttemptStorage.NAME, null, net.minecraft.SharedConstants.getCurrentVersion().getDataVersion().getVersion());
+                    PathfinderAttemptStorage onDisk = PathfinderAttemptStorage.load(attemptRoot.getCompound("data"), server.overworld().registryAccess());
+                    onDiskRecord = onDisk.active(player.getUUID()).orElse(null);
+                } catch (java.io.IOException e) {
+                    onDiskRecord = null;
+                }
+                helper.assertTrue(onDiskRecord != null && onDiskRecord.finished() && !onDiskRecord.progressionCredited(),
+                        "a fresh reload from disk (simulating a restart right now, while the progression write is still failing) must still see the "
+                                + "completed-but-uncredited attempt - not lose it (the old bug: the attempt was cleared to disk despite the overall "
+                                + "verification failing) and not see it falsely marked progressionCredited=true ahead of the progression write actually landing");
+
                 helper.assertTrue(deleteIfEmptyDirectory(progressFile), "must be able to remove the fault directory to let the real file be written");
                 restoredWritable[0] = true;
                 helper.fail("removed the fault directory - wait for the retry to confirm and pay out");

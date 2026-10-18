@@ -43,4 +43,14 @@ public final class PathfinderVillagerLevel {
     public static void recordCompletion(MinecraftServer server, UUID villagerId, int completedLevel, int completionsToAdvance) {
         PathfinderVillagerProgressStorage.of(server).recordCompletion(villagerId, completedLevel, completionsToAdvance);
     }
+
+    /**
+     * Same as {@link #recordCompletion(MinecraftServer, UUID, int, int)}, but idempotent against
+     * being invoked twice for the SAME attempt - see {@link
+     * PathfinderVillagerProgressStorage}'s class javadoc. {@code PathfinderAttempts#recordVillagerCompletion},
+     * the one real production caller, has a durable, stable per-attempt key to pass here.
+     */
+    public static void recordCompletion(MinecraftServer server, UUID villagerId, int completedLevel, int completionsToAdvance, String attemptKey) {
+        PathfinderVillagerProgressStorage.of(server).recordCompletion(villagerId, completedLevel, completionsToAdvance, attemptKey);
+    }
 }

@@ -152,14 +152,11 @@ public final class PathfinderTickHandler {
         boolean advanced = progress.onReach(playerPosition, now, PathfinderServerConfig.REACH_RADIUS.get());
 
         if (progress.isFinished()) {
-            // Credit progression exactly once, for the level this circuit actually was, THEN
-            // attempt the durable clear - see PathfinderVillagerProgressStorage#recordCompletion
-            // for why "actually was" matters (a real concurrency exploit otherwise).
+            // Review follow-up (round 7): progression credit used to be applied AND persisted to
+            // the attempt record here, before any durability check ever ran - attemptDurablePayout
+            // now owns the whole credit-then-confirm sequence itself (see its own javadoc for why
+            // ordering it that way matters), so this just records the checkpoint/time progress.
             PathfinderAttemptRecord finishedRecord = record.withProgress(progress);
-            if (!finishedRecord.progressionCredited()) {
-                PathfinderAttempts.recordVillagerCompletion(finishedRecord, server);
-                finishedRecord = finishedRecord.withProgressionCredited();
-            }
             storage.update(finishedRecord);
             attemptDurablePayout(server, player, storage, finishedRecord);
         } else if (progress.isExpired()) {
@@ -174,33 +171,54 @@ public final class PathfinderTickHandler {
     }
 
     /**
-     * Clears {@code record} and attempts to confirm BOTH the attempt-clear and the villager
-     * progression credit durably; grants the reward only once both are confirmed. Review
-     * follow-up: the villager progression write (a separate {@code SavedData} file,
-     * {@link PathfinderVillagerProgressStorage}) can independently fail even when the attempt
-     * file's own write succeeds - a disk-verification covering only the attempt file would then
-     * pay the reward while the earned progression silently never lands. {@code
-     * expectedProgress} is read from the IN-MEMORY storage, not recomputed, so a retry after a
-     * failed verification compares against the same already-applied (not re-applied - {@link
-     * PathfinderAttemptRecord#progressionCredited()} already guards that) credit each time. If
-     * confirmation fails, puts {@code record} back (still marked finished/credited) so the next
-     * tick's {@link #evaluate} retries just this step.
+     * Two-phase durable payout (review follow-up, round 7). The attempt's own persisted state
+     * must never show the progression credit as applied - either by being cleared, or by
+     * carrying {@code progressionCredited=true} - before the progression write is INDEPENDENTLY
+     * confirmed durable first: doing it the other way round (clear/mark-credited optimistically,
+     * verify after, restore in-memory on failure) let a save that landed the attempt-clear while
+     * the progression write failed durably delete the completed run from disk with only an
+     * in-memory restoration backing it up - a crash/restart right then loses the whole run, and
+     * even without a crash, a later unrelated autosave of that in-memory-restored record could
+     * persist {@code progressionCredited=true} while the progression file remains stale,
+     * permanently settling the attempt as "credited" with the credit itself never having landed.
+     * <ul>
+     * <li>Phase 1 (only while {@code progressionCredited} is still false): credit progression in
+     * memory and confirm THAT alone is durable on disk. The attempt record itself is not touched
+     * here, so a crash/retry at any point in this phase just resumes from whatever was last
+     * durably saved - {@link PathfinderVillagerProgressStorage}'s per-attempt {@code attemptKey}
+     * tracking makes re-entering this phase (e.g. after a restart) safe even if the credit had
+     * already landed just before the attempt's own {@code progressionCredited} flag caught up.
+     * <li>Phase 2 (once progression is confirmed durable, in-memory OR via a prior tick):
+     * progression is already durably settled, so it is now safe to clear the attempt and confirm
+     * THAT durably - exactly the same retryable shape as the no-progression-involved paths.
+     * </ul>
      */
     private static void attemptDurablePayout(MinecraftServer server, ServerPlayer player, PathfinderAttemptStorage storage, PathfinderAttemptRecord record) {
+        PathfinderAttemptRecord current = record;
+        if (!current.progressionCredited()) {
+            PathfinderAttempts.recordVillagerCompletion(current, server);
+            PathfinderVillagerProgressStorage progressStorage = PathfinderVillagerProgressStorage.of(server);
+            // A FAILED write silently clears a SavedData's dirty flag too (same gotcha as the
+            // attempt file) - without forcing it dirty again on every attempt, a failed
+            // progression write would never be retried at all.
+            progressStorage.markDirtyForRetry();
+            PathfinderVillagerProgress.State expectedProgress = progressStorage.stateOf(current.villagerId());
+            if (!forceSaveAndVerifyProgressDurable(server, current.villagerId(), expectedProgress)) {
+                // current (progressionCredited=false) is exactly what's already in storage -
+                // nothing to restore. recordVillagerCompletion is idempotent per attempt, so
+                // retrying this phase again next tick (even after a crash/restart) is safe.
+                return;
+            }
+            current = current.withProgressionCredited();
+            storage.update(current);
+        }
+
         storage.clear(player.getUUID());
-        PathfinderVillagerProgressStorage progressStorage = PathfinderVillagerProgressStorage.of(server);
-        // recordVillagerCompletion only ever runs once per attempt (see evaluate's
-        // progressionCredited guard), so nothing else re-dirties this SavedData on a retry - and
-        // a FAILED write silently clears its dirty flag too (same gotcha as the attempt file).
-        // Without forcing it dirty again on every attempt, a failed progression write would never
-        // be retried at all, even though the attempt file's own clear keeps retrying fine.
-        progressStorage.markDirtyForRetry();
-        PathfinderVillagerProgress.State expectedProgress = progressStorage.stateOf(record.villagerId());
-        if (!forceSaveAndVerifyPayoutDurable(server, player.getUUID(), record.villagerId(), expectedProgress)) {
-            storage.update(record);
+        if (!forceSaveAndVerifyAbsent(server, player.getUUID())) {
+            storage.update(current);
             return;
         }
-        int rewardedEmeralds = PathfinderAttempts.grantReward(player, record.level());
+        int rewardedEmeralds = PathfinderAttempts.grantReward(player, current.level());
         player.sendSystemMessage(Component.translatable("message.dynamicvehicles.pathfinder.completed", rewardedEmeralds));
         PathfinderAttempts.clearHud(player);
     }
@@ -237,23 +255,16 @@ public final class PathfinderTickHandler {
     }
 
     /**
-     * Same save-then-read-back-off-disk shape as {@link #forceSaveAndVerifyAbsent}, but for the
-     * reward/completion path: also confirms {@code villagerId}'s progression credit landed, by
-     * reading {@link PathfinderVillagerProgressStorage} straight off disk too and comparing
-     * against {@code expectedProgress} (the already-applied in-memory value). Review follow-up:
-     * these are two independent {@code SavedData} files/writes, so either can fail without the
-     * other failing - a completion is only durably settled once BOTH are confirmed on disk.
+     * Same save-then-read-back-off-disk shape as {@link #forceSaveAndVerifyAbsent}, but confirms
+     * {@code villagerId}'s progression credit alone - deliberately NOT the attempt file (see
+     * {@link #attemptDurablePayout}'s javadoc for why the two must be confirmed as separate,
+     * ordered phases rather than one combined check).
      */
-    private static boolean forceSaveAndVerifyPayoutDurable(MinecraftServer server, UUID playerId, UUID villagerId,
-                                                             PathfinderVillagerProgress.State expectedProgress) {
+    private static boolean forceSaveAndVerifyProgressDurable(MinecraftServer server, UUID villagerId, PathfinderVillagerProgress.State expectedProgress) {
         server.overworld().getDataStorage().save();
         IOUtilities.waitUntilIOWorkerComplete();
         try {
-            if (readAttemptsFromDisk(server).active(playerId).isPresent()) {
-                return false;
-            }
-            PathfinderVillagerProgressStorage onDiskProgress = readVillagerProgressFromDisk(server);
-            return onDiskProgress.stateOf(villagerId).equals(expectedProgress);
+            return readVillagerProgressFromDisk(server).stateOf(villagerId).equals(expectedProgress);
         } catch (IOException e) {
             return false;
         }

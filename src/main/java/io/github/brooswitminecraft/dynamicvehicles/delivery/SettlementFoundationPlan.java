@@ -24,20 +24,4 @@ public final class SettlementFoundationPlan {
         }
         return Decision.FOUND;
     }
-
-    /**
-     * A Trading Post begins with eight residents: seven general villagers and one
-     * Dispatcher.  The count is deliberately explicit rather than random so a
-     * destination has the same population after every retry or restart.
-     */
-    public static int villagerCount(String settlementKey) {
-        return 8;
-    }
-
-    /** The bounded pavilion footprint is seven blocks square and five blocks high. */
-    public static final int TRADING_POST_RADIUS = 3;
-    public static final int TRADING_POST_HEIGHT = 5;
-
-    /** How far below the floor a column is filled while looking for solid ground. */
-    public static final int MAX_FOUNDATION_DEPTH = 48;
 }

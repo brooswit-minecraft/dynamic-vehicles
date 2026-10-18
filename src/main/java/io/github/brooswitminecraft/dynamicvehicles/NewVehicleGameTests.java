@@ -78,10 +78,7 @@ public final class NewVehicleGameTests {
     }
 
     /** Entry, ground taxi (throttle + rudder) without picking up unwanted altitude, the landing-gear-style
-     * "stays grounded while slow" half of basic fixed-wing operation. Reaching and holding an actual
-     * sustained takeoff/climb is covered by {@code BiplanePhysicsTest}'s pure-function tests (a real
-     * taxi-to-liftoff run needs more open, flat runway than this small structure safely provides without
-     * risking running the entity off the templated area). */
+     * "stays grounded while slow and nose-level" half of basic fixed-wing operation. */
     @GameTest(template = "settlement_test", timeoutTicks = 100)
     public static void biplaneTaxisOnThrottleWithoutLeavingTheGround(GameTestHelper helper) {
         for (int dz = 0; dz <= 8; dz++) {
@@ -98,6 +95,74 @@ public final class NewVehicleGameTests {
             helper.assertTrue(plane.getControllingPassenger() == rider, "biplane lost its rider mid-taxi");
             helper.assertTrue(Math.abs(plane.getZ() - startZ) > 0.2, "biplane barely moved after 20 ticks of full throttle taxi");
             helper.assertTrue(plane.onGround(), "biplane left the ground while taxiing below takeoff speed with a level pitch");
+            helper.succeed();
+        });
+    }
+
+    /**
+     * A real taxi-to-liftoff: throttle alone (nose level) builds speed on the ground, then pulling the
+     * nose up past takeoff speed must actually leave the ground. Review 5563367455's second re-review
+     * (48012) flagged that the prior fix's grounded-sink branch was checked before this transition, so a
+     * fast, nose-up biplane could never actually take off -- {@code onGround()} reports the PREVIOUS
+     * tick's collision result, so it still reads true on the very tick the plane first qualifies for
+     * liftoff. This exercises that exact transition against the real entity/collision system, not just
+     * the pure {@code BiplanePhysics} unit tests (which can pass a {@code grounded} flag directly without
+     * ever going through {@code BiplaneEntity#onGround()}'s own one-tick lag).
+     *
+     * <p>Drives {@link BiplaneEntity#driveTick} directly rather than setting {@code rider.zza} once and
+     * waiting out real server ticks: a {@link GameTestHelper#makeMockPlayer} is never added to the level
+     * via {@code addFreshEntity}, yet its {@code zza} was observed decaying back toward 0 over real ticks
+     * anyway while mounted (diagnosed by logging it tick-by-tick) -- some part of the riding/tracking path
+     * (this repo's GameTest environment also carries Sable's own mixins into exactly that path, see
+     * {@code entity_rotations_and_riding.ServerEntityMixin} in the server log) evidently still ticks a
+     * mounted passenger even though it was never explicitly spawned. Re-asserting {@code zza} before each
+     * manual {@code driveTick} call sidesteps that entirely while still exercising the real entity's real
+     * {@code move}/collision/{@code onGround} path each call, not a shortcut around it.
+     */
+    @GameTest(template = "settlement_test", timeoutTicks = 60)
+    public static void biplaneLiftsOffAfterTaxiingToTakeoffSpeedAndPullingUp(GameTestHelper helper) {
+        for (int dz = 0; dz <= 20; dz++) {
+            helper.setBlock(new BlockPos(5, 2, dz), Blocks.STONE);
+            helper.setBlock(new BlockPos(5, 3, dz), Blocks.AIR);
+        }
+        BiplaneEntity plane = helper.spawn(DynamicVehiclesMod.BIPLANE.get(), new BlockPos(5, 3, 0));
+        plane.setYRot(0.0f);
+        Player rider = helper.makeMockPlayer(GameType.CREATIVE);
+        helper.assertTrue(rider.startRiding(plane), "mock player failed to board the biplane");
+        for (int i = 0; i < 60; i++) {
+            rider.zza = 1.0f;
+            plane.driveTick(rider);
+        }
+        helper.assertTrue(plane.onGround(), "sanity: should still be on the ground during the taxi phase, before pulling up");
+        helper.assertTrue(Math.hypot(plane.getDeltaMovement().x(), plane.getDeltaMovement().z()) >= BiplanePhysics.TAKEOFF_SPEED,
+                "sanity: should have reached takeoff speed after 60 ticks of full throttle");
+        rider.setXRot(-90.0f);
+        for (int i = 0; i < 30; i++) {
+            rider.zza = 1.0f;
+            plane.driveTick(rider);
+        }
+        helper.assertTrue(!plane.onGround(), "biplane never left the ground after taxiing to takeoff speed and pulling the nose up");
+        helper.succeed();
+    }
+
+    /** A real landing: an already-airborne, already-slow biplane (below stall speed, so this does not
+     * depend on the takeoff transition above) sinks under its bounded stall fall and actually touches
+     * down on solid ground, rather than hovering or falling through it. */
+    @GameTest(template = "settlement_test", timeoutTicks = 150)
+    public static void biplaneDescendsAndLandsWhenSlowAndAirborne(GameTestHelper helper) {
+        helper.setBlock(new BlockPos(5, 2, 5), Blocks.STONE);
+        for (int dy = 3; dy <= 7; dy++) {
+            helper.setBlock(new BlockPos(5, dy, 5), Blocks.AIR);
+        }
+        BiplaneEntity plane = helper.spawn(DynamicVehiclesMod.BIPLANE.get(), new BlockPos(5, 8, 5));
+        double startY = plane.getY();
+        Player rider = helper.makeMockPlayer(GameType.CREATIVE);
+        helper.assertTrue(rider.startRiding(plane), "mock player failed to board the biplane");
+        // No throttle, level pitch, starting well below stall speed: BiplanePhysics' own stall branch
+        // (speed < STALL_SPEED while airborne) sinks it at a bounded rate regardless of pitch.
+        helper.runAfterDelay(140L, () -> {
+            helper.assertTrue(plane.onGround(), "biplane never touched down after descending from above the landing site");
+            helper.assertTrue(plane.getY() < startY - 2.0, "biplane should have come down from its spawn height, not stayed up there: startY=" + startY + " now=" + plane.getY());
             helper.succeed();
         });
     }

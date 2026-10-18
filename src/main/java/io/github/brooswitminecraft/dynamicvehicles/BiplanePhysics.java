@@ -7,8 +7,17 @@ package io.github.brooswitminecraft.dynamicvehicles;
  * <p>Vertical speed is the same RATE-LIMITED TARGET {@link ChopperPhysics} uses, for the same reason: the
  * pre-fix version's {@code vy += -sin(pitch) * CLIMB_RATE * dt} every tick, with no cap, meant holding a
  * climb pitch accumulated {@code vy} without bound, and levelling the view afterward left that
- * accumulated ascent/descent completely unchanged. Grounded, the target is pinned to exactly 0 and the
- * rate limit is lifted ({@link #GROUND_SNAP}), so taxiing never drifts a fractional vertical velocity.
+ * accumulated ascent/descent completely unchanged.
+ *
+ * <p>The ground-to-air transition is a speed-and-pitch-qualified check ({@code liftingOffOrFlyingFast} in
+ * {@link #step}) evaluated BEFORE the grounded sink fallback, not after: {@code grounded} reflects the
+ * PREVIOUS tick's collision result, so a plane that only just cleared {@link #TAKEOFF_SPEED} this tick is
+ * still reported grounded, and an earlier version of this method checked {@code grounded} first -- which
+ * meant the sink target always won and the plane could never actually leave the ground no matter how fast
+ * or how hard it pulled up (caught by review, not by this class's own unit tests, since those called
+ * {@link #step} with {@code grounded} already false to test climbing). Once genuinely grounded with no
+ * qualifying climb attempt, the target is a small constant sink ({@link #GROUND_GRAVITY}), not exactly 0;
+ * see that field's own javadoc for why.
  */
 final class BiplanePhysics {
     private BiplanePhysics() {}
@@ -52,14 +61,24 @@ final class BiplanePhysics {
             vx += fx * throttle * THRUST_ACCEL;
             vz += fz * throttle * THRUST_ACCEL;
         }
+        // Positive = nose-up (climb intent), negative = nose-down (dive intent).
+        double climbComponent = hasRider ? -Math.sin(Math.toRadians(pitchDeg)) : 0.0;
+        // The ground-to-air transition: fast enough AND nose-up, checked BEFORE the grounded fallback
+        // below. onGround() is reported from the PREVIOUS tick's collision result, so a plane that just
+        // cleared takeoff speed this tick is still "grounded" as far as that stale flag is concerned --
+        // checking grounded first (an earlier version of this method did exactly that) meant the sink
+        // target below always won, and a biplane could never actually leave the ground no matter how
+        // fast it taxied. Once genuinely airborne (speed >= TAKEOFF_SPEED, grounded already false), pitch
+        // keeps responding the same way, climb or dive, without needing the nose-up qualifier again.
+        boolean liftingOffOrFlyingFast = hasRider && speed >= TAKEOFF_SPEED && (!grounded || climbComponent > 0.0);
         double targetVy;
         double verticalAccel;
-        if (grounded) {
+        if (liftingOffOrFlyingFast) {
+            targetVy = climbComponent * MAX_CLIMB_SPEED;
+            verticalAccel = VERTICAL_ACCEL;
+        } else if (grounded) {
             targetVy = -GROUND_GRAVITY;
             verticalAccel = GROUND_SNAP;
-        } else if (hasRider && speed >= TAKEOFF_SPEED) {
-            targetVy = -Math.sin(Math.toRadians(pitchDeg)) * MAX_CLIMB_SPEED;
-            verticalAccel = VERTICAL_ACCEL;
         } else if (speed < STALL_SPEED) {
             targetVy = -MAX_FALL_SPEED;
             verticalAccel = VERTICAL_ACCEL;

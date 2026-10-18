@@ -108,6 +108,30 @@ public class DynamicVehiclesMod {
                     .build(ResourceLocation.fromNamespaceAndPath(MODID, "cargo_truck").toString()));
     public static final DeferredItem<CarItem> CARGO_TRUCK_ITEM = ITEMS.register("cargo_truck", () -> new CarItem(new Item.Properties().stacksTo(1), CARGO_TRUCK, 0.6));
 
+    /** MINECRAFT-380: a watercraft, a rotor-powered aircraft and a fixed-wing aircraft. None of the three
+     * share CarEntity's Sable rigid body or wheel physics -- see SimpleVehicleEntity. */
+    public static final DeferredHolder<EntityType<?>, EntityType<MotorboatEntity>> MOTORBOAT = ENTITIES.register(VehicleIds.MOTORBOAT,
+            () -> EntityType.Builder.<MotorboatEntity>of(MotorboatEntity::new, MobCategory.MISC)
+                    .sized((float) (2 * MotorboatEntity.halfWidth()), (float) (2 * MotorboatEntity.halfHeight()))
+                    .clientTrackingRange(10).updateInterval(1)
+                    .build(ResourceLocation.fromNamespaceAndPath(MODID, VehicleIds.MOTORBOAT).toString()));
+    public static final DeferredItem<VehicleSpawnItem<MotorboatEntity>> MOTORBOAT_ITEM = ITEMS.register(VehicleIds.MOTORBOAT,
+            () -> new VehicleSpawnItem<>(new Item.Properties().stacksTo(1), MOTORBOAT, 0.5));
+    public static final DeferredHolder<EntityType<?>, EntityType<ChopperEntity>> CHOPPER = ENTITIES.register(VehicleIds.CHOPPER,
+            () -> EntityType.Builder.<ChopperEntity>of(ChopperEntity::new, MobCategory.MISC)
+                    .sized((float) (2 * ChopperEntity.halfWidth()), (float) (2 * ChopperEntity.halfHeight()))
+                    .clientTrackingRange(10).updateInterval(1)
+                    .build(ResourceLocation.fromNamespaceAndPath(MODID, VehicleIds.CHOPPER).toString()));
+    public static final DeferredItem<VehicleSpawnItem<ChopperEntity>> CHOPPER_ITEM = ITEMS.register(VehicleIds.CHOPPER,
+            () -> new VehicleSpawnItem<>(new Item.Properties().stacksTo(1), CHOPPER, 0.5));
+    public static final DeferredHolder<EntityType<?>, EntityType<BiplaneEntity>> BIPLANE = ENTITIES.register(VehicleIds.BIPLANE,
+            () -> EntityType.Builder.<BiplaneEntity>of(BiplaneEntity::new, MobCategory.MISC)
+                    .sized((float) (2 * BiplaneEntity.halfWidth()), (float) (2 * BiplaneEntity.halfHeight()))
+                    .clientTrackingRange(10).updateInterval(1)
+                    .build(ResourceLocation.fromNamespaceAndPath(MODID, VehicleIds.BIPLANE).toString()));
+    public static final DeferredItem<VehicleSpawnItem<BiplaneEntity>> BIPLANE_ITEM = ITEMS.register(VehicleIds.BIPLANE,
+            () -> new VehicleSpawnItem<>(new Item.Properties().stacksTo(1), BIPLANE, 0.5));
+
     public DynamicVehiclesMod(IEventBus modEventBus, ModContainer modContainer) {
         modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.SERVER, CarConfig.SPEC);
         // Explicit file name: the default ("dynamicvehicles-server.toml") is already claimed by
@@ -236,6 +260,9 @@ public class DynamicVehiclesMod {
             event.accept(INDY_ITEM);
             event.accept(BUS_ITEM);
             event.accept(CARGO_TRUCK_ITEM);
+            event.accept(MOTORBOAT_ITEM);
+            event.accept(CHOPPER_ITEM);
+            event.accept(BIPLANE_ITEM);
             event.accept(DispatcherBlocks.DISPATCH_BOARD_ITEM);
         }
     }
@@ -256,6 +283,9 @@ public class DynamicVehiclesMod {
             event.registerEntityRenderer(INDY.get(), CarRenderer::new);
             event.registerEntityRenderer(BUS.get(), CarRenderer::new);
             event.registerEntityRenderer(CARGO_TRUCK.get(), CarRenderer::new);
+            event.registerEntityRenderer(MOTORBOAT.get(), MotorboatRenderer::new);
+            event.registerEntityRenderer(CHOPPER.get(), ChopperRenderer::new);
+            event.registerEntityRenderer(BIPLANE.get(), BiplaneRenderer::new);
         }
 
         @SubscribeEvent

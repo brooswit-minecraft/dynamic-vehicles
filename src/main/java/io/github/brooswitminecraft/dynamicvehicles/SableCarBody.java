@@ -8,6 +8,7 @@ import dev.ryanhcode.sable.api.physics.object.box.BoxPhysicsObject;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.Pose3d;
+import io.github.brooswitminecraft.dynamicterrain.Erosion;
 import io.github.brooswitminecraft.dynamicterrain.SurfaceProperties;
 import io.github.brooswitminecraft.dynamicterrain.Surfaces;
 import io.github.brooswitminecraft.dynamicterrain.TireContactSampler;
@@ -42,6 +43,15 @@ final class SableCarBody {
     private final RigidBodyHandle body;
     private double lastSlipSpeed;
     private double lastSpinSlip;
+    // MINECRAFT-401 review, round 4: the REAL arguments the production path actually passed to
+    // SlipReporter.report() this tick, and the REAL Erosion.Result it actually returned -- captured at
+    // the one real call site below, not recomputed by a test from a peak value and an assumed load.
+    // DISABLED/SKIPPED/RESISTED whenever no wheel's wearSlipMax crossed the report threshold this tick
+    // (the loop below never calls report() at all, so these simply hold their last real value, same as
+    // lastSlipSpeed above).
+    private double lastErosionReportSlipSpeed;
+    private double lastErosionReportLoadKg;
+    private Erosion.Result lastErosionResult = Erosion.Result.SKIPPED;
     // One real spin rate per wheel (rad/s), persisted tick to tick and advanced sub-step to sub-step by
     // WheelMath.spinRate - state, not a value re-derived from scratch each call. See spinRate's own
     // javadoc for why a gripping wheel is pulled to ground speed rather than carrying forward a stale slip.
@@ -532,7 +542,11 @@ final class SableCarBody {
         }
         for (int wheel = 0; wheel < wheelCount; wheel++) {
             if (wearSlipMax[wheel] > 0.3) {
-                SlipReporter.report(level, wheelHits[wheel].getBlockPos(), wearSlipMax[wheel], wearSlipForce[wheel] / GRAVITY);
+                double loadKg = wearSlipForce[wheel] / GRAVITY;
+                Erosion.Result result = SlipReporter.report(level, wheelHits[wheel].getBlockPos(), wearSlipMax[wheel], loadKg);
+                lastErosionReportSlipSpeed = wearSlipMax[wheel];
+                lastErosionReportLoadKg = loadKg;
+                lastErosionResult = result;
             }
         }
         // MINECRAFT-259: water/lava buoyancy, independent of speed -- a car sitting still in a flooded
@@ -658,6 +672,20 @@ final class SableCarBody {
     /** The largest tire slip speed seen on the last tick, m/s. */
     double lastSlipSpeed() {
         return lastSlipSpeed;
+    }
+
+    /** The REAL slip speed (m/s), load (kg) and {@link Erosion.Result} the production tick last actually
+     * passed to/got back from {@link SlipReporter#report} -- not a value a caller recomputes itself. */
+    double lastErosionReportSlipSpeed() {
+        return lastErosionReportSlipSpeed;
+    }
+
+    double lastErosionReportLoadKg() {
+        return lastErosionReportLoadKg;
+    }
+
+    Erosion.Result lastErosionResult() {
+        return lastErosionResult;
     }
 
     /** Each wheel's suspension travel as of the last tick's single raycast, metres (a copy; not live state). */

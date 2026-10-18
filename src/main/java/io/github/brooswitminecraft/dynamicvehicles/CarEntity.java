@@ -310,6 +310,22 @@ public class CarEntity extends Entity {
         return sableBody == null ? 0.0 : SableCompat.slip(sableBody);
     }
 
+    /** Server test support only (MINECRAFT-401 review, round 4): the REAL (slipSpeed, loadKg, Result) the
+     * production tick last actually passed to and got back from {@code SlipReporter.report} -- observing
+     * the real production call, not a value a test recomputes itself from a peak reading and an assumed
+     * load. */
+    double debugLastErosionReportSlipSpeed() {
+        return sableBody == null ? 0.0 : SableCompat.lastErosionReportSlipSpeed(sableBody);
+    }
+
+    double debugLastErosionReportLoadKg() {
+        return sableBody == null ? 0.0 : SableCompat.lastErosionReportLoadKg(sableBody);
+    }
+
+    io.github.brooswitminecraft.dynamicterrain.Erosion.Result debugLastErosionResult() {
+        return sableBody == null ? io.github.brooswitminecraft.dynamicterrain.Erosion.Result.SKIPPED : SableCompat.lastErosionResult(sableBody);
+    }
+
     /** Client: engine RPM fraction 0..1 between idle and the limiter, for the drivetrain-derived engine
      * sound (MINECRAFT-401). */
     public double clientEngineRpmFraction() {

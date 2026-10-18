@@ -34,6 +34,21 @@ final class SableCompat {
         return ((SableCarBody) body).lastSlipSpeed();
     }
 
+    /** The real slip speed/load/{@code Erosion.Result} the production tick last actually passed to and
+     * got back from {@code SlipReporter.report} (MINECRAFT-401 review, round 4) -- see
+     * {@link SableCarBody#lastErosionResult()}. */
+    static double lastErosionReportSlipSpeed(Object body) {
+        return ((SableCarBody) body).lastErosionReportSlipSpeed();
+    }
+
+    static double lastErosionReportLoadKg(Object body) {
+        return ((SableCarBody) body).lastErosionReportLoadKg();
+    }
+
+    static io.github.brooswitminecraft.dynamicterrain.Erosion.Result lastErosionResult(Object body) {
+        return ((SableCarBody) body).lastErosionResult();
+    }
+
     /** Engine RPM implied by the drivetrain this tick (MINECRAFT-401). */
     static double engineRpm(Object body) {
         return ((SableCarBody) body).engineRpm();

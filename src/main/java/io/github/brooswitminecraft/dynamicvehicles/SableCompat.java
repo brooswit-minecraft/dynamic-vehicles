@@ -26,12 +26,22 @@ final class SableCompat {
         return ((SableCarBody) body).orientationF();
     }
 
-    static String describe(Object body) {
-        return ((SableCarBody) body).describe();
+    static String describe(Object body, CarPhysics.Gear gear, double throttle) {
+        return ((SableCarBody) body).describe(gear, throttle);
     }
 
     static double slip(Object body) {
         return ((SableCarBody) body).lastSlipSpeed();
+    }
+
+    /** Engine RPM implied by the drivetrain this tick (MINECRAFT-401). */
+    static double engineRpm(Object body) {
+        return ((SableCarBody) body).engineRpm();
+    }
+
+    /** Automatic mode's own currently held 0-based gear index, regardless of which gear is selected. */
+    static int automaticGearIndex(Object body) {
+        return ((SableCarBody) body).automaticGearIndex();
     }
 
     static double speed(Object body) {

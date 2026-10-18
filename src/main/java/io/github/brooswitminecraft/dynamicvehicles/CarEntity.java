@@ -67,6 +67,11 @@ public class CarEntity extends Entity {
             net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
     private static final net.minecraft.network.syncher.EntityDataAccessor<Float> DATA_SLIP =
             net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
+    /** MINECRAFT-401: engine RPM fraction 0..1 between {@link DrivetrainMath#IDLE_RPM} and
+     * {@link DrivetrainMath#LIMITER_RPM}, so the client's drivetrain-derived engine sound hears actual
+     * manual/automatic shifts instead of only road speed. */
+    private static final net.minecraft.network.syncher.EntityDataAccessor<Float> DATA_RPM =
+            net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
     /** Per-wheel suspension travel, steer angle and spin rate (MINECRAFT-122), packed by {@link WheelSync}. */
     private static final net.minecraft.network.syncher.EntityDataAccessor<CompoundTag> DATA_WHEELS =
             net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.COMPOUND_TAG);
@@ -187,6 +192,7 @@ public class CarEntity extends Entity {
         builder.define(DATA_LIGHTS, (byte) 0);
         builder.define(DATA_RADIO_URL, "");
         builder.define(DATA_SLIP, 0.0f);
+        builder.define(DATA_RPM, 0.0f);
         builder.define(DATA_WHEELS, new CompoundTag());
     }
 
@@ -278,6 +284,12 @@ public class CarEntity extends Entity {
         return entityData.get(DATA_SLIP);
     }
 
+    /** Client: engine RPM fraction 0..1 between idle and the limiter, for the drivetrain-derived engine
+     * sound (MINECRAFT-401). */
+    public double clientEngineRpmFraction() {
+        return entityData.get(DATA_RPM);
+    }
+
     /** Server: publish every wheel's suspension travel (m), steer angle (rad) and spin rate (rad/s). */
     void publishWheelState(double[] travel, double[] steerAngle, double[] spin) {
         entityData.set(DATA_WHEELS, packWheels(WheelSync.encode(travel, steerAngle, spin)));
@@ -333,14 +345,19 @@ public class CarEntity extends Entity {
     }
 
     /** Server: publish what the sound system needs to hear on every client. */
-    void publishSoundState(double throttle, double slipSpeed) {
+    void publishSoundState(double throttle, double slipSpeed, double engineRpm) {
         float t = (float) Math.max(0.0, Math.min(1.0, throttle));
         float s = (float) CarSoundMath.slipLevel(slipSpeed);
+        float r = (float) Math.max(0.0, Math.min(1.0,
+                (engineRpm - DrivetrainMath.IDLE_RPM) / (DrivetrainMath.LIMITER_RPM - DrivetrainMath.IDLE_RPM)));
         if (Math.abs(entityData.get(DATA_THROTTLE) - t) > 0.05f) {
             entityData.set(DATA_THROTTLE, t);
         }
         if (Math.abs(entityData.get(DATA_SLIP) - s) > 0.05f) {
             entityData.set(DATA_SLIP, s);
+        }
+        if (Math.abs(entityData.get(DATA_RPM) - r) > 0.02f) {
+            entityData.set(DATA_RPM, r);
         }
     }
 
@@ -367,7 +384,7 @@ public class CarEntity extends Entity {
     /**
      * Server: the rider pressed the explicit reverse-gear input (MINECRAFT-228: keyboard or gamepad, sent
      * by {@link GearTogglePayload}). Toggles between reverse and the default forward gear -- keyboard and
-     * gamepad never need to pick a specific one of the six forward gears, only whether they're reversing --
+     * gamepad never need to pick a specific manual gear or automatic, only whether they're reversing --
      * and never anything the brake alone can trigger: see {@link CarPhysics.Gear} for the invariant this
      * protects.
      */
@@ -379,7 +396,10 @@ public class CarEntity extends Entity {
     /** Server: selects one state from the explicit MINECRAFT-228 gear interface. */
     String selectGear(CarPhysics.Gear selected) {
         gear = selected;
-        return selected == CarPhysics.Gear.REVERSE ? "reverse" : selected == CarPhysics.Gear.NEUTRAL ? "neutral" : selected.name().toLowerCase(java.util.Locale.ROOT);
+        return selected == CarPhysics.Gear.REVERSE ? "reverse"
+                : selected == CarPhysics.Gear.NEUTRAL ? "neutral"
+                : selected == CarPhysics.Gear.AUTOMATIC ? "automatic"
+                : selected.name().toLowerCase(java.util.Locale.ROOT);
     }
 
     /**
@@ -1052,11 +1072,12 @@ public class CarEntity extends Entity {
             SableCompat.tick(sableBody, this, throttle, steer, handbrake, gear, DT);
             SableCompat.syncEntity(sableBody, this);
             publishWheelState(SableCompat.wheelTravel(sableBody), SableCompat.wheelSteerAngles(sableBody), SableCompat.wheelSpinRates(sableBody));
-            publishSoundState(Math.abs(throttle), SableCompat.slip(sableBody) + (handbrake || (throttle < 0 && SableCompat.speed(sableBody) > 8.0) ? 2.0 : 0.0));
+            publishSoundState(Math.abs(throttle), SableCompat.slip(sableBody) + (handbrake || (throttle < 0 && SableCompat.speed(sableBody) > 8.0) ? 2.0 : 0.0),
+                    SableCompat.engineRpm(sableBody));
             emitEffects(throttle, SableCompat.speed(sableBody), SableCompat.slip(sableBody));
             checkImpact(SableCompat.speed(sableBody));
             if (tickCount % 20 == 0) {
-                DynamicVehiclesMod.LOGGER.debug("car {} {}", getUUID(), SableCompat.describe(sableBody));
+                DynamicVehiclesMod.LOGGER.debug("car {} {}", getUUID(), SableCompat.describe(sableBody, gear, throttle));
             }
         } catch (RuntimeException dead) {
             // Sable released the physics body under us (its handle is null). Drop it so the next tick builds a fresh one

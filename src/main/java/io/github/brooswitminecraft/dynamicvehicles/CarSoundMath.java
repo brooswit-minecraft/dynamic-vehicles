@@ -11,11 +11,18 @@ public final class CarSoundMath {
         return Math.max(0.0, Math.min(1.0, v));
     }
 
-    /** Volumes of the idle, mid and high engine loops at a speed (m/s), cross-faded so one or two are audible. */
-    public static double[] engineMix(double speed) {
-        double idle = clamp01(1.0 - speed / 7.0);
-        double mid = clamp01(speed / 4.0) * clamp01(1.0 - Math.max(0.0, speed - 12.0) / 12.0);
-        double high = clamp01((speed - 13.0) / 12.0);
+    /**
+     * Volumes of the idle, mid and high engine loops from the drivetrain's own engine RPM fraction (0..1
+     * between idle and the limiter -- {@link CarEntity#clientEngineRpmFraction()}), cross-faded so one or
+     * two are audible. MINECRAFT-401: replaces the synthetic road-speed bands this used to read -- a
+     * manual shift now moves the RPM fraction (and so this mix) immediately, at the moment the ratio
+     * actually changes, rather than only as road speed itself climbs.
+     */
+    public static double[] engineMix(double rpmFraction) {
+        double r = clamp01(rpmFraction);
+        double idle = clamp01(1.0 - r / 0.3);
+        double mid = clamp01(r / 0.2) * clamp01(1.0 - Math.max(0.0, r - 0.75) / 0.25);
+        double high = clamp01((r - 0.8) / 0.2);
         return new double[] {idle, mid, high};
     }
 
@@ -32,26 +39,6 @@ public final class CarSoundMath {
         return rev + Math.max(-step, Math.min(step, delta));
     }
 
-    /** Speed (m/s) each simulated gear tops out at before the next one takes over. */
-    private static final double[] GEAR_BREAKS = {0.0, 5.0, 10.0, 16.0, 23.0, 31.0, Double.MAX_VALUE};
-
-    /**
-     * Gear-like pitch stepping, as a multiplier layered over the existing speed/throttle cross-fade:
-     * climbs through a gear band as speed rises, then drops back down at the shift point into the next
-     * gear, instead of climbing smoothly and unendingly with speed.
-     */
-    public static double gearPitch(double speed) {
-        double s = Math.max(0.0, speed);
-        int gear = 0;
-        while (gear < GEAR_BREAKS.length - 2 && s >= GEAR_BREAKS[gear + 1]) {
-            gear++;
-        }
-        double lo = GEAR_BREAKS[gear];
-        double hi = Math.min(GEAR_BREAKS[gear + 1], lo + 40.0);
-        double within = clamp01((s - lo) / (hi - lo));
-        return 0.88 + 0.26 * within;
-    }
-
     /**
      * 0..1: how hard the engine is straining -- throttle held down without the speed to show for it yet
      * (climbing, towing, or just flooring it from a stop), which is where a real engine note deepens and
@@ -63,12 +50,17 @@ public final class CarSoundMath {
         return throttle * unmet;
     }
 
-    /** Engine pitch: rises with speed, steps through gears, chases the throttle via the smoothed rev
-     * value instead of lagging behind road speed, and dips slightly under load (a straining engine's
-     * note drops before it catches back up). */
-    public static double enginePitch(double speed, double rev, double load) {
-        double base = 0.8 + 0.5 * clamp01(speed / 32.0) + 0.2 * clamp01(rev);
-        return base * gearPitch(speed) - 0.08 * clamp01(load);
+    /**
+     * Engine pitch from the drivetrain's own RPM fraction (MINECRAFT-401): rises from idle to the limiter,
+     * chases the throttle via the smoothed rev value for an immediate blip before RPM itself catches up,
+     * and dips slightly under load (a straining engine's note drops before it catches back up). A manual
+     * shift or an automatic upshift/downshift moves {@code rpmFraction} directly -- there is no separate
+     * gear-band stepping layered on top of this the way the removed speed-based {@code gearPitch} needed,
+     * because RPM already carries the shift.
+     */
+    public static double enginePitch(double rpmFraction, double rev, double load) {
+        double base = 0.78 + 0.95 * clamp01(rpmFraction) + 0.12 * clamp01(rev);
+        return base - 0.08 * clamp01(load);
     }
 
     /** Overall engine loudness: louder under throttle, and louder still under load (straining). */

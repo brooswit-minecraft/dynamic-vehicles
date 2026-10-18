@@ -13,21 +13,36 @@ public final class CarPhysics {
     private CarPhysics() {}
 
     /**
-     * The drivetrain's explicit gear (MINECRAFT-228): which direction the throttle is allowed to drive the
-     * car from a standstill. The owner's real shifter is six forward gears plus reverse (6+R), so the type
-     * names all of them -- {@code D1}..{@code D6} -- rather than a single "forward", so a future caller
-     * deriving gear from physical shifter hardware can address any of the six directly without reshaping
-     * this type. Keyboard and gamepad only ever select {@link #REVERSE} or {@link #DEFAULT_FORWARD} today;
-     * nothing yet gives the six forward gears different ratios (see the PR description for that proposal),
-     * so which forward gear is selected has no physics effect yet -- the Sable car only distinguishes
-     * {@link #REVERSE} from the rest. Braking is never gear-gated -- only acceleration away from zero is -- so the hard
-     * invariant this buys is simple: with a forward gear or {@link #NEUTRAL} selected, speed never goes
-     * negative; with {@link #REVERSE} selected, it never goes positive.
+     * The drivetrain's explicit gear (MINECRAFT-228, MINECRAFT-401): which direction the throttle is
+     * allowed to drive the car from a standstill, and (for a forward gear) at what ratio. The owner's real
+     * shifter has five manual forward positions, a sixth position that selects {@link #AUTOMATIC} instead
+     * of a sixth manual ratio, and reverse -- so the type names {@code D1}..{@code D5} individually rather
+     * than a single "forward", letting a caller deriving gear from physical shifter hardware address any
+     * manual ratio directly. Keyboard and gamepad only ever select {@link #REVERSE} or
+     * {@link #DEFAULT_FORWARD} today; {@link #AUTOMATIC} is reached only through the physical shifter's
+     * sixth position (see {@link WheelMapping#shifterGear}). Braking is never gear-gated -- only
+     * acceleration away from zero is -- so the hard invariant this buys is simple: with a forward gear,
+     * {@link #AUTOMATIC} or {@link #NEUTRAL} selected, speed never goes negative; with {@link #REVERSE}
+     * selected, it never goes positive.
      */
     public enum Gear {
-        REVERSE, NEUTRAL, D1, D2, D3, D4, D5, D6;
+        REVERSE, NEUTRAL, D1, D2, D3, D4, D5, AUTOMATIC;
 
         /** Keyboard/gamepad's single forward selection; see the class javadoc for why D1 is as good as any. */
         public static final Gear DEFAULT_FORWARD = D1;
+
+        /** 0-based index into {@link DrivetrainMath#GEAR_RATIOS} for a manual forward gear, or -1 for
+         * {@link #REVERSE}, {@link #NEUTRAL} or {@link #AUTOMATIC} (whose own effective ratio comes from
+         * elsewhere -- the automatic shift logic, or the fixed reverse ratio). */
+        public int manualIndex() {
+            return switch (this) {
+                case D1 -> 0;
+                case D2 -> 1;
+                case D3 -> 2;
+                case D4 -> 3;
+                case D5 -> 4;
+                default -> -1;
+            };
+        }
     }
 }

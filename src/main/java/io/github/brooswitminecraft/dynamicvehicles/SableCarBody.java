@@ -51,6 +51,15 @@ final class SableCarBody {
     // this state into it would re-entangle the tick-dt-evaluated reporting contract with a value that is
     // itself integrated sub-step by sub-step, which is exactly what that contract exists to avoid.
     private final double[] wheelSpin;
+    // Drivetrain state (MINECRAFT-401), persisted tick to tick like wheelSpin above. automaticGearIndex is
+    // only ever advanced while gear == AUTOMATIC (see tick()'s own call to DrivetrainMath.automaticGearIndex);
+    // it otherwise holds whatever it last was, so re-selecting AUTOMATIC resumes from a sensible gear
+    // instead of always restarting at D1. engineRpm is read by SableCompat for the client-facing sound/debug
+    // telemetry the ticket asks for; both are derived once per tick, not per sub-step, from the SAME
+    // wheelSpin snapshot the sub-step loop below starts from -- one tick's lag behind the spin the loop
+    // itself produces, the same lag every other "fixed for the whole tick" value in this method already has.
+    private int automaticGearIndex;
+    private double engineRpm = DrivetrainMath.IDLE_RPM;
     // Per-wheel values published to clients for rendering (MINECRAFT-122). Airborne/zero-load/raycast-miss
     // behaviour differs per value, each deliberate:
     //  - suspensionTravel is replaced wholesale every tick from pass 1's own compressions[] (the single
@@ -130,6 +139,37 @@ final class SableCarBody {
         Vector3d down = orientation.transform(new Vector3d(0, -1, 0));
 
         Vector3d carForward = orientation.transform(new Vector3d(0, 0, 1));
+
+        // Drivetrain (MINECRAFT-401): resolve the gear ratio actually engaged this tick, once, from the
+        // driven wheels' own spin as it stood at the end of the LAST tick (wheelSpin is only updated inside
+        // the sub-step loop below) -- see the field's own comment for why that one-tick lag is acceptable.
+        // All four wheels are driven (DRIVE_FORCE's own comment: "per wheel, all-wheel drive"), so the
+        // average of their magnitudes is the drivetrain's own input speed; averaging rather than picking one
+        // wheel keeps a single wheel's momentary wheelspin from single-handedly forcing an automatic shift.
+        int wheelCountForDrivetrain = spec.mounts().length;
+        double drivenWheelSpin = 0.0;
+        for (int w = 0; w < wheelCountForDrivetrain; w++) {
+            drivenWheelSpin += Math.abs(wheelSpin[w]);
+        }
+        drivenWheelSpin /= wheelCountForDrivetrain;
+        double gearRatio;
+        if (gear == CarPhysics.Gear.NEUTRAL) {
+            gearRatio = 0.0;
+            engineRpm = DrivetrainMath.freeRevRpm(throttle);
+        } else if (gear == CarPhysics.Gear.REVERSE) {
+            gearRatio = DrivetrainMath.REVERSE_RATIO;
+            engineRpm = DrivetrainMath.engineRpm(drivenWheelSpin, gearRatio);
+        } else {
+            if (gear == CarPhysics.Gear.AUTOMATIC) {
+                automaticGearIndex = DrivetrainMath.automaticGearIndex(automaticGearIndex, drivenWheelSpin);
+                gearRatio = DrivetrainMath.ratioFor(automaticGearIndex);
+            } else {
+                gearRatio = DrivetrainMath.ratioFor(gear.manualIndex());
+            }
+            engineRpm = DrivetrainMath.engineRpm(drivenWheelSpin, gearRatio);
+        }
+        double driveForceMultiplier = DrivetrainMath.forceMultiplier(gearRatio);
+
         boolean touching = false;
         double slipThisTick = 0.0;
         double spinSlipThisTick = 0.0;
@@ -331,7 +371,7 @@ final class SableCarBody {
 
                 // Accelerator direction follows the selected gear, and the brake always just brakes --
                 // see GearDrive's own javadoc (MINECRAFT-382).
-                double drive = GearDrive.drive(throttle, forwardSpeed, gear, DRIVE_FORCE, REVERSE_FORCE, spec.forceScale(), spec.maxSpeed());
+                double drive = GearDrive.drive(throttle, forwardSpeed, gear, driveForceMultiplier, DRIVE_FORCE, REVERSE_FORCE, spec.forceScale(), spec.maxSpeed());
                 double brake = GearDrive.brake(throttle, forwardSpeed, BRAKE_FORCE, spec.forceScale());
                 double lateralScale = 1.0;
                 double brakeGain = 1.0;
@@ -365,7 +405,7 @@ final class SableCarBody {
                     double[] partnerMount = spec.mounts()[partner];
                     boolean left = mount[0] < 0.0;
                     double partnerDrive = TorqueDistribution.distribute(
-                            GearDrive.drive(throttle, forwardSpeed, gear, DRIVE_FORCE, REVERSE_FORCE, spec.forceScale(), spec.maxSpeed()),
+                            GearDrive.drive(throttle, forwardSpeed, gear, driveForceMultiplier, DRIVE_FORCE, REVERSE_FORCE, spec.forceScale(), spec.maxSpeed()),
                             partnerMount[2] > 0.0, partnerMount[0] < 0.0, tuning, steer);
                     LimitedSlipDifferential.DrivePair axleDrive = left
                             ? LimitedSlipDifferential.distribute(drive, partnerDrive,
@@ -596,6 +636,18 @@ final class SableCarBody {
         return wheelSpin.clone();
     }
 
+    /** Engine RPM implied by the drivetrain this tick (MINECRAFT-401): idle in NEUTRAL scaled by throttle,
+     * otherwise {@link DrivetrainMath#engineRpm} through whichever ratio is actually engaged. */
+    double engineRpm() {
+        return engineRpm;
+    }
+
+    /** 0-based index into {@link DrivetrainMath#GEAR_RATIOS} that automatic mode is currently holding,
+     * regardless of whether {@link CarPhysics.Gear#AUTOMATIC} is the gear actually selected right now. */
+    int automaticGearIndex() {
+        return automaticGearIndex;
+    }
+
     /** The body's speed, m/s. */
     double speed() {
         return body.getLinearVelocity(new Vector3d()).length();
@@ -609,7 +661,7 @@ final class SableCarBody {
     }
 
     /** Debug summary: height of the body centre above the ground below it, pitch and roll in degrees. */
-    String describe() {
+    String describe(CarPhysics.Gear gear, double throttle) {
         box.updatePose();
         Pose3d pose = new Pose3d(box.getPose());
         Quaterniond q = new Quaterniond(pose.orientation());
@@ -618,7 +670,21 @@ final class SableCarBody {
         double pitch = Math.toDegrees(Math.asin(Math.max(-1, Math.min(1, fwd.y))));
         double roll = Math.toDegrees(Math.atan2(q.transform(new Vector3d(1, 0, 0)).y, up.y));
         Vector3d v = body.getLinearVelocity(new Vector3d());
-        return String.format("body y=%.3f pitch=%.2f roll=%.2f speed=%.2f spinSlip=%.2f",
-                pose.position().y, pitch, roll, v.length(), lastSpinSlip);
+        // MINECRAFT-401: requested mode/gear, the effective gear/ratio it resolves to (AUTOMATIC's own
+        // current pick, or the manual gear itself), engine RPM, throttle, and every wheel's own
+        // spin/linear/slip so a Trophy Truck playtest report can distinguish exactly what the ticket asked
+        // for -- see the class javadoc for which values are "fixed for the whole tick" versus live.
+        String effective = gear == CarPhysics.Gear.AUTOMATIC
+                ? "D" + (automaticGearIndex + 1) + "(auto)"
+                : gear.name();
+        StringBuilder wheels = new StringBuilder();
+        for (int wheel = 0; wheel < wheelSpin.length; wheel++) {
+            double wheelLinear = wheelSpin[wheel] * spec.wheelRadius();
+            wheels.append(String.format(" w%d(spin=%.2f linear=%.2f)", wheel, wheelSpin[wheel], wheelLinear));
+        }
+        return String.format("body y=%.3f pitch=%.2f roll=%.2f speed=%.2f spinSlip=%.2f slip=%.2f "
+                + "requestedGear=%s effectiveGear=%s rpm=%.0f throttle=%.2f%s",
+                pose.position().y, pitch, roll, v.length(), lastSpinSlip, lastSlipSpeed,
+                gear.name(), effective, engineRpm, throttle, wheels);
     }
 }

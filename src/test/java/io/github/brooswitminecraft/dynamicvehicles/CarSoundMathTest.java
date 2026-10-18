@@ -7,22 +7,22 @@ import org.junit.jupiter.api.Test;
 
 class CarSoundMathTest {
     @Test
-    void idleLoopDominatesAtRestAndHighLoopAtSpeed() {
-        double[] stopped = CarSoundMath.engineMix(0);
-        assertEquals(1.0, stopped[0], 1e-9);
-        assertEquals(0.0, stopped[2], 1e-9);
-        double[] fast = CarSoundMath.engineMix(28);
-        assertEquals(0.0, fast[0], 1e-9);
-        assertTrue(fast[2] > fast[1]);
-        assertTrue(CarSoundMath.engineMix(12)[1] > 0.9);
+    void idleLoopDominatesAtIdleAndHighLoopNearTheLimiter() {
+        double[] idle = CarSoundMath.engineMix(0.0);
+        assertEquals(1.0, idle[0], 1e-9);
+        assertEquals(0.0, idle[2], 1e-9);
+        double[] limiter = CarSoundMath.engineMix(1.0);
+        assertEquals(0.0, limiter[0], 1e-9);
+        assertTrue(limiter[2] > limiter[1]);
+        assertTrue(CarSoundMath.engineMix(0.4)[1] > 0.9);
     }
 
     @Test
     void theEngineCrossFadeNeverGoesSilentOrLoud() {
-        for (double s = 0; s <= 40; s += 0.5) {
-            double[] mix = CarSoundMath.engineMix(s);
+        for (double r = 0; r <= 1.0; r += 0.025) {
+            double[] mix = CarSoundMath.engineMix(r);
             double sum = mix[0] + mix[1] + mix[2];
-            assertTrue(sum > 0.4 && sum < 2.1, "speed " + s + " mix sum " + sum);
+            assertTrue(sum > 0.4 && sum < 2.1, "rpmFraction " + r + " mix sum " + sum);
             for (double v : mix) {
                 assertTrue(v >= 0.0 && v <= 1.0);
             }
@@ -30,16 +30,26 @@ class CarSoundMathTest {
     }
 
     @Test
-    void pitchRisesWithSpeedAndRevAndStaysBounded() {
-        assertTrue(CarSoundMath.enginePitch(20, 0, 0) > CarSoundMath.enginePitch(2, 0, 0));
-        assertTrue(CarSoundMath.enginePitch(10, 1, 0) > CarSoundMath.enginePitch(10, 0, 0));
-        assertTrue(CarSoundMath.enginePitch(500, 5, 0) <= 2.0 + 1e-9);
-        assertTrue(CarSoundMath.enginePitch(0, 0, 0) >= 0.5 - 1e-9);
+    void pitchRisesWithRpmFractionAndRevAndStaysBounded() {
+        assertTrue(CarSoundMath.enginePitch(0.8, 0, 0) > CarSoundMath.enginePitch(0.1, 0, 0));
+        assertTrue(CarSoundMath.enginePitch(0.5, 1, 0) > CarSoundMath.enginePitch(0.5, 0, 0));
+        assertTrue(CarSoundMath.enginePitch(1.0, 1, 0) <= 2.0 + 1e-9);
+        assertTrue(CarSoundMath.enginePitch(0.0, 0, 0) >= 0.5 - 1e-9);
+    }
+
+    @Test
+    void aManualOrAutomaticShiftMovesPitchImmediatelyThroughRpmFraction() {
+        // MINECRAFT-401: unlike the removed speed-banded gearPitch, a shift that drops RPM (e.g. an
+        // upshift into a taller gear) must drop the pitch right away -- there is no separate per-gear
+        // band to re-climb first.
+        double beforeUpshift = CarSoundMath.enginePitch(0.9, 0, 0);
+        double afterUpshift = CarSoundMath.enginePitch(0.3, 0, 0);
+        assertTrue(afterUpshift < beforeUpshift);
     }
 
     @Test
     void loadDeepensPitchAndLoudensVolume() {
-        assertTrue(CarSoundMath.enginePitch(2, 1, 1) < CarSoundMath.enginePitch(2, 1, 0));
+        assertTrue(CarSoundMath.enginePitch(0.3, 1, 1) < CarSoundMath.enginePitch(0.3, 1, 0));
         assertTrue(CarSoundMath.engineVolume(1, 1) > CarSoundMath.engineVolume(1, 0));
     }
 
@@ -63,18 +73,6 @@ class CarSoundMathTest {
         }
         assertEquals(1.0, rev, 1e-9);
         assertTrue(rev >= 0.0 && rev <= 1.0);
-    }
-
-    @Test
-    void gearPitchStepsUpThenDropsAtEachShiftPoint() {
-        double justBeforeShift = CarSoundMath.gearPitch(4.9);
-        double justAfterShift = CarSoundMath.gearPitch(5.0);
-        assertTrue(justAfterShift < justBeforeShift, "pitch should drop back down at the shift point");
-        assertTrue(CarSoundMath.gearPitch(9.9) > CarSoundMath.gearPitch(5.0));
-        for (double s = 0; s <= 40; s += 0.25) {
-            double p = CarSoundMath.gearPitch(s);
-            assertTrue(p >= 0.85 && p <= 1.2, "speed " + s + " gear pitch " + p);
-        }
     }
 
     @Test

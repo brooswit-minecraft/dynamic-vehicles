@@ -1,5 +1,6 @@
 package io.github.brooswitminecraft.dynamicvehicles;
 
+import io.github.brooswitminecraft.dynamicterrain.SlipMath;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
@@ -88,7 +89,20 @@ public final class CarDrivetrainGameTests {
      * snapshot that could land mid-cut: coupling the limiter to the wheel's own spin state means torque
      * legitimately oscillates near the limiter rather than holding it steady -- a real low-gear, low-grip
      * launch's own "fighting the limiter" behavior, now damped by the engine's own modeled rotational
-     * inertia ({@link DrivetrainMath#smoothedRpm}) rather than snapping on/off every tick. */
+     * inertia ({@link DrivetrainMath#smoothedRpm}) rather than snapping on/off every tick.
+     *
+     * <p>Review, round 3: &gt; 0.3 m/s alone is SlipReporter's own GATE, not proof erosion itself would do
+     * anything with it -- the real downstream decision is {@code dynamic-terrain}'s own
+     * {@link SlipMath#amount}, a pure function of slip speed and wheel load this test can call directly
+     * with the peak slip actually observed (and the car's own real quarter-mass load, matching
+     * {@code SableCarBody}'s {@code wearSlipForce[wheel] / GRAVITY} that production code passes). A merely
+     * gate-clearing slip that still rounds to a negligible erosion amount would not be the evidence the
+     * ticket means by "must still erode eligible ground" -- asserting on the actual amount, not just the
+     * gate, is. Observing the resulting IN-WORLD block change directly is not attempted here: by design
+     * (see {@code Erosion.erode}'s own probability roll against a block's resistance) a single report has
+     * well under a 1% chance of actually changing a stone block, so waiting for one in a short, deterministic
+     * window would make this test flaky for the wrong reason -- the pure {@code amount} this test does
+     * check is the one piece of that pipeline that is NOT probabilistic. */
     @GameTest(template = "settlement_test", timeoutTicks = 140)
     public static void limiterCapsWheelspinInsteadOfLettingItGrowWithoutBoundAgainstAWall(GameTestHelper helper) {
         helper.setBlock(new BlockPos(5, 2, 5), Blocks.STONE);
@@ -130,6 +144,12 @@ public final class CarDrivetrainGameTests {
             helper.assertTrue(worstSlipHolder[0] > 0.3,
                     "wheelspin against the wall never produced a large RAW slip speed across the whole window (SlipReporter's own erosion threshold): peak="
                             + worstSlipHolder[0] + " m/s");
+            // The actual downstream erosion decision, not just SlipReporter's own gate: a quarter of the
+            // CAR's own mass (1200 kg / 4), matching what SableCarBody really passes as wheelLoadKg.
+            double erosionAmount = SlipMath.amount(worstSlipHolder[0], 300.0);
+            helper.assertTrue(erosionAmount > 0.0005,
+                    "the peak slip speed observed would still round to a negligible erosion amount, not real erosion-worthy wheelspin: slip="
+                            + worstSlipHolder[0] + " m/s, amount=" + erosionAmount);
             helper.succeed();
         });
     }
@@ -209,8 +229,17 @@ public final class CarDrivetrainGameTests {
      * in MINECRAFT-401's own drivetrain code). Treat a failure here with "peak displacement=0.0" and a
      * matching "Aborting entity get for abnormally large AABB" in the log the same way as the project's
      * other known-flaky test (the Builder corner-post relocation GameTest): a pre-existing engine issue to
-     * track separately, not a MINECRAFT-401 regression. */
-    @GameTest(template = "settlement_test", timeoutTicks = 160)
+     * track separately, not a MINECRAFT-401 regression.
+     *
+     * <p>Review, round 3: since the malformed AABB observed spans this test's own coordinates together
+     * with an unrelated, concurrently-running test's, this now runs in its own {@code batch} -- GameTest
+     * batches run one at a time (sequentially), while every test WITHIN a batch runs concurrently with the
+     * others in it (see the other tests in this file, which share {@code defaultBatch} and do run at the
+     * same time). Isolating this one removes any other test's car/structure from existing at the same
+     * moment this body is ticking, which is the condition the cross-structure query needs to misfire in
+     * the first place -- expected to make this specific flake materially less likely, though it cannot by
+     * itself prove the upstream Sable bug gone, since nothing here can fix Sable's own broad-phase query. */
+    @GameTest(template = "settlement_test", timeoutTicks = 160, batch = "carDrivetrainLedgeIsolated")
     public static void carRecoversCleanlyAfterDrivingOffALedgeAndLanding(GameTestHelper helper) {
         // Starts well inside the structure (not at its dz=0 edge, where a test region boundary could
         // interfere with the body) like every other test in this file.
@@ -289,7 +318,7 @@ public final class CarDrivetrainGameTests {
      * (no instantaneous flip -- the chassis still has to coast down first) but MUST have gone negative by
      * well into the window (the opposing-direction force actually overcomes the roll eventually). The
      * mirror does the same starting in REVERSE and switching to D1. */
-    @GameTest(template = "settlement_test", timeoutTicks = 180)
+    @GameTest(template = "settlement_test", timeoutTicks = 340)
     public static void opposingDirectionThrottleDecelerateAndReverseInBothMirroredDirections(GameTestHelper helper) {
         helper.setBlock(new BlockPos(5, 2, 5), Blocks.STONE);
         helper.setBlock(new BlockPos(5, 3, 5), Blocks.AIR);
@@ -328,7 +357,15 @@ public final class CarDrivetrainGameTests {
                     helper.assertTrue(forwardVelocity(reverseFirst) < 0.0,
                             "reverse-first car's velocity flipped sign on the very first tick after switching to D1 -- an instantaneous flip, not a traction-limited one: "
                                     + forwardVelocity(reverseFirst));
-                    helper.runAfterDelay(100L, () -> {
+                    // Review, round 3: a car's own forward wheelspin before the switch leaves the engine's
+                    // smoothed RPM (DrivetrainMath.smoothedRpm) near the limiter regardless of which
+                    // direction it is now driven in -- REVERSE's own force is throttled by the same
+                    // limiterTorqueFactor just like a forward gear's is, so the opposing force starts weak
+                    // and only ramps up as the smoothed RPM decays (bounded at MAX_RPM_CHANGE_PER_TICK per
+                    // tick). That decay plus REVERSE_FORCE's comparatively modest magnitude (never scaled
+                    // by a gear ratio multiplier the way forward gears are) genuinely needs more real time
+                    // to reverse a multi-m/s roll than the round-2 version of this test allowed for.
+                    helper.runAfterDelay(250L, () -> {
                         helper.assertTrue(forwardVelocity(forwardFirst) < 0.0,
                                 "forward-first car never actually reversed direction under sustained opposing throttle: "
                                         + forwardVelocity(forwardFirst));
@@ -350,30 +387,46 @@ public final class CarDrivetrainGameTests {
         return v.z * 20.0;
     }
 
-    /** Review, round 2: "tick/substep consistency" through the production path, not only
+    /** Review, round 2 &amp; 3: "tick/substep consistency" through the production path, not only
      * {@code WheelSubStepperTest}'s pure-function coverage of the same formula. Drives the identical
      * scenario at {@code wheelSubSteps = 1} and {@code wheelSubSteps = 4} and asserts the reached speed is
      * comparable -- sub-stepping is documented (see {@code SableCarBody.tick}'s own sub-stepping note) to
      * change the friction circle's lateral behavior measurably (~10-15%) but is not meant to change
-     * straight-line longitudinal acceleration by anything like that much. The config value is a global,
-     * live-reloadable setting shared with every other car in this batch, so this restores it immediately
-     * after reading the second car's result -- before any assertion that could abort early -- rather than
-     * leaving it mutated for longer than the minimum two 30-tick windows this needs. */
-    @GameTest(template = "settlement_test", timeoutTicks = 100)
+     * straight-line longitudinal acceleration by anything like that much.
+     *
+     * <p>{@code CarConfig.WHEEL_SUB_STEPS} is a global, live-reloadable setting, not something this test
+     * can scope to its own car -- review round 3 flagged both halves of what that demands: (1) this now
+     * runs in its OWN {@code batch} (see the ledge test's own javadoc above for what GameTest batches
+     * guarantee: one batch runs at a time, so nothing else is ticking a car while this one mutates the
+     * global value), and (2) restoration is now GUARANTEED, not merely placed before the one assertion
+     * that used to be able to throw past it -- every risky section (every {@code assertTrue} on a mock
+     * player boarding, which this test cannot control) is wrapped so a thrown assertion still restores
+     * {@code originalSubSteps} before propagating, rather than leaving the global mutated into whatever
+     * batch happens to run next. */
+    @GameTest(template = "settlement_test", timeoutTicks = 100, batch = "carDrivetrainSubStepIsolated")
     public static void wheelSubStepCountDoesNotMateriallyChangeReachedSpeedAfterAFixedWindow(GameTestHelper helper) {
         int originalSubSteps = CarConfig.WHEEL_SUB_STEPS.get();
         helper.setBlock(new BlockPos(5, 2, 5), Blocks.STONE);
         helper.setBlock(new BlockPos(5, 3, 5), Blocks.AIR);
         helper.setBlock(new BlockPos(5, 2, 15), Blocks.STONE);
         helper.setBlock(new BlockPos(5, 3, 15), Blocks.AIR);
-        CarConfig.WHEEL_SUB_STEPS.set(1);
-        CarEntity carOneStep = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
-        carOneStep.setYRot(0.0f);
-        carOneStep.selectGear(CarPhysics.Gear.D1);
-        Player riderOneStep = helper.makeMockPlayer(GameType.CREATIVE);
-        helper.assertTrue(riderOneStep.startRiding(carOneStep), "mock player failed to board the 1-substep car");
-        riderOneStep.zza = 1.0f;
-        helper.runAfterDelay(30L, () -> {
+        try {
+            CarConfig.WHEEL_SUB_STEPS.set(1);
+            CarEntity carOneStep = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
+            carOneStep.setYRot(0.0f);
+            carOneStep.selectGear(CarPhysics.Gear.D1);
+            Player riderOneStep = helper.makeMockPlayer(GameType.CREATIVE);
+            helper.assertTrue(riderOneStep.startRiding(carOneStep), "mock player failed to board the 1-substep car");
+            riderOneStep.zza = 1.0f;
+            helper.runAfterDelay(30L, () -> runSecondLegAndRestoreOnAnyFailure(helper, originalSubSteps, carOneStep));
+        } catch (RuntimeException e) {
+            CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
+            throw e;
+        }
+    }
+
+    private static void runSecondLegAndRestoreOnAnyFailure(GameTestHelper helper, int originalSubSteps, CarEntity carOneStep) {
+        try {
             double speedAtOneStep = carOneStep.debugSpeed();
             CarConfig.WHEEL_SUB_STEPS.set(4);
             CarEntity carFourStep = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 15));
@@ -383,16 +436,24 @@ public final class CarDrivetrainGameTests {
             helper.assertTrue(riderFourStep.startRiding(carFourStep), "mock player failed to board the 4-substep car");
             riderFourStep.zza = 1.0f;
             helper.runAfterDelay(30L, () -> {
-                double speedAtFourStep = carFourStep.debugSpeed();
-                CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
-                helper.assertTrue(speedAtOneStep > 0.5 && speedAtFourStep > 0.5,
-                        "test setup invalid -- a car never built real speed: 1-step=" + speedAtOneStep + " 4-step=" + speedAtFourStep);
-                double ratio = speedAtFourStep / speedAtOneStep;
-                helper.assertTrue(ratio > 0.6 && ratio < 1.6,
-                        "wheelSubSteps materially changed the reached speed in straight-line acceleration: 1-step="
-                                + speedAtOneStep + " 4-step=" + speedAtFourStep + " ratio=" + ratio);
-                helper.succeed();
+                try {
+                    double speedAtFourStep = carFourStep.debugSpeed();
+                    CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
+                    helper.assertTrue(speedAtOneStep > 0.5 && speedAtFourStep > 0.5,
+                            "test setup invalid -- a car never built real speed: 1-step=" + speedAtOneStep + " 4-step=" + speedAtFourStep);
+                    double ratio = speedAtFourStep / speedAtOneStep;
+                    helper.assertTrue(ratio > 0.6 && ratio < 1.6,
+                            "wheelSubSteps materially changed the reached speed in straight-line acceleration: 1-step="
+                                    + speedAtOneStep + " 4-step=" + speedAtFourStep + " ratio=" + ratio);
+                    helper.succeed();
+                } catch (RuntimeException e) {
+                    CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
+                    throw e;
+                }
             });
-        });
+        } catch (RuntimeException e) {
+            CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
+            throw e;
+        }
     }
 }

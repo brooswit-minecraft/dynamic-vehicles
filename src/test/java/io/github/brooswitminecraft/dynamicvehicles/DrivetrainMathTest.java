@@ -152,7 +152,7 @@ class DrivetrainMathTest {
     @Test
     void smoothedRpmConvergesToASustainedTargetOverSeveralTicks() {
         double rpm = DrivetrainMath.IDLE_RPM;
-        for (int i = 0; i < 50; i++) {
+        for (int i = 0; i < 200; i++) {
             rpm = DrivetrainMath.smoothedRpm(rpm, DrivetrainMath.LIMITER_RPM);
         }
         assertEquals(DrivetrainMath.LIMITER_RPM, rpm, 1e-9, "a sustained target must eventually be reached exactly");

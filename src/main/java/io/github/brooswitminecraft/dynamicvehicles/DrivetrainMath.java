@@ -22,7 +22,12 @@ public final class DrivetrainMath {
     /** Automatic mode downshifts once the current gear's implied RPM drops below this -- comfortably
      * below {@link #UPSHIFT_RPM} so a steady speed near either threshold does not hunt between gears. */
     public static final double DOWNSHIFT_RPM = 2200.0;
-    /** How far below {@link #LIMITER_RPM} {@link #limiterTorqueFactor} starts tapering torque. */
+    /**
+     * How far below {@link #LIMITER_RPM} {@link #limiterTorqueFactor} starts tapering torque. Must stay
+     * comfortably wider than {@link #MAX_RPM_CHANGE_PER_TICK} crossing it in a single tick -- see that
+     * constant's own javadoc (review, round 3) for why a taper band no wider than one tick's worth of
+     * smoothing is not meaningfully smoothed at all.
+     */
     public static final double LIMITER_TAPER_RPM = 400.0;
     /**
      * Maximum RPM {@link #smoothedRpm} may change by in one tick -- the engine's own rotational inertia
@@ -36,8 +41,24 @@ public final class DrivetrainMath {
      * the driveline between it and the wheel) keeps turning under its own momentum for a while after
      * torque is cut; {@link #smoothedRpm} models exactly that missing inertia, decoupling what the limiter
      * reads from the tire model's own instant snap.
+     * <p>
+     * Review, round 3: the first value chosen here (500) was still too large relative to
+     * {@link #LIMITER_TAPER_RPM} (400) -- a single tick's allowed jump could cross the ENTIRE taper band
+     * in one step, from comfortably under it to fully cut (or the reverse, on the way back up), which is
+     * exactly the on/off behavior this constant exists to prevent; it only looked different from the
+     * un-smoothed version by one tick's delay, not in kind. The fix keeps THIS constant well under
+     * {@link #LIMITER_TAPER_RPM} rather than widening that one to make room: D1's own ratio already means
+     * ordinary driving (not just a wall-pinned burnout) commonly runs with RAW RPM near the limiter at
+     * fairly light throttle (confirmed by production telemetry), so widening the taper band to get the
+     * same multi-tick margin was tried first and rejected -- it visibly slowed D1's ordinary acceleration
+     * enough to flip the sign of the production-path ratio-multiplier regression test
+     * ({@code CarDrivetrainGameTests.d1ReachesAHigherSpeedThanD5OverTheSameShortWindow}), proving the
+     * taper band's WIDTH is not free to grow without changing normal-operation behavior the way its RATE
+     * of crossing is. Keeping this well under {@link #LIMITER_TAPER_RPM} (currently a 4x margin) is
+     * load-bearing: a caller tuning either constant must keep that gap wide enough that crossing the
+     * taper band takes several ticks, not one, without growing the band itself.
      */
-    public static final double MAX_RPM_CHANGE_PER_TICK = 500.0;
+    public static final double MAX_RPM_CHANGE_PER_TICK = 100.0;
 
     private DrivetrainMath() {}
 

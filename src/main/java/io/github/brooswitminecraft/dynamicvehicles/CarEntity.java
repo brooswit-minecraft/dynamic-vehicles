@@ -829,6 +829,11 @@ public class CarEntity extends Entity {
         health = Math.max(0.0f, health - amount);
     }
 
+    /** Server test hook: current health, 0..{@link CarHealth#MAX}. */
+    float health() {
+        return health;
+    }
+
     /** Server: smoke, fire, flip and wreck handling for this tick, then explosion if health ran out. */
     private void tickHealth() {
         if (isRemoved() || !(level() instanceof net.minecraft.server.level.ServerLevel serverLevel)) {
@@ -844,7 +849,22 @@ public class CarEntity extends Entity {
                 // Sable has released the body; no orientation to judge this tick.
             }
         }
-        boolean burning = CarHealth.burning(health) && !isInWater();
+        if (isInWater() && isOnFire()) {
+            // The game's established extinguishing rule: water puts the fire out. Clearing it here
+            // (MINECRAFT-385), rather than only skipping this tick's damage below, stops a leftover
+            // fire-tick count from reigniting burning damage the instant the vehicle leaves the water.
+            clearFire();
+        }
+        // MINECRAFT-385: lava contact and external ignition (a flame arrow, a fire charge, standing in
+        // fire) both reach the car as vanilla's own isOnFire() -- lava ignites it via Entity's own
+        // baseTick()/lavaHurt() before this tick's tickHealth() runs, so lava contact and "is on fire"
+        // are the same damage path here, including from full health, not only the low-health
+        // self-burning CarHealth.burning() already covered damage/explosion/wreck below. Reusing that
+        // single damage() call for both keeps low-health self-burning and external ignition from ever
+        // stacking into double damage on the same tick; vanilla's own lava hurt() call is swallowed by
+        // this class's hurt() override (non-explosion sources fall through to Entity.hurt, a no-op), so
+        // it never adds a second hit on top of this one.
+        boolean burning = (CarHealth.burning(health) || isOnFire()) && !isInWater();
         if (burning) {
             damage(CarHealth.burnDamage(DT));
             setRemainingFireTicks(40);

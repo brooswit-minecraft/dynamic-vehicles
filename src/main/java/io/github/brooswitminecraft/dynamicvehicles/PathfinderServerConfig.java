@@ -16,12 +16,6 @@ import net.neoforged.neoforge.common.ModConfigSpec;
  *   <li>{@code ticksPerLeg} IS genuinely snapshotted: {@code PathfinderAttempts#tryStart} reads
  *       it once into that attempt's own {@code PathfinderAttemptRecord#timeLimitTicks()}, so a
  *       later config change never moves an in-progress deadline.
- *   <li>{@code reachRadius} is read fresh on every single reach check ({@code
- *       PathfinderProgress#onReach}'s {@code reachRadius} parameter) — a change takes effect
- *       immediately, for every in-progress attempt and every already-cached route, by design:
- *       the checkpoint geometry a route caches ({@code PathfinderCheckpoint}) deliberately does
- *       NOT carry its own radius, so this tunable isn't frozen at whatever it was when that
- *       route happened to first generate.
  *   <li>{@code rewardBaseEmeralds}/{@code rewardPerLevelEmeralds} are read at the moment of
  *       payout ({@code PathfinderAttempts#grantReward}), not at attempt start — a level can't
  *       change mid-attempt, so this just means a config change takes effect on the very next
@@ -36,7 +30,6 @@ public final class PathfinderServerConfig {
     public static final ModConfigSpec.IntValue TICKS_PER_LEG;
     public static final ModConfigSpec.IntValue REWARD_BASE_EMERALDS;
     public static final ModConfigSpec.IntValue REWARD_PER_LEVEL_EMERALDS;
-    public static final ModConfigSpec.DoubleValue REACH_RADIUS;
     public static final ModConfigSpec.IntValue COMPLETIONS_TO_ADVANCE;
 
     static {
@@ -54,10 +47,6 @@ public final class PathfinderServerConfig {
                 .comment("Additional emerald reward per level above 1 (so level N pays rewardBaseEmeralds + "
                         + "(N-1) * this).")
                 .defineInRange("rewardPerLevelEmeralds", 16, 0, 1000);
-        REACH_RADIUS = builder
-                .comment("How close (blocks) a player must be to a checkpoint's own position, in its own "
-                        + "dimension, to count as having reached it.")
-                .defineInRange("reachRadius", 3.0, 0.5, 100.0);
         COMPLETIONS_TO_ADVANCE = builder
                 .comment("Successful circuit completions AT a given Pathfinder villager, at its current "
                         + "Pathfinder level, required before that villager's level advances (see "

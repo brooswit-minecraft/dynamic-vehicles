@@ -11,28 +11,21 @@ import java.util.Optional;
  * region exactly one checkpoint ({@code countInRegion == 1}).
  *
  * <p>Pulled out as a seam (rather than hard-coded into {@link
- * PathfinderRouteGenerator}) so the real, terrain-safe placement strategy —
- * adapting {@code delivery.SpawnOffsetPicker}/{@code SettlementFounder} to
- * find safe height and avoid obstructions, per MINECRAFT-379's acceptance
- * criteria #4 — can be swapped in later without changing route/circuit
- * math or {@link PathfinderProgress}.
+ * PathfinderRouteGenerator}) so {@link PathfinderTerrainPlacer} — the real
+ * implementation, which resolves against a real dimension — can be swapped
+ * in without changing route/circuit math or {@link PathfinderProgress}.
+ * MINECRAFT-403: there is no "safe/valid position" concept any more —
+ * terrain accessibility never gates a checkpoint, so {@code place} always
+ * returns a present {@link Optional}; the return type stays {@code
+ * Optional} only for interface stability.
  *
- * <p>Returns {@link Optional#empty()} when no safe/valid position could be
- * resolved (review follow-up: the terrain placer must fail closed, never
- * cache or hand back an unsafe fallback position) — {@link
- * PathfinderRouteGenerator} propagates that as a failed route generation
- * rather than building a route with an invalid checkpoint.
- *
- * <p>{@link #DEFAULT_UNPLACED} is an explicit placeholder: a fixed dummy
- * height/dimension, checkpoints laid out on a circle around the region
- * center (so a multi-checkpoint region at least forms a loop shape rather
- * than stacking every checkpoint on one point). It never fails. It exists
- * only so the checkpoint/progress state machine (identity, ordering,
- * proximity validation, persistence shape) can be built and tested now,
- * independently of the terrain-safe placement decision — it is NOT a real
- * placement strategy and must not be shipped as one; a server-facing
- * wiring step must replace it before any Pathfinder checkpoint is
- * reachable in-game.
+ * <p>{@link #DEFAULT_UNPLACED} is the same deterministic region-center/
+ * circle math as {@link PathfinderTerrainPlacer}, but with a fixed
+ * placeholder dimension/height instead of a real one — useful for tests
+ * exercising the checkpoint/progress state machine (identity, ordering,
+ * chunk-arrival validation, persistence shape) without a real {@code
+ * ServerLevel}. It is not reachable by a real player (its dimension never
+ * matches a real one) and must not be used as a real route's placer.
  */
 @FunctionalInterface
 public interface PathfinderCheckpointPlacer {

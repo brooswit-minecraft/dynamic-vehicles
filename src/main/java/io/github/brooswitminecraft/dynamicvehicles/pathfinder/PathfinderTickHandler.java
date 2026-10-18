@@ -16,8 +16,6 @@ import java.io.IOException;
 import java.util.Optional;
 import java.util.UUID;
 
-import io.github.brooswitminecraft.dynamicvehicles.PathfinderServerConfig;
-
 /**
  * The coarse server timer that evaluates each online player's active Pathfinder attempt against
  * their live position every {@link #EVALUATE_INTERVAL_TICKS} ticks — mirrors {@code
@@ -149,7 +147,7 @@ public final class PathfinderTickHandler {
         String playerDimension = player.level().dimension().location().toString();
         PathfinderPosition playerPosition = new PathfinderPosition(playerDimension, pos.x, pos.y, pos.z);
 
-        boolean advanced = progress.onReach(playerPosition, now, PathfinderServerConfig.REACH_RADIUS.get());
+        boolean advanced = progress.onReach(playerPosition, now);
 
         if (progress.isFinished()) {
             // Review follow-up (round 7): progression credit used to be applied AND persisted to

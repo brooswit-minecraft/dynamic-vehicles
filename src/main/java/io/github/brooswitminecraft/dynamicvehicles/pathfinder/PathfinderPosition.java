@@ -11,8 +11,14 @@ package io.github.brooswitminecraft.dynamicvehicles.pathfinder;
  * PathfinderRegion} identifies which 512x512-block cell a checkpoint is
  * in, but is not itself a reachable point and cannot distinguish two
  * checkpoints that happen to sit in the same region. A checkpoint needs an
- * actual position (this type) plus a reach radius — see {@link
- * PathfinderCheckpoint}.
+ * actual position (this type) — see {@link PathfinderCheckpoint}.
+ *
+ * <p>MINECRAFT-403: arrival is "enters the checkpoint's own Minecraft chunk
+ * (16x16 blocks), in the correct dimension, at any Y" — not a reach-radius
+ * proximity check against a specific block position. {@code y} is kept only
+ * because this type doubles as a representative point for presentation
+ * (map/HUD marker) and as the real teleport target GameTests use; {@link
+ * #sameChunkAs} and arrival checks never read it.
  */
 public record PathfinderPosition(String dimensionId, double x, double y, double z) {
     public PathfinderPosition {
@@ -21,11 +27,13 @@ public record PathfinderPosition(String dimensionId, double x, double y, double 
         }
     }
 
-    public double distanceSquaredTo(PathfinderPosition other) {
-        double dx = x - other.x;
-        double dy = y - other.y;
-        double dz = z - other.z;
-        return dx * dx + dy * dy + dz * dz;
+    /** Same Minecraft chunk (16x16-block cell) on X/Z, correct for negative coordinates. Ignores Y. */
+    public boolean sameChunkAs(PathfinderPosition other) {
+        return chunkCoord(x) == chunkCoord(other.x) && chunkCoord(z) == chunkCoord(other.z);
+    }
+
+    private static int chunkCoord(double blockCoord) {
+        return Math.floorDiv((int) Math.floor(blockCoord), 16);
     }
 
     public boolean sameDimensionAs(PathfinderPosition other) {

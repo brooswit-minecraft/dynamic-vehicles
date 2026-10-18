@@ -30,8 +30,11 @@
   "key.categories.dynamicvehicles": "Dynamic Vehicles",
   "entity.dynamicvehicles.villager.dispatcher": "Dispatcher",
   "entity.minecraft.villager.dynamicvehicles.builder": "Builder",
+  "entity.minecraft.villager.dynamicvehicles.pathfinder": "Pathfinder",
   "block.dynamicvehicles.dispatch_board": "Dispatch Board",
+  "block.dynamicvehicles.route_board": "Route Board",
   "gui.dynamicvehicles.dispatcher.no_offers": "No destinations available right now.",
+  "gui.dynamicvehicles.pathfinder.wrong_dimension": "Wrong dimension for this checkpoint",
   "gauge.dynamicvehicles.danger.safe": "Safe",
   "gauge.dynamicvehicles.danger.low": "Low",
   "gauge.dynamicvehicles.danger.moderate": "Moderate",
@@ -41,5 +44,14 @@
   "message.dynamicvehicles.dispatcher.no_longer_valid": "This Dispatcher is no longer available.",
   "message.dynamicvehicles.dispatcher.accepted": "Contract accepted. Check your HUD for the destination.",
   "message.dynamicvehicles.dispatcher.completed": "Delivery complete! You earned %s emerald(s).",
-  "message.dynamicvehicles.dispatcher.expired": "Your delivery contract expired."
+  "message.dynamicvehicles.dispatcher.expired": "Your delivery contract expired.",
+  "message.dynamicvehicles.pathfinder.already_active": "You already have an active Pathfinder circuit. Finish or wait for it to expire before starting another.",
+  "message.dynamicvehicles.pathfinder.started": "Pathfinder circuit started (level %s). Check your HUD for the next checkpoint.",
+  "message.dynamicvehicles.pathfinder.status": "Checkpoint %s/%s reached so far on your active circuit.",
+  "message.dynamicvehicles.pathfinder.no_attempt": "You have no active Pathfinder circuit.",
+  "message.dynamicvehicles.pathfinder.route_unavailable": "No safe route could be found right now. Try again shortly.",
+  "message.dynamicvehicles.pathfinder.level_locked": "Level %s is not unlocked yet (this villager is at level %s). Use /pathfinder start <level> with an unlocked level.",
+  "message.dynamicvehicles.pathfinder.completed": "Circuit complete! You earned %s emerald(s).",
+  "message.dynamicvehicles.pathfinder.expired": "Your Pathfinder circuit expired.",
+  "message.dynamicvehicles.pathfinder.died": "You died, so your Pathfinder circuit failed."
 }

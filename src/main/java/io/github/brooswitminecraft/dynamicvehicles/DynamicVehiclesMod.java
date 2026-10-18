@@ -47,6 +47,12 @@ import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderTradeHandler;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderCampfireHandler;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderPassiveSettlementHandler;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.VillagerNoonProgressionHandler;
+import io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderBlocks;
+import io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderHudPayload;
+import io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderInteractionHandler;
+import io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderPoiTypes;
+import io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderProfession;
+import io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderTickHandler;
 
 /** Entry point and registry for the first vehicle, a 4-wheel car (MINECRAFT-63). */
 @Mod(DynamicVehiclesMod.MODID)
@@ -137,6 +143,7 @@ public class DynamicVehiclesMod {
         // Explicit file name: the default ("dynamicvehicles-server.toml") is already claimed by
         // CarConfig.SPEC above, and ConfigTracker throws on a second SERVER config reusing it.
         modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.SERVER, DispatcherOfferConfig.SPEC, "dynamicvehicles-dispatcher-server.toml");
+        modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.SERVER, PathfinderServerConfig.SPEC, "dynamicvehicles-pathfinder-server.toml");
         modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.CLIENT, ClientConfig.SPEC);
         ModSounds.SOUNDS.register(modEventBus);
         ENTITIES.register(modEventBus);
@@ -147,6 +154,9 @@ public class DynamicVehiclesMod {
         DispatcherProfession.PROFESSIONS.register(modEventBus);
         BuilderPoiTypes.POI_TYPES.register(modEventBus);
         BuilderProfession.PROFESSIONS.register(modEventBus);
+        PathfinderBlocks.BLOCKS.register(modEventBus);
+        PathfinderPoiTypes.POI_TYPES.register(modEventBus);
+        PathfinderProfession.PROFESSIONS.register(modEventBus);
         DispatcherOfferMenus.MENUS.register(modEventBus);
         modEventBus.addListener(this::commonSetup);
         modEventBus.addListener(this::addCreative);
@@ -164,6 +174,11 @@ public class DynamicVehiclesMod {
         NeoForge.EVENT_BUS.addListener(ContractTickHandler::onPlayerLoggedOut);
         NeoForge.EVENT_BUS.addListener(io.github.brooswitminecraft.dynamicvehicles.delivery.PillagerAmbushHandler::onEntityJoinLevel);
         NeoForge.EVENT_BUS.addListener(io.github.brooswitminecraft.dynamicvehicles.delivery.PillagerAmbushHandler::onEntityLeaveLevel);
+        NeoForge.EVENT_BUS.addListener(PathfinderInteractionHandler::onEntityInteract);
+        NeoForge.EVENT_BUS.addListener(PathfinderTickHandler::onServerTick);
+        NeoForge.EVENT_BUS.addListener(PathfinderTickHandler::onPlayerLoggedIn);
+        NeoForge.EVENT_BUS.addListener(PathfinderTickHandler::onPlayerRespawn);
+        NeoForge.EVENT_BUS.addListener(PathfinderTickHandler::onLivingDeath);
     }
 
     private void registerPayloads(net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent event) {
@@ -174,6 +189,7 @@ public class DynamicVehiclesMod {
         registrar.playToServer(GearSelectPayload.TYPE, GearSelectPayload.STREAM_CODEC, GearSelectPayload::handle);
         registrar.playToServer(DispatcherOfferAcceptPayload.TYPE, DispatcherOfferAcceptPayload.STREAM_CODEC, DispatcherOfferAcceptPayload::handle);
         registrar.playToClient(DeliveryHudPayload.TYPE, DeliveryHudPayload.STREAM_CODEC, DeliveryHudPayload::handle);
+        registrar.playToClient(PathfinderHudPayload.TYPE, PathfinderHudPayload.STREAM_CODEC, PathfinderHudPayload::handle);
     }
 
     private void commonSetup(FMLCommonSetupEvent event) {
@@ -220,6 +236,35 @@ public class DynamicVehiclesMod {
                                     context.getSource().sendSuccess(() -> Component.literal("driving " + count + " car(s)"), true);
                                     return count;
                                 })))));
+
+        // Review follow-up: route selection was missing entirely - right-click always
+        // auto-started the villager's current maximum unlocked level, with no way to run an
+        // earlier, already-unlocked circuit again. No elaborate UI is required for this: a plain
+        // player command (no permission requirement, unlike the debug commands above),
+        // server-validated against the nearest Pathfinder villager's actual unlocked level.
+        event.getDispatcher().register(Commands.literal("pathfinder")
+                .then(Commands.literal("start")
+                        .then(Commands.argument("level", IntegerArgumentType.integer(1, 5))
+                                .executes(context -> startPathfinderAtLevel(context, IntegerArgumentType.getInteger(context, "level"))))));
+    }
+
+    private static int startPathfinderAtLevel(com.mojang.brigadier.context.CommandContext<net.minecraft.commands.CommandSourceStack> context,
+            int level) {
+        if (!(context.getSource().getEntity() instanceof net.minecraft.server.level.ServerPlayer player)) {
+            context.getSource().sendFailure(Component.literal("Only a player can start a Pathfinder circuit."));
+            return 0;
+        }
+        var villager = io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderAttempts.nearestPathfinderVillager(player);
+        if (villager.isEmpty()) {
+            context.getSource().sendFailure(Component.literal("No Pathfinder villager is nearby."));
+            return 0;
+        }
+        if (!(player.level() instanceof net.minecraft.server.level.ServerLevel serverLevel)) {
+            return 0;
+        }
+        io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderAttempts.tryStart(
+                player, serverLevel, villager.get(), io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderLevel.values()[level - 1]);
+        return 1;
     }
 
     private static int tuneDrivenVehicle(com.mojang.brigadier.context.CommandContext<net.minecraft.commands.CommandSourceStack> context,
@@ -264,6 +309,7 @@ public class DynamicVehiclesMod {
             event.accept(CHOPPER_ITEM);
             event.accept(BIPLANE_ITEM);
             event.accept(DispatcherBlocks.DISPATCH_BOARD_ITEM);
+            event.accept(PathfinderBlocks.ROUTE_BOARD_ITEM);
         }
     }
 
@@ -299,6 +345,8 @@ public class DynamicVehiclesMod {
                     new io.github.brooswitminecraft.dynamicvehicles.delivery.ContractHudOverlay());
             event.registerAboveAll(ResourceLocation.fromNamespaceAndPath(MODID, "delivery_waypoint"),
                     new io.github.brooswitminecraft.dynamicvehicles.delivery.ContractWaypointOverlay());
+            event.registerAboveAll(ResourceLocation.fromNamespaceAndPath(MODID, "pathfinder_hud"),
+                    new io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderHudOverlay());
         }
     }
 }

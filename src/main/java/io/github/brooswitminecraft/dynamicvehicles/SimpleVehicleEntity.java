@@ -23,7 +23,6 @@ import net.minecraft.world.phys.Vec3;
  * rideable entity.
  */
 public abstract class SimpleVehicleEntity extends Entity {
-    private static final double DT = 1.0 / 20.0;
 
     protected SimpleVehicleEntity(EntityType<? extends SimpleVehicleEntity> type, Level level) {
         super(type, level);
@@ -32,11 +31,14 @@ public abstract class SimpleVehicleEntity extends Entity {
     /** Local seat offset from the entity origin (bottom centre of the box): x right, y up, z forward. */
     protected abstract Vec3 seatOffset();
 
-    /** Server and client: advance this vehicle's own movement model by one tick (DT seconds), given the
-     * current driver (null if unmanned). Implementations read {@code rider.zza}/{@code rider.xxa} for
-     * throttle/steer and {@code rider.getXRot()} for pitch-based climb/dive, exactly as {@link CarEntity}
-     * already reads {@code rider.zza}/{@code rider.xxa} for its own steering. */
-    protected abstract void driveTick(Player rider, double dt);
+    /** Server and client: advance this vehicle's own movement model by exactly one game tick (there is no
+     * continuous {@code dt} here -- every constant in {@code MotorboatPhysics}/{@code ChopperPhysics}/
+     * {@code BiplanePhysics} is already expressed in Minecraft's own native per-tick units, the same
+     * convention {@code Entity#getDeltaMovement}/{@code Entity#move} use), given the current driver (null
+     * if unmanned). Implementations read {@code rider.zza}/{@code rider.xxa} for throttle/steer and
+     * {@code rider.getXRot()} for pitch-based climb/dive, exactly as {@link CarEntity} already reads
+     * {@code rider.zza}/{@code rider.xxa} for its own steering. */
+    protected abstract void driveTick(Player rider);
 
     @Override
     protected void defineSynchedData(SynchedEntityData.Builder builder) {
@@ -91,6 +93,6 @@ public abstract class SimpleVehicleEntity extends Entity {
         super.tick();
         LivingEntity controller = getControllingPassenger();
         Player rider = controller instanceof Player player ? player : null;
-        driveTick(rider, DT);
+        driveTick(rider);
     }
 }

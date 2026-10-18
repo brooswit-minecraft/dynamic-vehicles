@@ -13,19 +13,13 @@ import net.minecraft.world.phys.Vec3;
  * MINECRAFT-380: a watercraft. Floats to the surface of whatever water column it is over (or settles under
  * gravity when there is none nearby, e.g. beached or in the air after a fall), steers like a tiller &mdash;
  * {@code rider.zza} is the throttle, {@code rider.xxa} the rudder, scaled by current speed so the boat does
- * not spin in place at a standstill.
+ * not spin in place at a standstill. The movement model itself lives in {@link MotorboatPhysics}, a pure
+ * function this class just wires Minecraft's own per-tick input/output onto.
  */
 public class MotorboatEntity extends SimpleVehicleEntity {
     private static final double HALF_WIDTH = VehicleGeometry.MOTORBOAT_HALF_WIDTH;
     private static final double HALF_HEIGHT = VehicleGeometry.MOTORBOAT_HALF_HEIGHT;
     private static final double HALF_LENGTH = VehicleGeometry.MOTORBOAT_HALF_LENGTH;
-    private static final double ENGINE_ACCEL = 9.0;
-    private static final double MAX_SPEED = 9.0;
-    private static final double TURN_RATE_DEG = 70.0;
-    private static final double DRAG = 0.92;
-    private static final double FLOAT_GAIN = 0.3;
-    private static final double GRAVITY = 0.08;
-    private static final double FALL_DRAG = 0.98;
 
     public MotorboatEntity(EntityType<? extends MotorboatEntity> type, Level level) {
         super(type, level);
@@ -49,41 +43,20 @@ public class MotorboatEntity extends SimpleVehicleEntity {
     }
 
     @Override
-    protected void driveTick(Player rider, double dt) {
+    protected void driveTick(Player rider) {
         if (level().isClientSide() && !isControlledByLocalInstance()) {
             return;
         }
         Double surfaceY = findWaterSurfaceY();
         Vec3 motion = getDeltaMovement();
-        double vx = motion.x();
-        double vy = motion.y();
-        double vz = motion.z();
+        double throttle = rider == null ? 0.0 : Mth.clamp(rider.zza, -1.0, 1.0);
+        double steer = rider == null ? 0.0 : Mth.clamp(rider.xxa, -1.0, 1.0);
         boolean floating = surfaceY != null;
-        if (floating) {
-            vy += (surfaceY - getY()) * FLOAT_GAIN;
-            vy *= 0.6;
-        } else {
-            vy = (vy - GRAVITY) * FALL_DRAG;
-        }
-        if (rider != null && floating) {
-            double throttle = Mth.clamp(rider.zza, -1.0, 1.0);
-            double steer = Mth.clamp(rider.xxa, -1.0, 1.0);
-            double speed = Math.hypot(vx, vz);
-            setYRot((float) (getYRot() + steer * TURN_RATE_DEG * (0.2 + Math.min(1.0, speed / 4.0)) * dt));
-            double yaw = Math.toRadians(getYRot());
-            double fx = -Math.sin(yaw);
-            double fz = Math.cos(yaw);
-            vx += fx * throttle * ENGINE_ACCEL * dt;
-            vz += fz * throttle * ENGINE_ACCEL * dt;
-        }
-        vx *= DRAG;
-        vz *= DRAG;
-        double speed = Math.hypot(vx, vz);
-        if (speed > MAX_SPEED) {
-            vx = vx / speed * MAX_SPEED;
-            vz = vz / speed * MAX_SPEED;
-        }
-        setDeltaMovement(vx, vy, vz);
+        double surfaceDelta = floating ? surfaceY - getY() : 0.0;
+        MotorboatPhysics.Result result = MotorboatPhysics.step(motion.x(), motion.y(), motion.z(), getYRot(),
+                throttle, steer, rider != null, floating, surfaceDelta);
+        setYRot((float) result.yawDeg());
+        setDeltaMovement(result.vx(), result.vy(), result.vz());
         move(MoverType.SELF, getDeltaMovement());
     }
 

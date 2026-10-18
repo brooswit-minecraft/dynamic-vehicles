@@ -38,6 +38,10 @@ final class RadioSoundInstance implements TickableSoundInstance {
     private double y;
     private double z;
     private boolean stopped;
+    /** Set by {@link #getStream}, read/cancelled by {@link #stop} (MINECRAFT-394 review finding #4):
+     * ensures a still-connecting (or already-connected-but-now-unwanted) {@link RadioAudioStream} is
+     * always closed if this instance stops before vanilla ever gets to attach it to a channel. */
+    private PendingAsyncOpen<AudioStream> pendingOpen;
 
     RadioSoundInstance(CarEntity car, String url) {
         this.car = car;
@@ -60,8 +64,10 @@ final class RadioSoundInstance implements TickableSoundInstance {
     @Override
     public CompletableFuture<AudioStream> getStream(SoundBufferLibrary soundBuffers, Sound streamSound, boolean looping) {
         // Deliberately ignores soundBuffers/streamSound: this never goes through the resource-pack
-        // SoundBufferLibrary at all, only our own network connection to the station URL.
-        return CompletableFuture.supplyAsync(() -> {
+        // SoundBufferLibrary at all, only our own network connection to the station URL. Tracked via
+        // pendingOpen (not just returned bare) so stop() can cancel/close it if this instance is torn
+        // down before vanilla ever attaches the result to a channel (MINECRAFT-394 review finding #4).
+        PendingAsyncOpen<AudioStream> opening = new PendingAsyncOpen<>(() -> {
             try {
                 return (AudioStream) RadioAudioStream.open(url);
             } catch (IOException e) {
@@ -69,11 +75,29 @@ final class RadioSoundInstance implements TickableSoundInstance {
                 throw new CompletionException(e);
             }
         }, RadioAudioStream.EXECUTOR);
+        this.pendingOpen = opening;
+        return opening.future();
     }
 
     @Override
     public boolean isStopped() {
         return stopped;
+    }
+
+    /**
+     * Marks this instance stopped and, if {@link #getStream} started connecting but nobody has (yet)
+     * claimed the result, cancels that in-flight open and/or closes whatever it already produced
+     * (MINECRAFT-394 review finding #4). Idempotent and safe to call either from {@link #tick} noticing
+     * it should stop, or directly from {@link CarRadioClient} on dismount/removal/station switch.
+     */
+    void stop() {
+        if (stopped) {
+            return;
+        }
+        stopped = true;
+        if (pendingOpen != null) {
+            pendingOpen.cancel();
+        }
     }
 
     @Override
@@ -85,7 +109,7 @@ final class RadioSoundInstance implements TickableSoundInstance {
         // engine-on check), or the car cycled to a different station since this instance started --
         // any of those must stop this exact stream rather than let it play on orphaned.
         if (car.isRemoved() || !car.radioOn() || !url.equals(car.radioUrl())) {
-            stopped = true;
+            stop();
             return;
         }
         x = car.getX();

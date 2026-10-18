@@ -35,9 +35,13 @@ final class CarRadioClient {
     }
 
     /** Stops whatever this car's radio is currently holding, if anything -- safe to call with the field's
-     * raw {@code Object} (including {@code null}) directly, e.g. from {@link CarEntity#remove}. */
+     * raw {@code Object} (including {@code null}) directly, e.g. from {@link CarEntity#remove}. Calls
+     * both halves of teardown: {@code instance.stop()} cancels/closes a still-connecting (or
+     * already-connected-but-unclaimed) {@link RadioAudioStream} (MINECRAFT-394 review finding #4), and
+     * {@code SoundManager.stop} tears down the vanilla channel for whatever is already attached/playing. */
     static void stop(Object current) {
         if (current instanceof RadioSoundInstance instance) {
+            instance.stop();
             Minecraft.getInstance().getSoundManager().stop(instance);
         }
     }

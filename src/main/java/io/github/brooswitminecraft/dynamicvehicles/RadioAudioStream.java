@@ -2,11 +2,10 @@ package io.github.brooswitminecraft.dynamicvehicles;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.PipedInputStream;
-import java.io.PipedOutputStream;
 import java.net.URI;
 import java.net.URLConnection;
 import java.nio.ByteBuffer;
+import java.util.Arrays;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -25,33 +24,41 @@ import net.minecraft.client.sounds.AudioStream;
  * vanilla's {@code Channel} via {@code AudioStream} (MINECRAFT-394). Connects directly to the station URL
  * from this client -- the Minecraft server is never involved in the audio itself.
  *
- * <p>A background thread does the actual network reading and MP3 decoding (javazoom JLayer), writing
- * decoded PCM bytes into a bounded pipe; {@link #read} just drains that pipe, blocking like any ordinary
- * {@link InputStream} read -- which is safe here because {@link RadioSoundInstance#getStream} and every
- * call the sound engine makes into this class run on its own background executor, never the render
- * thread. The pipe's bound (a few seconds of audio) keeps a station the decoder is outpacing from piling
- * up unbounded PCM in memory; the socket's own read timeout keeps a stalled connection from blocking
- * either thread forever, so a dead/unreachable station reads as a clean end of stream rather than a hang.
+ * <p>A background thread does the actual network reading and MP3 decoding (javazoom JLayer), downmixing
+ * any stereo frames to mono (OpenAL only spatializes mono buffers -- see {@link
+ * PcmChunkPipe#downmixToMono}) and pushing fixed-size PCM chunks into a {@link PcmChunkPipe}. {@link #read}
+ * just delegates to {@link PcmChunkPipe#drain}, which never blocks: vanilla's {@code
+ * ChannelAccess.scheduleTick} pumps {@code updateStream} (which calls this) for every active streamed
+ * channel on one shared executor, so a station that stalls over the network must never hold up that
+ * thread -- only this class's own decode thread ever waits on the socket or on queue space. All of the
+ * actual buffering/non-blocking/downmix logic lives in {@link PcmChunkPipe} rather than here specifically
+ * so it can be unit tested without the Minecraft client classes {@link AudioStream} pulls in.
  */
 final class RadioAudioStream implements AudioStream {
     /** Shared pool for connecting to stations and decoding them; virtual threads because this work is
-     * almost entirely blocked on network I/O, not CPU, and multiple cars may each have one in flight. */
+     * almost entirely blocked on network I/O, not CPU, and multiple cars may each have one in flight. Note
+     * that this executor only ever runs the initial connect-and-first-frame work kicked off by {@link
+     * RadioSoundInstance#getStream} -- the per-tick {@link #read} calls happen on vanilla's own shared
+     * sound executor, which is exactly why {@link #read} must never block. */
     static final ExecutorService EXECUTOR = Executors.newVirtualThreadPerTaskExecutor();
 
     private static final int CONNECT_TIMEOUT_MS = 5000;
     private static final int READ_TIMEOUT_MS = 10000;
-    /** Pipe capacity in PCM bytes: a few seconds of 44.1kHz 16-bit stereo, generous enough that normal
-     * network jitter never starves {@link #read}, bounded so a stalled consumer cannot grow this forever. */
-    private static final int PIPE_CAPACITY_BYTES = 1 << 18;
+    /** How many decoded PCM chunks the background decode thread may buffer ahead of {@link #read} before
+     * blocking itself (never the caller of {@link #read}) -- generous enough that normal network jitter
+     * never starves playback, bounded so a decode thread that outpaces a stalled {@link #read} caller
+     * cannot grow memory use forever. Each chunk is one MP3 frame's worth of mono 16-bit PCM, roughly
+     * 1-2 KB, so this is on the order of a few seconds of buffered audio. */
+    private static final int QUEUE_CAPACITY_CHUNKS = 64;
 
     private final AudioFormat format;
-    private final PipedInputStream pcm;
+    private final PcmChunkPipe pipe;
     private final Thread decodeThread;
     private final URLConnectionCloser closer;
 
-    private RadioAudioStream(AudioFormat format, PipedInputStream pcm, Thread decodeThread, URLConnectionCloser closer) {
+    private RadioAudioStream(AudioFormat format, PcmChunkPipe pipe, Thread decodeThread, URLConnectionCloser closer) {
         this.format = format;
-        this.pcm = pcm;
+        this.pipe = pipe;
         this.decodeThread = decodeThread;
         this.closer = closer;
     }
@@ -60,7 +67,15 @@ final class RadioAudioStream implements AudioStream {
      * Connects to {@code url}, decodes just enough of the first MP3 frame to learn the real sample rate
      * and channel count (never guessed/hardcoded), and starts a background thread that keeps decoding the
      * rest of the stream into this object's pipe. Blocks the calling thread on the network connect and
-     * that first frame -- callers must run this off the render thread (see this class's own javadoc).
+     * that first frame -- callers must run this off the render thread and off vanilla's shared sound
+     * executor (see {@link #EXECUTOR}).
+     *
+     * <p>The {@link #getFormat} this returns always reports exactly one channel: any stereo source is
+     * downmixed to mono by the decode thread (see {@link PcmChunkPipe#downmixToMono}) before it ever
+     * reaches the pipe, because OpenAL does not apply 3D distance attenuation/panning to multichannel
+     * buffers (only {@code AL_FORMAT_MONO16}), which would otherwise silently break this radio's
+     * vehicle-positioned audio for any stereo station -- confirmed stereo for at least the OC ReMix
+     * stream this feature targets, not merely assumed.
      *
      * @throws IOException if the URL cannot be connected to, times out, or does not parse as MP3 -- the
      *      caller is expected to log this and give up on playing the station, not retry forever.
@@ -78,6 +93,9 @@ final class RadioAudioStream implements AudioStream {
         try {
             firstHeader = bitstream.readFrame();
             if (firstHeader == null) {
+                // Must close `in` here too, same as the catch block below -- previously this path threw
+                // without closing it (MINECRAFT-394 review finding #4's smaller named bug).
+                closeQuietly(in);
                 throw new IOException("Radio station stream has no audio frames: " + url);
             }
             firstFrame = (SampleBuffer) decoder.decodeFrame(firstHeader, bitstream);
@@ -86,53 +104,59 @@ final class RadioAudioStream implements AudioStream {
             throw new IOException("Radio station stream is not valid MP3: " + url, e);
         }
         bitstream.closeFrame();
-        AudioFormat format = new AudioFormat((float) firstFrame.getSampleFrequency(), 16, firstFrame.getChannelCount(), true, false);
+        // Always mono in the format we report -- see this method's javadoc. The source's real channel
+        // count only affects how putSamples below mixes it down, never what we tell OpenAL.
+        AudioFormat format = new AudioFormat((float) firstFrame.getSampleFrequency(), 16, 1, true, false);
 
-        PipedOutputStream pcmOut = new PipedOutputStream();
-        PipedInputStream pcmIn = new PipedInputStream(pcmOut, PIPE_CAPACITY_BYTES);
-        Thread thread = new Thread(() -> decodeLoop(url, bitstream, decoder, firstFrame, in, pcmOut),
+        PcmChunkPipe pipe = new PcmChunkPipe(QUEUE_CAPACITY_CHUNKS);
+        Thread thread = new Thread(() -> decodeLoop(url, bitstream, decoder, firstFrame, in, pipe),
                 "dynamicvehicles-radio-decode");
         thread.setDaemon(true);
         thread.start();
-        return new RadioAudioStream(format, pcmIn, thread, () -> closeQuietly(in));
+        return new RadioAudioStream(format, pipe, thread, () -> closeQuietly(in));
     }
 
-    /** Runs entirely on the background decode thread started by {@link #open}; never touches OpenAL. */
+    /** Runs entirely on the background decode thread started by {@link #open}; never touches OpenAL and
+     * never runs on vanilla's shared sound executor, so it is free to block on the network or on the
+     * pipe filling up. */
     private static void decodeLoop(String url, Bitstream bitstream, Decoder decoder, SampleBuffer firstFrame,
-            InputStream in, PipedOutputStream pcmOut) {
+            InputStream in, PcmChunkPipe pipe) {
         try {
-            writeSamples(firstFrame, pcmOut);
+            putSamples(firstFrame, pipe);
             while (!Thread.currentThread().isInterrupted()) {
                 Header header = bitstream.readFrame();
                 if (header == null) {
                     break;
                 }
                 SampleBuffer frame = (SampleBuffer) decoder.decodeFrame(header, bitstream);
-                writeSamples(frame, pcmOut);
+                putSamples(frame, pipe);
                 bitstream.closeFrame();
             }
-        } catch (IOException | BitstreamException | javazoom.jl.decoder.DecoderException | RuntimeException e) {
+        } catch (InterruptedException e) {
+            // close() interrupted us while we were blocked waiting for queue space -- just stop, same as
+            // any other wind-down below.
+            Thread.currentThread().interrupt();
+        } catch (BitstreamException | javazoom.jl.decoder.DecoderException | RuntimeException e) {
             // Connection dropped, timed out, or the stream stopped parsing as MP3 mid-way (a transcoder
             // hiccup, an Icecast metadata block we don't expect, the station going offline). Logged once
-            // here and the pipe is simply closed below -- read() then reports a clean end of stream to
-            // whatever is consuming this AudioStream, instead of this thread retrying forever.
+            // here; read() then reports a clean end of stream to whatever is consuming this AudioStream
+            // (once it has drained whatever is already queued), instead of this thread retrying forever.
             DynamicVehiclesMod.LOGGER.info("Radio stream {} ended: {}", url, e.toString());
         } finally {
-            closeQuietly(pcmOut);
+            pipe.markEndOfStream();
             closeQuietly(in);
         }
     }
 
-    private static void writeSamples(SampleBuffer frame, PipedOutputStream out) throws IOException {
+    /** Downmixes a decoded frame to mono (if it isn't already) and enqueues it as little-endian PCM
+     * bytes, blocking (this thread only, never a caller of {@link #read}) if the pipe is momentarily full. */
+    private static void putSamples(SampleBuffer frame, PcmChunkPipe pipe) throws InterruptedException {
         short[] samples = frame.getBuffer();
         int length = frame.getBufferLength();
-        byte[] bytes = new byte[length * 2];
-        for (int i = 0; i < length; i++) {
-            short sample = samples[i];
-            bytes[i * 2] = (byte) (sample & 0xFF);
-            bytes[i * 2 + 1] = (byte) ((sample >> 8) & 0xFF);
-        }
-        out.write(bytes);
+        short[] mono = frame.getChannelCount() == 2
+                ? PcmChunkPipe.downmixToMono(samples, length)
+                : Arrays.copyOf(samples, length);
+        pipe.put(PcmChunkPipe.toLittleEndianBytes(mono, mono.length));
     }
 
     @Override
@@ -140,17 +164,19 @@ final class RadioAudioStream implements AudioStream {
         return format;
     }
 
+    /**
+     * Returns up to {@code size} bytes of already-decoded PCM as a direct {@link ByteBuffer} -- see
+     * {@link PcmChunkPipe#drain} for the exact non-blocking/end-of-stream contract this delegates to
+     * wholesale (MINECRAFT-394 review findings #1 and #3).
+     */
     @Override
     public ByteBuffer read(int size) throws IOException {
-        byte[] buffer = new byte[size];
-        int read = pcm.read(buffer, 0, size);
-        return read <= 0 ? null : ByteBuffer.wrap(buffer, 0, read);
+        return pipe.drain(size);
     }
 
     @Override
     public void close() throws IOException {
         decodeThread.interrupt();
-        closeQuietly(pcm);
         closer.close();
     }
 
@@ -158,7 +184,7 @@ final class RadioAudioStream implements AudioStream {
         try {
             closeable.close();
         } catch (IOException ignored) {
-            // Best-effort cleanup; nothing left to do about a socket/pipe that won't close cleanly.
+            // Best-effort cleanup; nothing left to do about a socket that won't close cleanly.
         }
     }
 

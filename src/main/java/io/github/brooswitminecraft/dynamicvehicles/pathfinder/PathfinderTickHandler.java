@@ -1,6 +1,7 @@
 package io.github.brooswitminecraft.dynamicvehicles.pathfinder;
 
 import net.minecraft.SharedConstants;
+import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
@@ -17,15 +18,37 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * The coarse server timer that evaluates each online player's active Pathfinder attempt against
- * their live position every {@link #EVALUATE_INTERVAL_TICKS} ticks — mirrors {@code
- * delivery.ContractTickHandler}'s shape. Works on foot or in a vehicle equally (MINECRAFT-379's
- * requirement): this only ever reads {@link ServerPlayer#blockPosition()}/{@link
+ * The server timer that evaluates each online player's active Pathfinder attempt against their
+ * live position every {@link #EVALUATE_INTERVAL_TICKS} ticks. Works on foot or in a vehicle
+ * equally (MINECRAFT-379's requirement): this only ever reads {@link ServerPlayer#blockPosition()}/{@link
  * ServerPlayer#level()}, never anything about how the player got there.
+ *
+ * <p>MINECRAFT-409: unlike {@code delivery.ContractTickHandler}'s 20-tick batching (which this
+ * used to mirror), arrival here is chunk membership, not a persistent proximity condition — a
+ * player or vehicle that enters and leaves the target chunk entirely between two widely-spaced
+ * samples is never seen in it at all, so credit is simply missed, not merely delayed. No fixed
+ * entity moves anywhere close to a 16-block chunk width in a single tick, so evaluating every
+ * tick (rather than every {@code EVALUATE_INTERVAL_TICKS}) is what actually closes that gap,
+ * at a cost of a cheap, already-cached-route chunk comparison per online attempt per tick. The
+ * expensive, durability-checked I/O below runs immediately the first time a state actually
+ * transitions, same as before; see {@link #TERMINAL_RETRY_INTERVAL_TICKS} for why RETRYING a
+ * save that is still failing is deliberately not also raised to every tick.
  */
 public final class PathfinderTickHandler {
 
-    static final int EVALUATE_INTERVAL_TICKS = 20;
+    static final int EVALUATE_INTERVAL_TICKS = 1;
+
+    /**
+     * MINECRAFT-409 review follow-up: {@link #EVALUATE_INTERVAL_TICKS} = 1 is right for live
+     * arrival detection (missing a crossing is a real correctness gap - see the class javadoc),
+     * but it is the wrong cadence for RETRYING an already-terminal attempt's durable clear/payout
+     * once that save has started failing: that path blocks on {@code
+     * DimensionDataStorage#save}/{@code IOUtilities#waitUntilIOWorkerComplete} plus a disk
+     * readback every time it runs, and a persistently failing save gains nothing from retrying 20x
+     * more often - it only pays 20x the synchronous I/O cost for the same stuck outcome. Keeps the
+     * old 20-tick cadence for that one case.
+     */
+    static final int TERMINAL_RETRY_INTERVAL_TICKS = 20;
 
     private PathfinderTickHandler() {
     }
@@ -114,17 +137,25 @@ public final class PathfinderTickHandler {
         // confirm the clear; retry only that clear/verify/(pay) step - do not re-evaluate
         // checkpoints or re-credit progression (see PathfinderAttemptRecord#progressionCredited).
         // died is checked first and unconditionally: a dead player must never fall through to
-        // normal checkpoint evaluation below, even on a tick landing after respawn.
-        if (record.died()) {
-            attemptDurableClear(server, player, storage, record, "message.dynamicvehicles.pathfinder.died");
-            return;
-        }
-        if (record.finished()) {
-            attemptDurablePayout(server, player, storage, record);
-            return;
-        }
-        if (record.expired()) {
-            attemptDurableClear(server, player, storage, record, "message.dynamicvehicles.pathfinder.expired");
+        // normal checkpoint evaluation below, even on a tick landing after respawn - but the
+        // retry ITSELF (the synchronous dataStorage.save/waitUntilIOWorkerComplete/readback below)
+        // is throttled to TERMINAL_RETRY_INTERVAL_TICKS (review follow-up: raising
+        // EVALUATE_INTERVAL_TICKS to 1 for live arrival detection must not also raise a
+        // persistently-failing save's retry rate 20x; unlike arrival, which needs every tick to
+        // not miss a crossing, re-attempting a stuck save a few ticks later costs nothing). On a
+        // skipped tick this simply returns without touching the record - never falls through to
+        // live checkpoint evaluation, so the terminal state is never at risk of un-terminating.
+        if (record.died() || record.finished() || record.expired()) {
+            if (server.getTickCount() % TERMINAL_RETRY_INTERVAL_TICKS != 0) {
+                return;
+            }
+            if (record.died()) {
+                attemptDurableClear(server, player, storage, record, "message.dynamicvehicles.pathfinder.died");
+            } else if (record.finished()) {
+                attemptDurablePayout(server, player, storage, record);
+            } else {
+                attemptDurableClear(server, player, storage, record, "message.dynamicvehicles.pathfinder.expired");
+            }
             return;
         }
 
@@ -143,9 +174,14 @@ public final class PathfinderTickHandler {
                 record.reachedCount(), record.finished(), record.expired());
 
         long now = server.overworld().getGameTime();
-        var pos = player.position();
+        // MINECRAFT-409 review follow-up: acquires the player's block position the same way
+        // delivery.ContractTickHandler does (ServerPlayer#blockPosition(), not the continuous
+        // player.position() this used to read) - same production position-acquisition shape as
+        // the other tick handler that evaluates arrival, even though the two can never diverge in
+        // outcome (blockPosition() is itself Mth.floor of the same coordinates sameChunkAs floors).
+        BlockPos pos = player.blockPosition();
         String playerDimension = player.level().dimension().location().toString();
-        PathfinderPosition playerPosition = new PathfinderPosition(playerDimension, pos.x, pos.y, pos.z);
+        PathfinderPosition playerPosition = new PathfinderPosition(playerDimension, pos.getX(), pos.getY(), pos.getZ());
 
         boolean advanced = progress.onReach(playerPosition, now);
 
@@ -165,6 +201,12 @@ public final class PathfinderTickHandler {
             PathfinderAttemptRecord updated = record.withProgress(progress);
             storage.update(updated);
             PathfinderAttempts.sendHud(player, updated, route);
+            // MINECRAFT-409: an intermediate checkpoint used to update the HUD payload silently -
+            // the HUD count ticking up is easy to miss (it's a small corner overlay, not something
+            // a player is staring at while navigating), so "credited but no visible feedback" read
+            // to a player as "nothing happened" even when the attempt progressed correctly.
+            player.sendSystemMessage(Component.translatable("message.dynamicvehicles.pathfinder.checkpoint_reached",
+                    updated.reachedCount(), route.checkpoints().size()));
         }
     }
 

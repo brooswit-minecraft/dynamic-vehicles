@@ -167,6 +167,46 @@ public final class PathfinderGameTests {
         });
     }
 
+    /**
+     * MINECRAFT-409 acceptance #1: the source-supported gap this ticket was filed against -
+     * {@link PathfinderTickHandler} used to sample position only every 20 ticks with no
+     * prior-position crossing history, so a player who entered and left the target chunk entirely
+     * between two samples got no credit at all, not merely delayed credit. Teleports into the
+     * checkpoint's chunk, then a few ticks later teleports far away - well before this test's own
+     * assertion runs - and still expects the checkpoint to have been credited while the player was
+     * briefly inside it. See {@code PathfinderTickHandler#EVALUATE_INTERVAL_TICKS}'s javadoc for
+     * the fix (evaluating every tick instead of every 20).
+     */
+    @GameTest(template = "dispatch_profession", timeoutTicks = 100)
+    public static void briefCrossingThroughTheTargetChunkStillCreditsCheckpoint(GameTestHelper helper) {
+        Villager villager = helper.spawn(EntityType.VILLAGER, new BlockPos(2, 2, 2));
+        villager.setVillagerData(villager.getVillagerData().setProfession(PathfinderProfession.PATHFINDER.get()));
+        seedLevel1RouteForTest(helper, villager);
+        ServerPlayer player = GameTestMockPlayers.create(helper);
+        player.moveTo(helper.absolutePos(new BlockPos(2, 2, 3)).getCenter());
+        declarePathfinderHudChannel(player);
+
+        PathfinderInteractionHandler.onEntityInteract(new PlayerInteractEvent.EntityInteract(player, InteractionHand.MAIN_HAND, villager));
+        MinecraftServer server = helper.getLevel().getServer();
+        PathfinderAttemptStorage storage = PathfinderAttemptStorage.of(server);
+        PathfinderAttemptRecord record = storage.active(player.getUUID()).orElseThrow();
+        ServerLevel dimension = helper.getLevel();
+        PathfinderRoute route = PathfinderRouteStorage.of(server).routeFor(dimension, record.origin(), record.level()).orElseThrow();
+        PathfinderCheckpoint first = route.checkpoints().get(0);
+
+        player.teleportTo(first.position().x(), first.position().y(), first.position().z());
+        // A few real ticks of dwell time inside the target chunk - comfortably more than one, but
+        // nowhere near the old 20-tick sampling window - then gone to a different chunk entirely
+        // before this test's own assertion ever runs.
+        helper.runAfterDelay(3, () -> player.teleportTo(first.position().x() + 10_000, first.position().y(), first.position().z()));
+
+        helper.runAfterDelay(10, () -> {
+            helper.assertTrue(storage.active(player.getUUID()).map(PathfinderAttemptRecord::reachedCount).orElse(-1) == 1,
+                    "a brief crossing through the target chunk must be credited even though the player left it again before this assertion");
+            helper.succeed();
+        });
+    }
+
     @GameTest(template = "dispatch_profession", timeoutTicks = 600)
     public static void aSecondRightClickWhileActiveDoesNotStartASecondAttempt(GameTestHelper helper) {
         Villager villager = helper.spawn(EntityType.VILLAGER, new BlockPos(2, 2, 2));

@@ -151,7 +151,17 @@ public final class WheelMapping {
     /** Configured GLFW button indexes for the optional physical shifter. -1 means unmapped. */
     public record ShifterButtons(int neutral, int reverse, int d1, int d2, int d3, int d4, int d5, int d6) {}
 
-    /** Resolves an H-pattern/sequential button sample to the existing explicit gear state. */
+    /**
+     * Resolves an H-pattern/sequential button sample to the existing explicit gear state. Conflicting
+     * simultaneous presses resolve deterministically by this fixed priority: reverse, then the dedicated
+     * neutral button (if mapped), then D1..D6 in order.
+     *
+     * <p>When no mapped gear button is down, a released H-pattern lever really is sitting in neutral
+     * (MINECRAFT-382) -- but only once the sample can be trusted: {@code null} (no gear decision, leave
+     * the car's current gear alone) when nothing is actually mapped ({@link #shifterConfigured}), or when
+     * {@code buttons} does not even reach every mapped index, which reads as a disconnected device or a
+     * short/invalid sample rather than a genuine release of every gear button.
+     */
     public static CarPhysics.Gear shifterGear(byte[] buttons, ShifterButtons mapping) {
         if (buttonDown(buttons, mapping.reverse())) return CarPhysics.Gear.REVERSE;
         if (buttonDown(buttons, mapping.neutral())) return CarPhysics.Gear.NEUTRAL;
@@ -161,7 +171,20 @@ public final class WheelMapping {
         if (buttonDown(buttons, mapping.d4())) return CarPhysics.Gear.D4;
         if (buttonDown(buttons, mapping.d5())) return CarPhysics.Gear.D5;
         if (buttonDown(buttons, mapping.d6())) return CarPhysics.Gear.D6;
-        return null;
+        return shifterConfigured(mapping) && shifterSampleCovers(buttons, mapping) ? CarPhysics.Gear.NEUTRAL : null;
+    }
+
+    /** Whether at least one gear button is actually mapped; an unconfigured shifter never claims NEUTRAL. */
+    private static boolean shifterConfigured(ShifterButtons mapping) {
+        return mapping.reverse() >= 0 || mapping.neutral() >= 0 || mapping.d1() >= 0 || mapping.d2() >= 0
+                || mapping.d3() >= 0 || mapping.d4() >= 0 || mapping.d5() >= 0 || mapping.d6() >= 0;
+    }
+
+    /** Whether the sample has a slot for every mapped button index, so an unpressed read is trustworthy. */
+    private static boolean shifterSampleCovers(byte[] buttons, ShifterButtons mapping) {
+        int highest = Math.max(mapping.reverse(), Math.max(mapping.neutral(), Math.max(mapping.d1(),
+                Math.max(mapping.d2(), Math.max(mapping.d3(), Math.max(mapping.d4(), Math.max(mapping.d5(), mapping.d6())))))));
+        return buttons.length > highest;
     }
 
     /** The feature gate is deliberately outside all normal input mapping: disabled means no gear selection. */

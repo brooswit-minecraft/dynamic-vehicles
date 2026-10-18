@@ -5,6 +5,7 @@ import com.mojang.brigadier.exceptions.CommandSyntaxException;
 
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.SectionPos;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceKey;
@@ -141,6 +142,13 @@ final class FlatGarageCommand {
         int maxY = level.getMaxBuildHeight() - 1;
         int x = target.getX();
         int z = target.getZ();
+        // MINECRAFT-406: force the destination chunk to load/generate before querying collisions.
+        // ServerLevel#noCollision resolves to Level#getChunkForCollisions, which fetches the chunk
+        // with load=false - on a column nobody has ever visited (e.g. a fresh flat_garage dimension's
+        // first entry), that returns null, and BlockCollisions silently skips every cell in a null
+        // chunk rather than treating it as solid. The column then reads as "unobstructed" everywhere,
+        // including the floor, so no Y can ever satisfy isSafe() and the search always fails.
+        level.getChunk(SectionPos.blockToSectionCoord(x), SectionPos.blockToSectionCoord(z));
         OptionalLong safeY = SafeLandingSearch.findSafeY(target.getY(), minY, maxY, new SafeLandingSearch.ColumnQuery() {
             @Override
             public boolean isObstructed(int y) {

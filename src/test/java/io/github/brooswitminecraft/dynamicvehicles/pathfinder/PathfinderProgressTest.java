@@ -115,6 +115,31 @@ class PathfinderProgressTest {
     }
 
     @Test
+    void fullStateConstructorReconstructsAnEquivalentInProgressAttempt() {
+        // Simulates what a reload reconstructs from persisted storage: a route re-resolved through
+        // the route cache (not recomputed), plus the player's persisted reachedCount.
+        PathfinderProgress original = new PathfinderProgress(ROUTE, 100, 1000);
+        original.onReach(at(ROUTE.checkpoints().get(0)), 101);
+        original.onReach(at(ROUTE.checkpoints().get(1)), 102);
+
+        PathfinderProgress restored = new PathfinderProgress(
+                original.route(), original.startTick(), original.timeLimitTicks(), original.reachedCount(), original.isFinished(), original.isExpired());
+
+        assertEquals(original.nextExpected(), restored.nextExpected());
+        assertEquals(original.reachedCount(), restored.reachedCount());
+        // The restored attempt keeps advancing exactly like the original would have.
+        assertTrue(restored.onReach(at(ROUTE.checkpoints().get(2)), 103));
+    }
+
+    @Test
+    void fullStateConstructorRejectsAnOutOfRangeReachedCount() {
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> new PathfinderProgress(ROUTE, 0, 1000, ROUTE.checkpoints().size() + 1, false, false));
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> new PathfinderProgress(ROUTE, 0, 1000, -1, false, false));
+    }
+
+    @Test
     void concurrentAttemptsOnTheSameRouteDoNotShareOrCorruptEachOthersProgress() {
         PathfinderProgress playerA = new PathfinderProgress(ROUTE, 0, 1000);
         PathfinderProgress playerB = new PathfinderProgress(ROUTE, 0, 1000);

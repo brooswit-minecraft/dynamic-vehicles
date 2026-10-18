@@ -48,8 +48,11 @@ import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderCampfireHandl
 import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderPassiveSettlementHandler;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.VillagerNoonProgressionHandler;
 import io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderBlocks;
+import io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderHudPayload;
+import io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderInteractionHandler;
 import io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderPoiTypes;
 import io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderProfession;
+import io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderTickHandler;
 
 /** Entry point and registry for the first vehicle, a 4-wheel car (MINECRAFT-63). */
 @Mod(DynamicVehiclesMod.MODID)
@@ -146,6 +149,9 @@ public class DynamicVehiclesMod {
         NeoForge.EVENT_BUS.addListener(ContractTickHandler::onPlayerLoggedOut);
         NeoForge.EVENT_BUS.addListener(io.github.brooswitminecraft.dynamicvehicles.delivery.PillagerAmbushHandler::onEntityJoinLevel);
         NeoForge.EVENT_BUS.addListener(io.github.brooswitminecraft.dynamicvehicles.delivery.PillagerAmbushHandler::onEntityLeaveLevel);
+        NeoForge.EVENT_BUS.addListener(PathfinderInteractionHandler::onEntityInteract);
+        NeoForge.EVENT_BUS.addListener(PathfinderTickHandler::onServerTick);
+        NeoForge.EVENT_BUS.addListener(PathfinderTickHandler::onPlayerLoggedIn);
     }
 
     private void registerPayloads(net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent event) {
@@ -156,6 +162,7 @@ public class DynamicVehiclesMod {
         registrar.playToServer(GearSelectPayload.TYPE, GearSelectPayload.STREAM_CODEC, GearSelectPayload::handle);
         registrar.playToServer(DispatcherOfferAcceptPayload.TYPE, DispatcherOfferAcceptPayload.STREAM_CODEC, DispatcherOfferAcceptPayload::handle);
         registrar.playToClient(DeliveryHudPayload.TYPE, DeliveryHudPayload.STREAM_CODEC, DeliveryHudPayload::handle);
+        registrar.playToClient(PathfinderHudPayload.TYPE, PathfinderHudPayload.STREAM_CODEC, PathfinderHudPayload::handle);
     }
 
     private void commonSetup(FMLCommonSetupEvent event) {
@@ -276,6 +283,8 @@ public class DynamicVehiclesMod {
                     new io.github.brooswitminecraft.dynamicvehicles.delivery.ContractHudOverlay());
             event.registerAboveAll(ResourceLocation.fromNamespaceAndPath(MODID, "delivery_waypoint"),
                     new io.github.brooswitminecraft.dynamicvehicles.delivery.ContractWaypointOverlay());
+            event.registerAboveAll(ResourceLocation.fromNamespaceAndPath(MODID, "pathfinder_hud"),
+                    new io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderHudOverlay());
         }
     }
 }

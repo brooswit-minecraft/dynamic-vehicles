@@ -37,12 +37,46 @@ public final class PathfinderProgress {
     private boolean expired = false;
 
     public PathfinderProgress(PathfinderRoute route, long startTick, long timeLimitTicks) {
+        this(route, startTick, timeLimitTicks, 0, false, false);
+    }
+
+    /**
+     * Full-state constructor for reconstructing an attempt from persisted storage (e.g. after a
+     * server restart): the Minecraft-facing layer persists {@link #route}'s identity (origin
+     * region + level, re-resolved through the route cache, not re-derived from a live heightmap -
+     * see {@code pathfinder}'s terrain-placement follow-up) plus {@link #reachedCount}/{@link
+     * #isFinished}/{@link #isExpired}, and rebuilds an equivalent instance with this constructor.
+     */
+    public PathfinderProgress(PathfinderRoute route, long startTick, long timeLimitTicks,
+                               int reachedCount, boolean finished, boolean expired) {
         if (timeLimitTicks <= 0) {
             throw new IllegalArgumentException("timeLimitTicks must be > 0: " + timeLimitTicks);
+        }
+        if (reachedCount < 0 || reachedCount > route.checkpoints().size()) {
+            throw new IllegalArgumentException("reachedCount out of range [0, " + route.checkpoints().size() + "]: " + reachedCount);
         }
         this.route = route;
         this.startTick = startTick;
         this.timeLimitTicks = timeLimitTicks;
+        this.reachedCount = reachedCount;
+        this.finished = finished;
+        this.expired = expired;
+    }
+
+    public PathfinderRoute route() {
+        return route;
+    }
+
+    public long startTick() {
+        return startTick;
+    }
+
+    public long timeLimitTicks() {
+        return timeLimitTicks;
+    }
+
+    public int reachedCount() {
+        return reachedCount;
     }
 
     /** The checkpoint the player must reach next (the closing leg once every checkpoint has been reached). */

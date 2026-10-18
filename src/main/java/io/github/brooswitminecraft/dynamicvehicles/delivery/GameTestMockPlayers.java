@@ -21,11 +21,14 @@ import net.neoforged.neoforge.network.registration.ChannelAttributes;
  * BEFORE login, which {@link GameTestHelper#makeMockServerPlayerInLevel()} gives no hook for. This
  * builds the same player that helper does (same profile, creative, non-spectator, embedded channel)
  * with the mod channels declared first — the test-only equivalent of the negotiation having happened.
+ *
+ * <p>Public so {@code pathfinder.PathfinderGameTests} can reuse it too, instead of duplicating
+ * this same mock-player setup for a second profession's GameTests.
  */
-final class GameTestMockPlayers {
+public final class GameTestMockPlayers {
     private GameTestMockPlayers() {}
 
-    static ServerPlayer create(GameTestHelper helper) {
+    public static ServerPlayer create(GameTestHelper helper) {
         CommonListenerCookie cookie = CommonListenerCookie.createInitial(new GameProfile(UUID.randomUUID(), "test-mock-player"), false);
         ServerPlayer player = new ServerPlayer(helper.getLevel().getServer(), helper.getLevel(), cookie.gameProfile(), cookie.clientInformation()) {
             @Override

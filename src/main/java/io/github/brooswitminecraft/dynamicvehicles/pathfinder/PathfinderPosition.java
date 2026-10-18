@@ -15,6 +15,11 @@ package io.github.brooswitminecraft.dynamicvehicles.pathfinder;
  * PathfinderCheckpoint}.
  */
 public record PathfinderPosition(String dimensionId, double x, double y, double z) {
+    public PathfinderPosition {
+        if (!Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(z)) {
+            throw new IllegalArgumentException("position coordinates must be finite: (" + x + ", " + y + ", " + z + ")");
+        }
+    }
 
     public double distanceSquaredTo(PathfinderPosition other) {
         double dx = x - other.x;

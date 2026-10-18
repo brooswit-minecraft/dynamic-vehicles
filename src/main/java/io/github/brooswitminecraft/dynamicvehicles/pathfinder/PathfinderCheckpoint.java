@@ -16,8 +16,10 @@ package io.github.brooswitminecraft.dynamicvehicles.pathfinder;
  */
 public record PathfinderCheckpoint(PathfinderRegion region, PathfinderPosition position, double reachRadius) {
     public PathfinderCheckpoint {
-        if (reachRadius <= 0) {
-            throw new IllegalArgumentException("reachRadius must be > 0: " + reachRadius);
+        // Review follow-up (PR #163): a non-finite radius (e.g. Double.POSITIVE_INFINITY) satisfied the
+        // old "> 0" check and then matched any same-dimension position at all in isReachedBy.
+        if (!Double.isFinite(reachRadius) || reachRadius <= 0) {
+            throw new IllegalArgumentException("reachRadius must be a finite number > 0: " + reachRadius);
         }
     }
 

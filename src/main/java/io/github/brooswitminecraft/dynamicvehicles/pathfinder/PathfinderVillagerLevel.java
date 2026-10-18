@@ -1,43 +1,41 @@
 package io.github.brooswitminecraft.dynamicvehicles.pathfinder;
 
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.npc.Villager;
 
+import java.util.UUID;
+
 /**
- * Stores a Pathfinder villager's own progression ({@link PathfinderVillagerProgress}) on its
- * persistent data — the same {@code villager.getPersistentData()} mechanism {@code
- * delivery.BuilderCampfireHandler}/{@code BuilderSettlementService} already use for villager-
- * attached state — so it survives save/reload with the entity automatically, with no separate
- * persistence code needed. Deliberately NOT {@code VillagerData}: see {@link
- * PathfinderVillagerProgress}'s javadoc for why trusting that would be an anti-bypass hole.
+ * A Pathfinder villager's own progression ({@link PathfinderVillagerProgress}), backed by {@link
+ * PathfinderVillagerProgressStorage} (server-wide, keyed by villager UUID) rather than the
+ * villager entity's own persistent data — review follow-up: a completion routinely happens with
+ * its source villager long unloaded (circuits end regions away, at the first checkpoint, not
+ * back at the villager), so crediting progress only when the entity is loaded silently dropped
+ * it in the normal case, not just a rare edge case.
+ *
+ * <p>Deliberately NOT {@code VillagerData}: see {@link PathfinderVillagerProgress}'s javadoc for
+ * why trusting that would be an anti-bypass hole.
  */
 public final class PathfinderVillagerLevel {
-    private static final String LEVEL_TAG = "dynamicvehicles.pathfinderLevel";
-    private static final String COMPLETIONS_TAG = "dynamicvehicles.pathfinderLevelCompletions";
-
     private PathfinderVillagerLevel() {
     }
 
-    public static PathfinderLevel levelOf(Villager villager) {
-        return PathfinderLevel.values()[state(villager).level() - 1];
+    /** Convenience for callers that already have a loaded, in-world villager (e.g. the interaction handler). */
+    public static PathfinderLevel levelOf(ServerLevel level, Villager villager) {
+        return levelOf(level.getServer(), villager.getUUID());
     }
 
-    public static PathfinderVillagerProgress.State state(Villager villager) {
-        var data = villager.getPersistentData();
-        int level = data.contains(LEVEL_TAG) ? data.getInt(LEVEL_TAG) : 1;
-        int completions = data.getInt(COMPLETIONS_TAG);
-        return new PathfinderVillagerProgress.State(Math.max(1, Math.min(5, level)), Math.max(0, completions));
+    public static PathfinderLevel levelOf(MinecraftServer server, UUID villagerId) {
+        return PathfinderLevel.values()[stateOf(server, villagerId).level() - 1];
     }
 
-    /** Records one successful completion at this villager, using the posted default threshold. */
-    public static void recordCompletion(Villager villager) {
-        recordCompletion(villager, PathfinderVillagerProgress.DEFAULT_COMPLETIONS_TO_ADVANCE);
+    public static PathfinderVillagerProgress.State stateOf(MinecraftServer server, UUID villagerId) {
+        return PathfinderVillagerProgressStorage.of(server).stateOf(villagerId);
     }
 
-    /** Records one successful completion at this villager, advancing its level per {@link PathfinderVillagerProgress}. */
-    public static void recordCompletion(Villager villager, int completionsToAdvance) {
-        PathfinderVillagerProgress.State next = PathfinderVillagerProgress.onCompletion(state(villager), completionsToAdvance);
-        var data = villager.getPersistentData();
-        data.putInt(LEVEL_TAG, next.level());
-        data.putInt(COMPLETIONS_TAG, next.completionsAtLevel());
+    /** Records one successful completion for this villager, independent of whether the entity is currently loaded. */
+    public static void recordCompletion(MinecraftServer server, UUID villagerId, int completionsToAdvance) {
+        PathfinderVillagerProgressStorage.of(server).recordCompletion(villagerId, completionsToAdvance);
     }
 }

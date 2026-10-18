@@ -24,15 +24,15 @@ import java.util.UUID;
  * <p>Review follow-up on reward-payout crash safety: {@link #clear} only marks this {@code
  * SavedData} dirty, same as every other {@code SavedData} in this codebase ({@code
  * delivery.DeliveryContractStorage} included) — {@code setDirty()} alone schedules a write for
- * the next periodic autosave/shutdown, it does not flush to disk. {@link
- * PathfinderTickHandler#onFinished}/{@code #onExpired} additionally call {@link
+ * the next periodic autosave/shutdown, it does not flush to disk. {@code
+ * PathfinderTickHandler#onFinished}/{@code #onExpired} additionally call {@code
  * MinecraftServer#overworld()}{@code .getDataStorage().save()} immediately after {@link #clear},
- * BEFORE granting the reward, forcing that write to be queued right away instead of waiting for
- * the next autosave — narrowing, not eliminating, the crash window NeoForge's own async IO
- * worker still has to actually finish writing the file. A true zero-window guarantee would need
- * blocking on that worker's completion, which NeoForge does not expose; this is a real,
- * concrete improvement over the prior "whenever the next autosave happens" window, not a claim
- * of absolute durability no code in this codebase actually provides.
+ * AND THEN block on {@code IOUtilities#waitUntilIOWorkerComplete()} before granting the reward —
+ * a real persistence barrier, not merely a narrowed window: by the time the reward is granted,
+ * the cleared attempt is actually on disk (NeoForge's own {@code IOUtilities#atomicWrite} writes
+ * to a temp file, {@code force(true)}s it, then renames it into place, so the write itself can't
+ * leave a half-written file either). A crash after that point cannot reload the old record and
+ * pay again. See {@code PathfinderTickHandler#forceSave} for exactly which calls do this.
  */
 public final class PathfinderAttemptStorage extends SavedData {
     private static final String NAME = "dynamicvehicles_pathfinder_attempts";

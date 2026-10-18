@@ -94,13 +94,18 @@ public final class PathfinderProgress {
     }
 
     /**
-     * Reports the player at {@code playerPosition} as of {@code currentTick}. Expiry is checked first and
-     * is final: once expired, no further reach is ever accepted, even one reported at the exact same tick
-     * as expiry or at a checkpoint the player had legitimately reached. Otherwise, advances only if
-     * {@code playerPosition} is within {@link #nextExpected()}'s reach radius and dimension; a wrong
-     * position, a wrong dimension, or an out-of-order checkpoint is rejected with no state change.
+     * Reports the player at {@code playerPosition} as of {@code currentTick}, checked against
+     * {@code reachRadius}. Expiry is checked first and is final: once expired, no further reach
+     * is ever accepted, even one reported at the exact same tick as expiry or at a checkpoint the
+     * player had legitimately reached. Otherwise, advances only if {@code playerPosition} is
+     * within {@code reachRadius} of {@link #nextExpected()} and its dimension; a wrong position,
+     * a wrong dimension, or an out-of-order checkpoint is rejected with no state change.
+     *
+     * <p>{@code reachRadius} is a parameter, not stored on the checkpoint/route, specifically so
+     * a config change takes effect on the very next check of an already-in-progress (or already
+     * cached) route — see {@link PathfinderCheckpoint}'s javadoc.
      */
-    public boolean onReach(PathfinderPosition playerPosition, long currentTick) {
+    public boolean onReach(PathfinderPosition playerPosition, long currentTick, double reachRadius) {
         if (finished || expired) {
             return false;
         }
@@ -108,7 +113,7 @@ public final class PathfinderProgress {
             expired = true;
             return false;
         }
-        if (!nextExpected().isReachedBy(playerPosition)) {
+        if (!nextExpected().isReachedBy(playerPosition, reachRadius)) {
             return false;
         }
         if (reachedCount < route.checkpoints().size()) {

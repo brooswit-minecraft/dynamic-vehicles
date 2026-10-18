@@ -3,11 +3,12 @@ package io.github.brooswitminecraft.dynamicvehicles.pathfinder;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.neoforged.neoforge.network.PacketDistributor;
+
+import java.util.Optional;
 
 import io.github.brooswitminecraft.dynamicvehicles.PathfinderServerConfig;
 
@@ -29,8 +30,8 @@ public final class PathfinderAttempts {
      * existing level across a profession change, so trusting it directly would let a villager
      * trade-leveled under any OTHER profession instantly unlock high Pathfinder levels.
      */
-    public static PathfinderLevel levelOf(Villager villager) {
-        return PathfinderVillagerLevel.levelOf(villager);
+    public static PathfinderLevel levelOf(ServerLevel level, Villager villager) {
+        return PathfinderVillagerLevel.levelOf(level, villager);
     }
 
     public static PathfinderRegion regionOf(Villager villager) {
@@ -41,7 +42,9 @@ public final class PathfinderAttempts {
      * Starts a new attempt at {@code villager}'s region/level, refusing with player-visible
      * feedback if one is already active (MINECRAFT-379's multiplayer-isolation and one-attempt
      * invariant — each player gets their own persisted record, so concurrent players never share
-     * or corrupt each other's progress).
+     * or corrupt each other's progress), or if no safe route could be resolved right now (review
+     * follow-up: fail closed with a retryable message rather than starting an attempt against an
+     * invalid/uncached route).
      */
     public static void tryStart(ServerPlayer player, ServerLevel level, Villager villager) {
         PathfinderAttemptStorage storage = PathfinderAttemptStorage.of(player.server);
@@ -50,11 +53,15 @@ public final class PathfinderAttempts {
             return;
         }
 
-        PathfinderLevel pfLevel = levelOf(villager);
+        PathfinderLevel pfLevel = levelOf(level, villager);
         PathfinderRegion origin = regionOf(villager);
-        PathfinderRoute route = PathfinderRouteStorage.of(player.server).routeFor(level, origin, pfLevel);
+        Optional<PathfinderRoute> route = PathfinderRouteStorage.of(player.server).routeFor(level, origin, pfLevel);
+        if (route.isEmpty()) {
+            player.sendSystemMessage(Component.translatable("message.dynamicvehicles.pathfinder.route_unavailable"));
+            return;
+        }
         long now = player.server.overworld().getGameTime();
-        long timeLimitTicks = PathfinderConfig.timeLimitTicks(route, PathfinderServerConfig.TICKS_PER_LEG.get());
+        long timeLimitTicks = PathfinderConfig.timeLimitTicks(route.get(), PathfinderServerConfig.TICKS_PER_LEG.get());
 
         PathfinderAttemptRecord record = new PathfinderAttemptRecord(
                 player.getUUID(), villager.getUUID(), level.dimension().location().toString(), origin, pfLevel, now, timeLimitTicks, 0, false, false);
@@ -65,7 +72,7 @@ public final class PathfinderAttempts {
         }
 
         player.sendSystemMessage(Component.translatable("message.dynamicvehicles.pathfinder.started", pfLevel.level()));
-        sendHud(player, record, route);
+        sendHud(player, record, route.get());
     }
 
     /** Status report for a right-click while an attempt is already active, instead of refusing silently. */
@@ -90,7 +97,16 @@ public final class PathfinderAttempts {
         PacketDistributor.sendToPlayer(player, PathfinderHudPayload.inactive());
     }
 
-    /** @return the emerald count actually granted, so callers can report the exact amount instead of recomputing it. */
+    /**
+     * @return the emerald count actually granted, so callers can report the exact amount instead
+     *         of recomputing it. Reads {@code PathfinderServerConfig} at the moment of payout,
+     *         not snapshotted at attempt start — a level doesn't change mid-attempt, so this
+     *         only means a config change takes effect immediately, the same as {@link
+     *         PathfinderProgress#onReach}'s reach radius; unlike {@code timeLimitTicks}, which IS
+     *         genuinely snapshotted into {@link PathfinderAttemptRecord#timeLimitTicks()} at
+     *         start (a deadline that moved mid-attempt would be far more surprising than a
+     *         reward amount that does).
+     */
     static int grantReward(ServerPlayer player, PathfinderLevel level) {
         int amount = PathfinderConfig.rewardEmeralds(level, PathfinderServerConfig.REWARD_BASE_EMERALDS.get(), PathfinderServerConfig.REWARD_PER_LEVEL_EMERALDS.get());
         player.getInventory().placeItemBackInInventory(new ItemStack(Items.EMERALD, amount));
@@ -99,15 +115,12 @@ public final class PathfinderAttempts {
 
     /**
      * Awards {@link PathfinderVillagerLevel} progression to the specific villager a finished
-     * attempt was started at, looking it up by id in its own recorded dimension. A missing/
-     * unloaded villager (killed, chunk unloaded) just means no progression this time — the
-     * player's reward is unaffected, and the next completed attempt at any Pathfinder villager
-     * still progresses normally.
+     * attempt was started at, by UUID — independent of whether that villager's entity is
+     * currently loaded (review follow-up: a completion routinely happens with the source
+     * villager regions away and unloaded; crediting only when loaded silently dropped progress
+     * in the normal case, not a rare edge case).
      */
-    static void recordVillagerCompletion(ServerLevel dimension, PathfinderAttemptRecord record) {
-        Entity entity = dimension.getEntity(record.villagerId());
-        if (entity instanceof Villager villager) {
-            PathfinderVillagerLevel.recordCompletion(villager, PathfinderServerConfig.COMPLETIONS_TO_ADVANCE.get());
-        }
+    static void recordVillagerCompletion(PathfinderAttemptRecord record, net.minecraft.server.MinecraftServer server) {
+        PathfinderVillagerLevel.recordCompletion(server, record.villagerId(), PathfinderServerConfig.COMPLETIONS_TO_ADVANCE.get());
     }
 }

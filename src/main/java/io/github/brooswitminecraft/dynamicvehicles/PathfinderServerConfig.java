@@ -10,11 +10,25 @@ import net.neoforged.neoforge.common.ModConfigSpec;
  * server-admin-tunable without a rebuild, the same role {@code DispatcherOfferConfig} plays for
  * the Dispatcher.
  *
- * <p>Changing a value here never affects an attempt already in progress: {@code
- * PathfinderAttempts#tryStart} snapshots the current {@code ticksPerLeg}/{@code
- * reachRadius} into that attempt's own {@code PathfinderAttemptRecord}/generated {@code
- * PathfinderRoute} at start time, so a later config change only takes effect for attempts
- * started after it.
+ * <p>Per-value semantics for an attempt already in progress (corrected after an earlier,
+ * inaccurate blanket "everything is snapshotted" claim):
+ * <ul>
+ *   <li>{@code ticksPerLeg} IS genuinely snapshotted: {@code PathfinderAttempts#tryStart} reads
+ *       it once into that attempt's own {@code PathfinderAttemptRecord#timeLimitTicks()}, so a
+ *       later config change never moves an in-progress deadline.
+ *   <li>{@code reachRadius} is read fresh on every single reach check ({@code
+ *       PathfinderProgress#onReach}'s {@code reachRadius} parameter) — a change takes effect
+ *       immediately, for every in-progress attempt and every already-cached route, by design:
+ *       the checkpoint geometry a route caches ({@code PathfinderCheckpoint}) deliberately does
+ *       NOT carry its own radius, so this tunable isn't frozen at whatever it was when that
+ *       route happened to first generate.
+ *   <li>{@code rewardBaseEmeralds}/{@code rewardPerLevelEmeralds} are read at the moment of
+ *       payout ({@code PathfinderAttempts#grantReward}), not at attempt start — a level can't
+ *       change mid-attempt, so this just means a config change takes effect on the very next
+ *       completion, which is intended, not a bug.
+ *   <li>{@code completionsToAdvance} is read at the moment a completion is recorded, same
+ *       reasoning as the reward values.
+ * </ul>
  */
 public final class PathfinderServerConfig {
     public static final ModConfigSpec SPEC;

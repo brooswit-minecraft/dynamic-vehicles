@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Server-wide cache of generated {@link PathfinderRoute}s, keyed by
@@ -26,6 +27,12 @@ import java.util.Map;
  * persisting the result is what keeps a route stable across retries,
  * reloads and later infrastructure edits, per MINECRAFT-379's review
  * follow-up.
+ *
+ * <p>{@link #routeFor} returns {@link Optional#empty()}, and caches
+ * nothing, when generation fails (every checkpoint's placement search
+ * came up empty) — review follow-up: never cache/start an unsafe or
+ * invalid route. A later call (terrain changed, hazard cleared) can still
+ * succeed and cache normally.
  */
 public final class PathfinderRouteStorage extends SavedData {
     private static final String NAME = "dynamicvehicles_pathfinder_routes";
@@ -38,16 +45,34 @@ public final class PathfinderRouteStorage extends SavedData {
     }
 
     /** Returns the cached route for this key, generating and persisting one via {@code dimension} if absent. */
-    public PathfinderRoute routeFor(ServerLevel dimension, PathfinderRegion origin, PathfinderLevel level) {
+    public Optional<PathfinderRoute> routeFor(ServerLevel dimension, PathfinderRegion origin, PathfinderLevel level) {
         String key = key(dimension, origin, level);
         PathfinderRoute cached = routes.get(key);
         if (cached != null) {
-            return cached;
+            return Optional.of(cached);
         }
-        PathfinderRoute generated = PathfinderRouteGenerator.generate(origin, level, new PathfinderTerrainPlacer(dimension));
-        routes.put(key, generated);
-        setDirty();
+        Optional<PathfinderRoute> generated = PathfinderRouteGenerator.generate(origin, level, new PathfinderTerrainPlacer(dimension));
+        generated.ifPresent(route -> {
+            routes.put(key, route);
+            setDirty();
+        });
         return generated;
+    }
+
+    /**
+     * Test-only seam: seeds the cache directly with an already-built route (typically one
+     * generated with {@link PathfinderCheckpointPlacer#DEFAULT_UNPLACED}, which always
+     * succeeds), bypassing real terrain placement. For GameTests exercising attempt lifecycle
+     * behavior (start/death/completion/expiry) rather than terrain safety itself — the GameTest
+     * server's own "Test Level" dimension is void far from any test structure, so a real
+     * region-center candidate for a villager spawned there routinely has no terrain at all, and
+     * {@link PathfinderTerrainPlacer} now correctly fails closed on that (see its own review
+     * follow-up) rather than returning a nonsense fallback position. Terrain-safety behavior
+     * itself is covered directly against {@link PathfinderTerrainPlacer} in {@code
+     * PathfinderGameTests}' own terrain tests.
+     */
+    void seedForTest(ServerLevel dimension, PathfinderRegion origin, PathfinderLevel level, PathfinderRoute route) {
+        routes.put(key(dimension, origin, level), route);
     }
 
     private static String key(ServerLevel dimension, PathfinderRegion origin, PathfinderLevel level) {
@@ -70,7 +95,7 @@ public final class PathfinderRouteStorage extends SavedData {
                 PathfinderPosition position = new PathfinderPosition(
                         checkpointTag.getString("Dimension"),
                         checkpointTag.getDouble("X"), checkpointTag.getDouble("Y"), checkpointTag.getDouble("Z"));
-                checkpoints.add(new PathfinderCheckpoint(region, position, checkpointTag.getDouble("ReachRadius")));
+                checkpoints.add(new PathfinderCheckpoint(region, position));
             }
             storage.routes.put(key, new PathfinderRoute(origin, level, checkpoints));
         }
@@ -96,7 +121,6 @@ public final class PathfinderRouteStorage extends SavedData {
                 checkpointTag.putDouble("X", checkpoint.position().x());
                 checkpointTag.putDouble("Y", checkpoint.position().y());
                 checkpointTag.putDouble("Z", checkpoint.position().z());
-                checkpointTag.putDouble("ReachRadius", checkpoint.reachRadius());
                 checkpointList.add(checkpointTag);
             }
             routeTag.put("Checkpoints", checkpointList);

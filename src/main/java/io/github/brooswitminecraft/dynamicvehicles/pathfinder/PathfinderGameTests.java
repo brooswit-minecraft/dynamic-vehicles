@@ -44,6 +44,38 @@ public final class PathfinderGameTests {
     }
 
     /**
+     * Seeds {@code villager}'s level-1 route with the placeholder placer (always succeeds),
+     * bypassing real terrain placement, for tests exercising attempt lifecycle behavior rather
+     * than terrain safety itself. See {@link PathfinderRouteStorage#seedForTest}'s own javadoc
+     * for why: the GameTest server's "Test Level" dimension is void far from any test
+     * structure, and a villager's real region-center candidate routinely lands there, which
+     * {@link PathfinderTerrainPlacer} now correctly refuses (fail-closed, review follow-up)
+     * rather than returning a nonsense fallback.
+     */
+    private static void seedLevel1RouteForTest(GameTestHelper helper, Villager villager) {
+        PathfinderRegion origin = PathfinderAttempts.regionOf(villager);
+        String dimensionId = helper.getLevel().dimension().location().toString();
+        // DEFAULT_UNPLACED's own placeholder dimension ("unplaced") would fail every proximity
+        // check against a real player's real dimension - this is the same placeholder math with
+        // the GameTest level's own real dimension id instead, so teleporting a real player to a
+        // checkpoint's position actually counts as reaching it.
+        PathfinderCheckpointPlacer realDimensionPlaceholder = (region, indexInRegion, countInRegion) -> {
+            double centerX = region.x() * (double) PathfinderRegion.SIZE_BLOCKS + PathfinderRegion.SIZE_BLOCKS / 2.0;
+            double centerZ = region.z() * (double) PathfinderRegion.SIZE_BLOCKS + PathfinderRegion.SIZE_BLOCKS / 2.0;
+            double x = centerX;
+            double z = centerZ;
+            if (countInRegion > 1) {
+                double angle = 2 * Math.PI * indexInRegion / countInRegion;
+                x += PathfinderCheckpointPlacer.DEFAULT_LOOP_RADIUS_BLOCKS * Math.cos(angle);
+                z += PathfinderCheckpointPlacer.DEFAULT_LOOP_RADIUS_BLOCKS * Math.sin(angle);
+            }
+            return java.util.Optional.of(new PathfinderCheckpoint(region, new PathfinderPosition(dimensionId, x, 0, z)));
+        };
+        PathfinderRoute route = PathfinderRouteGenerator.generate(origin, PathfinderLevel.LEVEL_1, realDimensionPlaceholder).orElseThrow();
+        PathfinderRouteStorage.of(helper.getLevel().getServer()).seedForTest(helper.getLevel(), origin, PathfinderLevel.LEVEL_1, route);
+    }
+
+    /**
      * Regression for a real bug found while writing this test: the Route Board's PoiType was
      * correctly registered and correctly backed the block, but nothing had added
      * {@code dynamicvehicles:route_board} to the vanilla {@code acquirable_job_site} POI tag
@@ -84,6 +116,7 @@ public final class PathfinderGameTests {
     public static void rightClickingAPathfinderStartsAnAttempt(GameTestHelper helper) {
         Villager villager = helper.spawn(EntityType.VILLAGER, new BlockPos(2, 2, 2));
         villager.setVillagerData(villager.getVillagerData().setProfession(PathfinderProfession.PATHFINDER.get()));
+        seedLevel1RouteForTest(helper, villager);
         // A fresh villager's own Pathfinder progression (PathfinderVillagerLevel, persistent-data-backed,
         // NOT VillagerData's level) defaults to 1 - see anti-bypass note on PathfinderVillagerProgress.
         ServerPlayer player = GameTestMockPlayers.create(helper);
@@ -106,6 +139,7 @@ public final class PathfinderGameTests {
     public static void aSecondRightClickWhileActiveDoesNotStartASecondAttempt(GameTestHelper helper) {
         Villager villager = helper.spawn(EntityType.VILLAGER, new BlockPos(2, 2, 2));
         villager.setVillagerData(villager.getVillagerData().setProfession(PathfinderProfession.PATHFINDER.get()));
+        seedLevel1RouteForTest(helper, villager);
         // A fresh villager's own Pathfinder progression (PathfinderVillagerLevel, persistent-data-backed,
         // NOT VillagerData's level) defaults to 1 - see anti-bypass note on PathfinderVillagerProgress.
         ServerPlayer player = GameTestMockPlayers.create(helper);
@@ -133,6 +167,7 @@ public final class PathfinderGameTests {
     public static void completingTheLastCheckpointAndClosingLegGrantsRewardAndClearsTheAttempt(GameTestHelper helper) {
         Villager villager = helper.spawn(EntityType.VILLAGER, new BlockPos(2, 2, 2));
         villager.setVillagerData(villager.getVillagerData().setProfession(PathfinderProfession.PATHFINDER.get()));
+        seedLevel1RouteForTest(helper, villager);
         // A fresh villager's own Pathfinder progression (PathfinderVillagerLevel, persistent-data-backed,
         // NOT VillagerData's level) defaults to 1 - see anti-bypass note on PathfinderVillagerProgress.
         ServerPlayer player = GameTestMockPlayers.create(helper);
@@ -145,7 +180,7 @@ public final class PathfinderGameTests {
         PathfinderAttemptStorage storage = PathfinderAttemptStorage.of(server);
         PathfinderAttemptRecord record = storage.active(player.getUUID()).orElseThrow();
         ServerLevel dimension = helper.getLevel();
-        PathfinderRoute route = PathfinderRouteStorage.of(server).routeFor(dimension, record.origin(), record.level());
+        PathfinderRoute route = PathfinderRouteStorage.of(server).routeFor(dimension, record.origin(), record.level()).orElseThrow();
         int lastIndex = route.checkpoints().size() - 1;
 
         // Jump straight to "one checkpoint left" via the same storage API a reload would use,
@@ -171,7 +206,7 @@ public final class PathfinderGameTests {
             int emeralds = player.getInventory().countItem(Items.EMERALD);
             int expected = PathfinderConfig.rewardEmeralds(record.level());
             helper.assertTrue(emeralds == expected, "expected " + expected + " emerald(s) rewarded, got " + emeralds);
-            PathfinderVillagerProgress.State villagerState = PathfinderVillagerLevel.state(villager);
+            PathfinderVillagerProgress.State villagerState = PathfinderVillagerLevel.stateOf(server, villager.getUUID());
             helper.assertTrue(villagerState.completionsAtLevel() == 1,
                     "the villager's own completion count should have advanced once the attempt it started finished");
         });
@@ -192,23 +227,51 @@ public final class PathfinderGameTests {
         villager.setVillagerData(villager.getVillagerData().setLevel(5).setProfession(PathfinderProfession.PATHFINDER.get()));
 
         helper.assertTrue(villager.getVillagerData().getLevel() == 5, "sanity: VillagerData's own level should still read 5");
-        helper.assertTrue(PathfinderAttempts.levelOf(villager) == PathfinderLevel.LEVEL_1,
+        helper.assertTrue(PathfinderAttempts.levelOf(helper.getLevel(), villager) == PathfinderLevel.LEVEL_1,
                 "a villager's vanilla trade level must never unlock a Pathfinder level it hasn't earned through actual completions");
         helper.succeed();
     }
 
-    /** {@link PathfinderVillagerProgress}'s threshold, exercised against a real {@link Villager} entity's persistent data. */
+    /** {@link PathfinderVillagerProgress}'s threshold, exercised against a real villager's UUID. */
     @GameTest(template = "dispatch_profession", timeoutTicks = 100)
     public static void pathfinderVillagerLevelAdvancesAfterThreeCompletions(GameTestHelper helper) {
         Villager villager = helper.spawn(EntityType.VILLAGER, new BlockPos(2, 2, 2));
-        helper.assertTrue(PathfinderVillagerLevel.levelOf(villager) == PathfinderLevel.LEVEL_1, "a fresh villager should start at Pathfinder level 1");
+        MinecraftServer server = helper.getLevel().getServer();
+        helper.assertTrue(PathfinderVillagerLevel.levelOf(server, villager.getUUID()) == PathfinderLevel.LEVEL_1,
+                "a fresh villager should start at Pathfinder level 1");
 
-        PathfinderVillagerLevel.recordCompletion(villager);
-        PathfinderVillagerLevel.recordCompletion(villager);
-        helper.assertTrue(PathfinderVillagerLevel.levelOf(villager) == PathfinderLevel.LEVEL_1, "two completions should not yet advance the level");
+        int threshold = PathfinderVillagerProgress.DEFAULT_COMPLETIONS_TO_ADVANCE;
+        PathfinderVillagerLevel.recordCompletion(server, villager.getUUID(), threshold);
+        PathfinderVillagerLevel.recordCompletion(server, villager.getUUID(), threshold);
+        helper.assertTrue(PathfinderVillagerLevel.levelOf(server, villager.getUUID()) == PathfinderLevel.LEVEL_1,
+                "two completions should not yet advance the level");
 
-        PathfinderVillagerLevel.recordCompletion(villager);
-        helper.assertTrue(PathfinderVillagerLevel.levelOf(villager) == PathfinderLevel.LEVEL_2, "the third completion should advance to level 2");
+        PathfinderVillagerLevel.recordCompletion(server, villager.getUUID(), threshold);
+        helper.assertTrue(PathfinderVillagerLevel.levelOf(server, villager.getUUID()) == PathfinderLevel.LEVEL_2,
+                "the third completion should advance to level 2");
+        helper.succeed();
+    }
+
+    /**
+     * Review follow-up: progression must be credited "independently of loaded entities" - this
+     * proves it directly, with no {@link Villager} entity ever spawned for this UUID in this
+     * test at all. A real completion still looks up the villager by UUID in a possibly-unloaded
+     * dimension ({@code PathfinderAttempts#recordVillagerCompletion}), but the credit itself,
+     * exercised here, has no dependency on that lookup succeeding.
+     */
+    @GameTest(template = "dispatch_profession", timeoutTicks = 100)
+    public static void villagerProgressionIsCreditedByUuidWithNoLoadedEntityAtAll(GameTestHelper helper) {
+        java.util.UUID neverSpawnedVillagerId = java.util.UUID.randomUUID();
+        MinecraftServer server = helper.getLevel().getServer();
+        int threshold = PathfinderVillagerProgress.DEFAULT_COMPLETIONS_TO_ADVANCE;
+
+        helper.assertTrue(PathfinderVillagerLevel.levelOf(server, neverSpawnedVillagerId) == PathfinderLevel.LEVEL_1,
+                "an unknown villager id should default to level 1, not error");
+        for (int i = 0; i < threshold; i++) {
+            PathfinderVillagerLevel.recordCompletion(server, neverSpawnedVillagerId, threshold);
+        }
+        helper.assertTrue(PathfinderVillagerLevel.levelOf(server, neverSpawnedVillagerId) == PathfinderLevel.LEVEL_2,
+                "progression must be credited by UUID alone, independent of any loaded entity");
         helper.succeed();
     }
 
@@ -217,6 +280,7 @@ public final class PathfinderGameTests {
     public static void deathClearsTheActiveAttempt(GameTestHelper helper) {
         Villager villager = helper.spawn(EntityType.VILLAGER, new BlockPos(2, 2, 2));
         villager.setVillagerData(villager.getVillagerData().setProfession(PathfinderProfession.PATHFINDER.get()));
+        seedLevel1RouteForTest(helper, villager);
         ServerPlayer player = GameTestMockPlayers.create(helper);
         player.moveTo(helper.absolutePos(new BlockPos(2, 2, 3)).getCenter());
         declarePathfinderHudChannel(player);
@@ -236,6 +300,7 @@ public final class PathfinderGameTests {
     public static void endConqueredRespawnDoesNotClearTheActiveAttempt(GameTestHelper helper) {
         Villager villager = helper.spawn(EntityType.VILLAGER, new BlockPos(2, 2, 2));
         villager.setVillagerData(villager.getVillagerData().setProfession(PathfinderProfession.PATHFINDER.get()));
+        seedLevel1RouteForTest(helper, villager);
         ServerPlayer player = GameTestMockPlayers.create(helper);
         player.moveTo(helper.absolutePos(new BlockPos(2, 2, 3)).getCenter());
         declarePathfinderHudChannel(player);
@@ -247,6 +312,111 @@ public final class PathfinderGameTests {
 
         helper.assertTrue(storage.active(player.getUUID()).isPresent(), "an end-portal respawn must not fail the active attempt");
         helper.succeed();
+    }
+
+    /**
+     * Review follow-up: death must fail the attempt AT THE MOMENT OF DEATH, not deferred to
+     * respawn - triggered here via a real death ({@code player.kill}, which fires the real
+     * {@code LivingDeathEvent} through NeoForge's normal event hooks), not by calling the
+     * handler method directly, so this also proves the event is actually wired up in {@code
+     * DynamicVehiclesMod}, not just correct in isolation.
+     */
+    @GameTest(template = "dispatch_profession", timeoutTicks = 100)
+    public static void aRealDeathClearsTheActiveAttemptImmediately(GameTestHelper helper) {
+        Villager villager = helper.spawn(EntityType.VILLAGER, new BlockPos(2, 2, 2));
+        villager.setVillagerData(villager.getVillagerData().setProfession(PathfinderProfession.PATHFINDER.get()));
+        seedLevel1RouteForTest(helper, villager);
+        ServerPlayer player = GameTestMockPlayers.create(helper);
+        player.moveTo(helper.absolutePos(new BlockPos(2, 2, 3)).getCenter());
+        declarePathfinderHudChannel(player);
+
+        PathfinderInteractionHandler.onEntityInteract(new PlayerInteractEvent.EntityInteract(player, InteractionHand.MAIN_HAND, villager));
+        PathfinderAttemptStorage storage = PathfinderAttemptStorage.of(helper.getLevel().getServer());
+        helper.assertTrue(storage.active(player.getUUID()).isPresent(), "the attempt should be active before the death");
+
+        player.kill();
+
+        helper.assertTrue(storage.active(player.getUUID()).isEmpty(),
+                "a real death must clear the active attempt immediately, via the actual wired-up LivingDeathEvent listener");
+        helper.succeed();
+    }
+
+    /**
+     * Review follow-up defense-in-depth: {@code onServerTick} must skip (never advance/complete)
+     * a dead player's attempt. The primary fix is clearing at death itself ({@link
+     * #aRealDeathClearsTheActiveAttemptImmediately}); this test exercises the {@code isAlive()}
+     * guard directly by constructing the "attempt still technically active, player not alive"
+     * state the guard exists for (bypassing the death-clears-it path, which would otherwise make
+     * this state unreachable in a controlled test).
+     */
+    @GameTest(template = "dispatch_profession", timeoutTicks = 100)
+    public static void aDeadPlayersAttemptIsNotEvaluatedByTheServerTick(GameTestHelper helper) {
+        Villager villager = helper.spawn(EntityType.VILLAGER, new BlockPos(2, 2, 2));
+        villager.setVillagerData(villager.getVillagerData().setProfession(PathfinderProfession.PATHFINDER.get()));
+        seedLevel1RouteForTest(helper, villager);
+        ServerPlayer player = GameTestMockPlayers.create(helper);
+        player.moveTo(helper.absolutePos(new BlockPos(2, 2, 3)).getCenter());
+        declarePathfinderHudChannel(player);
+
+        PathfinderInteractionHandler.onEntityInteract(new PlayerInteractEvent.EntityInteract(player, InteractionHand.MAIN_HAND, villager));
+        MinecraftServer server = helper.getLevel().getServer();
+        PathfinderAttemptStorage storage = PathfinderAttemptStorage.of(server);
+        PathfinderAttemptRecord record = storage.active(player.getUUID()).orElseThrow();
+        ServerLevel dimension = helper.getLevel();
+        PathfinderRoute route = PathfinderRouteStorage.of(server).routeFor(dimension, record.origin(), record.level()).orElseThrow();
+
+        // Stand the player exactly on the next checkpoint, then make them not-alive without going
+        // through the normal death event (so the attempt is deliberately left active, the one
+        // state the isAlive() guard protects, which a real death would have already cleared).
+        PathfinderCheckpoint next = route.checkpoints().get(0);
+        player.teleportTo(next.position().x(), next.position().y(), next.position().z());
+        player.setHealth(0.0F);
+        helper.assertTrue(!player.isAlive(), "sanity: the player must actually read as not-alive for this guard to matter");
+
+        helper.runAfterDelay(25, () -> {
+            helper.assertTrue(storage.active(player.getUUID()).map(PathfinderAttemptRecord::reachedCount).orElse(-1) == 0,
+                    "a server tick must not advance a dead player's attempt");
+            helper.succeed();
+        });
+    }
+
+    /**
+     * Review follow-up: the terrain search must fail closed, not cache/return the original
+     * unsafe candidate when every searched offset is also unsafe. Poisons the candidate AND
+     * every one of {@link PathfinderTerrainSearch#offsets()}'s columns with lava underfoot, at a
+     * fully self-constructed, known Y (not relying on any naturally generated terrain at those
+     * columns, which this test does not otherwise control), then drives the real search loop via
+     * {@link PathfinderTerrainPlacer}'s package-visible {@code placeAt}.
+     */
+    @GameTest(template = "dispatch_profession", timeoutTicks = 100)
+    public static void placeFailsClosedWhenEveryCandidateColumnIsUnsafe(GameTestHelper helper) {
+        BlockPos anchor = helper.absolutePos(new BlockPos(2, 2, 2));
+        ServerLevel level = helper.getLevel();
+        poisonColumnWithLava(level, anchor.getX(), anchor.getY(), anchor.getZ());
+        for (int[] offset : PathfinderTerrainSearch.offsets()) {
+            poisonColumnWithLava(level, anchor.getX() + offset[0], anchor.getY(), anchor.getZ() + offset[1]);
+        }
+
+        PathfinderTerrainPlacer placer = new PathfinderTerrainPlacer(level);
+        var result = placer.placeAt(new PathfinderRegion(0, 0), anchor.getX(), anchor.getZ());
+
+        helper.assertTrue(result.isEmpty(), "every candidate column was made unsafe, so placement must fail closed, not return a fallback");
+        helper.succeed();
+    }
+
+    /**
+     * Sets a known lava footing at {@code y}, AND clears a generous span above it - not just the
+     * two headroom blocks {@code isSafeColumn} itself checks - so {@code getHeight(...)} (which
+     * finds the TOPMOST motion-blocking block in the whole column) can't still see some taller,
+     * untouched block from whatever this column's terrain already was and report a surface
+     * higher than {@code y}, which would make the lava footing below it irrelevant to the
+     * column {@code isSafeColumn} actually ends up checking.
+     */
+    private static void poisonColumnWithLava(ServerLevel level, int x, int y, int z) {
+        level.setBlockAndUpdate(new BlockPos(x, y - 1, z), net.minecraft.world.level.block.Blocks.LAVA.defaultBlockState());
+        for (int dy = 0; dy <= 20; dy++) {
+            level.setBlockAndUpdate(new BlockPos(x, y + dy, z), net.minecraft.world.level.block.Blocks.AIR.defaultBlockState());
+        }
     }
 
     /**
@@ -351,5 +521,58 @@ public final class PathfinderGameTests {
         helper.assertTrue(reloadedAfterClear.active(record.playerId()).isEmpty(),
                 "a cleared attempt must not reappear after a save/reload round trip (no duplicate reward on reload)");
         helper.succeed();
+    }
+
+    /**
+     * Review follow-up: "the gameTime clock also needs the requested disconnect/reload expiry
+     * coverage; don't claim wall-clock server-downtime expiry from game ticks." The deadline is,
+     * and only ever was, {@code startTick + timeLimitTicks} in {@code MinecraftServer#overworld()
+     * .getGameTime()} ticks (confirmed here with a real, persisted, re-loaded record and a real
+     * server tick) - never wall-clock time: a server that is actually stopped does not advance
+     * game time at all, so downtime during a real restart does not count against a player, which
+     * is a different (and already-true) property from "disconnected while the server keeps
+     * running does not pause the clock" (the selected death/disconnect policy - no special
+     * pause mechanism, by design).
+     */
+    @GameTest(template = "dispatch_profession", timeoutTicks = 100)
+    public static void persistedAttemptExpiresByElapsedGameTicksNotWallClock(GameTestHelper helper) {
+        MinecraftServer server = helper.getLevel().getServer();
+        ServerPlayer player = GameTestMockPlayers.create(helper);
+        declarePathfinderHudChannel(player);
+        PathfinderAttemptStorage storage = PathfinderAttemptStorage.of(server);
+        PathfinderRegion origin = new PathfinderRegion(0, 0);
+        String dimensionId = helper.getLevel().dimension().location().toString();
+        // Seed the route cache directly (same reasoning as seedLevel1RouteForTest): this test is
+        // about expiry timing, not terrain placement, and a real region(0,0) candidate would
+        // routinely land in this GameTest world's own void far from any test structure.
+        PathfinderRoute route = PathfinderRouteGenerator.generate(origin, PathfinderLevel.LEVEL_2,
+                (region, indexInRegion, countInRegion) -> java.util.Optional.of(new PathfinderCheckpoint(region, new PathfinderPosition(dimensionId, 0, 0, 0))))
+                .orElseThrow();
+        PathfinderRouteStorage.of(server).seedForTest(helper.getLevel(), origin, PathfinderLevel.LEVEL_2, route);
+
+        long startTick = server.overworld().getGameTime();
+        var record = new PathfinderAttemptRecord(player.getUUID(), java.util.UUID.randomUUID(),
+                dimensionId, origin, PathfinderLevel.LEVEL_2, startTick, PathfinderTickHandler.EVALUATE_INTERVAL_TICKS, 0, false, false);
+        helper.assertTrue(storage.tryStart(record), "starting a fresh attempt should succeed");
+
+        // Simulate a reload: reconstruct storage from a real save/load round trip, exactly as a
+        // server restart would, before the next tick evaluates it - the deadline must survive
+        // that round trip exactly (same startTick/timeLimitTicks), not be silently reset.
+        var saved = storage.save(new net.minecraft.nbt.CompoundTag(), helper.getLevel().registryAccess());
+        var reloaded = PathfinderAttemptStorage.load(saved, helper.getLevel().registryAccess());
+        storage.update(reloaded.active(record.playerId()).orElseThrow());
+
+        // EVALUATE_INTERVAL_TICKS worth of real SERVER ticks is exactly what the deadline is
+        // measured in - the whole point: it is game time, not wall-clock time, and it survived
+        // the reload unchanged. Waits two full evaluation cycles' worth: onServerTick only
+        // evaluates on ticks aligned to EVALUATE_INTERVAL_TICKS (a GLOBAL counter, not relative
+        // to this attempt's own startTick), so depending on this test's phase within that cycle
+        // when it starts, the first aligned tick reached might still be short of the deadline by
+        // up to nearly one full interval - a second cycle guarantees catching it regardless.
+        helper.runAfterDelay(2L * PathfinderTickHandler.EVALUATE_INTERVAL_TICKS + 10L, () -> {
+            helper.assertTrue(storage.active(record.playerId()).isEmpty(),
+                    "the reloaded attempt must have expired by now, purely from elapsed game ticks");
+            helper.succeed();
+        });
     }
 }

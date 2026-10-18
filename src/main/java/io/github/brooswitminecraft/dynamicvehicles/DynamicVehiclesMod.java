@@ -154,6 +154,7 @@ public class DynamicVehiclesMod {
         NeoForge.EVENT_BUS.addListener(PathfinderTickHandler::onServerTick);
         NeoForge.EVENT_BUS.addListener(PathfinderTickHandler::onPlayerLoggedIn);
         NeoForge.EVENT_BUS.addListener(PathfinderTickHandler::onPlayerRespawn);
+        NeoForge.EVENT_BUS.addListener(PathfinderTickHandler::onLivingDeath);
     }
 
     private void registerPayloads(net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent event) {

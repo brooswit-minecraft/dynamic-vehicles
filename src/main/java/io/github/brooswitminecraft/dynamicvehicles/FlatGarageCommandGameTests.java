@@ -59,4 +59,29 @@ public final class FlatGarageCommandGameTests {
         helper.assertTrue(landing.equals(target), "an already-safe landing on a real full block was moved: " + landing);
         helper.succeed();
     }
+
+    /**
+     * MINECRAFT-406 regression: a column whose chunk has never been loaded or generated must
+     * still find the real floor there, not read as "unobstructed" everywhere. Before the fix,
+     * {@code ServerLevel#noCollision} resolved to {@code Level#getChunkForCollisions}, which
+     * fetches the chunk with {@code load=false}; for a column nobody has ever visited that
+     * returns {@code null}, and {@code BlockCollisions} silently skips a {@code null} chunk
+     * instead of treating it as solid - so every Y, including the floor, read as clear and no
+     * landing could ever be found.
+     *
+     * <p>This test's target is thousands of blocks from the {@code settlement_test} structure,
+     * a column this GameTest server's own world (a superflat preset - see
+     * {@code GameTestServer}'s {@code WorldPresets.FLAT}) has never touched, reproducing that
+     * exact "ungenerated destination chunk" condition without touching any live player's world.
+     */
+    @GameTest(template = "settlement_test")
+    public static void firstVisitToAnUngeneratedChunkStillFindsTheRealFloorBelowIt(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        BlockPos target = new BlockPos(100_000, level.getMinBuildHeight() + 4, 100_000);
+
+        BlockPos landing = FlatGarageCommand.findSafeLanding(level, target);
+
+        helper.assertTrue(landing != null, "no safe landing was found in a never-visited chunk");
+        helper.succeed();
+    }
 }

@@ -3,9 +3,17 @@ package io.github.brooswitminecraft.dynamicvehicles.town;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+/**
+ * Two regions sharing an EAST/WEST (or NORTH/SOUTH) boundary never occupy the same block column —
+ * region A's EAST edge sits at its own max-X column, its east neighbor's WEST edge sits one column
+ * further out, at ITS own min-X column. What must agree between them is the perpendicular "offset
+ * along the edge" coordinate (Z for an EAST/WEST pair, X for a NORTH/SOUTH pair) — that is the
+ * actual shared-edge-point agreement MINECRAFT-388 asks for, not literal identical block
+ * coordinates on an axis that can never be shared between two disjoint regions in the first place.
+ */
 class RoadEdgePlannerTest {
     private static final long SEED = 987654321L;
 
@@ -19,7 +27,8 @@ class RoadEdgePlannerTest {
 
         int[] absoluteFromA = RoadEdgePlanner.absolutePosition(a, TownEdge.EAST, fromA);
         int[] absoluteFromB = RoadEdgePlanner.absolutePosition(b, TownEdge.WEST, fromB);
-        assertArrayEquals(absoluteFromA, absoluteFromB);
+        assertEquals(absoluteFromA[1], absoluteFromB[1], "the shared Z offset along an EAST/WEST boundary must agree");
+        assertEquals(absoluteFromA[0] + 1, absoluteFromB[0], "b's west edge column should sit exactly one block east of a's east edge column");
     }
 
     @Test
@@ -32,7 +41,8 @@ class RoadEdgePlannerTest {
 
         int[] absoluteFromA = RoadEdgePlanner.absolutePosition(a, TownEdge.NORTH, fromA);
         int[] absoluteFromB = RoadEdgePlanner.absolutePosition(b, TownEdge.SOUTH, fromB);
-        assertArrayEquals(absoluteFromA, absoluteFromB);
+        assertEquals(absoluteFromA[0], absoluteFromB[0], "the shared X offset along a NORTH/SOUTH boundary must agree");
+        assertEquals(absoluteFromA[1] - 1, absoluteFromB[1], "b's south edge row should sit exactly one block north of a's north edge row");
     }
 
     @Test
@@ -45,7 +55,7 @@ class RoadEdgePlannerTest {
 
         int[] absoluteFromA = RoadEdgePlanner.absolutePosition(a, TownEdge.EAST, fromA);
         int[] absoluteFromB = RoadEdgePlanner.absolutePosition(b, TownEdge.WEST, fromB);
-        assertArrayEquals(absoluteFromA, absoluteFromB);
+        assertEquals(absoluteFromA[1], absoluteFromB[1], "the shared Z offset must agree even for negative region coordinates");
     }
 
     @Test

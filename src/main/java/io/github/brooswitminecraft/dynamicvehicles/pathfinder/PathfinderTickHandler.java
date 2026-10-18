@@ -17,15 +17,24 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * The coarse server timer that evaluates each online player's active Pathfinder attempt against
- * their live position every {@link #EVALUATE_INTERVAL_TICKS} ticks — mirrors {@code
- * delivery.ContractTickHandler}'s shape. Works on foot or in a vehicle equally (MINECRAFT-379's
- * requirement): this only ever reads {@link ServerPlayer#blockPosition()}/{@link
+ * The server timer that evaluates each online player's active Pathfinder attempt against their
+ * live position every {@link #EVALUATE_INTERVAL_TICKS} ticks. Works on foot or in a vehicle
+ * equally (MINECRAFT-379's requirement): this only ever reads {@link ServerPlayer#blockPosition()}/{@link
  * ServerPlayer#level()}, never anything about how the player got there.
+ *
+ * <p>MINECRAFT-409: unlike {@code delivery.ContractTickHandler}'s 20-tick batching (which this
+ * used to mirror), arrival here is chunk membership, not a persistent proximity condition — a
+ * player or vehicle that enters and leaves the target chunk entirely between two widely-spaced
+ * samples is never seen in it at all, so credit is simply missed, not merely delayed. No fixed
+ * entity moves anywhere close to a 16-block chunk width in a single tick, so evaluating every
+ * tick (rather than every {@code EVALUATE_INTERVAL_TICKS}) is what actually closes that gap,
+ * at a cost of a cheap, already-cached-route chunk comparison per online attempt per tick — the
+ * expensive, durability-checked I/O below only runs on an actual state transition, exactly as
+ * before.
  */
 public final class PathfinderTickHandler {
 
-    static final int EVALUATE_INTERVAL_TICKS = 20;
+    static final int EVALUATE_INTERVAL_TICKS = 1;
 
     private PathfinderTickHandler() {
     }
@@ -165,6 +174,12 @@ public final class PathfinderTickHandler {
             PathfinderAttemptRecord updated = record.withProgress(progress);
             storage.update(updated);
             PathfinderAttempts.sendHud(player, updated, route);
+            // MINECRAFT-409: an intermediate checkpoint used to update the HUD payload silently -
+            // the HUD count ticking up is easy to miss (it's a small corner overlay, not something
+            // a player is staring at while navigating), so "credited but no visible feedback" read
+            // to a player as "nothing happened" even when the attempt progressed correctly.
+            player.sendSystemMessage(Component.translatable("message.dynamicvehicles.pathfinder.checkpoint_reached",
+                    updated.reachedCount(), route.checkpoints().size()));
         }
     }
 

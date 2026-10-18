@@ -15,4 +15,9 @@ final class VehicleIds {
     static final String TRUCK = "truck";
     static final String TROPHY_TRUCK = "trophy_truck";
     static final String DRIFT_CAR = "drift_car";
+
+    /** MINECRAFT-380: a watercraft, a rotor-powered aircraft and a fixed-wing aircraft. */
+    static final String MOTORBOAT = "motorboat";
+    static final String CHOPPER = "chopper";
+    static final String BIPLANE = "biplane";
 }

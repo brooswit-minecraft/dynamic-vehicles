@@ -109,7 +109,18 @@ final class RadioAudioStream implements AudioStream {
         AudioFormat format = new AudioFormat((float) firstFrame.getSampleFrequency(), 16, 1, true, false);
 
         PcmChunkPipe pipe = new PcmChunkPipe(QUEUE_CAPACITY_CHUNKS);
-        Thread thread = new Thread(() -> decodeLoop(url, bitstream, decoder, firstFrame, in, pipe),
+        try {
+            // Small, bounded quality improvement (not required for correctness -- PcmChunkPipe.drain's
+            // silence-fill already makes every attachBufferStream pump slot safe either way): firstFrame
+            // was already decoded synchronously above on this thread, so enqueue it right here instead of
+            // leaving it to race the brand-new decode thread below. This can only shrink how much silence
+            // the very first attachBufferStream pump ever has to pad with, never block meaningfully -- the
+            // queue is freshly created and empty, so put() cannot block on capacity here.
+            putSamples(firstFrame, pipe);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        Thread thread = new Thread(() -> decodeLoop(url, bitstream, decoder, in, pipe),
                 "dynamicvehicles-radio-decode");
         thread.setDaemon(true);
         thread.start();
@@ -118,11 +129,11 @@ final class RadioAudioStream implements AudioStream {
 
     /** Runs entirely on the background decode thread started by {@link #open}; never touches OpenAL and
      * never runs on vanilla's shared sound executor, so it is free to block on the network or on the
-     * pipe filling up. */
-    private static void decodeLoop(String url, Bitstream bitstream, Decoder decoder, SampleBuffer firstFrame,
-            InputStream in, PcmChunkPipe pipe) {
+     * pipe filling up. The very first frame is enqueued by {@link #open} itself, before this thread even
+     * starts -- this loop only ever handles the second frame onwards. */
+    private static void decodeLoop(String url, Bitstream bitstream, Decoder decoder, InputStream in,
+            PcmChunkPipe pipe) {
         try {
-            putSamples(firstFrame, pipe);
             while (!Thread.currentThread().isInterrupted()) {
                 Header header = bitstream.readFrame();
                 if (header == null) {
@@ -139,11 +150,17 @@ final class RadioAudioStream implements AudioStream {
         } catch (BitstreamException | javazoom.jl.decoder.DecoderException | RuntimeException e) {
             // Connection dropped, timed out, or the stream stopped parsing as MP3 mid-way (a transcoder
             // hiccup, an Icecast metadata block we don't expect, the station going offline). Logged once
-            // here; this thread simply stops producing -- once whatever is already queued in the pipe is
-            // drained, read() naturally starts returning null every time (see PcmChunkPipe's javadoc),
-            // which is all vanilla's Channel ever needs to eventually let this station's channel stop.
+            // here; this thread simply stops producing -- markEndOfStream() below tells the pipe this is
+            // genuine, permanent end of stream rather than a momentary stall, so read() starts returning
+            // real (not silence-padded) partial data followed by null once the pipe is truly drained (see
+            // PcmChunkPipe's javadoc), which is all vanilla's Channel ever needs to eventually let this
+            // station's channel stop.
             DynamicVehiclesMod.LOGGER.info("Radio stream {} ended: {}", url, e.toString());
         } finally {
+            // Must run for every exit path above (clean EOF, decode error, or close()/interruption) --
+            // without this, a merely-stalled-looking drain() would pad with silence forever instead of
+            // ever reporting real end of stream (MINECRAFT-394 PR #168 third review round).
+            pipe.markEndOfStream();
             closeQuietly(in);
         }
     }
@@ -165,10 +182,12 @@ final class RadioAudioStream implements AudioStream {
     }
 
     /**
-     * Returns up to {@code size} bytes of already-decoded PCM as a direct {@link ByteBuffer}, or
-     * {@code null} if zero bytes are available right now -- see {@link PcmChunkPipe#drain} for the exact
-     * non-blocking contract this delegates to wholesale (MINECRAFT-394 review round 1 findings #1 and #3;
-     * round 2 finding #1 for why {@code null} is the only non-data outcome).
+     * Returns {@code size} bytes as a direct {@link ByteBuffer} -- real decoded PCM where available,
+     * silence-padded where the decoder is temporarily short -- or {@code null} only once this stream has
+     * genuinely, permanently ended and no real data is left buffered either. See {@link PcmChunkPipe#drain}
+     * for the exact non-blocking contract this delegates to wholesale, and its javadoc for why that
+     * silence-fill is required against vanilla's real {@code Channel}/{@code ChannelAccess} consumer
+     * (MINECRAFT-394 review round 1 findings #1 and #3; round 3 finding #1).
      */
     @Override
     public ByteBuffer read(int size) throws IOException {

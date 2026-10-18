@@ -15,25 +15,33 @@ import java.util.concurrent.BlockingQueue;
  * <p>One background decode thread calls {@link #put} (blocking itself, never a reader) to push decoded
  * PCM chunks in; whoever is pumping the stream (vanilla's shared sound executor, for the real {@link
  * RadioAudioStream}) calls {@link #drain} to pull bytes out, which never blocks -- it returns whatever is
- * already queued immediately, or {@code null} if nothing is queued right now, see {@link #drain}'s own
- * return-value contract spelled out there.
+ * already queued immediately, padded out with silence if that is not enough, or {@code null} only for a
+ * genuine end of stream, see {@link #drain}'s own return-value contract spelled out there.
  *
- * <p>There used to be an {@code endOfStream} flag here distinguishing "decode thread finished" from "queue
- * is merely momentarily empty" (set via a since-removed {@code markEndOfStream}), with {@link #drain}
- * returning a non-null <em>empty</em> buffer for the latter and only {@code null} for the former. That
- * distinction is gone (MINECRAFT-394 PR #168 second review round, finding #1): {@code
- * com.mojang.blaze3d.audio.Channel.pumpBuffers} queues <strong>any</strong> non-null {@code read()} result
- * -- including a zero-byte one -- as a real (zero-duration) OpenAL buffer via {@code
- * AL10.alSourceQueueBuffers}, and {@code ChannelAccess.scheduleTick} permanently releases and stops
- * tracking any channel whose OpenAL source naturally reaches {@code AL_STOPPED} (which an artificially
- * injected zero-duration buffer helps bring about sooner than real playback would). Vanilla's {@code
- * Channel} has no notion of "try again later" versus "stream actually ended" in the first place -- both
- * just mean "nothing to queue this pump cycle" to it, and it naturally calls {@link #drain} again on a
- * later tick for as long as the already-queued real buffers keep the AL source out of {@code AL_STOPPED}.
- * So the only contract that matters to vanilla, and the only one {@link #drain} now implements, is: zero
- * bytes available right now = {@code null}, full stop; one or more bytes available = a buffer with that
- * many bytes. Whether the decode thread is done, mid-frame, or merely between network packets is no longer
- * caller-visible, because nothing downstream ever needed that distinction.
+ * <p>MINECRAFT-394 PR #168's third review round found the second round's fix above (collapsing "merely
+ * momentarily empty" and "decode thread actually finished" into a single {@code null} outcome) was wrong
+ * about <em>which two cases to collapse</em>. The real {@code com.mojang.blaze3d.audio.Channel} is a
+ * strict producer with a capped, non-catching-up consumer: {@code Channel.attachBufferStream} calls {@code
+ * pumpBuffers(4)} exactly once, and every later {@code Channel.updateStream} calls {@code
+ * pumpBuffers(this.removeProcessedBuffers())} -- capped by how many <em>previously queued</em> buffers have
+ * actually finished playing, never by how many slots are "missing". A slot where {@code read()} (i.e.
+ * {@link #drain}) returns {@code null} is simply skipped and never queued, so it can never later become
+ * "processed" -- that slot is lost for good, and if enough slots are lost (worst case: all 4 of the initial
+ * {@code pumpBuffers(4)}, well before our background decode thread has produced anything), the OpenAL
+ * source has nothing queued, reads {@code AL_STOPPED} almost immediately, and {@code
+ * ChannelAccess.scheduleTick} permanently releases/removes the channel -- {@link #drain} is then never
+ * called again for this instance no matter how much real audio the decode thread goes on to produce.
+ *
+ * <p>So the correct collapse is the other way around: "temporarily nothing real ready" must join "real
+ * data ready" (both return a real, correctly-sized, non-null buffer -- padded with trailing silence when
+ * real data runs short), and only "genuinely, permanently done" (the decode thread has actually finished --
+ * see {@link #markEndOfStream}) <em>and</em> there is no real data left buffered either stays {@code null}.
+ * Every {@code pumpBuffers} attempt therefore always succeeds in queuing something playable while the
+ * stream is alive, so the "replenish exactly what finished" bookkeeping never silently loses a slot: every
+ * queued buffer eventually finishes playing and is correctly counted as processed, keeping the refill loop
+ * self-sustaining forever instead of ratcheting down to zero. A transient stall is heard as a brief, bounded
+ * gap of silence -- acceptable here (sample-accurate cross-client sync was never a requirement for this
+ * feature) and far better than the channel dying permanently.
  */
 final class PcmChunkPipe {
     private final BlockingQueue<byte[]> chunks;
@@ -42,6 +50,12 @@ final class PcmChunkPipe {
      * touched by whatever single thread calls {@link #drain} -- never concurrently for one pipe. */
     private byte[] leftover;
     private int leftoverPos;
+
+    /** Set once by the decode thread (via {@link #markEndOfStream}) when it has genuinely finished --
+     * clean EOF, a decode error, or {@code close()}/interruption -- and never unset. {@code volatile}
+     * because it is written by the decode thread and read by whatever thread calls {@link #drain} (never
+     * the same thread). Only matters to {@link #drain} once the queue is also empty -- see its javadoc. */
+    private volatile boolean endOfStream;
 
     PcmChunkPipe(int queueCapacityChunks) {
         this.chunks = new ArrayBlockingQueue<>(queueCapacityChunks);
@@ -59,17 +73,36 @@ final class PcmChunkPipe {
         chunks.put(chunk);
     }
 
+    /** Called only by the background decode thread, exactly once, when it is genuinely and permanently
+     * done producing -- clean EOF, a decode error, or {@code close()}/interruption -- so that {@link
+     * #drain} knows a future empty queue means real end-of-stream rather than a momentary stall. Any real
+     * chunks already {@link #put} before this call are still delivered normally first. */
+    void markEndOfStream() {
+        endOfStream = true;
+    }
+
     /**
-     * Returns up to {@code size} bytes of already-queued PCM as a <strong>direct</strong> little-endian
-     * {@link ByteBuffer} (direct because the real caller, {@code Channel.pumpBuffers}, passes this
-     * straight into a native {@code AL10.alBufferData} call that requires one), without ever blocking.
+     * Returns up to {@code size} bytes of PCM as a <strong>direct</strong> little-endian {@link ByteBuffer}
+     * (direct because the real caller, {@code Channel.pumpBuffers}, passes this straight into a native
+     * {@code AL10.alBufferData} call that requires one), without ever blocking.
      *
-     * <p>Returns {@code null} -- never a non-null empty buffer -- whenever zero bytes are available right
-     * now, regardless of whether the decode thread is still running: see this class's own javadoc for why
-     * collapsing that distinction is required, not optional, for correctness against vanilla's {@code
-     * Channel}/{@code ChannelAccess}. Otherwise returns a buffer with between 1 and {@code size} bytes,
-     * assembled from however many already-queued chunks are needed to satisfy the request (or fewer, if
-     * the queue runs dry partway through).
+     * <p>While the stream is still alive (i.e. {@link #markEndOfStream} has not been called, or it has but
+     * some real data is still queued), this <strong>never</strong> returns {@code null} or an empty
+     * buffer: as much real queued data as available is copied first, and any shortfall is padded with
+     * trailing silence (zero bytes -- a zero sample is silence in any byte order) so the result always has
+     * exactly {@code size} bytes. This is required, not optional, for correctness against vanilla's real
+     * {@code Channel}/{@code ChannelAccess} consumer contract -- see this class's own javadoc for exactly
+     * why a {@code null}/empty result for a merely-stalled-but-alive stream permanently starves the
+     * channel. A buffer mixing real bytes followed by silence padding is allowed and expected (it
+     * minimizes how much silence is ever audible) rather than forcing a read to be "fully real" or "fully
+     * silence".
+     *
+     * <p>Returns {@code null} only once the stream has genuinely, permanently ended: {@link
+     * #markEndOfStream} has been called <em>and</em> there is no real data left buffered to drain either.
+     * If the stream has ended but some real data is still queued, that partial-or-full real data is
+     * returned trimmed to however many real bytes remain (never padded with silence -- there is no more
+     * real audio coming, so there is nothing meaningful left to pad towards); only once that real data is
+     * also exhausted does a later call return {@code null}.
      */
     ByteBuffer drain(int size) {
         ByteBuffer out = ByteBuffer.allocateDirect(size).order(ByteOrder.LITTLE_ENDIAN);
@@ -87,6 +120,23 @@ final class PcmChunkPipe {
             out.put(leftover, leftoverPos, toCopy);
             leftoverPos += toCopy;
             remaining -= toCopy;
+        }
+        if (remaining > 0) {
+            if (endOfStream) {
+                // Genuinely done and nothing real left queued either: null only if this call collected no
+                // real bytes at all. If it collected some (a final partial chunk), return that trimmed --
+                // no silence padding, there is no more real audio coming to bridge towards.
+                if (out.position() == 0) {
+                    return null;
+                }
+            } else {
+                // Stream is still alive but momentarily short (including totally empty, e.g. the decode
+                // thread hasn't produced its first chunk yet, or a brief network stall) -- pad with
+                // silence so this call still returns a full-size, non-null, playable buffer.
+                for (int i = 0; i < remaining; i++) {
+                    out.put((byte) 0);
+                }
+            }
         }
         out.flip();
         return out.remaining() == 0 ? null : out;

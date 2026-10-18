@@ -168,12 +168,22 @@ public final class DrivetrainMath {
      * changes the EXCESS-force integration WheelMath already owns, and nothing here touches the official
      * slip-REPORTING contract (MINECRAFT-73/118), which never read {@code wheelSpin} in the first place.
      *
+     * <p>
+     * Review, round 6: {@code frictionForce} must be the circle's remaining HEADROOM this step
+     * ({@code frictionLimit - hypot(longitudinal, lateral)}), not the full {@code mu * normalForce}
+     * circle round 5 passed -- this same friction is already partly (or wholly) spent by this step's own
+     * longitudinal/lateral tire force; treating the full circle as available again here double-counts
+     * it. The caller must also pay the chassis the equal-and-opposite reaction for whatever change this
+     * method actually returns -- unlike {@link WheelMath#spinRate}'s own {@code excessForce} branch,
+     * where the extra torque is the engine's own and needs no ground reaction, the torque THIS method
+     * bounds is ground-sourced (see the call site's own comment for the reaction impulse itself).
+     *
      * @param priorSpin this wheel's own spin rate coming into the step, rad/s
      * @param snappedSpin {@link WheelMath#spinRate}'s own result for this same step (what a caller would
      *        have used unmodified before this fix)
-     * @param frictionForce the friction force actually available at this contact this step, N (the same
-     *        {@code gripMu * normalForce} the friction circle itself used -- sign-independent, only its
-     *        magnitude matters here)
+     * @param frictionForce the friction circle's remaining HEADROOM at this contact this step, N (what
+     *        this step's own longitudinal/lateral tire force has NOT already spent of
+     *        {@code gripMu * normalForce} -- sign-independent, only its magnitude matters here)
      */
     public static double boundedSpinTowardSnap(double priorSpin, double snappedSpin, double frictionForce,
             double wheelRadius, double wheelInertia, double dt) {

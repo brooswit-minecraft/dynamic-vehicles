@@ -509,10 +509,39 @@ final class SableCarBody {
                 // could actually despin this wheel by this step -- see DrivetrainMath.boundedSpinTowardSnap's
                 // own javadoc. Only this one branch changes; excessForce != 0 still reads spinRate's own
                 // return value exactly as before, untouched.
-                wheelSpin[wheel] = excessForce == 0.0
-                        ? DrivetrainMath.boundedSpinTowardSnap(priorSpin, snappedSpin, gripMu * force,
-                                spec.wheelRadius(), WheelMath.WHEEL_INERTIA, subDt)
-                        : snappedSpin;
+                //
+                // Review, round 6: two things round 5 missed about WHERE that bounding torque comes from.
+                // First, the excessForce != 0 branch needs no chassis reaction because its extra torque is
+                // the ENGINE's own (driveForce exceeding what the circle delivers) - entirely internal to
+                // the driveline, already fully accounted by handing the chassis exactly tire.longitudinal()
+                // and nothing more. This branch is different: the wheel isn't gripping because it's being
+                // driven within the circle, it's gripping because excessForce reads exactly 0 - any torque
+                // that still changes its spin here can only come from the GROUND (kinetic friction against
+                // the leftover spin/ground-speed mismatch), and a ground-sourced torque demands an equal and
+                // opposite reaction on the chassis (Newton's third law) - round 5 bounded the torque but
+                // never paid that reaction, conjuring momentum. Second, that friction is drawn from the SAME
+                // circle this step's longitudinal/lateral tire forces already spent part of, not a second,
+                // independent mu*normalForce budget - bound by the circle's remaining headroom instead.
+                if (excessForce == 0.0) {
+                    double frictionHeadroom = Math.max(0.0,
+                            tire.frictionLimit() - Math.hypot(tire.longitudinal(), tire.lateral()));
+                    double recoveredSpin = DrivetrainMath.boundedSpinTowardSnap(priorSpin, snappedSpin,
+                            frictionHeadroom, spec.wheelRadius(), WheelMath.WHEEL_INERTIA, subDt);
+                    // The same torque balance WheelMath.spinRate itself uses (a force F at the contact
+                    // produces Δspin = F*radius/inertia*dt) relates a GROUND force to a WHEEL-torque
+                    // reaction of the OPPOSITE sign on this model's own sign convention (a positive, forward
+                    // drive force resists being spun up, per spinRate's existing excessForce contract) -
+                    // solving that same relation for the force that would have produced THIS step's actual
+                    // (bounded) Δspin gives the one-time chassis impulse below: spin decreasing (overspin
+                    // bleeding off) pays out as a FORWARD impulse, spin increasing (a locked wheel catching
+                    // back up) as a backward one, matching the two cases driving/braking already use the
+                    // opposite sign for.
+                    double reactionImpulse = -(recoveredSpin - priorSpin) * WheelMath.WHEEL_INERTIA / spec.wheelRadius();
+                    impulseWorld.fma(reactionImpulse, forward);
+                    wheelSpin[wheel] = recoveredSpin;
+                } else {
+                    wheelSpin[wheel] = snappedSpin;
+                }
                 double spinSlip = WheelMath.slipFromSpin(wheelSpin[wheel], spec.wheelRadius(), vLong);
                 spinSlipThisTick = Math.max(spinSlipThisTick, Math.abs(spinSlip));
                 // Reported slip (feeds slipThisTick/lastSlipSpeed/wearSlip/SlipReporter) is evaluated at the

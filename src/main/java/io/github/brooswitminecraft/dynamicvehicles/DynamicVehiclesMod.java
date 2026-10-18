@@ -144,6 +144,7 @@ public class DynamicVehiclesMod {
         // CarConfig.SPEC above, and ConfigTracker throws on a second SERVER config reusing it.
         modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.SERVER, DispatcherOfferConfig.SPEC, "dynamicvehicles-dispatcher-server.toml");
         modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.SERVER, PathfinderServerConfig.SPEC, "dynamicvehicles-pathfinder-server.toml");
+        modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.SERVER, MotorboatConfig.SPEC, "dynamicvehicles-motorboat-server.toml");
         modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.CLIENT, ClientConfig.SPEC);
         ModSounds.SOUNDS.register(modEventBus);
         ENTITIES.register(modEventBus);

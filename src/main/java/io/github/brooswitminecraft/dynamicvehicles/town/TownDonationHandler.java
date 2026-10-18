@@ -3,8 +3,8 @@ package io.github.brooswitminecraft.dynamicvehicles.town;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.npc.Villager;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
-import net.minecraft.world.item.trading.ItemCost;
 import net.minecraft.world.item.trading.MerchantOffer;
 import net.neoforged.neoforge.event.entity.player.TradeWithVillagerEvent;
 
@@ -45,12 +45,11 @@ public final class TownDonationHandler {
     }
 
     /**
-     * Resolves an {@link ItemCost} to the same registry-id strings {@link TownDonationConversion}
-     * is keyed by, via {@code ItemCost#is(Item)} checks against every item that table recognizes —
-     * the same per-item check shape {@code delivery.BuilderTradeHandler} already uses for its own
-     * tier lookup, rather than reaching into {@code ItemStack} internals.
+     * Resolves the offer's cost {@link ItemStack} to the same registry-id strings
+     * {@link TownDonationConversion} is keyed by, via {@code ItemStack#is(Item)} checks against
+     * every item that table recognizes.
      */
-    private static String idFor(ItemCost cost) {
+    private static String idFor(ItemStack cost) {
         if (cost.is(Items.DIRT)) return "minecraft:dirt";
         if (cost.is(Items.COBBLESTONE)) return "minecraft:cobblestone";
         if (cost.is(Items.STONE_BRICKS)) return "minecraft:stone_bricks";

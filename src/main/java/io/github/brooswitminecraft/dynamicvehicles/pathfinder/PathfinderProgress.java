@@ -10,7 +10,7 @@ package io.github.brooswitminecraft.dynamicvehicles.pathfinder;
  * or share state across players itself.
  *
  * <p>Reaching a checkpoint requires matching its {@link PathfinderCheckpoint#isReachedBy}
- * (dimension + reach-radius proximity to its own concrete position), not
+ * (dimension + entering its own Minecraft chunk, at any Y — MINECRAFT-403), not
  * merely entering its region — a PR #163 review flagged the earlier
  * region-only check as unable to distinguish checkpoints that share a
  * region or reject a wrong position within the correct one.
@@ -94,18 +94,14 @@ public final class PathfinderProgress {
     }
 
     /**
-     * Reports the player at {@code playerPosition} as of {@code currentTick}, checked against
-     * {@code reachRadius}. Expiry is checked first and is final: once expired, no further reach
-     * is ever accepted, even one reported at the exact same tick as expiry or at a checkpoint the
-     * player had legitimately reached. Otherwise, advances only if {@code playerPosition} is
-     * within {@code reachRadius} of {@link #nextExpected()} and its dimension; a wrong position,
+     * Reports the player at {@code playerPosition} as of {@code currentTick}. Expiry is checked
+     * first and is final: once expired, no further reach is ever accepted, even one reported at
+     * the exact same tick as expiry or at a checkpoint the player had legitimately reached.
+     * Otherwise, advances only if {@code playerPosition} is in {@link #nextExpected()}'s own
+     * chunk and dimension (MINECRAFT-403: any Y, no terrain/accessibility check); a wrong chunk,
      * a wrong dimension, or an out-of-order checkpoint is rejected with no state change.
-     *
-     * <p>{@code reachRadius} is a parameter, not stored on the checkpoint/route, specifically so
-     * a config change takes effect on the very next check of an already-in-progress (or already
-     * cached) route — see {@link PathfinderCheckpoint}'s javadoc.
      */
-    public boolean onReach(PathfinderPosition playerPosition, long currentTick, double reachRadius) {
+    public boolean onReach(PathfinderPosition playerPosition, long currentTick) {
         if (finished || expired) {
             return false;
         }
@@ -113,7 +109,7 @@ public final class PathfinderProgress {
             expired = true;
             return false;
         }
-        if (!nextExpected().isReachedBy(playerPosition, reachRadius)) {
+        if (!nextExpected().isReachedBy(playerPosition)) {
             return false;
         }
         if (reachedCount < route.checkpoints().size()) {

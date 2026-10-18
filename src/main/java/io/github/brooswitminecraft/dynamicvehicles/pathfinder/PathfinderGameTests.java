@@ -44,13 +44,12 @@ public final class PathfinderGameTests {
     }
 
     /**
-     * Seeds {@code villager}'s level-1 route with the placeholder placer (always succeeds),
-     * bypassing real terrain placement, for tests exercising attempt lifecycle behavior rather
-     * than terrain safety itself. See {@link PathfinderRouteStorage#seedForTest}'s own javadoc
-     * for why: the GameTest server's "Test Level" dimension is void far from any test
-     * structure, and a villager's real region-center candidate routinely lands there, which
-     * {@link PathfinderTerrainPlacer} now correctly refuses (fail-closed, review follow-up)
-     * rather than returning a nonsense fallback.
+     * Seeds {@code villager}'s level-1 route with the placeholder placer, bypassing real terrain
+     * placement, for tests exercising attempt lifecycle behavior rather than placement itself.
+     * See {@link PathfinderRouteStorage#seedForTest}'s own javadoc for why: a real region-center
+     * candidate routinely lands hundreds of blocks from this GameTest's own tiny test structure,
+     * even though {@link PathfinderTerrainPlacer} would resolve it fine (MINECRAFT-403: it never
+     * fails) - this just keeps the checkpoint conveniently close enough to teleport a test player to.
      */
     private static void seedLevel1RouteForTest(GameTestHelper helper, Villager villager) {
         PathfinderRegion origin = PathfinderAttempts.regionOf(villager);
@@ -133,6 +132,39 @@ public final class PathfinderGameTests {
         helper.assertTrue(record.level() == PathfinderLevel.LEVEL_1, "a level-1 villager should start a level-1 attempt");
         helper.assertTrue(record.reachedCount() == 0, "a freshly started attempt should have no checkpoints reached yet");
         helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-403 acceptance #2: crossing into the current target chunk credits the checkpoint
+     * regardless of player Y, driven through the real server tick evaluation path. Teleports
+     * deep underground (far below the checkpoint's own representative Y) but inside its chunk.
+     */
+    @GameTest(template = "dispatch_profession", timeoutTicks = 100)
+    public static void checkpointCreditedUndergroundInTheTargetChunk(GameTestHelper helper) {
+        Villager villager = helper.spawn(EntityType.VILLAGER, new BlockPos(2, 2, 2));
+        villager.setVillagerData(villager.getVillagerData().setProfession(PathfinderProfession.PATHFINDER.get()));
+        seedLevel1RouteForTest(helper, villager);
+        ServerPlayer player = GameTestMockPlayers.create(helper);
+        player.moveTo(helper.absolutePos(new BlockPos(2, 2, 3)).getCenter());
+        declarePathfinderHudChannel(player);
+
+        PathfinderInteractionHandler.onEntityInteract(new PlayerInteractEvent.EntityInteract(player, InteractionHand.MAIN_HAND, villager));
+        MinecraftServer server = helper.getLevel().getServer();
+        PathfinderAttemptStorage storage = PathfinderAttemptStorage.of(server);
+        PathfinderAttemptRecord record = storage.active(player.getUUID()).orElseThrow();
+        ServerLevel dimension = helper.getLevel();
+        PathfinderRoute route = PathfinderRouteStorage.of(server).routeFor(dimension, record.origin(), record.level()).orElseThrow();
+        PathfinderCheckpoint first = route.checkpoints().get(0);
+
+        // Same chunk (same X/Z) as the checkpoint, but far underground - below any naturally
+        // generated terrain and far from the checkpoint's own representative Y.
+        player.teleportTo(first.position().x(), dimension.getMinBuildHeight() + 1, first.position().z());
+
+        helper.runAfterDelay(25, () -> {
+            helper.assertTrue(storage.active(player.getUUID()).map(PathfinderAttemptRecord::reachedCount).orElse(-1) == 1,
+                    "entering the target chunk underground must credit the checkpoint");
+            helper.succeed();
+        });
     }
 
     @GameTest(template = "dispatch_profession", timeoutTicks = 600)
@@ -554,118 +586,88 @@ public final class PathfinderGameTests {
     }
 
     /**
-     * Review follow-up: the terrain search must fail closed, not cache/return the original
-     * unsafe candidate when every searched offset is also unsafe. Poisons the candidate AND
-     * every one of {@link PathfinderTerrainSearch#offsets()}'s columns with lava underfoot, at a
-     * fully self-constructed, known Y (not relying on any naturally generated terrain at those
-     * columns, which this test does not otherwise control), then drives the real search loop via
-     * {@link PathfinderTerrainPlacer}'s package-visible {@code placeAt}.
+     * MINECRAFT-403 acceptance #1: a checkpoint candidate column that is lava or otherwise
+     * "inaccessible" must still be placed and offered AT THAT EXACT COLUMN, not rejected or
+     * silently moved to a different one. Review follow-up: an earlier version of this test built
+     * the lava fixture at a GameTest-local anchor but then called {@code place()} with region
+     * math whose real candidate (512-block region center) lands at a totally different,
+     * uncontrolled column - so it never actually exercised the lava column it built, and could
+     * not have caught a regression that moved the checkpoint. Uses {@link
+     * PathfinderTerrainPlacer}'s package-visible {@code placeAt} to pin the candidate to the
+     * exact column the lava is poisoned at, then asserts the returned checkpoint's own X/Z
+     * floors to that same column - not just that placement succeeded.
      */
     @GameTest(template = "dispatch_profession", timeoutTicks = 100)
-    public static void placeFailsClosedWhenEveryCandidateColumnIsUnsafe(GameTestHelper helper) {
+    public static void placementSucceedsOverLavaAtTheExactCandidateColumn(GameTestHelper helper) {
         BlockPos anchor = helper.absolutePos(new BlockPos(2, 2, 2));
         ServerLevel level = helper.getLevel();
-        poisonColumnWithLava(level, anchor.getX(), anchor.getY(), anchor.getZ());
-        for (int[] offset : PathfinderTerrainSearch.offsets()) {
-            poisonColumnWithLava(level, anchor.getX() + offset[0], anchor.getY(), anchor.getZ() + offset[1]);
-        }
+        level.setBlockAndUpdate(anchor.below(), net.minecraft.world.level.block.Blocks.LAVA.defaultBlockState());
+        level.setBlockAndUpdate(anchor, net.minecraft.world.level.block.Blocks.LAVA.defaultBlockState());
 
+        PathfinderRegion region = new PathfinderRegion(0, 0);
         PathfinderTerrainPlacer placer = new PathfinderTerrainPlacer(level);
-        var result = placer.placeAt(new PathfinderRegion(0, 0), anchor.getX(), anchor.getZ());
+        var result = placer.placeAt(region, anchor.getX() + 0.5, anchor.getZ() + 0.5);
 
-        helper.assertTrue(result.isEmpty(), "every candidate column was made unsafe, so placement must fail closed, not return a fallback");
+        helper.assertTrue(result.isPresent(), "placement must never fail over terrain accessibility (MINECRAFT-403)");
+        PathfinderCheckpoint checkpoint = result.get();
+        String dimensionId = level.dimension().location().toString();
+        helper.assertTrue(checkpoint.position().dimensionId().equals(dimensionId), "the real dimension must be used, not a placeholder");
+        helper.assertTrue((int) Math.floor(checkpoint.position().x()) == anchor.getX()
+                        && (int) Math.floor(checkpoint.position().z()) == anchor.getZ(),
+                "the lava-poisoned candidate column must be returned unchanged, not moved to a different one");
         helper.succeed();
     }
 
     /**
-     * Sets a known lava footing at {@code y}, AND clears a generous span above it - not just the
-     * two headroom blocks {@code isSafeColumn} itself checks - so {@code getHeight(...)} (which
-     * finds the TOPMOST motion-blocking block in the whole column) can't still see some taller,
-     * untouched block from whatever this column's terrain already was and report a surface
-     * higher than {@code y}, which would make the lava footing below it irrelevant to the
-     * column {@code isSafeColumn} actually ends up checking.
+     * Same regression coverage as {@link #placementSucceedsOverLavaAtTheExactCandidateColumn},
+     * for a solid block occupying the candidate's headroom (the old {@code isSafeColumn}'s other
+     * rejection case) and for a water-filled column - both terrain-independent per MINECRAFT-403,
+     * covered without ever reading the world (this placer makes no world calls at all).
      */
-    private static void poisonColumnWithLava(ServerLevel level, int x, int y, int z) {
-        level.setBlockAndUpdate(new BlockPos(x, y - 1, z), net.minecraft.world.level.block.Blocks.LAVA.defaultBlockState());
-        for (int dy = 0; dy <= 20; dy++) {
-            level.setBlockAndUpdate(new BlockPos(x, y + dy, z), net.minecraft.world.level.block.Blocks.AIR.defaultBlockState());
-        }
-    }
-
-    /**
-     * All three safety-predicate tests below build their own column directly in absolute space
-     * at a single anchor ({@code helper.absolutePos}, called exactly once per test), rather than
-     * relying on the template's own floor shape and a second relative-to-absolute translation
-     * for each block placed — {@code delivery.DispatcherGameTests}' own javadoc already flags
-     * this template's placement/orientation bookkeeping as empirically quirky (that comment's
-     * "northwest corner" issue), and these tests need the surface Y to be exactly known, not
-     * re-derived from a heightmap query that quirk could put one layer off from what a relative
-     * {@code helper.setBlock} call actually touched.
-     */
-    private static BlockPos anchorSurface(GameTestHelper helper) {
-        BlockPos surface = helper.absolutePos(new BlockPos(2, 2, 2));
+    @GameTest(template = "dispatch_profession", timeoutTicks = 100)
+    public static void placementSucceedsOverBlockedHeadroomAndWaterAtTheExactCandidateColumn(GameTestHelper helper) {
+        BlockPos blockedAnchor = helper.absolutePos(new BlockPos(2, 2, 2));
         ServerLevel level = helper.getLevel();
-        level.setBlockAndUpdate(surface.below(), net.minecraft.world.level.block.Blocks.GRASS_BLOCK.defaultBlockState());
-        level.setBlockAndUpdate(surface, net.minecraft.world.level.block.Blocks.AIR.defaultBlockState());
-        level.setBlockAndUpdate(surface.above(), net.minecraft.world.level.block.Blocks.AIR.defaultBlockState());
-        return surface;
-    }
+        level.setBlockAndUpdate(blockedAnchor, net.minecraft.world.level.block.Blocks.STONE.defaultBlockState());
+        level.setBlockAndUpdate(blockedAnchor.above(), net.minecraft.world.level.block.Blocks.STONE.defaultBlockState());
 
-    /** Solid ground with two blocks of headroom must be accepted. */
-    @GameTest(template = "dispatch_profession", timeoutTicks = 100)
-    public static void terrainPlacerAcceptsSolidGroundWithHeadroom(GameTestHelper helper) {
-        BlockPos surface = anchorSurface(helper);
-        PathfinderTerrainPlacer placer = new PathfinderTerrainPlacer(helper.getLevel());
-        helper.assertTrue(placer.isSafeColumn(surface.getX(), surface.getZ(), surface.getY()),
-                "flat grass ground with open air above should be a safe column");
-        helper.succeed();
-    }
+        PathfinderRegion region = new PathfinderRegion(0, 0);
+        PathfinderTerrainPlacer placer = new PathfinderTerrainPlacer(level);
+        var blockedResult = placer.placeAt(region, blockedAnchor.getX() + 0.5, blockedAnchor.getZ() + 0.5);
+        helper.assertTrue(blockedResult.isPresent(), "a solid-headroom column must still be placed, not rejected");
+        helper.assertTrue((int) Math.floor(blockedResult.get().position().x()) == blockedAnchor.getX()
+                        && (int) Math.floor(blockedResult.get().position().z()) == blockedAnchor.getZ(),
+                "the blocked-headroom candidate column must be returned unchanged");
 
-    /** Lava underfoot is a hazard and must be rejected, even with full headroom above it. */
-    @GameTest(template = "dispatch_profession", timeoutTicks = 100)
-    public static void terrainPlacerRejectsLavaUnderfoot(GameTestHelper helper) {
-        BlockPos surface = anchorSurface(helper);
-        helper.getLevel().setBlockAndUpdate(surface.below(), net.minecraft.world.level.block.Blocks.LAVA.defaultBlockState());
-        PathfinderTerrainPlacer placer = new PathfinderTerrainPlacer(helper.getLevel());
-        helper.assertTrue(!placer.isSafeColumn(surface.getX(), surface.getZ(), surface.getY()),
-                "lava underfoot must never be accepted as a safe checkpoint column");
-        helper.succeed();
-    }
-
-    /** A solid block occupying the headroom above a candidate surface must be rejected (no passable space to stand). */
-    @GameTest(template = "dispatch_profession", timeoutTicks = 100)
-    public static void terrainPlacerRejectsNoHeadroom(GameTestHelper helper) {
-        BlockPos surface = anchorSurface(helper);
-        helper.getLevel().setBlockAndUpdate(surface.above(), net.minecraft.world.level.block.Blocks.STONE.defaultBlockState());
-        PathfinderTerrainPlacer placer = new PathfinderTerrainPlacer(helper.getLevel());
-        helper.assertTrue(!placer.isSafeColumn(surface.getX(), surface.getZ(), surface.getY()),
-                "a solid block occupying the headroom must reject the column");
-        helper.succeed();
-    }
-
-    /** A surface right at the world's build-height ceiling has no room for headroom and must be rejected. */
-    @GameTest(template = "dispatch_profession", timeoutTicks = 100)
-    public static void terrainPlacerRejectsAtWorldHeightBounds(GameTestHelper helper) {
-        PathfinderTerrainPlacer placer = new PathfinderTerrainPlacer(helper.getLevel());
-        int ceilingY = helper.getLevel().getMaxBuildHeight();
-        helper.assertTrue(!placer.isSafeColumn(0, 0, ceilingY), "a surface at the world ceiling must be rejected (no headroom above it)");
-        int floorY = helper.getLevel().getMinBuildHeight();
-        helper.assertTrue(!placer.isSafeColumn(0, 0, floorY), "a surface at the world floor must be rejected (bounds check)");
+        BlockPos waterAnchor = helper.absolutePos(new BlockPos(3, 2, 2));
+        level.setBlockAndUpdate(waterAnchor, net.minecraft.world.level.block.Blocks.WATER.defaultBlockState());
+        var waterResult = placer.placeAt(region, waterAnchor.getX() + 0.5, waterAnchor.getZ() + 0.5);
+        helper.assertTrue(waterResult.isPresent(), "a water column must still be placed, not rejected");
+        helper.assertTrue((int) Math.floor(waterResult.get().position().x()) == waterAnchor.getX()
+                        && (int) Math.floor(waterResult.get().position().z()) == waterAnchor.getZ(),
+                "the water candidate column must be returned unchanged");
         helper.succeed();
     }
 
     /**
-     * {@code place()}'s fallback loop (try each {@link PathfinderTerrainSearch#offsets()} offset,
-     * keep the first safe one) can't be driven end-to-end in a GameTest: real offsets are 4+
-     * blocks out, well beyond this template's own tiny 5x5 structure, and {@code place()}'s
-     * candidate X/Z comes from region math this test does not control the absolute placement
-     * of. {@link #terrainPlacerAcceptsSolidGroundWithHeadroom}/{@link #terrainPlacerRejectsLavaUnderfoot}/
-     * {@link #terrainPlacerRejectsNoHeadroom} cover the safety predicate the loop calls; {@link
-     * PathfinderTerrainPlacerOffsetsTest} covers the offset list the loop iterates; the loop
-     * itself (iterate offsets, keep the first where {@code isSafeColumn} is true) is simple
-     * enough to rely on code review for, rather than a GameTest that can't actually control
-     * whether its "nearby safe column" is reachable by a real offset.
+     * MINECRAFT-403 acceptance #4: an inability to resolve a real terrain height for the
+     * representative marker must never affect arrival. The player teleports to the checkpoint's
+     * own chunk at a Y far from the placer's own representative ({@code getSeaLevel()}) height -
+     * arrival must still credit.
      */
+    @GameTest(template = "dispatch_profession", timeoutTicks = 100)
+    public static void representativeMarkerHeightDoesNotGateArrival(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        PathfinderTerrainPlacer placer = new PathfinderTerrainPlacer(level);
+        PathfinderCheckpoint checkpoint = placer.place(new PathfinderRegion(0, 0), 0, 1).orElseThrow();
+        String dimensionId = level.dimension().location().toString();
+        PathfinderPosition farFromMarkerY = new PathfinderPosition(
+                dimensionId, checkpoint.position().x(), checkpoint.position().y() - 200, checkpoint.position().z());
+
+        helper.assertTrue(checkpoint.isReachedBy(farFromMarkerY),
+                "arrival must not depend on matching the marker's own representative Y");
+        helper.succeed();
+    }
 
     /**
      * Review follow-up: "a save/reload no-duplicate regression". save()/load() round-trip

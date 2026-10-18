@@ -19,20 +19,18 @@ import java.util.Optional;
  * dimension + origin region + level. "One deterministic route per origin
  * region per level, shared by all Pathfinder villagers in that region" is
  * easy while {@link PathfinderRouteGenerator} is a pure function of
- * {@code (origin, level)} — but {@link PathfinderTerrainPlacer} is NOT
- * pure (it reads the live heightmap), so without this cache, two players
- * starting attempts at different times — one before and one after the
- * first player bridges/terraforms the area — could resolve different
- * checkpoint coordinates for the "same" route. Generating once and
- * persisting the result is what keeps a route stable across retries,
- * reloads and later infrastructure edits, per MINECRAFT-379's review
- * follow-up.
+ * {@code (origin, level)} — {@link PathfinderTerrainPlacer} resolves
+ * against a real dimension id, so caching by dimension too, and generating
+ * only once, is what keeps a route's identity stable across retries and
+ * reloads (MINECRAFT-379's review follow-up) — and, per MINECRAFT-403,
+ * also keeps a checkpoint's deterministically selected chunk fixed even if
+ * the terrain underneath it changes later.
  *
- * <p>{@link #routeFor} returns {@link Optional#empty()}, and caches
- * nothing, when generation fails (every checkpoint's placement search
- * came up empty) — review follow-up: never cache/start an unsafe or
- * invalid route. A later call (terrain changed, hazard cleared) can still
- * succeed and cache normally.
+ * <p>{@code PathfinderTerrainPlacer} never fails any more (MINECRAFT-403:
+ * no terrain-accessibility check gates placement), so {@link #routeFor}'s
+ * {@code Optional} return is never empty for a real caller in practice;
+ * the type is kept for interface stability with {@link
+ * PathfinderRouteGenerator}.
  */
 public final class PathfinderRouteStorage extends SavedData {
     private static final String NAME = "dynamicvehicles_pathfinder_routes";
@@ -60,16 +58,13 @@ public final class PathfinderRouteStorage extends SavedData {
     }
 
     /**
-     * Test-only seam: seeds the cache directly with an already-built route (typically one
-     * generated with {@link PathfinderCheckpointPlacer#DEFAULT_UNPLACED}, which always
-     * succeeds), bypassing real terrain placement. For GameTests exercising attempt lifecycle
-     * behavior (start/death/completion/expiry) rather than terrain safety itself — the GameTest
-     * server's own "Test Level" dimension is void far from any test structure, so a real
-     * region-center candidate for a villager spawned there routinely has no terrain at all, and
-     * {@link PathfinderTerrainPlacer} now correctly fails closed on that (see its own review
-     * follow-up) rather than returning a nonsense fallback position. Terrain-safety behavior
-     * itself is covered directly against {@link PathfinderTerrainPlacer} in {@code
-     * PathfinderGameTests}' own terrain tests.
+     * Test-only seam: seeds the cache directly with an already-built route, bypassing the real
+     * placer. For GameTests exercising attempt lifecycle behavior (start/death/completion/expiry)
+     * rather than placement itself — a real region-center candidate for a villager spawned in the
+     * GameTest server's own small "Test Level" structure is routinely hundreds of blocks away
+     * from anywhere the test can conveniently teleport a player, even though {@link
+     * PathfinderTerrainPlacer} would resolve and return it without issue (MINECRAFT-403: it never
+     * fails).
      */
     void seedForTest(ServerLevel dimension, PathfinderRegion origin, PathfinderLevel level, PathfinderRoute route) {
         routes.put(key(dimension, origin, level), route);

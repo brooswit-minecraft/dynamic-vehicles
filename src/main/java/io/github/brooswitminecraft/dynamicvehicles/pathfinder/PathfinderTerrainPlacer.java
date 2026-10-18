@@ -1,47 +1,27 @@
 package io.github.brooswitminecraft.dynamicvehicles.pathfinder;
 
-import net.minecraft.core.BlockPos;
-import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.util.Mth;
-import net.minecraft.world.level.levelgen.Heightmap;
-import net.minecraft.world.level.material.Fluids;
 
 import java.util.Optional;
 
 /**
- * The real, terrain-safe seam for {@link PathfinderCheckpointPlacer} (MINECRAFT-379 review
- * follow-up: {@code DEFAULT_UNPLACED}'s fixed y=0/"unplaced" dimension were explicitly
- * scaffolding, not playable placement). The candidate X/Z is the same deterministic
- * region-center/circle layout {@code DEFAULT_UNPLACED} uses (a pure function of the region +
- * index/count, no RNG); from there this class searches a small, bounded, deterministic set of
- * nearby columns ({@link PathfinderTerrainSearch#offsets()}) for one that is actually safe to
- * stand on — world-height bounds, no lava underfoot, standable footing, two blocks of headroom —
- * returning {@link Optional#empty()} if every offset fails.
+ * Resolves a checkpoint's deterministic region-center/circle column (the same pure X/Z math
+ * {@link PathfinderCheckpointPlacer#DEFAULT_UNPLACED} uses) against a real dimension, per
+ * MINECRAFT-403: "stop rejecting, moving or failing a route because a chosen checkpoint lacks a
+ * safe or accessible terrain placement" — reaching the location and making it accessible are the
+ * player's job, not this class's. This placer therefore never inspects the world, never searches
+ * for an alternative column, and never fails.
  *
- * <p>Second independent-review follow-up: the previous version both (a) fell back to the
- * original, possibly-unsafe candidate instead of failing, letting a permanently-cached route
- * contain an unsafe checkpoint, and (b) only checked for lava, not whether the footing block
- * actually forms a standable surface (e.g. a fence or slab arrangement can be "motion-blocking"
- * for heightmap purposes without being a place a player can actually stand). Fixed: no safe
- * column found now means no checkpoint — {@link PathfinderRouteGenerator} propagates that as a
- * failed route generation, and {@link PathfinderRouteStorage} never caches a failed attempt, so
- * a later generation attempt (e.g. after the hazard is cleared, or the search finds a different
- * column as the surrounding terrain changes) can still succeed.
- *
- * <p>Read-only: never calls {@link ServerLevel#setBlock} or anything else that mutates the
- * world, per the design's "do not generate roads, pave tracks or automatically reshape terrain"
- * — the same {@code Heightmap.Types.MOTION_BLOCKING_NO_LEAVES} type {@code
- * delivery.SettlementFounder} uses to pick its own board's Y (that class clears/fills terrain
- * for the Dispatcher; this one deliberately does not, since Pathfinder checkpoints are not
- * built structures). The standable-footing check below mirrors {@code SettlementFounder}'s own
- * {@code state.getFluidState().isEmpty() && state.isFaceSturdy(level, pos, Direction.UP)}
- * sturdiness test.
+ * <p>{@code y} is {@link ServerLevel#getSeaLevel()}: a dimension-type constant that costs no
+ * chunk load, used purely as a representative height for presentation (the map/HUD marker).
+ * Arrival ({@link PathfinderCheckpoint#isReachedBy}) never reads it, so an inability to resolve a
+ * "real" terrain height here can never gate route availability or chunk arrival. This class
+ * deliberately never calls anything that forces terrain generation (e.g. {@code
+ * ServerLevel#getHeight}) just to approve a checkpoint.
  *
  * <p>This placer is only ever consulted once per (dimension, origin, level) — see {@link
- * PathfinderRouteStorage} — so a checkpoint's resolved position, once generated, stays fixed
- * even if the terrain underneath it changes later (a player's bridge/road, erosion, etc.):
- * exactly the "preserving routes across retries/reloads/infrastructure edits" requirement.
+ * PathfinderRouteStorage} — so a checkpoint's resolved position, once generated, stays fixed:
+ * exactly the "preserve existing deterministic selected chunks" requirement.
  */
 public final class PathfinderTerrainPlacer implements PathfinderCheckpointPlacer {
     private final ServerLevel level;
@@ -61,49 +41,20 @@ public final class PathfinderTerrainPlacer implements PathfinderCheckpointPlacer
             x += PathfinderCheckpointPlacer.DEFAULT_LOOP_RADIUS_BLOCKS * Math.cos(angle);
             z += PathfinderCheckpointPlacer.DEFAULT_LOOP_RADIUS_BLOCKS * Math.sin(angle);
         }
-        return placeAt(region, Mth.floor(x), Mth.floor(z));
+        return placeAt(region, x, z);
     }
 
     /**
-     * Package-visible so a GameTest can drive the real search/fallback logic with a candidate
-     * X/Z it fully controls, instead of one derived from region math whose absolute placement
-     * the test can't control (region-center coordinates can be hundreds of blocks from wherever
-     * the test's own structure happens to load).
+     * Package-visible test seam (review follow-up): lets a GameTest resolve a checkpoint at an
+     * X/Z it fully controls — and so can build real, known terrain (lava, a solid headroom
+     * block, water) directly under — rather than one derived from region math whose absolute
+     * placement the test cannot control (a region-center candidate is routinely hundreds of
+     * blocks from wherever a test's own structure happens to load). Exercises the exact same
+     * no-search, never-fails resolution {@link #place} uses.
      */
-    Optional<PathfinderCheckpoint> placeAt(PathfinderRegion region, int candidateX, int candidateZ) {
-        for (int[] offset : PathfinderTerrainSearch.offsets()) {
-            int blockX = candidateX + offset[0];
-            int blockZ = candidateZ + offset[1];
-            int surfaceY = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, blockX, blockZ);
-            if (isSafeColumn(blockX, blockZ, surfaceY)) {
-                String dimensionId = level.dimension().location().toString();
-                PathfinderPosition position = new PathfinderPosition(dimensionId, blockX + 0.5, surfaceY, blockZ + 0.5);
-                return Optional.of(new PathfinderCheckpoint(region, position));
-            }
-        }
-        return Optional.empty();
-    }
-
-    /** Package-visible for direct GameTest coverage of just the safety predicate. */
-    boolean isSafeColumn(int blockX, int blockZ, int surfaceY) {
-        if (surfaceY <= level.getMinBuildHeight() || surfaceY >= level.getMaxBuildHeight() - 2) {
-            return false;
-        }
-        BlockPos footingPos = new BlockPos(blockX, surfaceY - 1, blockZ);
-        var footing = level.getBlockState(footingPos);
-        if (footing.getFluidState().is(Fluids.LAVA)) {
-            return false;
-        }
-        // Standable footing (review follow-up): a column can be "motion-blocking" for heightmap
-        // purposes (a fence, a slab) without actually being something a player can stand on.
-        // Water is accepted without a sturdy-face check - swimming/treading water is fine, same
-        // as the design's own "players build bridges" expectation.
-        boolean standable = !footing.getFluidState().isEmpty() || footing.isFaceSturdy(level, footingPos, Direction.UP);
-        if (!standable) {
-            return false;
-        }
-        BlockPos headA = new BlockPos(blockX, surfaceY, blockZ);
-        BlockPos headB = new BlockPos(blockX, surfaceY + 1, blockZ);
-        return level.isEmptyBlock(headA) && level.isEmptyBlock(headB);
+    Optional<PathfinderCheckpoint> placeAt(PathfinderRegion region, double candidateX, double candidateZ) {
+        String dimensionId = level.dimension().location().toString();
+        PathfinderPosition position = new PathfinderPosition(dimensionId, candidateX, level.getSeaLevel(), candidateZ);
+        return Optional.of(new PathfinderCheckpoint(region, position));
     }
 }

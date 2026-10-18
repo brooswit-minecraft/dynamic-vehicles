@@ -88,7 +88,7 @@ public final class PathfinderAttempts {
         long timeLimitTicks = PathfinderConfig.timeLimitTicks(route.get(), PathfinderServerConfig.TICKS_PER_LEG.get());
 
         PathfinderAttemptRecord record = new PathfinderAttemptRecord(
-                player.getUUID(), villager.getUUID(), level.dimension().location().toString(), origin, pfLevel, now, timeLimitTicks, 0, false, false, false);
+                player.getUUID(), villager.getUUID(), level.dimension().location().toString(), origin, pfLevel, now, timeLimitTicks, 0, false, false, false, false);
 
         if (!storage.tryStart(record)) {
             player.sendSystemMessage(Component.translatable("message.dynamicvehicles.pathfinder.already_active"));

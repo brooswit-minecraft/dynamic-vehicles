@@ -84,8 +84,7 @@ public final class PathfinderTickHandler {
             return;
         }
         PathfinderAttemptStorage storage = PathfinderAttemptStorage.of(player.server);
-        storage.active(player.getUUID()).ifPresent(record ->
-                attemptDurableClear(player.server, player, storage, record, "message.dynamicvehicles.pathfinder.died"));
+        storage.active(player.getUUID()).ifPresent(record -> markDiedAndClear(player.server, player, storage, record));
     }
 
     /** Catches the (expected to be rare/impossible given {@link #onLivingDeath}) case of a respawn with no matching prior death event. */
@@ -95,14 +94,33 @@ public final class PathfinderTickHandler {
             return;
         }
         PathfinderAttemptStorage storage = PathfinderAttemptStorage.of(player.server);
-        storage.active(player.getUUID()).ifPresent(record ->
-                attemptDurableClear(player.server, player, storage, record, "message.dynamicvehicles.pathfinder.died"));
+        storage.active(player.getUUID()).ifPresent(record -> markDiedAndClear(player.server, player, storage, record));
+    }
+
+    /**
+     * Review follow-up: marks and durably persists {@code died} on the record BEFORE attempting
+     * the clear, rather than clearing the original still-"live" record directly. If the clear's
+     * durable-save verification then fails, the record that goes back into storage (via {@link
+     * #attemptDurableClear}'s retry path) already carries {@code died=true} - so a later tick,
+     * even one landing after respawn, recognizes it as terminal via {@link #evaluate}'s {@code
+     * record.died()} check instead of advancing or completing it as if it were still live.
+     */
+    private static void markDiedAndClear(MinecraftServer server, ServerPlayer player, PathfinderAttemptStorage storage, PathfinderAttemptRecord record) {
+        PathfinderAttemptRecord diedRecord = record.withDied();
+        storage.update(diedRecord);
+        attemptDurableClear(server, player, storage, diedRecord, "message.dynamicvehicles.pathfinder.died");
     }
 
     private static void evaluate(MinecraftServer server, PathfinderAttemptStorage storage, ServerPlayer player, PathfinderAttemptRecord record) {
-        // A prior tick already finished/expired this attempt but failed to durably confirm the
-        // clear; retry only that clear/verify/(pay) step - do not re-evaluate checkpoints or
-        // re-credit progression (see PathfinderAttemptRecord#progressionCredited).
+        // A prior tick already finished/expired/died on this attempt but failed to durably
+        // confirm the clear; retry only that clear/verify/(pay) step - do not re-evaluate
+        // checkpoints or re-credit progression (see PathfinderAttemptRecord#progressionCredited).
+        // died is checked first and unconditionally: a dead player must never fall through to
+        // normal checkpoint evaluation below, even on a tick landing after respawn.
+        if (record.died()) {
+            attemptDurableClear(server, player, storage, record, "message.dynamicvehicles.pathfinder.died");
+            return;
+        }
         if (record.finished()) {
             attemptDurablePayout(server, player, storage, record);
             return;
@@ -156,13 +174,29 @@ public final class PathfinderTickHandler {
     }
 
     /**
-     * Clears {@code record} and attempts to confirm that durably; grants the reward only once
-     * confirmed. If confirmation fails, puts {@code record} back (still marked finished/credited)
-     * so the next tick's {@link #evaluate} retries just this step.
+     * Clears {@code record} and attempts to confirm BOTH the attempt-clear and the villager
+     * progression credit durably; grants the reward only once both are confirmed. Review
+     * follow-up: the villager progression write (a separate {@code SavedData} file,
+     * {@link PathfinderVillagerProgressStorage}) can independently fail even when the attempt
+     * file's own write succeeds - a disk-verification covering only the attempt file would then
+     * pay the reward while the earned progression silently never lands. {@code
+     * expectedProgress} is read from the IN-MEMORY storage, not recomputed, so a retry after a
+     * failed verification compares against the same already-applied (not re-applied - {@link
+     * PathfinderAttemptRecord#progressionCredited()} already guards that) credit each time. If
+     * confirmation fails, puts {@code record} back (still marked finished/credited) so the next
+     * tick's {@link #evaluate} retries just this step.
      */
     private static void attemptDurablePayout(MinecraftServer server, ServerPlayer player, PathfinderAttemptStorage storage, PathfinderAttemptRecord record) {
         storage.clear(player.getUUID());
-        if (!forceSaveAndVerifyAbsent(server, player.getUUID())) {
+        PathfinderVillagerProgressStorage progressStorage = PathfinderVillagerProgressStorage.of(server);
+        // recordVillagerCompletion only ever runs once per attempt (see evaluate's
+        // progressionCredited guard), so nothing else re-dirties this SavedData on a retry - and
+        // a FAILED write silently clears its dirty flag too (same gotcha as the attempt file).
+        // Without forcing it dirty again on every attempt, a failed progression write would never
+        // be retried at all, even though the attempt file's own clear keeps retrying fine.
+        progressStorage.markDirtyForRetry();
+        PathfinderVillagerProgress.State expectedProgress = progressStorage.stateOf(record.villagerId());
+        if (!forceSaveAndVerifyPayoutDurable(server, player.getUUID(), record.villagerId(), expectedProgress)) {
             storage.update(record);
             return;
         }
@@ -196,13 +230,45 @@ public final class PathfinderTickHandler {
         server.overworld().getDataStorage().save();
         IOUtilities.waitUntilIOWorkerComplete();
         try {
-            CompoundTag root = server.overworld().getDataStorage()
-                    .readTagFromDisk(PathfinderAttemptStorage.NAME, null, SharedConstants.getCurrentVersion().getDataVersion().getVersion());
-            PathfinderAttemptStorage onDisk = PathfinderAttemptStorage.load(root.getCompound("data"), server.overworld().registryAccess());
-            return onDisk.active(playerId).isEmpty();
+            return readAttemptsFromDisk(server).active(playerId).isEmpty();
         } catch (IOException e) {
             return false;
         }
+    }
+
+    /**
+     * Same save-then-read-back-off-disk shape as {@link #forceSaveAndVerifyAbsent}, but for the
+     * reward/completion path: also confirms {@code villagerId}'s progression credit landed, by
+     * reading {@link PathfinderVillagerProgressStorage} straight off disk too and comparing
+     * against {@code expectedProgress} (the already-applied in-memory value). Review follow-up:
+     * these are two independent {@code SavedData} files/writes, so either can fail without the
+     * other failing - a completion is only durably settled once BOTH are confirmed on disk.
+     */
+    private static boolean forceSaveAndVerifyPayoutDurable(MinecraftServer server, UUID playerId, UUID villagerId,
+                                                             PathfinderVillagerProgress.State expectedProgress) {
+        server.overworld().getDataStorage().save();
+        IOUtilities.waitUntilIOWorkerComplete();
+        try {
+            if (readAttemptsFromDisk(server).active(playerId).isPresent()) {
+                return false;
+            }
+            PathfinderVillagerProgressStorage onDiskProgress = readVillagerProgressFromDisk(server);
+            return onDiskProgress.stateOf(villagerId).equals(expectedProgress);
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    private static PathfinderAttemptStorage readAttemptsFromDisk(MinecraftServer server) throws IOException {
+        CompoundTag root = server.overworld().getDataStorage()
+                .readTagFromDisk(PathfinderAttemptStorage.NAME, null, SharedConstants.getCurrentVersion().getDataVersion().getVersion());
+        return PathfinderAttemptStorage.load(root.getCompound("data"), server.overworld().registryAccess());
+    }
+
+    private static PathfinderVillagerProgressStorage readVillagerProgressFromDisk(MinecraftServer server) throws IOException {
+        CompoundTag root = server.overworld().getDataStorage()
+                .readTagFromDisk(PathfinderVillagerProgressStorage.NAME, null, SharedConstants.getCurrentVersion().getDataVersion().getVersion());
+        return PathfinderVillagerProgressStorage.load(root.getCompound("data"), server.overworld().registryAccess());
     }
 
     private static net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dimensionKey(String dimensionId) {

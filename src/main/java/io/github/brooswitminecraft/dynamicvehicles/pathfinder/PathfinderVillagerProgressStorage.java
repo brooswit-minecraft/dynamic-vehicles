@@ -20,9 +20,16 @@ import java.util.UUID;
  * not a rare edge case. Storing progress here instead means a completion can always be credited,
  * and a villager (whenever it next loads) just reads whatever this storage already has for its
  * UUID — no dependency on load state in either direction.
+ *
+ * <p>Review follow-up: this is its own separate {@code SavedData} from {@link
+ * PathfinderAttemptStorage} — a save can land the attempt-clear write while the progression
+ * write independently fails (or vice versa), so {@code PathfinderTickHandler}'s durable-payout
+ * verification reads BOTH files back off disk, not just the attempt one, before treating a
+ * completion as durably settled.
  */
 public final class PathfinderVillagerProgressStorage extends SavedData {
-    private static final String NAME = "dynamicvehicles_pathfinder_villager_progress";
+    /** Package-visible so {@code PathfinderTickHandler} can read this exact file back from disk to verify a save actually landed. */
+    static final String NAME = "dynamicvehicles_pathfinder_villager_progress";
 
     private final Map<UUID, PathfinderVillagerProgress.State> progress = new HashMap<>();
 
@@ -57,7 +64,22 @@ public final class PathfinderVillagerProgressStorage extends SavedData {
         setDirty();
     }
 
-    private static PathfinderVillagerProgressStorage load(CompoundTag tag, HolderLookup.Provider registries) {
+    /**
+     * Package-visible so {@code PathfinderTickHandler} can force a retry of this write on every
+     * payout attempt, not just the first. Review follow-up (a real bug found while adding fault
+     * coverage for this exact path): {@code SavedData#save} silently clears the dirty flag on a
+     * FAILED write too (see the class javadoc), and {@link #recordCompletion} only runs once per
+     * attempt (guarded by {@code progressionCredited}) - so without this, a failed write here
+     * would never be retried on subsequent ticks even though the attempt file's own clear keeps
+     * retrying fine (its dirty flag is naturally re-set every retry by {@code clear}/{@code
+     * update}). Content is unchanged; this only re-queues the existing in-memory state for save.
+     */
+    void markDirtyForRetry() {
+        setDirty();
+    }
+
+    /** Package-visible for direct round-trip testing and for {@code PathfinderTickHandler}'s on-disk verification read. */
+    static PathfinderVillagerProgressStorage load(CompoundTag tag, HolderLookup.Provider registries) {
         PathfinderVillagerProgressStorage storage = new PathfinderVillagerProgressStorage();
         ListTag list = tag.getList("Villagers", Tag.TAG_COMPOUND);
         for (int i = 0; i < list.size(); i++) {

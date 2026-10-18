@@ -94,6 +94,7 @@ public final class PathfinderAttemptStorage extends SavedData {
                     entry.getInt("ReachedCount"),
                     entry.getBoolean("Finished"),
                     entry.getBoolean("Expired"),
+                    entry.getBoolean("Died"),
                     entry.getBoolean("ProgressionCredited"));
             storage.attempts.put(playerId, record);
         }
@@ -118,6 +119,7 @@ public final class PathfinderAttemptStorage extends SavedData {
             entry.putInt("ReachedCount", record.reachedCount());
             entry.putBoolean("Finished", record.finished());
             entry.putBoolean("Expired", record.expired());
+            entry.putBoolean("Died", record.died());
             entry.putBoolean("ProgressionCredited", record.progressionCredited());
             list.add(entry);
         }

@@ -241,7 +241,7 @@ public final class PathfinderGameTests {
         // instead of teleporting through all 8 - the per-checkpoint logic is already covered by
         // PathfinderProgressTest; this test is about the real tick/reward/clear wiring.
         storage.update(new PathfinderAttemptRecord(record.playerId(), record.villagerId(), record.dimensionId(), record.origin(), record.level(),
-                record.startTick(), record.timeLimitTicks(), lastIndex, false, false, false));
+                record.startTick(), record.timeLimitTicks(), lastIndex, false, false, false, false));
 
         PathfinderCheckpoint last = route.checkpoints().get(lastIndex);
         player.teleportTo(last.position().x(), last.position().y(), last.position().z());
@@ -275,8 +275,19 @@ public final class PathfinderGameTests {
      * confirms: the reward is withheld and the attempt record is retained (not lost) while the
      * write keeps failing; once the directory is made writable again, the next tick's retry
      * confirms the write, pays the reward exactly once, and clears the attempt.
+     *
+     * <p>Bug found while adding the two sibling fault-injection tests below: all three (and every
+     * other GameTest here) default to vanilla's {@code "defaultBatch"}, and a batch's tests all
+     * tick CONCURRENTLY against the one shared overworld data directory ({@code
+     * GameTestRunner#runBatch} only advances once every test in the batch finishes) - toggling
+     * that directory's writable bit here was intermittently starving/flipping writes for
+     * unrelated concurrently-running tests (even ones with no fault injection of their own, like
+     * {@code completingTheLastCheckpointAndClosingLegGrantsRewardAndClearsTheAttempt}), and the
+     * two sibling tests toggling the SAME bit were intermittently racing each other too. Each of
+     * the three gets its own dedicated batch so none of them ever ticks concurrently with
+     * anything else that might be saving to the same directory at the same moment.
      */
-    @GameTest(template = "dispatch_profession", timeoutTicks = 150)
+    @GameTest(template = "dispatch_profession", timeoutTicks = 150, batch = "pathfinder_fault_attempt_write")
     public static void writeFailureWithholdsRewardUntilConfirmedThenRetrySucceeds(GameTestHelper helper) {
         Villager villager = helper.spawn(EntityType.VILLAGER, new BlockPos(2, 2, 2));
         villager.setVillagerData(villager.getVillagerData().setProfession(PathfinderProfession.PATHFINDER.get()));
@@ -294,7 +305,7 @@ public final class PathfinderGameTests {
         PathfinderRoute route = PathfinderRouteStorage.of(server).routeFor(dimension, record.origin(), record.level()).orElseThrow();
         int lastIndex = route.checkpoints().size() - 1;
         storage.update(new PathfinderAttemptRecord(record.playerId(), record.villagerId(), record.dimensionId(), record.origin(), record.level(),
-                record.startTick(), record.timeLimitTicks(), lastIndex, false, false, false));
+                record.startTick(), record.timeLimitTicks(), lastIndex, false, false, false, false));
 
         // Ensure the data file already exists once (a brand-new world has no "data" dir yet) and
         // locate it, exactly as PathfinderTickHandler's own verification does.
@@ -667,7 +678,7 @@ public final class PathfinderGameTests {
     @GameTest(template = "dispatch_profession", timeoutTicks = 100)
     public static void clearedAttemptDoesNotReappearAfterASaveReloadRoundTrip(GameTestHelper helper) {
         var record = new PathfinderAttemptRecord(java.util.UUID.randomUUID(), java.util.UUID.randomUUID(), "minecraft:overworld",
-                new PathfinderRegion(3, -5), PathfinderLevel.LEVEL_2, 100, 1000, 2, false, false, false);
+                new PathfinderRegion(3, -5), PathfinderLevel.LEVEL_2, 100, 1000, 2, false, false, false, false);
 
         PathfinderAttemptStorage storage = new PathfinderAttemptStorage();
         helper.assertTrue(storage.tryStart(record), "starting a fresh attempt should succeed");
@@ -714,7 +725,7 @@ public final class PathfinderGameTests {
 
         long startTick = server.overworld().getGameTime();
         var record = new PathfinderAttemptRecord(player.getUUID(), java.util.UUID.randomUUID(),
-                dimensionId, origin, PathfinderLevel.LEVEL_2, startTick, PathfinderTickHandler.EVALUATE_INTERVAL_TICKS, 0, false, false, false);
+                dimensionId, origin, PathfinderLevel.LEVEL_2, startTick, PathfinderTickHandler.EVALUATE_INTERVAL_TICKS, 0, false, false, false, false);
         helper.assertTrue(storage.tryStart(record), "starting a fresh attempt should succeed");
 
         // Simulate a reload: reconstruct storage from a real save/load round trip, exactly as a
@@ -735,6 +746,184 @@ public final class PathfinderGameTests {
             helper.assertTrue(storage.active(record.playerId()).isEmpty(),
                     "the reloaded attempt must have expired by now, purely from elapsed game ticks");
             helper.succeed();
+        });
+    }
+
+    /**
+     * Review follow-up: the villager-progression write ({@link PathfinderVillagerProgressStorage},
+     * a SEPARATE {@code SavedData} file from the attempt's own) can independently fail even when
+     * the attempt file's own write/clear succeeds - a durability check that only verified the
+     * attempt file would then pay the reward while the earned progression silently never lands.
+     * This targets the fault at exactly that one file: pre-creating its on-disk path as a
+     * DIRECTORY (not a regular file) makes the atomic-rename step of just that file's write fail
+     * with a real {@code IOException} (replacing a directory with a regular file fails), while the
+     * attempt file's own write, at a different path in the same data directory, is entirely
+     * unaffected.
+     */
+    @GameTest(template = "dispatch_profession", timeoutTicks = 150, batch = "pathfinder_fault_progression_write")
+    public static void progressionOnlyWriteFailureWithholdsRewardUntilConfirmedThenRetrySucceeds(GameTestHelper helper) {
+        Villager villager = helper.spawn(EntityType.VILLAGER, new BlockPos(2, 2, 2));
+        villager.setVillagerData(villager.getVillagerData().setProfession(PathfinderProfession.PATHFINDER.get()));
+        seedLevel1RouteForTest(helper, villager);
+        ServerPlayer player = GameTestMockPlayers.create(helper);
+        player.moveTo(helper.absolutePos(new BlockPos(2, 2, 3)).getCenter());
+        declarePathfinderHudChannel(player);
+
+        PathfinderInteractionHandler.onEntityInteract(new PlayerInteractEvent.EntityInteract(player, InteractionHand.MAIN_HAND, villager));
+
+        MinecraftServer server = helper.getLevel().getServer();
+        PathfinderAttemptStorage storage = PathfinderAttemptStorage.of(server);
+        PathfinderAttemptRecord record = storage.active(player.getUUID()).orElseThrow();
+        ServerLevel dimension = helper.getLevel();
+        PathfinderRoute route = PathfinderRouteStorage.of(server).routeFor(dimension, record.origin(), record.level()).orElseThrow();
+        int lastIndex = route.checkpoints().size() - 1;
+        storage.update(new PathfinderAttemptRecord(record.playerId(), record.villagerId(), record.dimensionId(), record.origin(), record.level(),
+                record.startTick(), record.timeLimitTicks(), lastIndex, false, false, false, false));
+
+        server.overworld().getDataStorage().save();
+        net.neoforged.neoforge.common.IOUtilities.waitUntilIOWorkerComplete();
+        java.io.File dataDir = server.getWorldPath(net.minecraft.world.level.storage.LevelResource.ROOT).resolve("data").toFile();
+        helper.assertTrue(dataDir.isDirectory(), "sanity: the world's data directory must exist by now");
+        java.io.File progressFile = new java.io.File(dataDir, PathfinderVillagerProgressStorage.NAME + ".dat");
+        // The shared "Test Level" world may already have this file from an earlier test/batch in
+        // this same run (every completion anywhere writes it) - remove any pre-existing regular
+        // file first; its on-disk bytes are not the source of truth (the in-memory singleton,
+        // already populated for the whole server lifetime, is), so deleting it here is harmless.
+        if (progressFile.isFile()) {
+            helper.assertTrue(progressFile.delete(), "sanity: must be able to remove the pre-existing progression file to inject the fault");
+        }
+        helper.assertTrue(!progressFile.exists(), "sanity: the progression path must be clear before injecting the fault");
+        helper.assertTrue(progressFile.mkdir(), "sanity: must be able to pre-create the progression path as a directory");
+
+        PathfinderCheckpoint last = route.checkpoints().get(lastIndex);
+        PathfinderCheckpoint first = route.checkpoints().get(0);
+        player.teleportTo(last.position().x(), last.position().y(), last.position().z());
+
+        // Safety net, independent of the test's own outcome - see writeFailureWithholdsRewardUntilConfirmedThenRetrySucceeds.
+        helper.runAfterDelay(120L, () -> deleteIfEmptyDirectory(progressFile));
+
+        boolean[] restoredWritable = {false};
+        boolean[] movedToClosingLeg = {false};
+        helper.succeedWhen(() -> {
+            if (!movedToClosingLeg[0]) {
+                int reached = storage.active(player.getUUID()).map(PathfinderAttemptRecord::reachedCount).orElse(-1);
+                helper.assertTrue(reached == route.checkpoints().size(), "expected the last checkpoint to register first");
+                player.teleportTo(first.position().x(), first.position().y(), first.position().z());
+                movedToClosingLeg[0] = true;
+                helper.fail("moved to the closing leg - wait for the next evaluation to hit the injected progression-only write failure");
+            }
+            if (!restoredWritable[0]) {
+                PathfinderAttemptRecord pending = storage.active(player.getUUID()).orElse(null);
+                helper.assertTrue(pending != null && pending.finished(),
+                        "a failed progression write must retain the finished-but-unpaid attempt for retry, even though the attempt file's own write succeeded");
+                helper.assertTrue(player.getInventory().countItem(Items.EMERALD) == 0,
+                        "reward must be withheld while the villager's progression credit cannot be confirmed durable");
+                helper.assertTrue(deleteIfEmptyDirectory(progressFile), "must be able to remove the fault directory to let the real file be written");
+                restoredWritable[0] = true;
+                helper.fail("removed the fault directory - wait for the retry to confirm and pay out");
+            }
+            helper.assertTrue(storage.active(player.getUUID()).isEmpty(), "once the progression write succeeds, the retried payout should clear the attempt");
+            int expected = PathfinderConfig.rewardEmeralds(record.level());
+            int actual = player.getInventory().countItem(Items.EMERALD);
+            helper.assertTrue(actual == expected, "expected exactly " + expected + " emerald(s) after the retry succeeded, got " + actual);
+            PathfinderVillagerProgress.State villagerState = PathfinderVillagerLevel.stateOf(server, villager.getUUID());
+            helper.assertTrue(villagerState.completionsAtLevel() == 1,
+                    "the villager's own completion count should have advanced exactly once, not lost or double-counted across the retry");
+        });
+    }
+
+    private static boolean deleteIfEmptyDirectory(java.io.File dir) {
+        return !dir.isDirectory() || dir.delete();
+    }
+
+    /**
+     * Review follow-up: a failed death-clear previously put the ORIGINAL, still-"live" record
+     * back into storage (every terminal flag false) - letting a later tick, by then past respawn,
+     * treat it as a normal in-progress attempt and advance/complete it off whatever movement
+     * happened to follow. This drives the real sequence with a genuinely injected write failure
+     * (read-only save directory, exactly as {@link #writeFailureWithholdsRewardUntilConfirmedThenRetrySucceeds}):
+     * die one checkpoint short of completion, respawn, move to the closing checkpoint exactly as a
+     * real completion would, and confirm across several real ticks that nothing is ever rewarded
+     * or credited while write access stays blocked - only once it is restored does the attempt
+     * finally clear (with no reward, since this was a death, not a completion).
+     */
+    @GameTest(template = "dispatch_profession", timeoutTicks = 200, batch = "pathfinder_fault_death_write")
+    public static void deathDuringWriteFailureSurvivingRespawnAndClosingCheckpointNeverRewardsThenClears(GameTestHelper helper) {
+        Villager villager = helper.spawn(EntityType.VILLAGER, new BlockPos(2, 2, 2));
+        villager.setVillagerData(villager.getVillagerData().setProfession(PathfinderProfession.PATHFINDER.get()));
+        seedLevel1RouteForTest(helper, villager);
+        ServerPlayer player = GameTestMockPlayers.create(helper);
+        player.moveTo(helper.absolutePos(new BlockPos(2, 2, 3)).getCenter());
+        declarePathfinderHudChannel(player);
+
+        PathfinderInteractionHandler.onEntityInteract(new PlayerInteractEvent.EntityInteract(player, InteractionHand.MAIN_HAND, villager));
+
+        MinecraftServer server = helper.getLevel().getServer();
+        PathfinderAttemptStorage storage = PathfinderAttemptStorage.of(server);
+        PathfinderAttemptRecord record = storage.active(player.getUUID()).orElseThrow();
+        ServerLevel dimension = helper.getLevel();
+        PathfinderRoute route = PathfinderRouteStorage.of(server).routeFor(dimension, record.origin(), record.level()).orElseThrow();
+        int lastIndex = route.checkpoints().size() - 1;
+        storage.update(new PathfinderAttemptRecord(record.playerId(), record.villagerId(), record.dimensionId(), record.origin(), record.level(),
+                record.startTick(), record.timeLimitTicks(), lastIndex, false, false, false, false));
+
+        server.overworld().getDataStorage().save();
+        net.neoforged.neoforge.common.IOUtilities.waitUntilIOWorkerComplete();
+        java.io.File dataDir = server.getWorldPath(net.minecraft.world.level.storage.LevelResource.ROOT).resolve("data").toFile();
+        helper.assertTrue(dataDir.isDirectory(), "sanity: the world's data directory must exist by now");
+
+        boolean permissionsBlockWrites = !dataDir.setWritable(false);
+        if (permissionsBlockWrites) {
+            dataDir.setWritable(true);
+            helper.succeed();
+            return;
+        }
+        helper.runAfterDelay(170L, () -> dataDir.setWritable(true));
+
+        // A real death (fires the actual, wired-up LivingDeathEvent) while writes are failing:
+        // onLivingDeath's own durable-clear verification must genuinely fail here, leaving the
+        // record marked died=true, still in storage - not discarded, and not left in its
+        // original live shape.
+        player.kill();
+        PathfinderAttemptRecord afterDeath = storage.active(player.getUUID()).orElse(null);
+        helper.assertTrue(afterDeath != null && afterDeath.died(),
+                "a death-clear that cannot be confirmed durable must leave the record marked died, not discard or revive it");
+
+        // Respawn while writes are still failing - the no-matching-prior-death-event fallback
+        // path must be a harmless no-op here (the record is already died=true), not a second
+        // chance to revive it.
+        PathfinderTickHandler.onPlayerRespawn(new net.neoforged.neoforge.event.entity.player.PlayerEvent.PlayerRespawnEvent(player, false));
+        helper.assertTrue(storage.active(player.getUUID()).map(PathfinderAttemptRecord::died).orElse(false),
+                "respawn's fallback clear attempt must not revive the attempt while writes still fail");
+
+        // Firing the respawn EVENT does not itself revive the entity - a real client respawn
+        // would. Restore health now so onServerTick's own isAlive() guard (defense in depth
+        // against evaluating a dead player) stops skipping this player once writes recover,
+        // exactly as a real post-respawn player would be picked back up by the normal tick loop.
+        player.setHealth(player.getMaxHealth());
+
+        PathfinderCheckpoint first = route.checkpoints().get(0);
+        player.teleportTo(first.position().x(), first.position().y(), first.position().z());
+
+        boolean[] restoredWritable = {false};
+        helper.succeedWhen(() -> {
+            // Real server ticks pass here via this polling loop - onServerTick fires for real
+            // through the event bus on each one. The player stands right at what would be the
+            // closing checkpoint; a bug reviving the record as live would complete or reward it
+            // on exactly this movement.
+            helper.assertTrue(player.getInventory().countItem(Items.EMERALD) == 0,
+                    "a dead attempt must never be rewarded, even while standing at the closing checkpoint");
+            PathfinderVillagerProgress.State villagerState = PathfinderVillagerLevel.stateOf(server, villager.getUUID());
+            helper.assertTrue(villagerState.completionsAtLevel() == 0,
+                    "a dead attempt must never credit villager progression, even while standing at the closing checkpoint");
+            if (!restoredWritable[0]) {
+                PathfinderAttemptRecord pending = storage.active(player.getUUID()).orElse(null);
+                helper.assertTrue(pending != null && pending.died(), "the died attempt must still be retained, pending a successful clear, while writes keep failing");
+                dataDir.setWritable(true);
+                restoredWritable[0] = true;
+                helper.fail("restored write access - wait for the retry to confirm the clear");
+            }
+            helper.assertTrue(storage.active(player.getUUID()).isEmpty(), "once writes recover, the died attempt should finally clear");
         });
     }
 }

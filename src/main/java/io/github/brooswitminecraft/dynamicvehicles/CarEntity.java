@@ -322,6 +322,45 @@ public class CarEntity extends Entity {
         return sableBody == null ? 0.0 : SableCompat.lastErosionReportLoadKg(sableBody);
     }
 
+    /** Server test support only (MINECRAFT-401 review, round 5): the engine RPM {@link DrivetrainMath}
+     * actually computed this tick, bypassing {@code DATA_RPM}'s own 0.02 network-sync gate in
+     * {@link #publishSoundState} -- that gate is a bandwidth optimisation for client-facing audio, and
+     * deliberately lets small per-tick drift accumulate before sending a single larger update, so reading
+     * through it (as {@link #clientEngineRpmFraction()} does) cannot distinguish a real on/off reset from
+     * an ordinary gradual change that the gate simply hadn't flushed yet. A caller checking gradualness of
+     * the underlying physics must read this instead. */
+    double debugEngineRpm() {
+        return sableBody == null ? DrivetrainMath.IDLE_RPM : SableCompat.engineRpm(sableBody);
+    }
+
+    /** Diagnostic only (MINECRAFT-401 review, round 5 ledge-test investigation): whether any wheel had
+     * a positive suspension force as of the end of the last tick -- distinguishes "genuinely airborne"
+     * from "still grounded" when a fall isn't showing up as expected in velocity. */
+    boolean debugTouching() {
+        return sableBody != null && SableCompat.touching(sableBody);
+    }
+
+    /** Server test support only (MINECRAFT-401 review, round 5): each wheel's own real contact-patch
+     * speed (m/s) and applied longitudinal force (N) as of the last tick it was grounded. */
+    double[] debugWheelContactSpeeds() {
+        return sableBody == null ? new double[0] : SableCompat.wheelContactSpeeds(sableBody);
+    }
+
+    /** Server test support only (MINECRAFT-401 review, round 5, second pass): each wheel's own spin rate
+     * (rad/s) read straight from SableCarBody, bypassing {@link #wheelSpin(int, float)}'s client-sync
+     * interpolation buffer -- that buffer is published once per tick but read back through its own
+     * previous/current double-buffer, which (like {@code DATA_RPM}'s own gate) cannot be assumed to reflect
+     * THIS tick's value the instant after it was set; a caller checking this tick's own physics state
+     * against this tick's own engine RPM must read both the same way, not mix a direct read with a
+     * sync-buffered one. */
+    double[] debugWheelSpins() {
+        return sableBody == null ? new double[0] : SableCompat.wheelSpinRates(sableBody);
+    }
+
+    double[] debugWheelForces() {
+        return sableBody == null ? new double[0] : SableCompat.wheelForces(sableBody);
+    }
+
     io.github.brooswitminecraft.dynamicterrain.Erosion.Result debugLastErosionResult() {
         return sableBody == null ? io.github.brooswitminecraft.dynamicterrain.Erosion.Result.SKIPPED : SableCompat.lastErosionResult(sableBody);
     }

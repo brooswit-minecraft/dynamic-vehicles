@@ -126,42 +126,55 @@ class DrivetrainMathTest {
     }
 
     @Test
-    void smoothedRpmNeverJumpsMoreThanTheMaxChangePerTick() {
-        double result = DrivetrainMath.smoothedRpm(DrivetrainMath.IDLE_RPM, DrivetrainMath.LIMITER_RPM);
-        assertEquals(DrivetrainMath.IDLE_RPM + DrivetrainMath.MAX_RPM_CHANGE_PER_TICK, result, 1e-9,
-                "a target far above the current value must only move by the max change per tick, not jump straight to it");
-    }
-
-    @Test
-    void smoothedRpmReachesTheTargetExactlyOnceCloseEnough() {
-        double small = DrivetrainMath.MAX_RPM_CHANGE_PER_TICK / 2.0;
-        double result = DrivetrainMath.smoothedRpm(1000.0, 1000.0 + small);
-        assertEquals(1000.0 + small, result, 1e-9, "a target already within one tick's reach must be met exactly, not overshot or approached forever");
-    }
-
-    @Test
-    void smoothedRpmTracksDownwardAtTheSameBoundedRate() {
-        // MINECRAFT-401 review (round 2): the whole point of this function is that a wheel's own spin can
-        // snap to a much LOWER value instantly (WheelMath.spinRate's grip snap) without the engine's RPM
-        // following it in a single tick -- downward must be bounded exactly like upward.
-        double result = DrivetrainMath.smoothedRpm(DrivetrainMath.LIMITER_RPM, 0.0);
-        assertEquals(DrivetrainMath.LIMITER_RPM - DrivetrainMath.MAX_RPM_CHANGE_PER_TICK, result, 1e-9,
-                "a target far below the current value must decay at the bounded rate, not snap straight down");
-    }
-
-    @Test
-    void smoothedRpmConvergesToASustainedTargetOverSeveralTicks() {
-        double rpm = DrivetrainMath.IDLE_RPM;
-        for (int i = 0; i < 200; i++) {
-            rpm = DrivetrainMath.smoothedRpm(rpm, DrivetrainMath.LIMITER_RPM);
-        }
-        assertEquals(DrivetrainMath.LIMITER_RPM, rpm, 1e-9, "a sustained target must eventually be reached exactly");
-    }
-
-    @Test
     void clampRpmMatchesEngineRpmsOwnClamp() {
         assertEquals(DrivetrainMath.IDLE_RPM, DrivetrainMath.clampRpm(0.0), 1e-9);
         assertEquals(DrivetrainMath.LIMITER_RPM, DrivetrainMath.clampRpm(50_000.0), 1e-9);
         assertEquals(3000.0, DrivetrainMath.clampRpm(3000.0), 1e-9);
+    }
+
+    @Test
+    void boundedSpinTowardSnapClampsALargeInstantSnapToTheFrictionTorqueLimit() {
+        // A wheel spinning fast (50 rad/s) with the limiter just cutting torque so WheelMath.spinRate
+        // wants to snap it straight to a near-stationary ground speed (2 rad/s) -- that 48 rad/s jump must
+        // be bounded by how fast the available friction torque could actually despin it, not applied whole.
+        double frictionForce = 3000.0; // N
+        double wheelRadius = 0.35;
+        double wheelInertia = 1.2;
+        double dt = 0.05;
+        double maxChange = frictionForce * wheelRadius * dt / wheelInertia;
+        double result = DrivetrainMath.boundedSpinTowardSnap(50.0, 2.0, frictionForce, wheelRadius, wheelInertia, dt);
+        assertEquals(50.0 - maxChange, result, 1e-9, "the snap must be clamped to exactly the friction-torque-bounded change");
+        assertTrue(result > 2.0, "a single bounded step must not reach all the way to the snapped target when the jump is larger than the bound");
+    }
+
+    @Test
+    void boundedSpinTowardSnapPassesThroughASmallSnapUnclamped() {
+        // When the requested snap is already within what friction could achieve this step, the result
+        // must be the snapped value exactly -- this must not introduce extra lag for the ordinary small
+        // corrections WheelMath.spinRate's own contract was built for.
+        double result = DrivetrainMath.boundedSpinTowardSnap(10.0, 9.99, 3000.0, 0.35, 1.2, 0.05);
+        assertEquals(9.99, result, 1e-9);
+    }
+
+    @Test
+    void boundedSpinTowardSnapWorksInEitherDirection() {
+        double frictionForce = 3000.0;
+        double wheelRadius = 0.35;
+        double wheelInertia = 1.2;
+        double dt = 0.05;
+        double maxChange = frictionForce * wheelRadius * dt / wheelInertia;
+        // Snapping DOWN from a fast spin (covered above) and snapping UP (e.g. a reversing wheel) must be
+        // bounded symmetrically.
+        double resultUp = DrivetrainMath.boundedSpinTowardSnap(-50.0, -2.0, frictionForce, wheelRadius, wheelInertia, dt);
+        assertEquals(-50.0 + maxChange, resultUp, 1e-9);
+    }
+
+    @Test
+    void boundedSpinTowardSnapIgnoresTheSignOfFrictionForce() {
+        // Only the MAGNITUDE of the available friction force bounds the rate -- a caller must not need to
+        // pre-sign it relative to the spin direction.
+        double a = DrivetrainMath.boundedSpinTowardSnap(50.0, 2.0, 3000.0, 0.35, 1.2, 0.05);
+        double b = DrivetrainMath.boundedSpinTowardSnap(50.0, 2.0, -3000.0, 0.35, 1.2, 0.05);
+        assertEquals(a, b, 1e-9);
     }
 }

@@ -23,42 +23,27 @@ public final class DrivetrainMath {
      * below {@link #UPSHIFT_RPM} so a steady speed near either threshold does not hunt between gears. */
     public static final double DOWNSHIFT_RPM = 2200.0;
     /**
-     * How far below {@link #LIMITER_RPM} {@link #limiterTorqueFactor} starts tapering torque. Must stay
-     * comfortably wider than {@link #MAX_RPM_CHANGE_PER_TICK} crossing it in a single tick -- see that
-     * constant's own javadoc (review, round 3) for why a taper band no wider than one tick's worth of
-     * smoothing is not meaningfully smoothed at all.
+     * How far below {@link #LIMITER_RPM} {@link #limiterTorqueFactor} starts tapering torque.
+     *
+     * <p>Review history worth keeping: an earlier revision (round 2) additionally smoothed the RPM value
+     * the limiter itself reads (a {@code smoothedRpm} function, since removed) to keep a single tick from
+     * crossing this whole band at once. Widening THIS band instead, to get the same multi-tick margin
+     * without touching that separate smoothing rate, was tried (round 3) and rejected: D1's own ratio
+     * means ordinary driving (not just a wall-pinned burnout) commonly runs with RAW RPM near the limiter
+     * at fairly light throttle (confirmed by production telemetry), so widening this band visibly slowed
+     * D1's ordinary acceleration enough to flip the production-path ratio-multiplier regression test
+     * ({@code CarDrivetrainGameTests.d1ReachesAHigherSpeedThanD5OverTheSameShortWindow}) -- this band's
+     * WIDTH is not free to grow without changing normal-operation behavior. The separate RPM-smoothing
+     * step was removed entirely in round 5 once {@link WheelMath#WHEEL_INERTIA} itself was given a
+     * physically-grounded, bounded recovery at the wheel level ({@code DrivetrainMath.boundedSpinTowardSnap},
+     * applied to {@code wheelSpin} in {@code SableCarBody}) -- that bound alone already keeps
+     * {@code drivenWheelSpin}, and so the RPM this reads, changing gradually at the source, so a second,
+     * independent engine-side smoothing pass was redundant and (worse) compounded into enough extra lag
+     * to fail other production-path tests that need the drivetrain to actually recover within their own
+     * windows. A caller is still free to tune this band's own width for the limiter's feel; it no longer
+     * has a cross-constant margin to maintain against a removed RPM-slew rate.
      */
     public static final double LIMITER_TAPER_RPM = 400.0;
-    /**
-     * Maximum RPM {@link #smoothedRpm} may change by in one tick -- the engine's own rotational inertia
-     * (review, round 2): {@link WheelMath#spinRate} legitimately snaps a wheel's own spin straight to
-     * {@code groundSpeed/radius} the instant it detects grip ({@code excessForce == 0}), which includes
-     * the instant the limiter cuts drive force to (near) zero -- that snap is correct for the TIRE's own
-     * contact state, but reading it directly as the engine's RPM would mean the engine itself has zero
-     * rotational inertia: it would lose all its spin in a single tick, the limiter would see RPM already
-     * back under the taper band next tick, torque would resume at full, the wheel would spin back up and
-     * trip the limiter again next tick, forever -- an on/off reset, not limiter hunting. A real engine (and
-     * the driveline between it and the wheel) keeps turning under its own momentum for a while after
-     * torque is cut; {@link #smoothedRpm} models exactly that missing inertia, decoupling what the limiter
-     * reads from the tire model's own instant snap.
-     * <p>
-     * Review, round 3: the first value chosen here (500) was still too large relative to
-     * {@link #LIMITER_TAPER_RPM} (400) -- a single tick's allowed jump could cross the ENTIRE taper band
-     * in one step, from comfortably under it to fully cut (or the reverse, on the way back up), which is
-     * exactly the on/off behavior this constant exists to prevent; it only looked different from the
-     * un-smoothed version by one tick's delay, not in kind. The fix keeps THIS constant well under
-     * {@link #LIMITER_TAPER_RPM} rather than widening that one to make room: D1's own ratio already means
-     * ordinary driving (not just a wall-pinned burnout) commonly runs with RAW RPM near the limiter at
-     * fairly light throttle (confirmed by production telemetry), so widening the taper band to get the
-     * same multi-tick margin was tried first and rejected -- it visibly slowed D1's ordinary acceleration
-     * enough to flip the sign of the production-path ratio-multiplier regression test
-     * ({@code CarDrivetrainGameTests.d1ReachesAHigherSpeedThanD5OverTheSameShortWindow}), proving the
-     * taper band's WIDTH is not free to grow without changing normal-operation behavior the way its RATE
-     * of crossing is. Keeping this well under {@link #LIMITER_TAPER_RPM} (currently a 4x margin) is
-     * load-bearing: a caller tuning either constant must keep that gap wide enough that crossing the
-     * taper band takes several ticks, not one, without growing the band itself.
-     */
-    public static final double MAX_RPM_CHANGE_PER_TICK = 100.0;
 
     private DrivetrainMath() {}
 
@@ -97,26 +82,11 @@ public final class DrivetrainMath {
         return clampRpm(rawRpm(wheelAngularSpeed, ratio));
     }
 
-    /** {@link #IDLE_RPM}..{@link #LIMITER_RPM}, clamping an already-computed RPM value (raw or smoothed)
-     * rather than recomputing it from a wheel speed -- the display-only clamp {@link #engineRpm} applies
-     * to {@link #rawRpm}, factored out so a caller tracking {@link #smoothedRpm} can clamp that instead. */
+    /** {@link #IDLE_RPM}..{@link #LIMITER_RPM}, clamping an already-computed RPM value rather than
+     * recomputing it from a wheel speed -- the display-only clamp {@link #engineRpm} applies to
+     * {@link #rawRpm}, factored out so a caller already holding a raw RPM value can clamp it directly. */
     public static double clampRpm(double rpm) {
         return Math.max(IDLE_RPM, Math.min(LIMITER_RPM, rpm));
-    }
-
-    /**
-     * One tick's worth of the engine's own rotational inertia (see {@link #MAX_RPM_CHANGE_PER_TICK}):
-     * {@code currentRpm} moves toward {@code targetRawRpm} (this tick's instantaneous, tire-model-derived
-     * {@link #rawRpm}) by at most that many RPM, in either direction. Call once per tick with the previous
-     * call's own return value as {@code currentRpm} (persisted state, like {@link WheelMath#spinRate}'s
-     * own {@code spin} parameter) -- never recomputed from scratch, or the inertia this models vanishes.
-     */
-    public static double smoothedRpm(double currentRpm, double targetRawRpm) {
-        double delta = targetRawRpm - currentRpm;
-        if (Math.abs(delta) <= MAX_RPM_CHANGE_PER_TICK) {
-            return targetRawRpm;
-        }
-        return currentRpm + Math.copySign(MAX_RPM_CHANGE_PER_TICK, delta);
     }
 
     /**
@@ -179,5 +149,39 @@ public final class DrivetrainMath {
      */
     public static double forceMultiplier(double ratio) {
         return ratio / GEAR_RATIOS[GEAR_RATIOS.length - 1];
+    }
+
+    /**
+     * Review, round 5: {@link WheelMath#spinRate}'s documented contract snaps a wheel's own spin straight
+     * to {@code groundSpeed/radius} the instant {@code excessForce} reads exactly 0 -- correct for the
+     * small, continuous corrections that contract was built for, but once the limiter (MINECRAFT-401) can
+     * make a wheel carrying real stored angular momentum from a sustained burnout hit exactly that
+     * condition in a single step, the same snap discards that momentum (the model's own declared
+     * {@code WheelMath.WHEEL_INERTIA}) without a bounded physical reaction. Kinetic friction can only
+     * despin a wheel so fast: the torque available is {@code frictionForce * wheelRadius} (the same
+     * friction force the friction circle already computed as available at this contact), and the spin
+     * rate it can change is that torque divided by the wheel's own rotational inertia. This clamps
+     * {@code snappedSpin} (whatever {@link WheelMath#spinRate} already returned) to at most that much
+     * change from {@code priorSpin} in this (sub-)step, instead of the unbounded jump -- a caller applies
+     * this ONLY in the {@code excessForce == 0.0} branch (see the call site's own comment); every other
+     * case keeps reading {@link WheelMath#spinRate}'s own return value unmodified, so nothing here
+     * changes the EXCESS-force integration WheelMath already owns, and nothing here touches the official
+     * slip-REPORTING contract (MINECRAFT-73/118), which never read {@code wheelSpin} in the first place.
+     *
+     * @param priorSpin this wheel's own spin rate coming into the step, rad/s
+     * @param snappedSpin {@link WheelMath#spinRate}'s own result for this same step (what a caller would
+     *        have used unmodified before this fix)
+     * @param frictionForce the friction force actually available at this contact this step, N (the same
+     *        {@code gripMu * normalForce} the friction circle itself used -- sign-independent, only its
+     *        magnitude matters here)
+     */
+    public static double boundedSpinTowardSnap(double priorSpin, double snappedSpin, double frictionForce,
+            double wheelRadius, double wheelInertia, double dt) {
+        double maxChange = Math.abs(frictionForce) * wheelRadius / wheelInertia * dt;
+        double delta = snappedSpin - priorSpin;
+        if (Math.abs(delta) <= maxChange) {
+            return snappedSpin;
+        }
+        return priorSpin + Math.copySign(maxChange, delta);
     }
 }

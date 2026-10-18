@@ -70,13 +70,12 @@ final class SableCarBody {
     // itself produces, the same lag every other "fixed for the whole tick" value in this method already has.
     private int automaticGearIndex;
     private double engineRpm = DrivetrainMath.IDLE_RPM;
-    // The engine's own rotational inertia (MINECRAFT-401 review, round 2), persisted tick to tick like
-    // wheelSpin and engineRpm above: see DrivetrainMath.smoothedRpm's own javadoc for why this must NOT be
-    // derived fresh from wheelSpin every tick the way engineRpm's display clamp is. This is the value
-    // limiterTorqueFactor actually reads; engineRpm (display/audio) is clamped from THIS, not from the raw
-    // per-tick target, so the two never disagree about what "RPM" currently means.
-    private double smoothedEngineRpm = DrivetrainMath.IDLE_RPM;
     private double gearRatio = DrivetrainMath.ratioFor(DrivetrainMath.GEAR_RATIOS.length - 1);
+    // Diagnostic only (MINECRAFT-401 review, round 5 ledge-test investigation): whether ANY wheel's
+    // suspension force was positive (the exact same `touching` condition that gates box.wakeUp() below)
+    // as of the end of the last tick -- lets a caller distinguish "genuinely airborne" from "still grounded
+    // but not yet falling fast" when a fall isn't showing up in velocity.
+    private boolean lastTouching;
     // Per-wheel telemetry for /dtcar debug (MINECRAFT-401 review: the ticket's own acceptance criteria
     // calls these out by name -- contact speed, slip, applied force/torque -- not just gear/RPM). Written
     // alongside wheelSpin, below the same force<=0 guard, so they freeze with it for an
@@ -179,13 +178,26 @@ final class SableCarBody {
             drivenWheelSpin += Math.abs(wheelSpin[w]);
         }
         drivenWheelSpin /= wheelCountForDrivetrain;
-        // There is exactly one engine regardless of gear, so exactly one smoothedEngineRpm state feeds
-        // the limiter below -- computed from whichever ratio is actually engaged this tick (REVERSE's own
+        // There is exactly one engine regardless of gear, so exactly one rawEngineRpm reading feeds the
+        // limiter below -- computed from whichever ratio is actually engaged this tick (REVERSE's own
         // ratio, the resolved manual/automatic ratio, or NEUTRAL's decoupled free-rev, which bypasses the
         // engine's rotational inertia entirely since nothing couples it to a wheel to have inertia against).
+        //
+        // Review, round 5: this used to ALSO smooth this value through DrivetrainMath.smoothedRpm (round
+        // 2's fix) before the limiter read it, on top of the round-5 fix below that already bounds how
+        // fast wheelSpin itself (and so drivenWheelSpin, and so this rawTarget) can change per step. Doing
+        // both compounded into enough extra lag to fail opposingDirectionThrottleDecelerateAndReverseInBothMirroredDirections
+        // and starve carRecoversCleanlyAfterDrivingOffALedgeAndLanding of real acceleration within its own
+        // window -- the SAME physical inertia counted twice. The wheel-level fix (DrivetrainMath.
+        // boundedSpinTowardSnap, applied to wheelSpin[] itself below in the per-wheel loop) is the
+        // physically-grounded one the round-5 review asked for; it already makes drivenWheelSpin change
+        // gradually at the SOURCE, which is sufficient on its own to keep rawRpm/engineRpm/
+        // limiterTorqueFactor gradual too (the gradual-recovery GameTest's own per-wheel assertions confirm
+        // this end-to-end) -- so the separate engine-side smoothing step is now redundant and removed.
+        double rawEngineRpm;
         if (gear == CarPhysics.Gear.NEUTRAL) {
             gearRatio = 0.0;
-            smoothedEngineRpm = DrivetrainMath.freeRevRpm(throttle);
+            rawEngineRpm = DrivetrainMath.freeRevRpm(throttle);
         } else {
             if (gear == CarPhysics.Gear.REVERSE) {
                 gearRatio = DrivetrainMath.REVERSE_RATIO;
@@ -195,21 +207,16 @@ final class SableCarBody {
             } else {
                 gearRatio = DrivetrainMath.ratioFor(gear.manualIndex());
             }
-            // The instantaneous, tire-model-derived target -- NOT what the limiter reads directly (see
-            // DrivetrainMath.smoothedRpm's own javadoc for why: wheelSpin itself can snap discontinuously
-            // the instant the tire regrips, and reading that snap as the engine's own RPM would mean the
-            // engine has no rotational inertia of its own).
-            double rawTarget = DrivetrainMath.rawRpm(drivenWheelSpin, gearRatio);
-            smoothedEngineRpm = DrivetrainMath.smoothedRpm(smoothedEngineRpm, rawTarget);
+            rawEngineRpm = DrivetrainMath.rawRpm(drivenWheelSpin, gearRatio);
         }
-        engineRpm = DrivetrainMath.clampRpm(smoothedEngineRpm);
-        // Couples the rev limiter to delivered torque, not just to the displayed RPM number, AND preserves
-        // the engine's own momentum through a torque cut (both review rounds): forceMultiplier scales the
-        // engaged ratio's own force, limiterTorqueFactor cuts it toward 0 as the SMOOTHED (inertia-bearing)
-        // RPM nears the limiter -- never instantly, because smoothedEngineRpm itself cannot jump. Reverse's
-        // own fixed force is cut by the exact same factor; harmless when not actually in REVERSE, since
-        // GearDrive.drive only ever reads whichever of the two its own gear branch applies.
-        double limiterTorqueFactor = DrivetrainMath.limiterTorqueFactor(smoothedEngineRpm);
+        engineRpm = DrivetrainMath.clampRpm(rawEngineRpm);
+        // Couples the rev limiter to delivered torque, not just to the displayed RPM number: forceMultiplier
+        // scales the engaged ratio's own force, limiterTorqueFactor cuts it toward 0 as RPM nears the
+        // limiter -- gradually, because drivenWheelSpin (and so rawEngineRpm) is itself now bounded by the
+        // wheel-level fix below, not because this value is separately smoothed. Reverse's own fixed force
+        // is cut by the exact same factor; harmless when not actually in REVERSE, since GearDrive.drive
+        // only ever reads whichever of the two its own gear branch applies.
+        double limiterTorqueFactor = DrivetrainMath.limiterTorqueFactor(rawEngineRpm);
         double driveForceMultiplier = DrivetrainMath.forceMultiplier(gearRatio) * limiterTorqueFactor;
         double effectiveReverseForce = REVERSE_FORCE * limiterTorqueFactor;
 
@@ -495,8 +502,17 @@ final class SableCarBody {
                 // make excessForce nonzero even while gripping, so a gripping wheel would never stop
                 // "spinning" rather than snapping to ground speed - see WheelMath.spinRate's javadoc.
                 double excessForce = tire.commandLongitudinal() - tire.longitudinal();
-                wheelSpin[wheel] = WheelMath.spinRate(wheelSpin[wheel], spec.wheelRadius(), vLong, excessForce,
+                double priorSpin = wheelSpin[wheel];
+                double snappedSpin = WheelMath.spinRate(priorSpin, spec.wheelRadius(), vLong, excessForce,
                         WheelMath.WHEEL_INERTIA, subDt);
+                // Review, round 5: bound WheelMath.spinRate's own zero-excess snap to what kinetic friction
+                // could actually despin this wheel by this step -- see DrivetrainMath.boundedSpinTowardSnap's
+                // own javadoc. Only this one branch changes; excessForce != 0 still reads spinRate's own
+                // return value exactly as before, untouched.
+                wheelSpin[wheel] = excessForce == 0.0
+                        ? DrivetrainMath.boundedSpinTowardSnap(priorSpin, snappedSpin, gripMu * force,
+                                spec.wheelRadius(), WheelMath.WHEEL_INERTIA, subDt)
+                        : snappedSpin;
                 double spinSlip = WheelMath.slipFromSpin(wheelSpin[wheel], spec.wheelRadius(), vLong);
                 spinSlipThisTick = Math.max(spinSlipThisTick, Math.abs(spinSlip));
                 // Reported slip (feeds slipThisTick/lastSlipSpeed/wearSlip/SlipReporter) is evaluated at the
@@ -608,6 +624,7 @@ final class SableCarBody {
         if (touching || throttle != 0 || steer != 0 || handbrake) {
             box.wakeUp();
         }
+        lastTouching = touching;
     }
 
     /** Move the entity to the body's current pose (position and yaw; pitch and roll come with the sync work). */
@@ -703,6 +720,17 @@ final class SableCarBody {
         return wheelSpin.clone();
     }
 
+    /** Each wheel's own contact-patch speed (m/s) and applied longitudinal force (N) as of the last tick
+     * it was grounded (MINECRAFT-401 review, round 5: evidence for actual wheel/contact torque-cut
+     * recovery, not just smoothed engine audio). Copies; not live state. */
+    double[] wheelContactSpeeds() {
+        return wheelContactSpeed.clone();
+    }
+
+    double[] wheelForces() {
+        return wheelForce.clone();
+    }
+
     /** Engine RPM implied by the drivetrain this tick (MINECRAFT-401): idle in NEUTRAL scaled by throttle,
      * otherwise {@link DrivetrainMath#engineRpm} through whichever ratio is actually engaged. */
     double engineRpm() {
@@ -724,6 +752,12 @@ final class SableCarBody {
     /** The body's speed, m/s. */
     double speed() {
         return body.getLinearVelocity(new Vector3d()).length();
+    }
+
+    /** Diagnostic only (MINECRAFT-401 review, round 5): whether any wheel had a positive suspension
+     * force as of the end of the last tick -- see {@link #lastTouching}. */
+    boolean touching() {
+        return lastTouching;
     }
 
     /** The body's current orientation, for saving. */

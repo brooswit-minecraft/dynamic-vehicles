@@ -38,22 +38,46 @@ public final class PathfinderAttempts {
         return PathfinderRegion.fromBlockCoords(villager.blockPosition().getX(), villager.blockPosition().getZ());
     }
 
-    /**
-     * Starts a new attempt at {@code villager}'s region/level, refusing with player-visible
-     * feedback if one is already active (MINECRAFT-379's multiplayer-isolation and one-attempt
-     * invariant — each player gets their own persisted record, so concurrent players never share
-     * or corrupt each other's progress), or if no safe route could be resolved right now (review
-     * follow-up: fail closed with a retryable message rather than starting an attempt against an
-     * invalid/uncached route).
-     */
+    /** The reach distance (blocks) {@code /pathfinder start} searches for a nearby Pathfinder villager. */
+    public static final double COMMAND_INTERACTION_RANGE = 8.0;
+
+    /** Nearest Pathfinder villager within {@link #COMMAND_INTERACTION_RANGE} of {@code player}, if any. */
+    public static Optional<Villager> nearestPathfinderVillager(ServerPlayer player) {
+        return player.level().getEntitiesOfClass(Villager.class, player.getBoundingBox().inflate(COMMAND_INTERACTION_RANGE),
+                        v -> v.isAlive() && v.getVillagerData().getProfession() == PathfinderProfession.PATHFINDER.get())
+                .stream()
+                .min((a, b) -> Double.compare(a.distanceToSqr(player), b.distanceToSqr(player)));
+    }
+
+    /** Right-click convenience: starts at the villager's own current unlocked maximum level. */
     public static void tryStart(ServerPlayer player, ServerLevel level, Villager villager) {
+        tryStart(player, level, villager, levelOf(level, villager));
+    }
+
+    /**
+     * Starts a new attempt at {@code villager}'s region, at {@code requestedLevel} — review
+     * follow-up: route selection was missing entirely; interaction always auto-started at the
+     * villager's current maximum unlocked level, with no way to run an earlier, already-unlocked
+     * circuit again. Refuses with player-visible feedback if one is already active
+     * (MINECRAFT-379's multiplayer-isolation and one-attempt invariant), if {@code
+     * requestedLevel} is higher than the villager has actually unlocked (server-validated — see
+     * {@link #levelOf}'s anti-bypass reasoning, which this check depends on being correct), or if
+     * no safe route could be resolved right now (review follow-up: fail closed with a retryable
+     * message rather than starting an attempt against an invalid/uncached route).
+     */
+    public static void tryStart(ServerPlayer player, ServerLevel level, Villager villager, PathfinderLevel requestedLevel) {
         PathfinderAttemptStorage storage = PathfinderAttemptStorage.of(player.server);
         if (storage.active(player.getUUID()).isPresent()) {
             player.sendSystemMessage(Component.translatable("message.dynamicvehicles.pathfinder.already_active"));
             return;
         }
 
-        PathfinderLevel pfLevel = levelOf(level, villager);
+        PathfinderLevel unlockedMax = levelOf(level, villager);
+        if (requestedLevel.level() > unlockedMax.level()) {
+            player.sendSystemMessage(Component.translatable("message.dynamicvehicles.pathfinder.level_locked", requestedLevel.level(), unlockedMax.level()));
+            return;
+        }
+        PathfinderLevel pfLevel = requestedLevel;
         PathfinderRegion origin = regionOf(villager);
         Optional<PathfinderRoute> route = PathfinderRouteStorage.of(player.server).routeFor(level, origin, pfLevel);
         if (route.isEmpty()) {
@@ -64,7 +88,7 @@ public final class PathfinderAttempts {
         long timeLimitTicks = PathfinderConfig.timeLimitTicks(route.get(), PathfinderServerConfig.TICKS_PER_LEG.get());
 
         PathfinderAttemptRecord record = new PathfinderAttemptRecord(
-                player.getUUID(), villager.getUUID(), level.dimension().location().toString(), origin, pfLevel, now, timeLimitTicks, 0, false, false);
+                player.getUUID(), villager.getUUID(), level.dimension().location().toString(), origin, pfLevel, now, timeLimitTicks, 0, false, false, false);
 
         if (!storage.tryStart(record)) {
             player.sendSystemMessage(Component.translatable("message.dynamicvehicles.pathfinder.already_active"));
@@ -121,6 +145,6 @@ public final class PathfinderAttempts {
      * in the normal case, not a rare edge case).
      */
     static void recordVillagerCompletion(PathfinderAttemptRecord record, net.minecraft.server.MinecraftServer server) {
-        PathfinderVillagerLevel.recordCompletion(server, record.villagerId(), PathfinderServerConfig.COMPLETIONS_TO_ADVANCE.get());
+        PathfinderVillagerLevel.recordCompletion(server, record.villagerId(), record.level().level(), PathfinderServerConfig.COMPLETIONS_TO_ADVANCE.get());
     }
 }

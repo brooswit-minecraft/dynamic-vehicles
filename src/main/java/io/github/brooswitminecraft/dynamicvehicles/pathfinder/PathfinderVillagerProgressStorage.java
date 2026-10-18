@@ -35,10 +35,25 @@ public final class PathfinderVillagerProgressStorage extends SavedData {
         return progress.getOrDefault(villagerId, new PathfinderVillagerProgress.State(1, 0));
     }
 
-    /** Applies one completion's worth of progression, idempotently sourced from whatever state is already durably stored. */
-    public void recordCompletion(UUID villagerId, int completionsToAdvance) {
-        PathfinderVillagerProgress.State next = PathfinderVillagerProgress.onCompletion(stateOf(villagerId), completionsToAdvance);
-        progress.put(villagerId, next);
+    /**
+     * Applies one completion's worth of progression for a circuit completed AT {@code
+     * completedLevel} — ONLY if that still equals the villager's own current level. Review
+     * follow-up (a real concurrency exploit): crediting the villager's CURRENT level regardless
+     * of which level the completed circuit actually was let many concurrent level-1 attempts
+     * (started together before any of them finished) each count toward advancing the villager
+     * past level 1 even after it had already advanced from an earlier one of those same
+     * completions — twelve concurrent level-1 completions could unlock level 5 at a threshold of
+     * 3, without a single level 2-5 circuit ever being run. A completion for a level the villager
+     * has already moved past (or, in principle, not yet reached) is "stale": it still counts as
+     * a legitimately finished circuit (the caller still grants its reward), it just does not
+     * advance progression any further.
+     */
+    public void recordCompletion(UUID villagerId, int completedLevel, int completionsToAdvance) {
+        PathfinderVillagerProgress.State current = stateOf(villagerId);
+        if (completedLevel != current.level()) {
+            return;
+        }
+        progress.put(villagerId, PathfinderVillagerProgress.onCompletion(current, completionsToAdvance));
         setDirty();
     }
 

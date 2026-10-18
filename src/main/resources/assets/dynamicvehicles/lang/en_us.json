@@ -44,6 +44,7 @@
   "message.dynamicvehicles.pathfinder.status": "Checkpoint %s/%s reached so far on your active circuit.",
   "message.dynamicvehicles.pathfinder.no_attempt": "You have no active Pathfinder circuit.",
   "message.dynamicvehicles.pathfinder.route_unavailable": "No safe route could be found right now. Try again shortly.",
+  "message.dynamicvehicles.pathfinder.level_locked": "Level %s is not unlocked yet (this villager is at level %s). Use /pathfinder start <level> with an unlocked level.",
   "message.dynamicvehicles.pathfinder.completed": "Circuit complete! You earned %s emerald(s).",
   "message.dynamicvehicles.pathfinder.expired": "Your Pathfinder circuit expired.",
   "message.dynamicvehicles.pathfinder.died": "You died, so your Pathfinder circuit failed."

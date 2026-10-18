@@ -21,21 +21,23 @@ import java.util.UUID;
  * per-player, server-wide concept, not tied to whichever dimension the
  * player happens to be in right now.
  *
- * <p>Review follow-up on reward-payout crash safety: {@link #clear} only marks this {@code
- * SavedData} dirty, same as every other {@code SavedData} in this codebase ({@code
- * delivery.DeliveryContractStorage} included) — {@code setDirty()} alone schedules a write for
- * the next periodic autosave/shutdown, it does not flush to disk. {@code
- * PathfinderTickHandler#onFinished}/{@code #onExpired} additionally call {@code
- * MinecraftServer#overworld()}{@code .getDataStorage().save()} immediately after {@link #clear},
- * AND THEN block on {@code IOUtilities#waitUntilIOWorkerComplete()} before granting the reward —
- * a real persistence barrier, not merely a narrowed window: by the time the reward is granted,
- * the cleared attempt is actually on disk (NeoForge's own {@code IOUtilities#atomicWrite} writes
- * to a temp file, {@code force(true)}s it, then renames it into place, so the write itself can't
- * leave a half-written file either). A crash after that point cannot reload the old record and
- * pay again. See {@code PathfinderTickHandler#forceSave} for exactly which calls do this.
+ * <p>Review follow-up on reward-payout crash safety, round 2: {@code
+ * IOUtilities#waitUntilIOWorkerComplete()} (round 1's fix) blocks until the queued write TASK
+ * finishes, but NeoForge's own {@code SavedData#save(File, ...)} catches any {@code IOException}
+ * INSIDE that queued task, logs it, and still clears the dirty flag — so joining the worker
+ * proves the write was ATTEMPTED, not that it actually landed on disk; a failed write is silently
+ * swallowed from the caller's perspective. {@code PathfinderTickHandler} closes that gap by
+ * reading the file straight back off disk afterward ({@code
+ * DimensionDataStorage#readTagFromDisk}, bypassing the in-memory cache entirely) and confirming
+ * the cleared attempt is actually absent there before granting any reward; if that confirmation
+ * fails, the in-memory record is put back (via {@link #update}) so the next tick's evaluation
+ * retries the whole clear/save/verify step — see {@code PathfinderTickHandler#attemptDurablePayout}.
+ * {@link PathfinderAttemptRecord#progressionCredited()} exists so that retry re-attempts only the
+ * clear/verify/pay step, never re-credits villager progression a second time.
  */
 public final class PathfinderAttemptStorage extends SavedData {
-    private static final String NAME = "dynamicvehicles_pathfinder_attempts";
+    /** Package-visible so {@code PathfinderTickHandler} can read this exact file back from disk to verify a save actually landed. */
+    static final String NAME = "dynamicvehicles_pathfinder_attempts";
 
     private final Map<UUID, PathfinderAttemptRecord> attempts = new HashMap<>();
 
@@ -91,7 +93,8 @@ public final class PathfinderAttemptStorage extends SavedData {
                     entry.getLong("TimeLimitTicks"),
                     entry.getInt("ReachedCount"),
                     entry.getBoolean("Finished"),
-                    entry.getBoolean("Expired"));
+                    entry.getBoolean("Expired"),
+                    entry.getBoolean("ProgressionCredited"));
             storage.attempts.put(playerId, record);
         }
         return storage;
@@ -115,6 +118,7 @@ public final class PathfinderAttemptStorage extends SavedData {
             entry.putInt("ReachedCount", record.reachedCount());
             entry.putBoolean("Finished", record.finished());
             entry.putBoolean("Expired", record.expired());
+            entry.putBoolean("ProgressionCredited", record.progressionCredited());
             list.add(entry);
         }
         tag.put("Attempts", list);

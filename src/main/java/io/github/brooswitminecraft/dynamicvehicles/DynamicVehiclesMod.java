@@ -212,6 +212,35 @@ public class DynamicVehiclesMod {
                                     context.getSource().sendSuccess(() -> Component.literal("driving " + count + " car(s)"), true);
                                     return count;
                                 })))));
+
+        // Review follow-up: route selection was missing entirely - right-click always
+        // auto-started the villager's current maximum unlocked level, with no way to run an
+        // earlier, already-unlocked circuit again. No elaborate UI is required for this: a plain
+        // player command (no permission requirement, unlike the debug commands above),
+        // server-validated against the nearest Pathfinder villager's actual unlocked level.
+        event.getDispatcher().register(Commands.literal("pathfinder")
+                .then(Commands.literal("start")
+                        .then(Commands.argument("level", IntegerArgumentType.integer(1, 5))
+                                .executes(context -> startPathfinderAtLevel(context, IntegerArgumentType.getInteger(context, "level"))))));
+    }
+
+    private static int startPathfinderAtLevel(com.mojang.brigadier.context.CommandContext<net.minecraft.commands.CommandSourceStack> context,
+            int level) {
+        if (!(context.getSource().getEntity() instanceof net.minecraft.server.level.ServerPlayer player)) {
+            context.getSource().sendFailure(Component.literal("Only a player can start a Pathfinder circuit."));
+            return 0;
+        }
+        var villager = io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderAttempts.nearestPathfinderVillager(player);
+        if (villager.isEmpty()) {
+            context.getSource().sendFailure(Component.literal("No Pathfinder villager is nearby."));
+            return 0;
+        }
+        if (!(player.level() instanceof net.minecraft.server.level.ServerLevel serverLevel)) {
+            return 0;
+        }
+        io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderAttempts.tryStart(
+                player, serverLevel, villager.get(), io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderLevel.values()[level - 1]);
+        return 1;
     }
 
     private static int tuneDrivenVehicle(com.mojang.brigadier.context.CommandContext<net.minecraft.commands.CommandSourceStack> context,

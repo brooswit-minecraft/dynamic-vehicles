@@ -1,15 +1,20 @@
 package io.github.brooswitminecraft.dynamicvehicles.pathfinder;
 
+import net.minecraft.SharedConstants;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.neoforge.common.IOUtilities;
 import net.neoforged.neoforge.event.entity.living.LivingDeathEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 
+import java.io.IOException;
 import java.util.Optional;
+import java.util.UUID;
 
 import io.github.brooswitminecraft.dynamicvehicles.PathfinderServerConfig;
 
@@ -78,7 +83,9 @@ public final class PathfinderTickHandler {
         if (!(event.getEntity() instanceof ServerPlayer player)) {
             return;
         }
-        failActiveAttempt(player, "message.dynamicvehicles.pathfinder.died");
+        PathfinderAttemptStorage storage = PathfinderAttemptStorage.of(player.server);
+        storage.active(player.getUUID()).ifPresent(record ->
+                attemptDurableClear(player.server, player, storage, record, "message.dynamicvehicles.pathfinder.died"));
     }
 
     /** Catches the (expected to be rare/impossible given {@link #onLivingDeath}) case of a respawn with no matching prior death event. */
@@ -87,21 +94,24 @@ public final class PathfinderTickHandler {
         if (event.isEndConquered() || !(event.getEntity() instanceof ServerPlayer player)) {
             return;
         }
-        failActiveAttempt(player, "message.dynamicvehicles.pathfinder.died");
-    }
-
-    private static void failActiveAttempt(ServerPlayer player, String messageKey) {
         PathfinderAttemptStorage storage = PathfinderAttemptStorage.of(player.server);
-        if (storage.active(player.getUUID()).isEmpty()) {
-            return;
-        }
-        storage.clear(player.getUUID());
-        forceSave(player.server);
-        player.sendSystemMessage(Component.translatable(messageKey));
-        PathfinderAttempts.clearHud(player);
+        storage.active(player.getUUID()).ifPresent(record ->
+                attemptDurableClear(player.server, player, storage, record, "message.dynamicvehicles.pathfinder.died"));
     }
 
     private static void evaluate(MinecraftServer server, PathfinderAttemptStorage storage, ServerPlayer player, PathfinderAttemptRecord record) {
+        // A prior tick already finished/expired this attempt but failed to durably confirm the
+        // clear; retry only that clear/verify/(pay) step - do not re-evaluate checkpoints or
+        // re-credit progression (see PathfinderAttemptRecord#progressionCredited).
+        if (record.finished()) {
+            attemptDurablePayout(server, player, storage, record);
+            return;
+        }
+        if (record.expired()) {
+            attemptDurableClear(server, player, storage, record, "message.dynamicvehicles.pathfinder.expired");
+            return;
+        }
+
         ServerLevel dimension = server.getLevel(dimensionKey(record.dimensionId()));
         if (dimension == null) {
             return;
@@ -124,9 +134,20 @@ public final class PathfinderTickHandler {
         boolean advanced = progress.onReach(playerPosition, now, PathfinderServerConfig.REACH_RADIUS.get());
 
         if (progress.isFinished()) {
-            onFinished(server, player, storage, record);
+            // Credit progression exactly once, for the level this circuit actually was, THEN
+            // attempt the durable clear - see PathfinderVillagerProgressStorage#recordCompletion
+            // for why "actually was" matters (a real concurrency exploit otherwise).
+            PathfinderAttemptRecord finishedRecord = record.withProgress(progress);
+            if (!finishedRecord.progressionCredited()) {
+                PathfinderAttempts.recordVillagerCompletion(finishedRecord, server);
+                finishedRecord = finishedRecord.withProgressionCredited();
+            }
+            storage.update(finishedRecord);
+            attemptDurablePayout(server, player, storage, finishedRecord);
         } else if (progress.isExpired()) {
-            onExpired(server, player, storage);
+            PathfinderAttemptRecord expiredRecord = record.withProgress(progress);
+            storage.update(expiredRecord);
+            attemptDurableClear(server, player, storage, expiredRecord, "message.dynamicvehicles.pathfinder.expired");
         } else if (advanced) {
             PathfinderAttemptRecord updated = record.withProgress(progress);
             storage.update(updated);
@@ -134,38 +155,54 @@ public final class PathfinderTickHandler {
         }
     }
 
-    private static void onFinished(MinecraftServer server, ServerPlayer player,
-                                    PathfinderAttemptStorage storage, PathfinderAttemptRecord record) {
-        // Clear and force-save BEFORE granting the reward - see PathfinderAttemptStorage's class javadoc.
+    /**
+     * Clears {@code record} and attempts to confirm that durably; grants the reward only once
+     * confirmed. If confirmation fails, puts {@code record} back (still marked finished/credited)
+     * so the next tick's {@link #evaluate} retries just this step.
+     */
+    private static void attemptDurablePayout(MinecraftServer server, ServerPlayer player, PathfinderAttemptStorage storage, PathfinderAttemptRecord record) {
         storage.clear(player.getUUID());
-        forceSave(server);
-        PathfinderAttempts.recordVillagerCompletion(record, server);
+        if (!forceSaveAndVerifyAbsent(server, player.getUUID())) {
+            storage.update(record);
+            return;
+        }
         int rewardedEmeralds = PathfinderAttempts.grantReward(player, record.level());
         player.sendSystemMessage(Component.translatable("message.dynamicvehicles.pathfinder.completed", rewardedEmeralds));
         PathfinderAttempts.clearHud(player);
     }
 
-    private static void onExpired(MinecraftServer server, ServerPlayer player, PathfinderAttemptStorage storage) {
+    /** Same retryable durable-clear shape as {@link #attemptDurablePayout}, for the no-reward paths (death/expiry). */
+    private static void attemptDurableClear(MinecraftServer server, ServerPlayer player, PathfinderAttemptStorage storage,
+                                             PathfinderAttemptRecord record, String messageKey) {
         storage.clear(player.getUUID());
-        forceSave(server);
-        player.sendSystemMessage(Component.translatable("message.dynamicvehicles.pathfinder.expired"));
+        if (!forceSaveAndVerifyAbsent(server, player.getUUID())) {
+            storage.update(record);
+            return;
+        }
+        player.sendSystemMessage(Component.translatable(messageKey));
         PathfinderAttempts.clearHud(player);
     }
 
     /**
-     * A real persistence barrier, not just a narrowed window (review follow-up: scheduling an
-     * async save and returning does not establish durability before payout). {@code
-     * DimensionDataStorage#save()} only QUEUES each dirty {@code SavedData}'s write onto
-     * NeoForge's shared IO-worker queue ({@code IOUtilities#withIOWorker}); {@code
-     * IOUtilities#waitUntilIOWorkerComplete()} then blocks this thread until every queued write —
-     * including the one just queued — has actually finished (that write is itself atomic: {@code
-     * IOUtilities#atomicWrite} writes to a temp file, {@code force(true)}s it, then renames it
-     * into place). By the time this method returns, the cleared attempt is durably on disk; a
-     * crash after that point cannot reload the old, still-active record.
+     * Queues a save of every dirty {@code SavedData} in the overworld's data storage, blocks
+     * until NeoForge's IO worker has actually finished attempting all of them ({@code
+     * IOUtilities#waitUntilIOWorkerComplete}), and THEN reads this mod's attempt file straight
+     * back off disk (bypassing the in-memory cache entirely) to confirm {@code playerId} is
+     * actually absent there. See {@link PathfinderAttemptStorage}'s class javadoc for why the
+     * join alone is not sufficient: a failed write is caught and logged inside the queued task,
+     * never surfaced to the joining thread.
      */
-    private static void forceSave(MinecraftServer server) {
+    private static boolean forceSaveAndVerifyAbsent(MinecraftServer server, UUID playerId) {
         server.overworld().getDataStorage().save();
-        net.neoforged.neoforge.common.IOUtilities.waitUntilIOWorkerComplete();
+        IOUtilities.waitUntilIOWorkerComplete();
+        try {
+            CompoundTag root = server.overworld().getDataStorage()
+                    .readTagFromDisk(PathfinderAttemptStorage.NAME, null, SharedConstants.getCurrentVersion().getDataVersion().getVersion());
+            PathfinderAttemptStorage onDisk = PathfinderAttemptStorage.load(root.getCompound("data"), server.overworld().registryAccess());
+            return onDisk.active(playerId).isEmpty();
+        } catch (IOException e) {
+            return false;
+        }
     }
 
     private static net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dimensionKey(String dimensionId) {

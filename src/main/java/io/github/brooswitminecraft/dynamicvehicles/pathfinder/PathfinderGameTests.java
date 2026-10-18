@@ -158,6 +158,60 @@ public final class PathfinderGameTests {
     }
 
     /**
+     * Review follow-up: route selection was missing - interaction always auto-started the
+     * villager's current maximum unlocked level. {@code tryStart(..., requestedLevel)} must
+     * reject a level the villager has not actually unlocked, server-side, without starting an
+     * attempt.
+     */
+    @GameTest(template = "dispatch_profession", timeoutTicks = 100)
+    public static void requestingAnUnlockedLevelIsRejected(GameTestHelper helper) {
+        Villager villager = helper.spawn(EntityType.VILLAGER, new BlockPos(2, 2, 2));
+        villager.setVillagerData(villager.getVillagerData().setProfession(PathfinderProfession.PATHFINDER.get()));
+        // Fresh villager: Pathfinder level 1 only. Level 2 is still locked.
+        ServerPlayer player = GameTestMockPlayers.create(helper);
+        player.moveTo(helper.absolutePos(new BlockPos(2, 2, 3)).getCenter());
+        declarePathfinderHudChannel(player);
+
+        PathfinderAttempts.tryStart(player, helper.getLevel(), villager, PathfinderLevel.LEVEL_2);
+
+        PathfinderAttemptStorage storage = PathfinderAttemptStorage.of(helper.getLevel().getServer());
+        helper.assertTrue(storage.active(player.getUUID()).isEmpty(),
+                "requesting a level the villager has not unlocked must not start an attempt");
+        helper.succeed();
+    }
+
+    /**
+     * Review follow-up: once a villager has unlocked a higher level, a player must still be able
+     * to select and run an earlier, already-unlocked circuit - not just the current maximum.
+     */
+    @GameTest(template = "dispatch_profession", timeoutTicks = 100)
+    public static void requestingAnAlreadyUnlockedLowerLevelSucceeds(GameTestHelper helper) {
+        Villager villager = helper.spawn(EntityType.VILLAGER, new BlockPos(2, 2, 2));
+        villager.setVillagerData(villager.getVillagerData().setProfession(PathfinderProfession.PATHFINDER.get()));
+        MinecraftServer server = helper.getLevel().getServer();
+        int threshold = PathfinderVillagerProgress.DEFAULT_COMPLETIONS_TO_ADVANCE;
+        for (int i = 0; i < threshold; i++) {
+            PathfinderVillagerLevel.recordCompletion(server, villager.getUUID(), 1, threshold);
+        }
+        helper.assertTrue(PathfinderVillagerLevel.levelOf(server, villager.getUUID()) == PathfinderLevel.LEVEL_2,
+                "sanity: the villager should now be unlocked through level 2");
+        seedLevel1RouteForTest(helper, villager);
+
+        ServerPlayer player = GameTestMockPlayers.create(helper);
+        player.moveTo(helper.absolutePos(new BlockPos(2, 2, 3)).getCenter());
+        declarePathfinderHudChannel(player);
+
+        PathfinderAttempts.tryStart(player, helper.getLevel(), villager, PathfinderLevel.LEVEL_1);
+
+        PathfinderAttemptStorage storage = PathfinderAttemptStorage.of(server);
+        PathfinderAttemptRecord record = storage.active(player.getUUID()).orElse(null);
+        helper.assertTrue(record != null, "requesting an already-unlocked lower level must start an attempt");
+        helper.assertTrue(record != null && record.level() == PathfinderLevel.LEVEL_1,
+                "the attempt must be for the REQUESTED level 1, not the villager's current maximum (2)");
+        helper.succeed();
+    }
+
+    /**
      * Fast-forwards a real, started attempt to its last checkpoint (rather than re-deriving
      * checkpoint positions by hand), then drives the real {@link PathfinderTickHandler} through
      * the last leg and the closing leg via actual server ticks, confirming the reward is granted
@@ -187,7 +241,7 @@ public final class PathfinderGameTests {
         // instead of teleporting through all 8 - the per-checkpoint logic is already covered by
         // PathfinderProgressTest; this test is about the real tick/reward/clear wiring.
         storage.update(new PathfinderAttemptRecord(record.playerId(), record.villagerId(), record.dimensionId(), record.origin(), record.level(),
-                record.startTick(), record.timeLimitTicks(), lastIndex, false, false));
+                record.startTick(), record.timeLimitTicks(), lastIndex, false, false, false));
 
         PathfinderCheckpoint last = route.checkpoints().get(lastIndex);
         player.teleportTo(last.position().x(), last.position().y(), last.position().z());
@@ -209,6 +263,90 @@ public final class PathfinderGameTests {
             PathfinderVillagerProgress.State villagerState = PathfinderVillagerLevel.stateOf(server, villager.getUUID());
             helper.assertTrue(villagerState.completionsAtLevel() == 1,
                     "the villager's own completion count should have advanced once the attempt it started finished");
+        });
+    }
+
+    /**
+     * Review follow-up (re-review): joining NeoForge's IO worker proves a write was ATTEMPTED,
+     * not that it SUCCEEDED - {@code SavedData#save(File, ...)} catches and logs any {@code
+     * IOException} inside the queued task, never surfacing it to the joining thread. This injects
+     * a REAL write failure (making the save directory read-only, an actual OS-level permission
+     * denial, not a simulated one) at the moment the completion would otherwise pay out, and
+     * confirms: the reward is withheld and the attempt record is retained (not lost) while the
+     * write keeps failing; once the directory is made writable again, the next tick's retry
+     * confirms the write, pays the reward exactly once, and clears the attempt.
+     */
+    @GameTest(template = "dispatch_profession", timeoutTicks = 150)
+    public static void writeFailureWithholdsRewardUntilConfirmedThenRetrySucceeds(GameTestHelper helper) {
+        Villager villager = helper.spawn(EntityType.VILLAGER, new BlockPos(2, 2, 2));
+        villager.setVillagerData(villager.getVillagerData().setProfession(PathfinderProfession.PATHFINDER.get()));
+        seedLevel1RouteForTest(helper, villager);
+        ServerPlayer player = GameTestMockPlayers.create(helper);
+        player.moveTo(helper.absolutePos(new BlockPos(2, 2, 3)).getCenter());
+        declarePathfinderHudChannel(player);
+
+        PathfinderInteractionHandler.onEntityInteract(new PlayerInteractEvent.EntityInteract(player, InteractionHand.MAIN_HAND, villager));
+
+        MinecraftServer server = helper.getLevel().getServer();
+        PathfinderAttemptStorage storage = PathfinderAttemptStorage.of(server);
+        PathfinderAttemptRecord record = storage.active(player.getUUID()).orElseThrow();
+        ServerLevel dimension = helper.getLevel();
+        PathfinderRoute route = PathfinderRouteStorage.of(server).routeFor(dimension, record.origin(), record.level()).orElseThrow();
+        int lastIndex = route.checkpoints().size() - 1;
+        storage.update(new PathfinderAttemptRecord(record.playerId(), record.villagerId(), record.dimensionId(), record.origin(), record.level(),
+                record.startTick(), record.timeLimitTicks(), lastIndex, false, false, false));
+
+        // Ensure the data file already exists once (a brand-new world has no "data" dir yet) and
+        // locate it, exactly as PathfinderTickHandler's own verification does.
+        server.overworld().getDataStorage().save();
+        net.neoforged.neoforge.common.IOUtilities.waitUntilIOWorkerComplete();
+        java.io.File dataDir = server.getWorldPath(net.minecraft.world.level.storage.LevelResource.ROOT).resolve("data").toFile();
+        helper.assertTrue(dataDir.isDirectory(), "sanity: the world's data directory must exist by now");
+
+        boolean permissionsBlockWrites = !dataDir.setWritable(false);
+        if (permissionsBlockWrites) {
+            // This process can override its own permission bits (e.g. running as root) - the
+            // fault can't actually be injected this way in that environment. Restore and skip
+            // rather than report a false pass/fail for a mechanism this run cannot exercise.
+            dataDir.setWritable(true);
+            helper.succeed();
+            return;
+        }
+
+        PathfinderCheckpoint last = route.checkpoints().get(lastIndex);
+        PathfinderCheckpoint first = route.checkpoints().get(0);
+        player.teleportTo(last.position().x(), last.position().y(), last.position().z());
+
+        // Safety net, independent of the test's own outcome: if anything above goes wrong and the
+        // succeedWhen below never restores write access itself, this guarantees the directory is
+        // writable again well before this GameTest's own timeout - a shared "Test Level" data
+        // directory left read-only would otherwise break every later GameTest in the same run.
+        helper.runAfterDelay(120L, () -> dataDir.setWritable(true));
+
+        boolean[] restoredWritable = {false};
+        boolean[] movedToClosingLeg = {false};
+        helper.succeedWhen(() -> {
+            if (!movedToClosingLeg[0]) {
+                int reached = storage.active(player.getUUID()).map(PathfinderAttemptRecord::reachedCount).orElse(-1);
+                helper.assertTrue(reached == route.checkpoints().size(), "expected the last checkpoint to register first");
+                player.teleportTo(first.position().x(), first.position().y(), first.position().z());
+                movedToClosingLeg[0] = true;
+                helper.fail("moved to the closing leg - wait for the next evaluation to hit the injected write failure");
+            }
+            if (!restoredWritable[0]) {
+                // The write should be failing right now: the attempt must be retained
+                // (finished=true, still present) and no reward granted yet.
+                PathfinderAttemptRecord pending = storage.active(player.getUUID()).orElse(null);
+                helper.assertTrue(pending != null && pending.finished(), "a failed write must retain the finished-but-unpaid attempt for retry, not lose it");
+                helper.assertTrue(player.getInventory().countItem(Items.EMERALD) == 0, "reward must be withheld while the write cannot be confirmed durable");
+                dataDir.setWritable(true);
+                restoredWritable[0] = true;
+                helper.fail("restored write access - wait for the retry to confirm and pay out");
+            }
+            helper.assertTrue(storage.active(player.getUUID()).isEmpty(), "once the write succeeds, the retried payout should clear the attempt");
+            int expected = PathfinderConfig.rewardEmeralds(record.level());
+            int actual = player.getInventory().countItem(Items.EMERALD);
+            helper.assertTrue(actual == expected, "expected exactly " + expected + " emerald(s) after the retry succeeded, got " + actual);
         });
     }
 
@@ -241,12 +379,12 @@ public final class PathfinderGameTests {
                 "a fresh villager should start at Pathfinder level 1");
 
         int threshold = PathfinderVillagerProgress.DEFAULT_COMPLETIONS_TO_ADVANCE;
-        PathfinderVillagerLevel.recordCompletion(server, villager.getUUID(), threshold);
-        PathfinderVillagerLevel.recordCompletion(server, villager.getUUID(), threshold);
+        PathfinderVillagerLevel.recordCompletion(server, villager.getUUID(), 1, threshold);
+        PathfinderVillagerLevel.recordCompletion(server, villager.getUUID(), 1, threshold);
         helper.assertTrue(PathfinderVillagerLevel.levelOf(server, villager.getUUID()) == PathfinderLevel.LEVEL_1,
                 "two completions should not yet advance the level");
 
-        PathfinderVillagerLevel.recordCompletion(server, villager.getUUID(), threshold);
+        PathfinderVillagerLevel.recordCompletion(server, villager.getUUID(), 1, threshold);
         helper.assertTrue(PathfinderVillagerLevel.levelOf(server, villager.getUUID()) == PathfinderLevel.LEVEL_2,
                 "the third completion should advance to level 2");
         helper.succeed();
@@ -268,10 +406,34 @@ public final class PathfinderGameTests {
         helper.assertTrue(PathfinderVillagerLevel.levelOf(server, neverSpawnedVillagerId) == PathfinderLevel.LEVEL_1,
                 "an unknown villager id should default to level 1, not error");
         for (int i = 0; i < threshold; i++) {
-            PathfinderVillagerLevel.recordCompletion(server, neverSpawnedVillagerId, threshold);
+            PathfinderVillagerLevel.recordCompletion(server, neverSpawnedVillagerId, 1, threshold);
         }
         helper.assertTrue(PathfinderVillagerLevel.levelOf(server, neverSpawnedVillagerId) == PathfinderLevel.LEVEL_2,
                 "progression must be credited by UUID alone, independent of any loaded entity");
+        helper.succeed();
+    }
+
+    /**
+     * Review follow-up (a real concurrency exploit): many concurrent level-1 attempts finishing
+     * in sequence used to each count toward advancing the villager past level 1 even after
+     * earlier ones in the same batch had already advanced it - twelve concurrent level-1
+     * completions could unlock level 5 at a threshold of 3, without ever running a level 2-5
+     * circuit. Twelve completions all reported as "completedLevel = 1" (simulating twelve
+     * concurrent level-1 attempts finishing one after another) must advance the villager exactly
+     * ONE level (to 2, at which point further level-1 completions are stale - the villager isn't
+     * gated at level 1 anymore), never all the way to 5.
+     */
+    @GameTest(template = "dispatch_profession", timeoutTicks = 100)
+    public static void manyConcurrentLowLevelCompletionsCannotUnlockHigherLevels(GameTestHelper helper) {
+        java.util.UUID villagerId = java.util.UUID.randomUUID();
+        MinecraftServer server = helper.getLevel().getServer();
+        int threshold = PathfinderVillagerProgress.DEFAULT_COMPLETIONS_TO_ADVANCE;
+
+        for (int i = 0; i < 12; i++) {
+            PathfinderVillagerLevel.recordCompletion(server, villagerId, 1, threshold);
+        }
+        helper.assertTrue(PathfinderVillagerLevel.levelOf(server, villagerId) == PathfinderLevel.LEVEL_2,
+                "twelve level-1 completions (threshold 3) should advance exactly once, to level 2, not all the way to 5");
         helper.succeed();
     }
 
@@ -505,7 +667,7 @@ public final class PathfinderGameTests {
     @GameTest(template = "dispatch_profession", timeoutTicks = 100)
     public static void clearedAttemptDoesNotReappearAfterASaveReloadRoundTrip(GameTestHelper helper) {
         var record = new PathfinderAttemptRecord(java.util.UUID.randomUUID(), java.util.UUID.randomUUID(), "minecraft:overworld",
-                new PathfinderRegion(3, -5), PathfinderLevel.LEVEL_2, 100, 1000, 2, false, false);
+                new PathfinderRegion(3, -5), PathfinderLevel.LEVEL_2, 100, 1000, 2, false, false, false);
 
         PathfinderAttemptStorage storage = new PathfinderAttemptStorage();
         helper.assertTrue(storage.tryStart(record), "starting a fresh attempt should succeed");
@@ -552,7 +714,7 @@ public final class PathfinderGameTests {
 
         long startTick = server.overworld().getGameTime();
         var record = new PathfinderAttemptRecord(player.getUUID(), java.util.UUID.randomUUID(),
-                dimensionId, origin, PathfinderLevel.LEVEL_2, startTick, PathfinderTickHandler.EVALUATE_INTERVAL_TICKS, 0, false, false);
+                dimensionId, origin, PathfinderLevel.LEVEL_2, startTick, PathfinderTickHandler.EVALUATE_INTERVAL_TICKS, 0, false, false, false);
         helper.assertTrue(storage.tryStart(record), "starting a fresh attempt should succeed");
 
         // Simulate a reload: reconstruct storage from a real save/load round trip, exactly as a

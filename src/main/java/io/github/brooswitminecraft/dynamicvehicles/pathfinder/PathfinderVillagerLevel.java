@@ -34,8 +34,13 @@ public final class PathfinderVillagerLevel {
         return PathfinderVillagerProgressStorage.of(server).stateOf(villagerId);
     }
 
-    /** Records one successful completion for this villager, independent of whether the entity is currently loaded. */
-    public static void recordCompletion(MinecraftServer server, UUID villagerId, int completionsToAdvance) {
-        PathfinderVillagerProgressStorage.of(server).recordCompletion(villagerId, completionsToAdvance);
+    /**
+     * Records one successful completion for this villager, independent of whether the entity is
+     * currently loaded. {@code completedLevel} is the level the FINISHED circuit was actually
+     * for, not the villager's current level — see {@link PathfinderVillagerProgressStorage#recordCompletion}'s
+     * javadoc for the concurrency exploit that distinction closes.
+     */
+    public static void recordCompletion(MinecraftServer server, UUID villagerId, int completedLevel, int completionsToAdvance) {
+        PathfinderVillagerProgressStorage.of(server).recordCompletion(villagerId, completedLevel, completionsToAdvance);
     }
 }

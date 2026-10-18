@@ -9,6 +9,7 @@ import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.Heightmap;
 
 /**
@@ -16,9 +17,10 @@ import net.minecraft.world.level.levelgen.Heightmap;
  * destination, the destination is marked with a single Dispatch Board and a single Dispatcher
  * villager placed on the surface, found but never forced: no terrain is cleared or filled, and
  * no shack, platform, or extra villagers are generated (MINECRAFT-393). The top of water counts
- * as a surface. The only reasons to defer are an unloaded destination chunk or a column with no
- * surface to place on at all; both leave the delivery active so a later sweep can retry without
- * losing its contract.
+ * as a surface. The only reasons to defer are an unloaded destination chunk, a column with
+ * nothing to stand on at all, or a column whose candidate board cell or villager clearance is
+ * actually blocked (e.g. a low tree canopy); all three leave the delivery active so a later sweep
+ * can retry without losing its contract, and none of them mutate the world first.
  */
 public final class SettlementFounder {
     private SettlementFounder() {
@@ -49,9 +51,11 @@ public final class SettlementFounder {
 
         BlockPos boardPos = findSurfacePoint(level, target);
         if (boardPos == null) {
-            // No usable surface at this column (e.g. an unbroken void): a single, bounded check,
-            // not a scan or retry loop, and no destructive placement is attempted. The contract
-            // stays active so a later sweep retries, exactly like the unloaded-chunk case above.
+            // No usable surface at this column - nothing to stand on, no room within the build
+            // height limit, or the candidate board/villager cells are actually occupied (e.g. a
+            // low canopy). A single, bounded check, not a scan or retry loop, and no destructive
+            // placement is attempted. The contract stays active so a later sweep retries, exactly
+            // like the unloaded-chunk case above.
             return false;
         }
 
@@ -80,15 +84,27 @@ public final class SettlementFounder {
     /**
      * The surface at {@code column}'s (x, z): the first non-motion-blocking position above the
      * highest motion-blocking block, fluids included, so the top of water is an acceptable
-     * surface. {@code null} when the column has nothing to stand on at all (e.g. an unbroken
-     * void), or when there is no room above it to place the board and the villager standing on
-     * top of it within the build height limit.
+     * surface. {@code MOTION_BLOCKING_NO_LEAVES} deliberately ignores leaves, so that candidate
+     * height alone is not proof the board cell is actually empty - a low canopy can leave real
+     * leaf blocks sitting exactly there. {@code null} when the column has nothing to stand on at
+     * all (e.g. an unbroken void), when there is no room above it within the build height limit,
+     * when the board cell itself is occupied by something other than air or a fluid (so placing
+     * the board would destroy it rather than just claim a found surface), or when the villager's
+     * two cells above the board are not both clear for it to stand in.
      */
     static BlockPos findSurfacePoint(ServerLevel level, BlockPos column) {
         int y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, column.getX(), column.getZ());
-        if (y <= level.getMinBuildHeight() || y + 1 > level.getMaxBuildHeight() - 1) {
+        if (y <= level.getMinBuildHeight() || y + 2 > level.getMaxBuildHeight() - 1) {
             return null;
         }
-        return new BlockPos(column.getX(), y, column.getZ());
+        BlockPos boardPos = new BlockPos(column.getX(), y, column.getZ());
+        BlockState boardCell = level.getBlockState(boardPos);
+        if (!boardCell.isAir() && boardCell.getFluidState().isEmpty()) {
+            return null;
+        }
+        if (!level.getBlockState(boardPos.above()).isAir() || !level.getBlockState(boardPos.above(2)).isAir()) {
+            return null;
+        }
+        return boardPos;
     }
 }

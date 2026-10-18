@@ -586,26 +586,66 @@ public final class PathfinderGameTests {
     }
 
     /**
-     * MINECRAFT-403 acceptance #1: a checkpoint candidate column that is lava, void (no terrain
-     * at all) or otherwise "inaccessible" must still be placed and offered, not rejected or moved
-     * to a different column. Builds a real lava-filled column at the deterministic candidate
-     * itself (not an offset - MINECRAFT-403 also removes the old "search a bounded ring of
-     * nearby columns" behavior entirely) and confirms the real {@link PathfinderTerrainPlacer}
-     * still returns exactly that column.
+     * MINECRAFT-403 acceptance #1: a checkpoint candidate column that is lava or otherwise
+     * "inaccessible" must still be placed and offered AT THAT EXACT COLUMN, not rejected or
+     * silently moved to a different one. Review follow-up: an earlier version of this test built
+     * the lava fixture at a GameTest-local anchor but then called {@code place()} with region
+     * math whose real candidate (512-block region center) lands at a totally different,
+     * uncontrolled column - so it never actually exercised the lava column it built, and could
+     * not have caught a regression that moved the checkpoint. Uses {@link
+     * PathfinderTerrainPlacer}'s package-visible {@code placeAt} to pin the candidate to the
+     * exact column the lava is poisoned at, then asserts the returned checkpoint's own X/Z
+     * floors to that same column - not just that placement succeeded.
      */
     @GameTest(template = "dispatch_profession", timeoutTicks = 100)
-    public static void placementSucceedsOverLavaInsteadOfRejectingOrMovingTheCheckpoint(GameTestHelper helper) {
+    public static void placementSucceedsOverLavaAtTheExactCandidateColumn(GameTestHelper helper) {
         BlockPos anchor = helper.absolutePos(new BlockPos(2, 2, 2));
         ServerLevel level = helper.getLevel();
         level.setBlockAndUpdate(anchor.below(), net.minecraft.world.level.block.Blocks.LAVA.defaultBlockState());
         level.setBlockAndUpdate(anchor, net.minecraft.world.level.block.Blocks.LAVA.defaultBlockState());
 
+        PathfinderRegion region = new PathfinderRegion(0, 0);
         PathfinderTerrainPlacer placer = new PathfinderTerrainPlacer(level);
-        var result = placer.place(new PathfinderRegion(0, 0), 0, 1);
+        var result = placer.placeAt(region, anchor.getX() + 0.5, anchor.getZ() + 0.5);
 
         helper.assertTrue(result.isPresent(), "placement must never fail over terrain accessibility (MINECRAFT-403)");
+        PathfinderCheckpoint checkpoint = result.get();
         String dimensionId = level.dimension().location().toString();
-        helper.assertTrue(result.get().position().dimensionId().equals(dimensionId), "the real dimension must be used, not a placeholder");
+        helper.assertTrue(checkpoint.position().dimensionId().equals(dimensionId), "the real dimension must be used, not a placeholder");
+        helper.assertTrue((int) Math.floor(checkpoint.position().x()) == anchor.getX()
+                        && (int) Math.floor(checkpoint.position().z()) == anchor.getZ(),
+                "the lava-poisoned candidate column must be returned unchanged, not moved to a different one");
+        helper.succeed();
+    }
+
+    /**
+     * Same regression coverage as {@link #placementSucceedsOverLavaAtTheExactCandidateColumn},
+     * for a solid block occupying the candidate's headroom (the old {@code isSafeColumn}'s other
+     * rejection case) and for a water-filled column - both terrain-independent per MINECRAFT-403,
+     * covered without ever reading the world (this placer makes no world calls at all).
+     */
+    @GameTest(template = "dispatch_profession", timeoutTicks = 100)
+    public static void placementSucceedsOverBlockedHeadroomAndWaterAtTheExactCandidateColumn(GameTestHelper helper) {
+        BlockPos blockedAnchor = helper.absolutePos(new BlockPos(2, 2, 2));
+        ServerLevel level = helper.getLevel();
+        level.setBlockAndUpdate(blockedAnchor, net.minecraft.world.level.block.Blocks.STONE.defaultBlockState());
+        level.setBlockAndUpdate(blockedAnchor.above(), net.minecraft.world.level.block.Blocks.STONE.defaultBlockState());
+
+        PathfinderRegion region = new PathfinderRegion(0, 0);
+        PathfinderTerrainPlacer placer = new PathfinderTerrainPlacer(level);
+        var blockedResult = placer.placeAt(region, blockedAnchor.getX() + 0.5, blockedAnchor.getZ() + 0.5);
+        helper.assertTrue(blockedResult.isPresent(), "a solid-headroom column must still be placed, not rejected");
+        helper.assertTrue((int) Math.floor(blockedResult.get().position().x()) == blockedAnchor.getX()
+                        && (int) Math.floor(blockedResult.get().position().z()) == blockedAnchor.getZ(),
+                "the blocked-headroom candidate column must be returned unchanged");
+
+        BlockPos waterAnchor = helper.absolutePos(new BlockPos(3, 2, 2));
+        level.setBlockAndUpdate(waterAnchor, net.minecraft.world.level.block.Blocks.WATER.defaultBlockState());
+        var waterResult = placer.placeAt(region, waterAnchor.getX() + 0.5, waterAnchor.getZ() + 0.5);
+        helper.assertTrue(waterResult.isPresent(), "a water column must still be placed, not rejected");
+        helper.assertTrue((int) Math.floor(waterResult.get().position().x()) == waterAnchor.getX()
+                        && (int) Math.floor(waterResult.get().position().z()) == waterAnchor.getZ(),
+                "the water candidate column must be returned unchanged");
         helper.succeed();
     }
 

@@ -41,8 +41,20 @@ public final class PathfinderTerrainPlacer implements PathfinderCheckpointPlacer
             x += PathfinderCheckpointPlacer.DEFAULT_LOOP_RADIUS_BLOCKS * Math.cos(angle);
             z += PathfinderCheckpointPlacer.DEFAULT_LOOP_RADIUS_BLOCKS * Math.sin(angle);
         }
+        return placeAt(region, x, z);
+    }
+
+    /**
+     * Package-visible test seam (review follow-up): lets a GameTest resolve a checkpoint at an
+     * X/Z it fully controls — and so can build real, known terrain (lava, a solid headroom
+     * block, water) directly under — rather than one derived from region math whose absolute
+     * placement the test cannot control (a region-center candidate is routinely hundreds of
+     * blocks from wherever a test's own structure happens to load). Exercises the exact same
+     * no-search, never-fails resolution {@link #place} uses.
+     */
+    Optional<PathfinderCheckpoint> placeAt(PathfinderRegion region, double candidateX, double candidateZ) {
         String dimensionId = level.dimension().location().toString();
-        PathfinderPosition position = new PathfinderPosition(dimensionId, x, level.getSeaLevel(), z);
+        PathfinderPosition position = new PathfinderPosition(dimensionId, candidateX, level.getSeaLevel(), candidateZ);
         return Optional.of(new PathfinderCheckpoint(region, position));
     }
 }

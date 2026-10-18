@@ -46,13 +46,23 @@ public final class TownFounder {
      *  {@code delivery.SettlementFounder#onArrival} already uses for its own GameTests. */
     public static void tryFoundNear(ServerLevel level, ServerPlayer player, TownStorage storage) {
         RegionCoord region = TownRegion.fromBlockCoords(player.blockPosition().getX(), player.blockPosition().getZ());
+        TownPlan plan = TownPlanner.generate(region, level.getSeed());
+        BlockPos target = new BlockPos(plan.townCenterX(), player.blockPosition().getY(), plan.townCenterZ());
+        tryFoundAt(level, region, target, storage);
+    }
+
+    /**
+     * The core bootstrap-once decision and placement, factored out from {@link #tryFoundNear} so
+     * it is directly GameTest-able against a controlled, prepared target position — the planner's
+     * own choice of town centre (anywhere within a 384-block region) is already covered by
+     * {@code TownPlannerTest} and cannot itself be relied on to land inside a GameTest structure's
+     * tiny prepared footprint.
+     */
+    public static void tryFoundAt(ServerLevel level, RegionCoord region, BlockPos target, TownStorage storage) {
         String key = TownKeys.keyFor(level.dimension(), region);
         if (storage.hasFoundedTown(key)) {
             return;
         }
-
-        TownPlan plan = TownPlanner.generate(region, level.getSeed());
-        BlockPos target = new BlockPos(plan.townCenterX(), player.blockPosition().getY(), plan.townCenterZ());
         if (!level.hasChunkAt(target)) {
             return;
         }

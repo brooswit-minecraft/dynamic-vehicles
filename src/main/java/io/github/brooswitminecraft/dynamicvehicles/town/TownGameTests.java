@@ -1,11 +1,10 @@
 package io.github.brooswitminecraft.dynamicvehicles.town;
 
-import io.github.brooswitminecraft.dynamicvehicles.delivery.GameTestMockPlayers;
+import io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.GlobalPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
-import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.entity.ai.memory.MemoryModuleType;
@@ -20,9 +19,9 @@ import java.util.List;
 
 /**
  * MINECRAFT-388: GameTests for the Minecraft-facing halves of Dynamic Towns, following
- * {@code delivery.SettlementFounderGameTests}' conventions (same mock player, same flat-ground
- * helper, same "fresh region per test" trick so persisted founded-town state from an earlier
- * GameTest run can never make a rerun silently skip its own placement).
+ * {@code delivery.SettlementFounderGameTests}' conventions (same flat-ground helper, same
+ * freshly-constructed, never-persisted {@code TownStorage} per test so a prior run's founded-town
+ * state can never make a rerun silently skip its own placement).
  */
 @GameTestHolder(io.github.brooswitminecraft.dynamicvehicles.DynamicVehiclesMod.MODID)
 @PrefixGameTestTemplate(false)
@@ -41,16 +40,22 @@ public final class TownGameTests {
         }
     }
 
+    /**
+     * Exercises {@link TownFounder#tryFoundAt} directly with an explicit target matching the
+     * prepared flat ground, rather than {@link TownFounder#tryFoundNear}'s full plan-driven
+     * target (anywhere within a 384-block region, which cannot be relied on to land inside this
+     * tiny GameTest structure's own prepared footprint — {@code TownPlannerTest} already covers
+     * that choice). The region coordinate itself is irrelevant to this test other than needing to
+     * be stable across both calls within it, so a fixed, GameTest-only region is used.
+     */
     @GameTest(template = "settlement_test")
     public static void bootstrapPlacesExactlyOneCampfireAndOneVillager(GameTestHelper helper) {
         prepareFlatGround(helper);
         BlockPos absoluteAnchor = helper.absolutePos(ANCHOR);
-
-        ServerPlayer player = GameTestMockPlayers.create(helper);
-        player.moveTo(absoluteAnchor.getX() + 0.5D, absoluteAnchor.getY(), absoluteAnchor.getZ() + 0.5D, 0.0F, 0.0F);
+        RegionCoord region = new RegionCoord(0, 0);
         TownStorage storage = new TownStorage();
 
-        TownFounder.tryFoundNear(helper.getLevel(), player, storage);
+        TownFounder.tryFoundAt(helper.getLevel(), region, absoluteAnchor, storage);
 
         AABB footprint = AABB.encapsulatingFullBlocks(
                 helper.absolutePos(new BlockPos(0, 0, 0)), helper.absolutePos(new BlockPos(9, 12, 9)));
@@ -65,13 +70,11 @@ public final class TownGameTests {
     public static void repeatedBootstrapAttemptAtTheSameRegionDoesNotDuplicate(GameTestHelper helper) {
         prepareFlatGround(helper);
         BlockPos absoluteAnchor = helper.absolutePos(ANCHOR);
-
-        ServerPlayer player = GameTestMockPlayers.create(helper);
-        player.moveTo(absoluteAnchor.getX() + 0.5D, absoluteAnchor.getY(), absoluteAnchor.getZ() + 0.5D, 0.0F, 0.0F);
+        RegionCoord region = new RegionCoord(0, 0);
         TownStorage storage = new TownStorage();
 
-        TownFounder.tryFoundNear(helper.getLevel(), player, storage);
-        TownFounder.tryFoundNear(helper.getLevel(), player, storage);
+        TownFounder.tryFoundAt(helper.getLevel(), region, absoluteAnchor, storage);
+        TownFounder.tryFoundAt(helper.getLevel(), region, absoluteAnchor, storage);
 
         AABB footprint = AABB.encapsulatingFullBlocks(
                 helper.absolutePos(new BlockPos(0, 0, 0)), helper.absolutePos(new BlockPos(9, 12, 9)));

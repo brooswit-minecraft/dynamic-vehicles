@@ -44,6 +44,11 @@ public final class WheelInput {
     private static boolean lastSentHandbrake;
     private static boolean wasRidingCarForPaddles;
     private static CarPhysics.Gear lastSentShifterGear;
+    // MINECRAFT-394: the radio button is momentary (a single Triangle-style press), not a held paddle like
+    // honk/handbrake above, so it is read edge-triggered -- fire once on the false->true transition, never
+    // continuously while held -- mirroring how lastSentShifterGear avoids resending unchanged state, but
+    // adapted for an action rather than a level.
+    private static boolean lastRadioButtonDown;
 
     private WheelInput() {}
 
@@ -108,6 +113,9 @@ public final class WheelInput {
             // The newly mounted car starts with its own default gear state, so resend a held physical
             // shifter position even when it matches the last car we rode.
             lastSentShifterGear = null;
+            // A fresh mount must never replay whatever edge the previous car (or no car at all) left the
+            // button sitting on as an immediate "press" against the new car.
+            lastRadioButtonDown = false;
         }
         wasRidingCarForPaddles = ridingCar;
         if (!ridingCar) {
@@ -137,6 +145,12 @@ public final class WheelInput {
                 PacketDistributor.sendToServer(new GearSelectPayload(shifterGear));
             }
         }
+        // MINECRAFT-394: the configured radio button (e.g. a PS-pad's Triangle), edge-triggered.
+        boolean radioButtonDown = wheelActive && WheelMapping.buttonDown(readButtons(device), ClientConfig.WHEEL_RADIO_BUTTON.get());
+        if (radioButtonDown && !lastRadioButtonDown) {
+            PacketDistributor.sendToServer(new RadioTogglePayload());
+        }
+        lastRadioButtonDown = radioButtonDown;
     }
 
     @SubscribeEvent

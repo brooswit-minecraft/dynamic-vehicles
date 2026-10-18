@@ -25,6 +25,7 @@ public final class CarConfig {
     public static final ModConfigSpec.DoubleValue DRIFT_COUNTER_STEER_ASSIST;
     public static final ModConfigSpec.DoubleValue FOLIAGE_RESISTANCE;
     public static final ModConfigSpec.DoubleValue FLUID_EFFECTS;
+    public static final ModConfigSpec.ConfigValue<java.util.List<? extends String>> RADIO_STATIONS;
 
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
@@ -100,6 +101,23 @@ public final class CarConfig {
         FLUID_EFFECTS = builder
                 .comment("Multiplier on water/lava buoyancy (substantially counteracts gravity; lava more than water) and the extra drag they add on top of air drag (lava more than water). 0 = cars sink and drive through fluids unaffected, same as before this existed.")
                 .defineInRange("fluidEffects", 1.0, 0.0, 10.0);
+        // MINECRAFT-394: the vehicle radio's ordered station list. "Off" is not in this list at all -- it
+        // is always the implicit first choice of the cycle (see RadioStationIndex), regardless of how many
+        // (or how few) stations an operator configures here, including none. Each client connects directly
+        // to the selected URL itself (never through this server) to play it, so this is read-only server
+        // state: a stream, not a file the server fetches or stores. Read live (no restart needed to pick up
+        // an edit) since nothing else here depends on it staying fixed for a running vehicle beyond the
+        // single index lookup cycleRadio() already re-reads every time it is pressed.
+        RADIO_STATIONS = builder
+                .comment("Ordered list of internet radio streaming URLs offered by the vehicle radio. Players cycle "
+                        + "through Off (always first/implicit, not listed here), then each of these in order, then "
+                        + "back to Off. Every client connects to the chosen URL directly and plays it locally -- "
+                        + "this server never proxies or stores the audio. The one default entry is a verified "
+                        + "OC ReMix Icecast stream (plain HTTP; its HTTPS variant's certificate does not match the "
+                        + "hostname). An empty list means the radio only ever offers Off.")
+                .defineListAllowEmpty("radioStations",
+                        java.util.List.of("http://ocremixstream.rainwave.cc:8000/ocremix.mp3"),
+                        value -> value instanceof String);
         SPEC = builder.build();
     }
 

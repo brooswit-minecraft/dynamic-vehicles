@@ -49,6 +49,10 @@ public final class TownConstants {
      *  and at most this many road cells are placed per site per construction tick. */
     public static final int ROAD_COST_PER_BLOCK = 1;
     public static final int ROAD_BLOCKS_PER_TICK = 4;
+    /** [Review round 2, finding #4] How far apart along a major thoroughfare minor branch roads
+     *  are spawned, and how far each branch runs perpendicular into the zoned area on either side. */
+    public static final int MINOR_BRANCH_INTERVAL_BLOCKS = PARCEL_SIZE_BLOCKS * 2;
+    public static final int MINOR_BRANCH_LENGTH_BLOCKS = PARCEL_SIZE_BLOCKS;
 
     /** Residential : commercial : industrial footprint ratio, residential-heavy since every
      *  villager needs housing but only some need a workplace. */
@@ -105,9 +109,6 @@ public final class TownConstants {
     public static final int CONSTRUCTION_COST_PER_BLOCK = 1;
     public static final int CONSTRUCTION_BLOCKS_PER_TICK = 4;
     public static final long CONSTRUCTION_TICK_INTERVAL_TICKS = 20L; // one second
-
-    /** Search radius (blocks) used to look for a villager-claimed campfire's job-site memory. */
-    public static final int CAMPFIRE_CLAIM_SEARCH_RADIUS = 2;
 
     /** Zoning parcel size: one zoning decision per 16x16 column block, aligned to chunk size so a
      *  parcel never straddles a chunk boundary. */

@@ -34,6 +34,36 @@ public final class TownRoadPlanner {
 
     public record RoadCell(int x, int z, int y) {}
 
+    /**
+     * [Review round 2, finding #4] Minor branch roads spawned off a major edge-to-centre route at
+     * regular intervals, extending perpendicular to the major route into the zoned area on BOTH
+     * sides for {@link TownConstants#MINOR_BRANCH_LENGTH_BLOCKS}. A documented simplification:
+     * each branch holds flat at its origin cell's own interpolated height (no further grade
+     * ramping along the branch itself) - the major route it springs from has already done the
+     * real elevation work getting to that point.
+     */
+    public static List<List<RoadCell>> minorBranchesForEdge(TownPlan plan, TownEdge edge, int centerReferenceHeight) {
+        List<RoadCell> majorRoute = routeForEdge(plan, edge, centerReferenceHeight);
+        List<List<RoadCell>> branches = new ArrayList<>();
+        int interval = TownConstants.MINOR_BRANCH_INTERVAL_BLOCKS;
+        int length = TownConstants.MINOR_BRANCH_LENGTH_BLOCKS;
+        for (int i = interval; i < majorRoute.size(); i += interval) {
+            RoadCell origin = majorRoute.get(i);
+            RoadCell prev = majorRoute.get(i - 1);
+            boolean runsAlongX = prev.z() == origin.z() && prev.x() != origin.x();
+            for (int side = -1; side <= 1; side += 2) {
+                List<RoadCell> branch = new ArrayList<>(length);
+                for (int step = 1; step <= length; step++) {
+                    int bx = runsAlongX ? origin.x() : origin.x() + side * step;
+                    int bz = runsAlongX ? origin.z() + side * step : origin.z();
+                    branch.add(new RoadCell(bx, bz, origin.y()));
+                }
+                branches.add(branch);
+            }
+        }
+        return branches;
+    }
+
     public static List<RoadCell> routeForEdge(TownPlan plan, TownEdge edge, int centerReferenceHeight) {
         int[] edgePos = plan.edgeConnectionAbsolute(edge);
         int edgeX = edgePos[0];
@@ -90,6 +120,51 @@ public final class TownRoadPlanner {
                 break;
             }
         }
+    }
+
+    /**
+     * [Review round 2, finding #5] The Chebyshev distance from an absolute block column to the
+     * NEAREST point on any of the four edges' real two-leg L-shaped routes - the single shared
+     * source of "how far is this column from an actual road" that {@link TownPlanner#zoneAt} and
+     * {@link TownPlanner#isOnThoroughfare} both now defer to, replacing the old (and, after the
+     * L-shaped routes were added, no-longer-accurate) "distance to the infinite centre cross".
+     * Computed geometrically from each leg's own fixed-axis/range endpoints (the exact same
+     * segments {@link #routeForEdge} itself walks, just without needing a height to do it), so
+     * this is a strict read of the real route rather than a second, independently-drifting notion
+     * of where the road is.
+     */
+    public static int distanceToNearestRoute(TownPlan plan, int blockX, int blockZ) {
+        int centerX = plan.townCenterX();
+        int centerZ = plan.townCenterZ();
+        int best = Integer.MAX_VALUE;
+        for (TownEdge edge : TownEdge.values()) {
+            int[] edgePos = plan.edgeConnectionAbsolute(edge);
+            int edgeX = edgePos[0];
+            int edgeZ = edgePos[1];
+            switch (edge) {
+                case NORTH, SOUTH -> {
+                    best = Math.min(best, distanceToSegment(blockX, blockZ, edgeX, edgeZ, edgeX, centerZ));
+                    best = Math.min(best, distanceToSegment(blockX, blockZ, edgeX, centerZ, centerX, centerZ));
+                }
+                case EAST, WEST -> {
+                    best = Math.min(best, distanceToSegment(blockX, blockZ, edgeX, edgeZ, centerX, edgeZ));
+                    best = Math.min(best, distanceToSegment(blockX, blockZ, centerX, edgeZ, centerX, centerZ));
+                }
+            }
+        }
+        return best;
+    }
+
+    /** Chebyshev distance from a point to an axis-aligned segment (either {@code x1 == x2} or
+     *  {@code z1 == z2}, exactly the shape every leg {@link #routeForEdge} builds). */
+    private static int distanceToSegment(int px, int pz, int x1, int z1, int x2, int z2) {
+        int nearestX = x1 == x2 ? x1 : clamp(px, Math.min(x1, x2), Math.max(x1, x2));
+        int nearestZ = z1 == z2 ? z1 : clamp(pz, Math.min(z1, z2), Math.max(z1, z2));
+        return Math.max(Math.abs(px - nearestX), Math.abs(pz - nearestZ));
+    }
+
+    private static int clamp(int value, int lo, int hi) {
+        return Math.max(lo, Math.min(hi, value));
     }
 
     private static List<RoadCell> interpolateHeights(List<int[]> xz, int startHeight, int endHeight) {

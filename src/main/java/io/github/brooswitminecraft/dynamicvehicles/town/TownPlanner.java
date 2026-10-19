@@ -29,17 +29,18 @@ public final class TownPlanner {
     }
 
     /**
-     * The zone an absolute block column is planned for, computed relative to the town's two
-     * region-crossing thoroughfares (which cross at the town centre): distance to the nearer
-     * thoroughfare line is banded into {@link TownConstants#PARCEL_SIZE_BLOCKS}-wide rings, cycling
-     * commercial (closest), then industrial, then residential (farthest) — repeating outward so the
-     * long-run area ratio matches {@link TownConstants#COMMERCIAL_ZONE_SHARE} etc. A small
-     * per-parcel hashed jitter keeps the ring boundaries from reading as perfectly concentric
-     * squares.
+     * The zone an absolute block column is planned for, computed relative to the town's ACTUAL
+     * planned road routes (per review round 2 finding #5 - {@link TownRoadPlanner#distanceToNearestRoute},
+     * the real L-shaped edge-to-centre paths {@link TownRoadPlanner} builds, never the old
+     * infinite centre cross those routes superseded): distance to the nearest route point is
+     * banded into {@link TownConstants#PARCEL_SIZE_BLOCKS}-wide rings, cycling commercial
+     * (closest), then industrial, then residential (farthest) — repeating outward so the long-run
+     * area ratio matches {@link TownConstants#COMMERCIAL_ZONE_SHARE} etc. A small per-parcel
+     * hashed jitter keeps the ring boundaries from reading as perfectly concentric squares.
      */
     static TownZone zoneAt(TownPlan plan, int blockX, int blockZ) {
         int parcelSize = TownConstants.PARCEL_SIZE_BLOCKS;
-        int distanceToRoad = Math.min(Math.abs(blockX - plan.townCenterX()), Math.abs(blockZ - plan.townCenterZ()));
+        int distanceToRoad = TownRoadPlanner.distanceToNearestRoute(plan, blockX, blockZ);
 
         long hash = TownSeedMath.mix(plan.worldSeed(), plan.region().x(), plan.region().z(),
                 Math.floorDiv(blockX, parcelSize), Math.floorDiv(blockZ, parcelSize));
@@ -58,9 +59,11 @@ public final class TownPlanner {
         return TownZone.RESIDENTIAL;
     }
 
-    /** True when the column lies on either region-crossing thoroughfare (within half its width of the centre line). */
+    /** True when the column lies within half the major road's width of the nearest point on any
+     *  of the town's ACTUAL planned road routes (see {@link #zoneAt}'s javadoc for why this is no
+     *  longer the old infinite centre cross). */
     public static boolean isOnThoroughfare(TownPlan plan, int blockX, int blockZ) {
         int halfWidth = TownConstants.MAJOR_ROAD_WIDTH / 2;
-        return Math.abs(blockX - plan.townCenterX()) <= halfWidth || Math.abs(blockZ - plan.townCenterZ()) <= halfWidth;
+        return TownRoadPlanner.distanceToNearestRoute(plan, blockX, blockZ) <= halfWidth;
     }
 }

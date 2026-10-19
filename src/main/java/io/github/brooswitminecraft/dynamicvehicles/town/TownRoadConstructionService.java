@@ -3,19 +3,28 @@ package io.github.brooswitminecraft.dynamicvehicles.town;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.AABB;
 
 import java.util.List;
 
 /**
  * MINECRAFT-388 review finding #3's production half: {@link TownRoadPlanner} only computes
- * coordinates, so this is what actually turns a region's four edge-to-centre road spurs into
- * placed, resource-gated blocks - the "production road-placement consumer" the review found
- * entirely absent. Driven from {@link TownConstructionService#onLevelTick} once per tick for
- * every region that currently has at least one claimed site (roads have no single campfire anchor
- * of their own to iterate from the way building sites do).
+ * coordinates, so this is what actually turns a region's road routes into placed, resource-gated
+ * blocks. Driven from {@link TownConstructionService#onLevelTick} once per tick for every region
+ * that currently has at least one claimed site (roads have no single campfire anchor of their own
+ * to iterate from the way building sites do).
+ *
+ * <p>[Review round 2, finding #4] Builds BOTH the four major, town-centre-connecting edge routes
+ * (at {@link TownConstants#MAJOR_ROAD_WIDTH}) and, off each of those, minor branch roads into the
+ * zoned areas (at {@link TownConstants#MINOR_ROAD_WIDTH} — see
+ * {@link TownRoadPlanner#minorBranchesForEdge}); every individual cell placement is now a real,
+ * terrain-safe corridor: headroom is cleared above, support is filled below, an occupying entity
+ * skips just that cell, and both the world border and the dimension's own build height are
+ * checked before any mutation.
  */
 public final class TownRoadConstructionService {
     private TownRoadConstructionService() {}
@@ -35,32 +44,46 @@ public final class TownRoadConstructionService {
             if (placedThisTick >= TownConstants.ROAD_BLOCKS_PER_TICK) {
                 break;
             }
-            List<TownRoadPlanner.RoadCell> cells = TownRoadPlanner.routeForEdge(plan, edge, centerHeight);
-            int[] result = buildRoad(level, cells, store, placedThisTick);
+            List<TownRoadPlanner.RoadCell> majorCells = TownRoadPlanner.routeForEdge(plan, edge, centerHeight);
+            int[] result = buildRoad(level, majorCells, TownConstants.MAJOR_ROAD_WIDTH, store, placedThisTick);
             placedThisTick += result[0];
             mutated |= result[1] != 0;
+
+            for (List<TownRoadPlanner.RoadCell> branch : TownRoadPlanner.minorBranchesForEdge(plan, edge, centerHeight)) {
+                if (placedThisTick >= TownConstants.ROAD_BLOCKS_PER_TICK) {
+                    break;
+                }
+                int[] branchResult = buildRoad(level, branch, TownConstants.MINOR_ROAD_WIDTH, store, placedThisTick);
+                placedThisTick += branchResult[0];
+                mutated |= branchResult[1] != 0;
+            }
         }
         return mutated;
     }
 
     /**
      * Places as many cells of a single already-computed road route as the per-tick budget and
-     * available resources allow, applying the same per-cell safety/pacing/debit rules
-     * {@link #buildRoadsForRegion} uses internally. Exposed {@code public} (the same
-     * {@code TownFounder#tryFoundAt} / {@code TownConstructionService#buildAt} convention this PR
-     * already follows) so a GameTest can drive a small, fully-controlled route directly, without
-     * depending on a seed-derived {@link TownPlan}'s town centre happening to land inside the
-     * GameTest's own tiny loaded footprint.
+     * available resources allow, at {@link TownConstants#MINOR_ROAD_WIDTH} - the width every
+     * existing GameTest/caller of this exposed method already assumes. Exposed {@code public} so
+     * a GameTest can drive a small, fully-controlled route directly, without depending on a
+     * seed-derived {@link TownPlan}'s town centre happening to land inside the GameTest's own tiny
+     * loaded footprint.
      *
      * @return the number of cells actually placed.
      */
     public static int buildRoadCells(ServerLevel level, List<TownRoadPlanner.RoadCell> cells, TownResourceStore store) {
-        return buildRoad(level, cells, store, 0)[0];
+        return buildRoad(level, cells, TownConstants.MINOR_ROAD_WIDTH, store, 0)[0];
+    }
+
+    /** As {@link #buildRoadCells}, but lets a GameTest exercise a specific width (major or minor). */
+    public static int buildRoadCells(ServerLevel level, List<TownRoadPlanner.RoadCell> cells, int width, TownResourceStore store) {
+        return buildRoad(level, cells, width, store, 0)[0];
     }
 
     /** @return {@code {blocksPlaced, mutatedFlag}} */
-    private static int[] buildRoad(ServerLevel level, List<TownRoadPlanner.RoadCell> cells, TownResourceStore store, int alreadyPlaced) {
-        int halfWidth = (TownConstants.MINOR_ROAD_WIDTH - 1) / 2;
+    private static int[] buildRoad(ServerLevel level, List<TownRoadPlanner.RoadCell> cells, int width,
+            TownResourceStore store, int alreadyPlaced) {
+        int halfWidth = (width - 1) / 2;
         int placed = 0;
         boolean mutated = false;
         for (int i = 0; i < cells.size(); i++) {
@@ -80,26 +103,87 @@ public final class TownRoadConstructionService {
                 int x = runsAlongX ? cell.x() : cell.x() + offset;
                 int z = runsAlongX ? cell.z() + offset : cell.z();
                 BlockPos pos = new BlockPos(x, cell.y(), z);
-                if (!level.hasChunkAt(pos)) {
+                if (!placeRoadCell(level, pos, store)) {
                     continue;
                 }
-                BlockState state = level.getBlockState(pos);
-                if (state.is(ROAD_SURFACE)) {
-                    continue; // already built here
-                }
-                if (!TownTerrain.isNaturalTerrain(state)) {
-                    // Protected/foreign content (including another live campfire) - skip just this
-                    // cell, never bulldoze it, and never abort the rest of the road over it.
-                    continue;
-                }
-                if (!store.tryDebit(TownResourceCategory.STONE, TownConstants.ROAD_COST_PER_BLOCK)) {
-                    return new int[] {placed, mutated ? 1 : 0}; // out of funds - pause entirely, no partial charge
-                }
-                level.setBlock(pos, ROAD_SURFACE.defaultBlockState(), net.minecraft.world.level.block.Block.UPDATE_ALL);
                 placed++;
                 mutated = true;
             }
         }
         return new int[] {placed, mutated ? 1 : 0};
+    }
+
+    /**
+     * [Review round 2, finding #4] A single corridor-safe road cell: world border and build-height
+     * bounds are checked first (never place outside the dimension), then headroom above is
+     * cleared (natural terrain only - never tunnels through protected content), support below is
+     * filled so the surface never floats, any entity standing exactly here makes this cell skip
+     * for this tick (never enclosing it), and - per round 2 finding #3 - resources are debited
+     * only AFTER the surface placement is confirmed to have actually landed.
+     *
+     * @return {@code true} iff a road-surface block was actually placed and charged for.
+     */
+    private static boolean placeRoadCell(ServerLevel level, BlockPos pos, TownResourceStore store) {
+        if (!level.hasChunkAt(pos)) {
+            return false;
+        }
+        // Headroom for a cell, its surface, and the two cells of clearance above it (villager
+        // height) must all lie strictly within the dimension's own build limits.
+        if (pos.getY() <= level.getMinBuildHeight() || pos.getY() + 2 >= level.getMaxBuildHeight()) {
+            return false;
+        }
+        if (!level.getWorldBorder().isWithinBounds(pos)) {
+            return false;
+        }
+        BlockState state = level.getBlockState(pos);
+        if (state.is(ROAD_SURFACE)) {
+            return false; // already built here
+        }
+        if (!TownTerrain.isNaturalTerrain(state)) {
+            // Protected/foreign content (including another live campfire) - skip just this cell,
+            // never bulldoze it, and never abort the rest of the road over it.
+            return false;
+        }
+        BlockPos above1 = pos.above();
+        BlockPos above2 = pos.above(2);
+        if (!TownTerrain.isNaturalTerrain(level.getBlockState(above1)) || !TownTerrain.isNaturalTerrain(level.getBlockState(above2))) {
+            // Never tunnel through protected/foreign content to clear headroom.
+            return false;
+        }
+        if (isEntityOccupying(level, pos)) {
+            // Something is physically standing exactly here right now; skip just this cell and
+            // try again next tick rather than enclosing it.
+            return false;
+        }
+        if (!store.canAfford(TownResourceCategory.STONE, TownConstants.ROAD_COST_PER_BLOCK)) {
+            return false; // out of funds - pause entirely, no partial charge
+        }
+
+        // Clear headroom (villager-height corridor), then ensure solid support below so the
+        // surface can never float over open air.
+        if (!level.getBlockState(above1).isAir()) {
+            level.removeBlock(above1, false);
+        }
+        if (!level.getBlockState(above2).isAir()) {
+            level.removeBlock(above2, false);
+        }
+        BlockPos below = pos.below();
+        BlockState belowState = level.getBlockState(below);
+        if (belowState.isAir() || !belowState.isSolidRender(level, below)) {
+            level.setBlock(below, Blocks.DIRT.defaultBlockState(), net.minecraft.world.level.block.Block.UPDATE_ALL);
+        }
+
+        boolean placedOk = level.setBlock(pos, ROAD_SURFACE.defaultBlockState(), net.minecraft.world.level.block.Block.UPDATE_ALL);
+        if (!placedOk || !level.getBlockState(pos).is(ROAD_SURFACE)) {
+            // The mutation was rejected or did not land - charge nothing, try again next tick.
+            return false;
+        }
+        store.tryDebit(TownResourceCategory.STONE, TownConstants.ROAD_COST_PER_BLOCK);
+        return true;
+    }
+
+    private static boolean isEntityOccupying(ServerLevel level, BlockPos pos) {
+        AABB cell = new AABB(pos);
+        return !level.getEntities((Entity) null, cell).isEmpty();
     }
 }

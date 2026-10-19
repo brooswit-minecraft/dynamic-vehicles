@@ -90,18 +90,54 @@ public final class TownFounder {
             return;
         }
 
-        // Persist the one-way claim before mutating the world, exactly like SettlementFounder:
-        // repeated arrival, reconnect, and restart paths then cannot create a second bootstrap.
-        storage.markTownFounded(key);
-        storage.setDirty();
+        // [Review round 2, finding #6] The one-way "founded" claim must NOT be persisted before
+        // the placements it claims to represent are actually confirmed in the world: a rejected
+        // block placement or spawn failure must leave the region retryable, never permanently
+        // "founded" with nothing (or only half of something) actually there.
+        boolean campfirePlaced = level.setBlock(campfirePos, Blocks.CAMPFIRE.defaultBlockState(), 3)
+                && level.getBlockState(campfirePos).is(Blocks.CAMPFIRE);
+        if (!campfirePlaced) {
+            return; // retryable next EVALUATE_INTERVAL_TICKS pass - nothing was committed
+        }
 
-        level.setBlock(campfirePos, Blocks.CAMPFIRE.defaultBlockState(), 3);
         Villager villager = EntityType.VILLAGER.create(level, null, campfirePos, MobSpawnType.EVENT, false, false);
+        boolean villagerSpawned = false;
         if (villager != null) {
             villager.moveTo(campfirePos.getX() + 0.5D, campfirePos.getY() + 1.0D, campfirePos.getZ() + 0.5D,
                     level.random.nextFloat() * 360.0F, 0.0F);
-            level.addFreshEntity(villager);
+            villagerSpawned = level.addFreshEntity(villager);
         }
+
+        PlacementOutcome outcome = evaluatePlacement(campfirePlaced, villagerSpawned);
+        if (outcome.cleanupCampfire()) {
+            // The campfire landed but its companion villager did not: never leave an orphan
+            // campfire with nothing to claim it and no way to retry - remove it so the next pass
+            // can attempt a clean placement of both from scratch.
+            level.removeBlock(campfirePos, false);
+        }
+        if (outcome.markFounded()) {
+            // Only now, with BOTH placements confirmed, commit the one-way claim - a retry after
+            // this point must never duplicate either placement.
+            storage.markTownFounded(key);
+            storage.setDirty();
+        }
+    }
+
+    /** Pure success/cleanup decision for the campfire+villager pair, factored out so it is
+     *  directly unit-testable without a real level: {@code markFounded} is {@code true} only when
+     *  BOTH placements are confirmed, and {@code cleanupCampfire} is {@code true} exactly in the
+     *  one partial-failure case where the campfire landed but its villager did not - the one
+     *  shape that would otherwise strand an unclaimed, un-retryable orphan campfire. */
+    public record PlacementOutcome(boolean markFounded, boolean cleanupCampfire) {}
+
+    public static PlacementOutcome evaluatePlacement(boolean campfirePlaced, boolean villagerSpawned) {
+        if (!campfirePlaced) {
+            return new PlacementOutcome(false, false);
+        }
+        if (!villagerSpawned) {
+            return new PlacementOutcome(false, true);
+        }
+        return new PlacementOutcome(true, false);
     }
 
     /**

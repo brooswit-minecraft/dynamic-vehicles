@@ -12,6 +12,7 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.neoforge.event.tick.LevelTickEvent;
 
+import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -87,12 +88,15 @@ public final class TownConstructionService {
     /** Exposed {@code public} (mirroring {@code TownFounder#tryFoundAt}'s convention) so a GameTest
      *  can drive a single site deterministically without constructing a real {@link LevelTickEvent.Post}. */
     public static void buildAt(ServerLevel level, BlockPos campfire, TownStorage storage) {
-        // nextBlockToPlace's gate is re-checked against the live claim below, not assumed from the
-        // campfire having shown up in the job-site scan above: a villager can lose its job between
-        // the scan and this call (e.g. it died this same tick from an earlier site's work).
-        if (!TownCampfireClaims.isClaimed(level, campfire)) {
+        // [Review round 2, finding #1] The claim is looked up ONCE here, by real JOB_SITE memory
+        // (never spatial proximity), and the SAME claimant villager is then reused for every check
+        // and every placement below - never re-derived from "whoever happens to be near the
+        // campfire right now".
+        Optional<Villager> claimantOpt = TownCampfireClaims.findClaimant(level, campfire);
+        if (claimantOpt.isEmpty()) {
             return;
         }
+        Villager claimant = claimantOpt.get();
 
         RegionCoord region = TownRegion.fromBlockCoords(campfire.getX(), campfire.getZ());
         TownPlan plan = TownPlanner.generate(region, level.getSeed());
@@ -102,23 +106,57 @@ public final class TownConstructionService {
                 ? TownBuildingTemplates.Kind.STOREHOUSE
                 : TownBuildingTemplates.kindFor(plan.zoneAt(campfire.getX(), campfire.getZ()));
 
-        List<TownBuildingTemplates.Placement> template = TownBuildingTemplates.generate(
-                kind, campfire.getX(), campfire.getY(), campfire.getZ(), plan.storehouseVariant());
+        // [Review round 2, finding #2] The floor is the tree-excluded ESTIMATED ground height, not
+        // the campfire's own (possibly arbitrary - a trunk, a ledge, a tall column) current Y.
+        int floorY = TownTerrain.estimateGroundHeight(level, campfire.getX(), campfire.getZ());
+        if (floorY <= level.getMinBuildHeight() || floorY >= level.getMaxBuildHeight()) {
+            // A bounded, validated floor: refuse to plan a site whose estimated ground falls
+            // outside the dimension entirely, rather than silently building garbage there.
+            return;
+        }
+
+        List<TownBuildingTemplates.Placement> template = new ArrayList<>(TownBuildingTemplates.generate(
+                kind, campfire.getX(), floorY, campfire.getZ(), plan.storehouseVariant(),
+                claimant.getVillagerData().getProfession()));
         int radius = footprintRadius(kind);
 
         Map<String, TownBuildingTemplates.Placement> byPosition = new HashMap<>();
         for (TownBuildingTemplates.Placement placement : template) {
             byPosition.put(key(placement.x(), placement.y(), placement.z()), placement);
         }
+        if (!byPosition.containsKey(key(campfire.getX(), campfire.getY(), campfire.getZ()))) {
+            // The estimated floor and the campfire's own actual cell can differ (exactly the case
+            // finding #2 fixes); retaining the original campfire cell "until the end" still means
+            // it must eventually be replaced, so an explicit placement for its own exact position
+            // is appended - bottomUpOrder (by x/y/z match) defers it to the very last block, same
+            // as when it coincided with the floor plane.
+            TownBuildingTemplates.Placement extra = new TownBuildingTemplates.Placement(
+                    campfire.getX(), campfire.getY(), campfire.getZ(),
+                    TownBuildingTemplates.wallBlockFor(kind), TownBuildingTemplates.costFor(kind));
+            template.add(extra);
+            byPosition.put(key(extra.x(), extra.y(), extra.z()), extra);
+        }
 
-        // [Review finding #1] Preflight the WHOLE site before mutating anything: a protected,
-        // player-built, or otherwise-occupied block anywhere in the footprint (including another
-        // live claimed campfire) aborts this site for this tick, with no partial mutation and no
-        // resource charge at all - never just skip-and-continue over an unsafe cell. A cell that
-        // already holds exactly what THIS site's own template planned there (a previous tick's
-        // progress) is explicitly allowed, so an in-progress site does not fail its own preflight
-        // forever once its walls start going up.
-        if (!TownSitePreflight.isSiteSafe(level, campfire, radius, campfire.getY(),
+        // [Review round 2, finding #3] Validate EVERY planned cell against the dimension's own
+        // build height before anything is touched - not just the natural-terrain scan range
+        // TownSitePreflight itself bounds its own search by. A campfire near the world ceiling can
+        // otherwise plan roof cells strictly above TownTerrain#rawCanopyTop's own scan ceiling,
+        // which the preflight below would never even visit, let alone reject.
+        for (TownBuildingTemplates.Placement placement : template) {
+            if (!withinBuildHeight(level, new BlockPos(placement.x(), placement.y(), placement.z()))
+                    || !level.getWorldBorder().isWithinBounds(new BlockPos(placement.x(), placement.y(), placement.z()))) {
+                return;
+            }
+        }
+
+        // [Review finding #1 / round 2 finding #3] Preflight the WHOLE site before mutating
+        // anything: a protected, player-built, or otherwise-occupied block anywhere in the
+        // footprint (including another live claimed campfire), OR a cell outside the dimension's
+        // build height, aborts this site for this tick, with no partial mutation and no resource
+        // charge at all. A cell that already holds exactly what THIS site's own template planned
+        // there (a previous tick's progress) is explicitly allowed, so an in-progress site does
+        // not fail its own preflight forever once its walls start going up.
+        if (!TownSitePreflight.isSiteSafe(level, campfire, radius, floorY,
                 pos -> {
                     TownBuildingTemplates.Placement planned = byPosition.get(key(pos.getX(), pos.getY(), pos.getZ()));
                     return planned != null && level.getBlockState(pos).is(planned.block());
@@ -134,7 +172,7 @@ public final class TownConstructionService {
         // reload, or retry). The campfire's own cell is left untouched here - it keeps its current
         // block (the campfire) until the bottom-up build reaches it last. Already-placed template
         // blocks (non-natural) are left alone, not re-cleared, so this cannot undo earlier progress.
-        if (prepareTerrain(level, campfire, radius, store)) {
+        if (prepareTerrain(level, campfire, radius, floorY, store)) {
             storage.setDirty();
         }
 
@@ -153,9 +191,10 @@ public final class TownConstructionService {
                 // Already placed (or, degenerately, no template entry) - nothing to do here.
                 continue;
             }
-            if (!TownCampfireClaims.isClaimed(level, campfire)) {
-                // The claim can be lost mid-site (the villager wandered off or died); stop rather
-                // than keep building for an unclaimed campfire.
+            if (!claimant.isAlive() || !TownCampfireClaims.isClaimedBy(claimant, level, campfire)) {
+                // The claim can be lost mid-site (the villager wandered off its job or died); stop
+                // rather than keep building for an unclaimed campfire. Checked against the SAME
+                // claimant discovered above - never a fresh proximity re-scan.
                 break;
             }
             // Revalidate this exact cell immediately before mutating it: the preflight above ran
@@ -169,6 +208,12 @@ public final class TownConstructionService {
                 // now; skip just this cell rather than enclose it, and try again next tick.
                 continue;
             }
+            if (!withinBuildHeight(level, pos)) {
+                // [Review round 2, finding #3] A planned cell outside the dimension's own build
+                // height (e.g. a roof near the world ceiling) can never be placed; skip it without
+                // charging, rather than repeatedly debiting for a mutation that cannot land.
+                continue;
+            }
             if (pos.equals(campfire) && hasUnplacedBlocksBefore(ordered, block, byPosition, level)) {
                 // The campfire's own cell is deferred until literally everything else at the site
                 // is built, even if this loop would otherwise have reached it first for some
@@ -176,18 +221,34 @@ public final class TownConstructionService {
                 // defensive re-check, not the primary mechanism.
                 continue;
             }
-            if (!ConstructionSitePlan.tryPayForBlock(store, block, TownConstants.CONSTRUCTION_COST_PER_BLOCK)) {
+            // [Review round 2, finding #3] Debit only AFTER a confirmed placement: first check
+            // affordability (a non-mutating peek, never itself a charge), attempt the mutation, and
+            // re-read the block to confirm it actually landed before the store is ever touched. A
+            // rejected/failed mutation costs nothing and places nothing.
+            if (!store.canAfford(block.cost(), TownConstants.CONSTRUCTION_COST_PER_BLOCK)) {
                 // Insufficient resources: pause construction at this site for this tick without
                 // charging anything, per MINECRAFT-388 ("no free construction, no negative stores").
                 break;
             }
-            level.setBlock(pos, placement.block().defaultBlockState(), net.minecraft.world.level.block.Block.UPDATE_ALL);
+            boolean mutated = level.setBlock(pos, placement.state(), net.minecraft.world.level.block.Block.UPDATE_ALL);
+            if (!mutated || !level.getBlockState(pos).is(placement.block())) {
+                // The mutation was rejected (or silently failed) - nothing was placed, so nothing
+                // is charged; try again next tick rather than aborting the whole site.
+                continue;
+            }
+            ConstructionSitePlan.tryPayForBlock(store, block, TownConstants.CONSTRUCTION_COST_PER_BLOCK);
             placedThisTick++;
         }
         if (placedThisTick > 0) {
             storage.setDirty();
         }
     }
+
+    /** {@code true} when {@code pos} lies strictly within the dimension's own build-height bounds. */
+    private static boolean withinBuildHeight(ServerLevel level, BlockPos pos) {
+        return pos.getY() >= level.getMinBuildHeight() && pos.getY() < level.getMaxBuildHeight();
+    }
+
 
     private static int footprintRadius(TownBuildingTemplates.Kind kind) {
         int width = kind == TownBuildingTemplates.Kind.STOREHOUSE ? TownConstants.STOREHOUSE_FOOTPRINT_WIDTH : 5;
@@ -204,23 +265,24 @@ public final class TownConstructionService {
      *
      * @return {@code true} if anything was mutated (so the caller knows whether to persist storage).
      */
-    private static boolean prepareTerrain(ServerLevel level, BlockPos campfire, int radius, TownResourceStore store) {
-        int baseY = campfire.getY();
+    private static boolean prepareTerrain(ServerLevel level, BlockPos campfire, int radius, int baseY, TownResourceStore store) {
         Map<TownClearingYields.ClearedMaterial, Integer> tally = new EnumMap<>(TownClearingYields.ClearedMaterial.class);
         boolean mutated = false;
         for (int x = -radius; x <= radius; x++) {
             for (int z = -radius; z <= radius; z++) {
                 int columnX = campfire.getX() + x;
                 int columnZ = campfire.getZ() + z;
-                boolean isCampfireColumn = columnX == campfire.getX() && columnZ == campfire.getZ();
                 // The raw canopy top (trunks AND leaves), not the tree-excluded ground estimate:
                 // this bound must actually include the tree material being cleared below.
                 int top = TownTerrain.rawCanopyTop(level, columnX, columnZ);
                 for (int y = baseY; y < top; y++) {
-                    if (isCampfireColumn && y == baseY) {
-                        continue; // never touch the campfire's own cell here
-                    }
                     BlockPos pos = new BlockPos(columnX, y, columnZ);
+                    if (pos.equals(campfire)) {
+                        // [Review round 2, finding #2] Never touch the campfire's own ACTUAL cell
+                        // here, regardless of whether it happens to sit on the estimated floor
+                        // plane baseY - the floor and the campfire's real position can now differ.
+                        continue;
+                    }
                     BlockState state = level.getBlockState(pos);
                     if (state.isAir()) {
                         continue;
@@ -242,10 +304,10 @@ public final class TownConstructionService {
                 // Fill a gap below the floor (the terrain dips lower than this site's fixed floor
                 // height) with plain dirt - a leveling fill, not salvage, so it earns no credit.
                 for (int y = top; y < baseY; y++) {
-                    if (isCampfireColumn && y == baseY - 1) {
+                    BlockPos pos = new BlockPos(columnX, y, columnZ);
+                    if (pos.equals(campfire)) {
                         continue;
                     }
-                    BlockPos pos = new BlockPos(columnX, y, columnZ);
                     if (level.getBlockState(pos).isAir()) {
                         level.setBlock(pos, Blocks.DIRT.defaultBlockState(), net.minecraft.world.level.block.Block.UPDATE_ALL);
                         mutated = true;

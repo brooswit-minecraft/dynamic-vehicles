@@ -373,7 +373,16 @@ final class SableMotorboatBody {
         for (int dy = 0; dy <= PROBE_UP; dy++) {
             BlockPos pos = base.offset(0, dy, 0);
             Probe p = probe(level, x, z, pos);
-            if (blocksEntryFromBelow(p, pos)) {
+            // Round-5 review follow-up: this entry-from-below test only makes sense for a block the scan
+            // is actually ENTERING by climbing up from the one below it (dy > 0). At dy=0 the point already
+            // starts inside this exact block -- it isn't entering from anywhere, so whether this block's
+            // own solid happens to start right at ITS OWN bottom boundary (true for e.g. a bottom slab,
+            // even when the point itself sits safely above that slab's solid, in its open top half) is
+            // irrelevant to whether the point can reach water that may be sitting right there in that same
+            // open half. Applying this test unconditionally at dy=0 wrongly returned null for a point like
+            // that, in turn falling through to scanDownward and reporting (if anything) UNRELATED water
+            // from a completely different block below, rather than the point's own home water right here.
+            if (dy > 0 && blocksEntryFromBelow(p, pos)) {
                 // Round-4 review follow-up: this used to ask "does solid reach this block's TOP" (the wrong
                 // side for a scan arriving from BELOW), so a waterlogged BOTTOM slab -- solid spanning only
                 // [blockBottom, blockBottom+0.5], its topmost hit well short of the top -- never tripped
@@ -385,6 +394,16 @@ final class SableMotorboatBody {
             }
             if (p.waterSurfaceY != null) {
                 columnSurface = p.waterSurfaceY;
+                if (blocksEntryFromAbove(p, pos)) {
+                    // Round-5 review follow-up: this block's own solid reaches ITS OWN top boundary (e.g. a
+                    // waterlogged TOP slab), so the water just found here is physically capped by that
+                    // solid ceiling -- there is no way through it to whatever is in the block above.
+                    // Continuing to climb anyway could cross straight through that ceiling and, if real
+                    // (unrelated) water happens to sit up there too, silently overwrite this correct,
+                    // capped answer with that other water's own surface. Stop right here instead, with
+                    // the capped answer already recorded above.
+                    return columnSurface;
+                }
                 continue;
             }
             // Neither water nor solid blocking entry from below at this column (open air, or a non-water

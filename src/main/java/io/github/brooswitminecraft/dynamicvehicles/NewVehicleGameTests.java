@@ -93,33 +93,49 @@ public final class NewVehicleGameTests {
      * never happens for a fresh body" (that would freeze Y and pitch too, and it does not) -- it is
      * specifically X/Z, and specifically at THIS magnitude.
      *
-     * <p>The reason is a plain floating-point one: GameTest places each test's structure at a large,
-     * test-isolating absolute world offset (here on the order of {@code 7.67} million blocks on X/Z, vs.
-     * Y staying near {@code -57}, the actual world height). A 32-bit float's representable step size at
-     * magnitude {@code v} is {@code v * 2^-23} -- at {@code 7671073.5} that is {@code ~0.91} blocks, LARGER
-     * than this body's own real per-tick translation at this test's speeds ({@code speed * dt ~ 7.8 * 0.05
-     * = ~0.39} blocks). If Sable's own rigid-body position is held internally as a float at this scale (the
-     * public {@code Vector3d} accessors this PR's code reads are double, but widening a float costs nothing
-     * back), {@code x + dx == x} EXACTLY whenever {@code |dx|} is smaller than that float's own ULP at
-     * {@code x}'s magnitude -- not a rare rounding wobble but a hard, total floor on any translation this
-     * small ever registering at all, tick after tick, with no accumulation across ticks either (each tick's
-     * dx is independently swallowed, not banked toward a future step). Y (magnitude ~57) and the
-     * quaternion's own unit-scale components sit at magnitudes whose own ULP is many orders of magnitude
-     * smaller than their real per-tick deltas, so neither one ever hits this floor -- exactly why they
-     * alone move normally. This is consistent with (not a new, unrelated theory alongside) the
-     * already-documented upstream Sable "abnormally large AABB" broad-phase errors this same run logs at
-     * these same huge coordinates, and with MINECRAFT-395's independently-documented car ledge-test failure
-     * showing the identical signature (real forward speed, zero net travel) at a similarly huge GameTest
-     * coordinate.
+     * <p><b>Round-5 review follow-up: the prior round's specific explanation here (a 32-bit-float position
+     * ULP floor) is WITHDRAWN -- it was never actually checked against real arithmetic, and the review
+     * caught that the stated spacings were wrong.</b> Checked this round by decompiling the actual Sable
+     * dependency jars shipped with this project ({@code sable-companion-common.jar}): {@code
+     * dev.ryanhcode.sable.companion.math.Pose3d}'s {@code position} field is declared {@code
+     * org.joml.Vector3d} -- DOUBLE precision, not float -- so a float32 ULP floor cannot be the mechanism at
+     * all, full stop. Re-confirmed the same freeze independently this round with explicit per-tick {@code
+     * String.format("%.9f", ...)} logging of the live {@code Pose3d}'s own X/Y/Z and the {@code
+     * RigidBodyHandle}'s own linear velocity (temporary, reverted before this commit): Z sits BIT-IDENTICAL
+     * to 9 decimal places across 100+ consecutive ticks while {@code vz} is simultaneously non-zero and
+     * climbing (e.g. {@code 0.069 -> 0.197 -> 0.282 m/s}), which at {@code dt=0.05s} implies a real per-tick
+     * delta on the order of {@code 0.003-0.01} blocks -- many orders of magnitude above where EITHER
+     * float32's (~0.9 blocks) or double's (~2e-9 blocks) ULP floor would sit at this coordinate's magnitude
+     * (~1.1e7). No floating-point rounding floor, of any precision, can explain a real, nonzero, evolving
+     * velocity producing an EXACTLY zero position delta every single tick. Y, in the exact same object on
+     * the exact same ticks, updates normally throughout.
      *
-     * <p>This is a Sable/GameTest-harness interaction over which this PR's code has no control -- it only
-     * ever reads back Sable's own already-integrated pose and applies impulses, never touches Sable's
-     * internal position representation or GameTest's structure-placement coordinates. The assertion below
-     * is kept at its real, meaningful bound, not weakened; this remains an explicit, evidenced dependency
-     * hold pending either a Sable-side fix (representing rigid-body position in double, or re-basing it
-     * relative to the structure's own origin rather than the world's) or an authorized scoped waiver, same
-     * as {@link #motorboatTiltedOnEntryRightsItselfThroughRealPerPointBuoyancy}'s own already-documented
-     * hold (which independently shows the same class of symptom under the same huge-coordinate condition).
+     * <p>What this rules out: any precision-floor theory. What it does NOT establish: the actual mechanism.
+     * The most likely remaining explanation given what {@code SubLevelPhysicsSystem}'s own decompiled
+     * method signatures expose (a {@code PhysicsChunkTicketManager}, a {@code paused} flag, and a {@code
+     * storagePose}/local-origin-shaped field layout) is that Sable re-bases a rigid body's horizontal
+     * position against some kind of local/resident sub-level origin, and that re-basing may not be applying
+     * correctly for a body freshly created at an extreme absolute coordinate -- but this is an UNVERIFIED
+     * HYPOTHESIS, not a finding: Sable ships as a {@code compileOnly}/{@code runtimeOnly} binary dependency
+     * (PolyForm Shield 1.0.0, "compiled against only" per this project's own {@code build.gradle} comment)
+     * with no bundled source, and decompiling bytecode signatures (done) is not the same as reading real
+     * method bodies (not done, and not attempted further this round -- flagging rather than guessing).
+     *
+     * <p>This is consistent with (not a new, unrelated theory alongside) the already-documented upstream
+     * Sable "abnormally large AABB" broad-phase errors this same run logs at these same huge coordinates,
+     * and with MINECRAFT-395's independently-documented car ledge-test failure showing the identical
+     * signature (real forward speed, zero net travel) at a similarly huge GameTest coordinate -- but "same
+     * symptom at the same kind of coordinate" is correlation this javadoc is reporting honestly as
+     * correlation, not proof of a single shared root cause.
+     *
+     * <p>This PR's own code never touches Sable's internal position representation, re-basing, or
+     * GameTest's structure-placement coordinates -- it only reads back Sable's already-integrated pose and
+     * applies impulses. The assertion below is kept at its real, meaningful bound, not weakened; this
+     * remains an explicit, evidenced dependency hold pending either a Sable-side fix or an authorized scoped
+     * waiver, same as {@link #motorboatTiltedOnEntryRightsItselfThroughRealPerPointBuoyancy}'s own
+     * already-documented hold (which independently shows the same class of symptom under the same
+     * huge-coordinate condition, and which this exact round's repeated local runs show passing in some runs
+     * and failing in others -- genuinely intermittent, not deterministic, unlike this test's own failure).
      */
     @GameTest(template = "settlement_test", timeoutTicks = 150)
     public static void motorboatEntersWaterAndMovesAPlausibleDistanceUnderThrottle(GameTestHelper helper) {
@@ -531,6 +547,67 @@ public final class NewVehicleGameTests {
                 "an upward scan must stop at a waterlogged bottom slab's own solid lower half -- not climb "
                         + "through it to the real water block above -- got surface=" + surface + " expected "
                         + "(capped at the slab, i.e. the home block's own surface) =" + homeBlockSurface);
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-410 round-5 review follow-up (finding 1): a point sitting in a waterlogged BOTTOM slab's
+     * own OPEN top half must find that water right there at the scan's own starting block ({@code dy=0}),
+     * not get wrongly treated as if the scan were "entering this block from below" (a test that only makes
+     * sense for a block being climbed INTO from the one below it, not the block the point already starts
+     * in) -- which this slab's own solid, starting right at its own bottom boundary, always satisfied
+     * regardless of where the point itself actually sits. STONE directly below the slab (not water) makes
+     * this observable: the old bug's wrong early return from {@code scanUpward} fell through to {@code
+     * scanDownward}, which the stone then blocks outright -- producing a wrongly DRY result for a point
+     * that is, in fact, sitting in real water. Exercises the real production sampler, not a
+     * reimplementation.
+     */
+    @GameTest(template = "settlement_test", timeoutTicks = 20)
+    public static void sampleSurfaceFindsWaterInABottomSlabsOwnOpenHalfAtTheScansOwnHomeBlock(GameTestHelper helper) {
+        helper.setBlock(new BlockPos(5, 2, 5), Blocks.STONE);
+        net.minecraft.world.level.block.state.BlockState waterloggedBottomSlab = Blocks.STONE_SLAB.defaultBlockState()
+                .setValue(net.minecraft.world.level.block.SlabBlock.TYPE, net.minecraft.world.level.block.state.properties.SlabType.BOTTOM)
+                .setValue(net.minecraft.world.level.block.SlabBlock.WATERLOGGED, true);
+        helper.setBlock(new BlockPos(5, 3, 5), waterloggedBottomSlab);
+        net.minecraft.core.BlockPos slabAbs = helper.absolutePos(new BlockPos(5, 3, 5));
+        Double surface = SableMotorboatBody.sampleSurfaceForTest(helper.getLevel(),
+                slabAbs.getX() + 0.5, slabAbs.getY() + 0.75, slabAbs.getZ() + 0.5);
+        helper.assertTrue(surface != null,
+                "a point in a bottom slab's own open top half should find that slab's own water at the scan's "
+                        + "own home block, not be wrongly treated as dry just because solid (stone) blocks the "
+                        + "unrelated block below -- got null");
+        double homeBlockSurface = slabAbs.getY()
+                + helper.getLevel().getBlockState(slabAbs).getFluidState().getHeight(helper.getLevel(), slabAbs);
+        helper.assertTrue(Math.abs(surface - homeBlockSurface) < 1.0e-6,
+                "the surface found must be the home (slab) block's own real water height " + homeBlockSurface
+                        + ", not some other block's -- got " + surface);
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-410 round-5 review follow-up (finding 2): a point in a waterlogged TOP slab's open bottom
+     * half, with REAL (unrelated) water sitting in the block above the slab, must still report the slab's
+     * own capped underside surface -- not get overwritten by continuing to climb straight through the
+     * slab's own solid ceiling to find that unrelated water up there instead. Exercises the real
+     * production sampler, not a reimplementation.
+     */
+    @GameTest(template = "settlement_test", timeoutTicks = 20)
+    public static void sampleSurfaceDoesNotOverwriteATopSlabsCappedWaterWithUnrelatedWaterAbove(GameTestHelper helper) {
+        net.minecraft.world.level.block.state.BlockState waterloggedTopSlab = Blocks.STONE_SLAB.defaultBlockState()
+                .setValue(net.minecraft.world.level.block.SlabBlock.TYPE, net.minecraft.world.level.block.state.properties.SlabType.TOP)
+                .setValue(net.minecraft.world.level.block.SlabBlock.WATERLOGGED, true);
+        helper.setBlock(new BlockPos(5, 3, 5), waterloggedTopSlab);
+        helper.setBlock(new BlockPos(5, 4, 5), Blocks.WATER);
+        net.minecraft.core.BlockPos slabAbs = helper.absolutePos(new BlockPos(5, 3, 5));
+        Double surface = SableMotorboatBody.sampleSurfaceForTest(helper.getLevel(),
+                slabAbs.getX() + 0.5, slabAbs.getY() + 0.1, slabAbs.getZ() + 0.5);
+        helper.assertTrue(surface != null,
+                "a point in a waterlogged top slab's open bottom half should still find real water, got null");
+        double slabSolidUnderside = slabAbs.getY() + 0.5;
+        helper.assertTrue(Math.abs(surface - slabSolidUnderside) < 1.0e-6,
+                "the slab's own capped underside surface (" + slabSolidUnderside + ") must not be overwritten by "
+                        + "climbing through the slab's solid ceiling to the unrelated real water sitting in the "
+                        + "block above it -- got " + surface);
         helper.succeed();
     }
 

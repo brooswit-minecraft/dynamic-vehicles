@@ -33,7 +33,9 @@ public final class MissionWaypointRenderer {
      * to bottom, in the supplied order; pass an empty list for a Dispatcher-style marker with no
      * extra lines. The panel (backing box, distance label, extra lines) stays within the viewport
      * and is shifted clear of any other mission's panel already reserved for this frame via
-     * {@code mission} - the dot itself is always drawn at the true projected/clamped position.
+     * {@code mission}; if that shift happens, the dot moves with it (by the same amount), so two
+     * coincident markers are never drawn as a single overlapping dot - one mission's dot would
+     * otherwise completely hide the other's, regardless of panel separation.
      */
     public static void renderMarker(
             GuiGraphics graphics, Minecraft minecraft, MissionWaypointLayout.Mission mission,
@@ -59,8 +61,13 @@ public final class MissionWaypointRenderer {
 
         MarkerPanelLayout.Result layout = MarkerPanelLayout.layout(
                 dotX, dotY, textWidth / 2, extraLines.size(), graphics.guiWidth(), graphics.guiHeight());
-        Rect reservedBox = MissionWaypointLayout.reserve(mission, layout.box());
-        if (!reservedBox.equals(layout.box())) {
+        Rect panelBox = layout.box();
+        Rect reservedBox = MissionWaypointLayout.reserve(mission, panelBox, graphics.guiHeight());
+        if (!reservedBox.equals(panelBox)) {
+            // The panel moved to clear another mission's marker; move the dot with it (it owns
+            // this panel) so the two markers never draw as a single overlapping dot.
+            dotX += reservedBox.left() - panelBox.left();
+            dotY += reservedBox.top() - panelBox.top();
             layout = layout.withBox(reservedBox);
         }
 

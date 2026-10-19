@@ -16,13 +16,33 @@ class MarkerPanelLayoutTest {
     private static final int VIEWPORT_HEIGHT = 240;
 
     @Test
-    void unclampedCenterTargetMatchesTheOriginalFixedLayout() {
+    void unclampedCenterTargetMatchesTheOriginalFixedVerticalLayout() {
         // No extra lines, plenty of room: box top = dotY - 7 and bottom = dotY + 18, unchanged
         // from the original Dispatcher-only layout, and the text centres on the dot's own x.
+        // The box is symmetric horizontally around the dot (see below), unlike the original.
         MarkerPanelLayout.Result result = MarkerPanelLayout.layout(160, 120, 10, 0, VIEWPORT_WIDTH, VIEWPORT_HEIGHT);
-        assertEquals(new Rect(153, 113, 177, 138), result.box());
+        assertEquals(new Rect(143, 113, 177, 138), result.box());
         assertEquals(160, result.textCenterX());
         assertEquals(126, result.textOriginY());
+    }
+
+    @Test
+    void theBackingBoxAlwaysFullyContainsTheCenteredText() {
+        // Re-review: dotX=16, textWidth=40 (halfTextWidth=20) previously put the text's left edge
+        // at -4 while the backing box started at 9 - the box was built asymmetrically (dotX - 7 on
+        // the left, but dotX + max(8, halfTextWidth + 7) on the right). Assert containment directly
+        // rather than specific numbers, so this holds for any dot position/text width.
+        for (int dotX : new int[] {16, 0, 160, VIEWPORT_WIDTH, VIEWPORT_WIDTH / 2}) {
+            for (int halfTextWidth : new int[] {0, 5, 20, 60}) {
+                MarkerPanelLayout.Result result = MarkerPanelLayout.layout(dotX, 120, halfTextWidth, 0, VIEWPORT_WIDTH, VIEWPORT_HEIGHT);
+                int textLeft = result.textCenterX() - halfTextWidth;
+                int textRight = result.textCenterX() + halfTextWidth;
+                assertTrue(textLeft >= result.box().left(),
+                        "text (dotX=" + dotX + ", halfTextWidth=" + halfTextWidth + ") must not start left of the backing box: textLeft=" + textLeft + " box=" + result.box());
+                assertTrue(textRight <= result.box().right(),
+                        "text (dotX=" + dotX + ", halfTextWidth=" + halfTextWidth + ") must not end right of the backing box: textRight=" + textRight + " box=" + result.box());
+            }
+        }
     }
 
     @Test

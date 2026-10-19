@@ -18,6 +18,12 @@ package io.github.brooswitminecraft.dynamicvehicles.hud;
  * reserve}, Dispatcher's slot already holds this exact frame's value, not a stale one; the reverse
  * direction (Dispatcher checking Pathfinder's slot) would be at most one frame stale, which is not
  * visually significant for a screen position that only changes with camera/player movement.
+ *
+ * <p>Re-review follow-up: resolving an overlap by unconditionally shifting the candidate straight
+ * down could itself push an already bottom-edge-clamped candidate below the viewport (two targets
+ * both clamped near the bottom edge is exactly the case both panels are near the bottom in the
+ * first place). {@link #reserve} now also tries shifting up, and keeps whichever direction stays
+ * fully on screen.
  */
 public final class MissionWaypointLayout {
 
@@ -25,7 +31,7 @@ public final class MissionWaypointLayout {
         DISPATCHER, PATHFINDER
     }
 
-    /** Minimum vertical gap left between two resolved panels. */
+    /** Minimum gap left between two resolved panels. */
     private static final int GAP = 4;
 
     private static final Rect[] occupied = new Rect[Mission.values().length];
@@ -39,11 +45,11 @@ public final class MissionWaypointLayout {
     }
 
     /**
-     * Reserves {@code candidate} for {@code mission}, returning it shifted straight down just far
-     * enough to clear every other mission's currently reserved bounds, if it would otherwise
-     * overlap any of them.
+     * Reserves {@code candidate} for {@code mission} within a {@code viewportHeight}-tall screen,
+     * returning it moved just far enough, in whichever vertical direction keeps it fully on
+     * screen, to clear every other mission's currently reserved bounds it would otherwise overlap.
      */
-    public static Rect reserve(Mission mission, Rect candidate) {
+    public static Rect reserve(Mission mission, Rect candidate, int viewportHeight) {
         Rect resolved = candidate;
         for (Mission other : Mission.values()) {
             if (other == mission) {
@@ -51,19 +57,30 @@ public final class MissionWaypointLayout {
             }
             Rect otherBounds = occupied[other.ordinal()];
             if (otherBounds != null) {
-                resolved = resolveOverlap(otherBounds, resolved);
+                resolved = resolveOverlap(otherBounds, resolved, viewportHeight);
             }
         }
         occupied[mission.ordinal()] = resolved;
         return resolved;
     }
 
-    static Rect resolveOverlap(Rect occupiedBounds, Rect candidate) {
+    static Rect resolveOverlap(Rect occupiedBounds, Rect candidate, int viewportHeight) {
         if (!occupiedBounds.overlaps(candidate)) {
             return candidate;
         }
-        int shiftDown = occupiedBounds.bottom() - candidate.top() + GAP;
-        return candidate.translate(0, shiftDown);
+        Rect below = candidate.translate(0, occupiedBounds.bottom() - candidate.top() + GAP);
+        if (below.bottom() <= viewportHeight) {
+            return below;
+        }
+        Rect above = candidate.translate(0, occupiedBounds.top() - GAP - candidate.bottom());
+        if (above.top() >= 0) {
+            return above;
+        }
+        // Neither direction keeps the candidate fully on screen (the two panels, stacked with a
+        // gap, are taller than the viewport) - clamp into the viewport as a last resort; this can
+        // still touch the other panel in that degenerate case, but never leaves the screen.
+        int clampedTop = Math.max(0, Math.min(below.top(), viewportHeight - candidate.height()));
+        return candidate.translate(0, clampedTop - candidate.top());
     }
 
     /** Test-only: drops all reservations so tests don't leak state into each other. */

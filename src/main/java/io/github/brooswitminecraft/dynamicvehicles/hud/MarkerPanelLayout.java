@@ -11,6 +11,12 @@ package io.github.brooswitminecraft.dynamicvehicles.hud;
  * on screen - a dot clamped near the bottom edge pushed Pathfinder's progress/countdown lines (and,
  * at extremes, even the distance label) below the bottom of the screen. This also keeps the panel
  * clear of the left/right edges, not just the top/bottom.
+ *
+ * <p>Re-review follow-up: the box was previously built asymmetrically around the dot - always
+ * {@code dotX - 7} on the left, but {@code dotX + max(8, halfTextWidth + 7)} on the right - so
+ * centred text wider than about 14px already started to the left of the backing box. The box is
+ * now symmetric around the dot ({@code dotX ± max(8, halfTextWidth + 7)}), so it always fully
+ * contains the centred text regardless of width.
  */
 public final class MarkerPanelLayout {
     /** Vertical spacing between stacked lines, matching the original fixed layout. */
@@ -52,7 +58,7 @@ public final class MarkerPanelLayout {
         int boxBottom = boxTop + panelHeight;
 
         int halfWidth = Math.max(8, halfTextWidth + 7);
-        int boxLeft = dotX - 7;
+        int boxLeft = dotX - halfWidth;
         int boxRight = dotX + halfWidth;
         if (boxRight > viewportWidth) {
             int shift = boxRight - viewportWidth;
@@ -66,7 +72,7 @@ public final class MarkerPanelLayout {
         }
 
         Rect box = new Rect(boxLeft, boxTop, boxRight, boxBottom);
-        return new Result(box, boxLeft + 7);
+        return new Result(box, boxLeft + halfWidth);
     }
 
     private static int clamp(int value, int lo, int hi) {

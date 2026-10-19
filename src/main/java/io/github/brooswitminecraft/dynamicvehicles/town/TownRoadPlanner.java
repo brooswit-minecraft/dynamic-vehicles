@@ -4,6 +4,7 @@ import net.minecraft.server.level.ServerLevel;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.OptionalInt;
 import java.util.function.ToIntFunction;
 
 /**
@@ -127,23 +128,27 @@ public final class TownRoadPlanner {
     }
 
     /**
-     * [Review round 3, finding #6] The grade-limited climb from an edge's own fixed-ish boundary
-     * height (near {@link TownConstants#ROAD_EDGE_BASE_HEIGHT}) can run out of route length
-     * before reaching a terrain-derived town-centre height that happens to be far from that base -
-     * exactly the case a high/low real centre height exposes. Rather than let each of the four
-     * edges independently climb toward the raw terrain height (and so risk disagreeing with each
-     * other at the shared centre point), this resolves ONE shared centre height every edge's own
-     * route can actually reach within the grade policy: it clamps the desired (terrain-derived)
-     * height into the intersection of what all four edges can reach from their own edge height
-     * within their own route length, so passing the SAME resolved value to every
+     * [Review round 3, finding #6 / round 9, finding #1] The grade-limited climb from an edge's own
+     * fixed-ish boundary height (near {@link TownConstants#ROAD_EDGE_BASE_HEIGHT}) can run out of
+     * route length before reaching a terrain-derived town-centre height that happens to be far from
+     * that base - exactly the case a high/low real centre height exposes. Rather than let each of
+     * the four edges independently climb toward the raw terrain height (and so risk disagreeing
+     * with each other at the shared centre point), this resolves ONE shared centre height every
+     * edge's own route can actually reach within the grade policy: it clamps the desired (terrain-
+     * derived) height into the intersection of what all four edges can reach from their own edge
+     * height within their own route length, so passing the SAME resolved value to every
      * {@link #routeForEdge}/{@link #minorBranchesForEdge} call for this region guarantees they all
-     * converge on one consistent Y at the centre. If that intersection is empty (only possible for
-     * implausibly short routes or large offsets given this mod's own constants), falls back to the
-     * edges' own achievable midpoint so the four routes still agree with EACH OTHER, even if not
-     * with the raw terrain estimate - a correctness/consistency priority this bounded fix makes
-     * deliberately, documented here as the intended behaviour rather than a rejection/retry.
+     * converge on one consistent Y at the centre. When that intersection is EMPTY (no single height
+     * is reachable by all four edges at all - only possible for implausibly short routes or large
+     * offsets given this mod's own constants, i.e. genuinely extreme real terrain), this safely
+     * REJECTS (returns empty) rather than picking any value: a chosen height reachable by only SOME
+     * edges would still leave the others ending at a genuinely different Y, exactly the divergence
+     * this whole mechanism exists to prevent - "most edges agree, one doesn't" is not an acceptable
+     * weaker form of "they all agree". The caller must not build any road for this region at all
+     * until this returns present - retried every tick, so a later pass (different nearby terrain
+     * sampling, e.g. if this mod ever supports edge-height re-evaluation) can still recover.
      */
-    public static int resolveSharedCenterHeight(TownPlan plan, int desiredCenterHeight) {
+    public static OptionalInt resolveSharedCenterHeight(TownPlan plan, int desiredCenterHeight) {
         return computeSharedCenterHeight(plan, desiredCenterHeight, edge -> edgeHeightFor(plan, edge));
     }
 
@@ -151,7 +156,7 @@ public final class TownRoadPlanner {
      *  {@link #edgeHeightFor(ServerLevel, TownPlan, TownEdge)}) - production's own call path, so the
      *  convergence invariant (every edge reaches the SAME centre height) holds against real terrain
      *  too, not just the pure fixed-base edge heights. */
-    public static int resolveSharedCenterHeight(ServerLevel level, TownPlan plan, int desiredCenterHeight) {
+    public static OptionalInt resolveSharedCenterHeight(ServerLevel level, TownPlan plan, int desiredCenterHeight) {
         return computeSharedCenterHeight(plan, desiredCenterHeight, edge -> edgeHeightFor(level, plan, edge));
     }
 
@@ -165,7 +170,7 @@ public final class TownRoadPlanner {
      *  reachable at all via genuinely extreme REAL terrain (production's own
      *  {@link #edgeHeightFor(ServerLevel, TownPlan, TownEdge)}), which a GameTest cannot easily
      *  construct across a region's full ~192-block edge-to-centre span. */
-    static int computeSharedCenterHeight(TownPlan plan, int desiredCenterHeight, ToIntFunction<TownEdge> edgeHeight) {
+    static OptionalInt computeSharedCenterHeight(TownPlan plan, int desiredCenterHeight, ToIntFunction<TownEdge> edgeHeight) {
         int lo = Integer.MIN_VALUE;
         int hi = Integer.MAX_VALUE;
         for (TownEdge edge : TownEdge.values()) {
@@ -176,41 +181,15 @@ public final class TownRoadPlanner {
             hi = Math.min(hi, height + maxDelta);
         }
         if (lo > hi) {
-            // [Review round 8, finding #2] No single height is reachable by ALL four edges within
-            // the grade policy - an arbitrary midpoint of this (inverted, empty) interval can be
-            // unreachable by EVERY edge, including ones that could otherwise have agreed with each
-            // other. Instead pick the height reachable by the MAXIMUM NUMBER of edges (a classic
-            // interval max-overlap sweep over each edge's own [height-maxDelta, height+maxDelta]
-            // range) - the best achievable common ground when full agreement is provably
-            // impossible, rather than a value chosen with no regard for how many edges can actually
-            // reach it at all.
-            return mostAchievableSharedHeight(plan, edgeHeight);
+            // [Review round 9, finding #1] No single height is reachable by ALL four edges within
+            // the grade policy - genuine convergence is provably impossible here. Any single chosen
+            // value (an arbitrary midpoint, or the height reachable by the most-but-not-all edges)
+            // would still leave at least one edge's own route ending at a DIFFERENT Y than the
+            // others - exactly the divergence this mechanism exists to prevent. Reject safely
+            // instead of picking a value that only partially solves the problem.
+            return OptionalInt.empty();
         }
-        return clamp(desiredCenterHeight, lo, hi);
-    }
-
-    private static int mostAchievableSharedHeight(TownPlan plan, ToIntFunction<TownEdge> edgeHeight) {
-        List<int[]> events = new ArrayList<>(); // {position, delta}: +1 at an edge's own range start, -1 just past its end
-        for (TownEdge edge : TownEdge.values()) {
-            int height = edgeHeight.applyAsInt(edge);
-            int steps = Math.max(0, buildEdgeXZ(plan, edge).size() - 1);
-            int maxDelta = steps / TownConstants.ROAD_GRADE_RUN_PER_RISE_BLOCK;
-            events.add(new int[] {height - maxDelta, 1});
-            events.add(new int[] {height + maxDelta + 1, -1});
-        }
-        // Starts sort before ends at the same position, so a single-point range is counted.
-        events.sort((a, b) -> a[0] != b[0] ? Integer.compare(a[0], b[0]) : Integer.compare(b[1], a[1]));
-        int bestHeight = events.get(0)[0];
-        int bestCount = 0;
-        int count = 0;
-        for (int[] event : events) {
-            count += event[1];
-            if (count > bestCount) {
-                bestCount = count;
-                bestHeight = event[0];
-            }
-        }
-        return bestHeight;
+        return OptionalInt.of(clamp(desiredCenterHeight, lo, hi));
     }
 
     private static List<int[]> buildEdgeXZ(TownPlan plan, TownEdge edge) {

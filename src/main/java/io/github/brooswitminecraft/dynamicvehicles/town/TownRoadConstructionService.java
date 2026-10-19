@@ -53,7 +53,15 @@ public final class TownRoadConstructionService {
         // terrain height and risk disagreeing with the others at the shared centre point.
         // [Review round 4, finding #4] Resolved against each edge's own REAL terrain-sampled
         // height, not a fixed ~64 base, so the convergence invariant holds against real terrain too.
-        int centerHeight = TownRoadPlanner.resolveSharedCenterHeight(level, plan, rawCenterHeight);
+        // [Review round 9, finding #1] When no single height is reachable by all four edges at all
+        // (genuinely extreme real terrain), safely reject building ANY road for this region this
+        // tick rather than build some edges to a height the others cannot actually reach too -
+        // retried every tick, so a later pass can still recover.
+        java.util.OptionalInt centerHeightResolution = TownRoadPlanner.resolveSharedCenterHeight(level, plan, rawCenterHeight);
+        if (centerHeightResolution.isEmpty()) {
+            return false;
+        }
+        int centerHeight = centerHeightResolution.getAsInt();
 
         boolean mutated = false;
         int placedThisTick = 0;

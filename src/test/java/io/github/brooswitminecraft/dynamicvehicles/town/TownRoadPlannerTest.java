@@ -131,7 +131,9 @@ class TownRoadPlannerTest {
     }
 
     private static void assertAllFourEdgesAgreeAtTheCenter(TownPlan plan, int desiredCenterHeight) {
-        int resolved = TownRoadPlanner.resolveSharedCenterHeight(plan, desiredCenterHeight);
+        java.util.OptionalInt resolution = TownRoadPlanner.resolveSharedCenterHeight(plan, desiredCenterHeight);
+        assertTrue(resolution.isPresent(), "a real plan's own bounded edge offsets must always resolve to a shared height");
+        int resolved = resolution.getAsInt();
         Integer commonHeight = null;
         for (TownEdge edge : TownEdge.values()) {
             List<TownRoadPlanner.RoadCell> route = TownRoadPlanner.routeForEdge(plan, edge, resolved);
@@ -152,16 +154,16 @@ class TownRoadPlannerTest {
     }
 
     /**
-     * MINECRAFT-388 review round 8, finding #2: when the four edges' own achievable height ranges
+     * MINECRAFT-388 review round 9, finding #1: when the four edges' own achievable height ranges
      * are genuinely DISJOINT (no single height is reachable by all four under the grade policy -
      * only realistically possible with production's own extreme-real-terrain edge heights, injected
      * here directly since {@link TownPlan}-generated offsets are bounded far too tightly to trigger
-     * this from a real plan alone), the resolved shared height must still be reachable by AT LEAST
-     * one edge - never an arbitrary value (the prior buggy midpoint of an inverted, empty interval)
-     * that no edge can actually reach at all.
+     * this from a real plan alone), resolution must safely REJECT (empty) rather than pick any
+     * single value: a height reachable by only SOME edges would still leave the others ending at a
+     * genuinely different Y - exactly the divergence this mechanism exists to prevent.
      */
     @Test
-    void disjointEdgeIntervalsResolveToAHeightReachableByAtLeastOneEdge() {
+    void disjointEdgeIntervalsAreSafelyRejectedRatherThanPartiallyResolved() {
         RegionCoord region = new RegionCoord(1, 1);
         TownPlan plan = TownPlanner.generate(region, SEED);
 
@@ -172,21 +174,10 @@ class TownRoadPlannerTest {
                 TownEdge.WEST, -500_000);
         java.util.function.ToIntFunction<TownEdge> edgeHeight = heights::get;
 
-        int resolved = TownRoadPlanner.computeSharedCenterHeight(plan, 0, edgeHeight);
+        java.util.OptionalInt resolution = TownRoadPlanner.computeSharedCenterHeight(plan, 0, edgeHeight);
 
-        boolean reachableByAtLeastOneEdge = false;
-        for (TownEdge edge : TownEdge.values()) {
-            int steps = TownRoadPlanner.routeForEdge(plan, edge, 0).size() - 1;
-            int maxDelta = steps / TownConstants.ROAD_GRADE_RUN_PER_RISE_BLOCK;
-            int lo = heights.get(edge) - maxDelta;
-            int hi = heights.get(edge) + maxDelta;
-            if (resolved >= lo && resolved <= hi) {
-                reachableByAtLeastOneEdge = true;
-            }
-        }
-        assertTrue(reachableByAtLeastOneEdge,
-                "with disjoint per-edge intervals, the resolved shared height must still be reachable by AT LEAST one edge, found "
-                        + resolved);
+        assertTrue(resolution.isEmpty(),
+                "disjoint per-edge intervals must be safely rejected, not resolved to a value only some edges can reach");
     }
 
     /** MINECRAFT-388 review round 2, finding #4: minor branch roads must actually exist (production

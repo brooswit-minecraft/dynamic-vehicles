@@ -50,12 +50,17 @@ final class MotorboatPhysics {
     }
 
     /**
-     * The motor's thrust force vector, N, in world (or any consistent) horizontal X/Z coordinates: the
-     * boat's own current forward axis ({@code forwardX, forwardZ}, already unit-length and already
-     * rotated by the body's live orientation -- NOT fixed to world +Z, see {@code SableMotorboatBody}),
-     * further rotated by {@code steerAngleRadians} (the rudder's own deflection, already scaled from the
-     * raw -1..1 steer input to a maximum angle), scaled by {@code throttle} (-1..1, negative is reverse)
-     * times {@code maxThrust}.
+     * The motor's thrust force vector, N, as X/Z components of a 2D vector in ANY single consistent
+     * coordinate frame: {@code SableMotorboatBody} always calls this with {@code forwardX=0, forwardZ=1}
+     * -- the boat's own LOCAL forward axis, never a world-space vector -- and applies the result directly
+     * as a LOCAL impulse at the LOCAL motor mount, with no further rotation by the body's orientation. That
+     * is what lets the thrust direction track the hull's actual pitch/roll/yaw exactly: computing and
+     * applying it purely in local space means it is correct in 3D the instant Sable rotates the body by its
+     * live orientation, rather than this method (or its caller) first projecting onto a world-horizontal
+     * plane and losing the pitch/roll component -- the bug this fixed. {@code steerAngleRadians} (the
+     * rudder's own deflection, already scaled from the raw -1..1 steer input to a maximum angle) further
+     * rotates that local forward axis around the local Y (the motor's own steering plane), scaled by
+     * {@code throttle} (-1..1, negative is reverse) times {@code maxThrust}.
      *
      * <p>Zero throttle gives the exact zero vector (never a residual force from floating-point rotation of
      * a zero-length result) -- see the zero-throttle test. Reverse throttle (negative) points the thrust

@@ -33,27 +33,38 @@ public final class NewVehicleGameTests {
 
     /**
      * Entry (mount) and that running the real rigid-body boat under Sable for many ticks of full throttle
-     * never diverges (no NaN/Infinity, no runaway distance -- the old pre-fix unit-mismatch regression,
-     * review 5563367455's first finding, would have shown up here as 100+ blocks in well under a second).
+     * actually covers a real, plausible forward distance -- not just "doesn't crash" -- while staying
+     * bounded against the old pre-fix unit-mismatch regression (review 5563367455's first finding, which
+     * would have shown up here as 100+ blocks in well under a second). A boat that never actually moves
+     * (e.g. a dead thrust path) must FAIL this test, not silently pass it.
      *
-     * <p>MINECRAFT-410: this does NOT assert a minimum distance travelled, unlike this test's own pre-410
-     * version (which could, because the old scalar model never touched Sable). {@code existingCarStillMo
-     * untsAndDismountsAfterTheseChanges}'s own javadoc below already documents a pre-existing Sable/
-     * GameTest coordinate interaction ({@code "Aborting entity get for abnormally large AABB"}, from
-     * Sable's own broad-phase query, GameTest's structures being translated to huge absolute coordinates)
-     * that makes a Sable-driven vehicle's physics unreliable in THIS harness specifically -- confirmed
-     * directly while writing this ticket: the SAME real entity, under the SAME throttle input, sometimes
-     * travels a plausible distance and sometimes travels ~0 blocks across repeated runs of
-     * {@code ./gradlew runGameTestServer}, purely depending on whether that AABB abort fires this run. The
-     * real thrust/drag/buoyancy MATH is already pinned down deterministically and exhaustively by
-     * {@code MotorboatPhysicsTest} (which does not depend on Sable or this GameTest harness at all); this
-     * test's own job is narrower -- the real entity must not crash or diverge -- and {@link
-     * #motorboatTurnsUnderSteerInput} and {@link #motorboatOrientationNbtRoundTripsThroughARealTiltedPose}
-     * below exercise real Sable-driven motion end to end too, and were NOT flaky across repeated runs.
+     * <p>MINECRAFT-410 review follow-up, diagnosed with ad hoc per-tick debug logging while fixing the
+     * other findings: the prior round's near-zero travel had TWO real, now-fixed causes unrelated to the
+     * Sable/GameTest AABB issue it blamed -- (1) the first ~15 ticks are legitimately spent settling from
+     * a spawn point just above the waterline down to where the motor mount is actually wet (correct
+     * wet/dry motor behaviour, not a bug), and (2) {@code
+     * biplaneLiftsOffAfterTaxiingToTakeoffSpeedAndPullingUp}'s own javadoc-documented input-decay quirk
+     * (a mounted-but-never-{@code addFreshEntity}'d mock player's {@code zza}/{@code xxa} silently decays
+     * toward 0 over real ticks) also applies here -- fixed below by re-asserting {@code rider.zza} every
+     * tick, the same workaround that test already uses.
+     *
+     * <p>A THIRD, genuinely separate and NOT fixed here, confirmed by the SAME debug logging plus directly
+     * correlating server log lines: the pre-existing {@code "Aborting entity get for abnormally large
+     * AABB"} Sable broad-phase bug (also documented on {@code existingCarStillMountsAndDismountsAfter
+     * TheseChanges} below, and on MINECRAFT-395's own car drivetrain GameTests) intermittently fires
+     * during this test's spawn/early-tick window and leaves the affected run's rigid body unable to move
+     * meaningfully for its whole duration (observed: 0.0 and 0.5 blocks on two affected runs, vs. 3+
+     * blocks on unaffected runs, all under byte-for-byte identical test code). This is upstream of, and
+     * unpatchable from, this PR's own code (confirmed: {@code CarEntity}/{@code SableCarBody} are
+     * untouched by this PR and the bug already affects THEM too). Per the ticket's own instruction not to
+     * replace a real acceptance assertion with a no-crash-only check when a dependency is blocked: this
+     * assertion is kept at a real, meaningful bound (not weakened), and this is an explicit, narrow,
+     * reported dependency hold on an intermittent upstream issue -- not a silent pass. See the PR/ticket
+     * comment for the scoped-waiver request this is pending, same as the analogous car test.
      */
-    @GameTest(template = "settlement_test", timeoutTicks = 100)
+    @GameTest(template = "settlement_test", timeoutTicks = 150)
     public static void motorboatEntersWaterAndMovesAPlausibleDistanceUnderThrottle(GameTestHelper helper) {
-        for (int dz = 0; dz <= 8; dz++) {
+        for (int dz = 0; dz <= 20; dz++) {
             helper.setBlock(new BlockPos(5, 2, dz), Blocks.WATER);
             helper.setBlock(new BlockPos(5, 3, dz), Blocks.AIR);
         }
@@ -61,32 +72,49 @@ public final class NewVehicleGameTests {
         boat.setYRot(0.0f);
         Player rider = helper.makeMockPlayer(GameType.CREATIVE);
         helper.assertTrue(rider.startRiding(boat), "mock player failed to board the motorboat");
-        rider.zza = 1.0f;
         double startZ = boat.getZ();
-        helper.runAfterDelay(40L, () -> {
+        pinThrottleEachTick(helper, rider, 1.0f, 0.0f, 100, () -> {
             helper.assertTrue(boat.getControllingPassenger() == rider, "motorboat lost its rider mid-drive");
             double traveled = Math.abs(boat.getZ() - startZ);
             helper.assertTrue(Double.isFinite(traveled) && Double.isFinite(boat.getX()) && Double.isFinite(boat.getY()),
-                    "motorboat position became non-finite after 40 ticks of full throttle");
-            helper.assertTrue(traveled < 15.0,
-                    "motorboat covered an unrealistic distance in 40 ticks (the pre-fix unit-mismatch regression): " + traveled + " blocks");
+                    "motorboat position became non-finite after full throttle");
+            helper.assertTrue(traveled > 0.5,
+                    "motorboat under full throttle should have travelled a real distance, got only " + traveled + " blocks");
+            helper.assertTrue(traveled < 20.0,
+                    "motorboat covered an unrealistic distance (the pre-fix unit-mismatch regression): " + traveled + " blocks");
             helper.succeed();
         });
     }
 
+    /** Re-sets {@code rider.zza}/{@code rider.xxa} every tick for {@code ticks} ticks, then runs {@code
+     * onDone} -- works around the mounted-but-never-{@code addFreshEntity}'d mock player's input silently
+     * decaying toward 0 over real ticks in this harness (see {@link
+     * #biplaneLiftsOffAfterTaxiingToTakeoffSpeedAndPullingUp}'s own javadoc, and this class's other motor
+     * boat tests above, for the same effect observed independently). */
+    private static void pinThrottleEachTick(GameTestHelper helper, Player rider, float zza, float xxa, int ticks, Runnable onDone) {
+        rider.zza = zza;
+        rider.xxa = xxa;
+        if (ticks <= 0) {
+            onDone.run();
+            return;
+        }
+        helper.runAfterDelay(1L, () -> pinThrottleEachTick(helper, rider, zza, xxa, ticks - 1, onDone));
+    }
+
     /**
      * MINECRAFT-410: idle flotation through the real production path -- an unmanned boat dropped a little
-     * above a flat water surface must never diverge (no NaN/Infinity, no unbounded runaway fall or
-     * launch) over many real ticks of the real 4-point hull buoyancy ({@code SableMotorboatBody.tick}).
+     * above a flat water surface settles to, and stays at, a real stable waterline close to its spawn
+     * height, over many real ticks of the real 4-point hull buoyancy ({@code SableMotorboatBody.tick}),
+     * never diverging (no NaN/Infinity, no unbounded runaway fall or launch).
      *
-     * <p>Like the test above, this does not pin down an exact resting Y: the same pre-existing Sable/
-     * GameTest large-AABB interaction documented there can intermittently drop a tick's buoyancy impulse,
-     * which (confirmed while writing this ticket) can let the boat fall well past the waterline in THIS
-     * harness before recovering. The actual settle-and-converge behaviour is pinned down precisely and
-     * deterministically by {@code MotorboatPhysicsTest.heaveSettlesTowardEquilibriumAndDoesNotDiverge},
-     * which exercises the exact same {@code MotorboatPhysics.pointBuoyantForce} the real tick calls,
-     * without Sable's own GameTest-coordinate issue in the way. This test's own job is narrower: the real
-     * entity integrated against the real world must stay finite and bounded, never explode.
+     * <p>MINECRAFT-410 review follow-up: the prior round had widened this to a ~200-block fall tolerance,
+     * which proves nothing about an actual waterline. Repeated local runs of {@code ./gradlew
+     * runGameTestServer} against this round's corrected sampling/thrust code did not reproduce the
+     * previously-cited Sable/GameTest large-AABB flakiness for this test -- the boat settles to a bounded
+     * height close to its spawn point every run. The tight bound is restored. The settle-and-converge
+     * behaviour is additionally pinned down precisely and deterministically by {@code
+     * MotorboatPhysicsTest.heaveSettlesTowardEquilibriumAndDoesNotDiverge}, which exercises the exact same
+     * {@code MotorboatPhysics.pointBuoyantForce} the real tick calls.
      */
     @GameTest(template = "settlement_test", timeoutTicks = 150)
     public static void motorboatSettlesToAStableWaterlineWithNoRider(GameTestHelper helper) {
@@ -97,20 +125,17 @@ public final class NewVehicleGameTests {
                 helper.setBlock(new BlockPos(dx, 4, dz), Blocks.AIR);
             }
         }
-        double spawnY = 4.0;
-        MotorboatEntity boat = helper.spawn(DynamicVehiclesMod.MOTORBOAT.get(), new BlockPos(5, (int) spawnY, 5));
+        MotorboatEntity boat = helper.spawn(DynamicVehiclesMod.MOTORBOAT.get(), new BlockPos(5, 4, 5));
+        // The ACTUAL (translated) spawn Y, not the relative "4" passed to spawn() above -- GameTest
+        // translates structure-relative coordinates to a real, far-from-origin absolute position, so
+        // comparing against the literal "4.0" instead of this would compare against the wrong baseline
+        // entirely regardless of whether the boat actually floats correctly.
+        double spawnY = boat.getY();
         helper.runAfterDelay(100L, () -> {
             double y = boat.getY();
             helper.assertTrue(Double.isFinite(y), "motorboat position became non-finite: " + y);
-            // Confirmed while writing this ticket: the AABB-abort issue documented above can let the boat
-            // free-fall for a stretch of ticks in THIS harness before the physics system recovers (it is
-            // Sable's own gravity integration still running underneath, not a NaN/explosion on this
-            // class's part -- MotorboatPhysicsTest's own pointBuoyantForce/heave tests already prove the
-            // buoyancy math itself converges deterministically without Sable in the way). This bound is
-            // deliberately generous: it exists only to catch a genuine blow-up (a NaN propagated into a
-            // huge finite number, or an unbounded force), not to pin down the actual settle height.
-            helper.assertTrue(Math.abs(y - spawnY) < 200.0,
-                    "unmanned motorboat should stay within a bounded range of its spawn height, not blow up: y=" + y);
+            helper.assertTrue(Math.abs(y - spawnY) < 2.0,
+                    "unmanned motorboat should settle to a real stable waterline close to its spawn height, not drift/blow up: spawnY=" + spawnY + " y=" + y);
             helper.succeed();
         });
     }
@@ -135,14 +160,67 @@ public final class NewVehicleGameTests {
         Player rider = helper.makeMockPlayer(GameType.CREATIVE);
         helper.assertTrue(rider.startRiding(boat), "mock player failed to board the motorboat");
         float startYaw = boat.getYRot();
-        rider.zza = 1.0f;
-        rider.xxa = 1.0f;
-        helper.runAfterDelay(100L, () -> {
+        pinThrottleEachTick(helper, rider, 1.0f, 1.0f, 100, () -> {
             float endYaw = boat.getYRot();
-            float turned = Math.abs(net.minecraft.util.Mth.wrapDegrees(endYaw - startYaw));
-            helper.assertTrue(turned > 5.0f, "motorboat should have turned a meaningful amount under sustained throttle+rudder: " + turned + " degrees");
+            float turned = net.minecraft.util.Mth.wrapDegrees(endYaw - startYaw);
+            helper.assertTrue(Math.abs(turned) > 5.0f, "motorboat should have turned a meaningful amount under sustained throttle+rudder: " + turned + " degrees");
+            // Sign pinned (not just "turned some amount"): a positive rider.xxa rudder input must reliably
+            // turn the boat the SAME way every run, through the real off-center motor torque, never a
+            // direct yaw write that could drift either way. Confirmed empirically against this round's
+            // corrected thrust/sampling code.
+            helper.assertTrue(turned > 0.0f, "positive rudder input (xxa=1.0) should reliably turn the boat the same way (positive yaw delta), got " + turned + " degrees");
             helper.succeed();
         });
+    }
+
+    /**
+     * MINECRAFT-410 review follow-up: the real production per-point sampler/point-force path, not a pure
+     * helper call -- a boat released UNDERWATER already tilted away from level must right itself (roll
+     * magnitude decreases substantially and settles bounded), because differential immersion across its
+     * four real hull points (via the real {@code SableMotorboatBody.sampleSurface}/{@code
+     * MotorboatPhysics.pointBuoyantForce}) produces a real restoring torque -- exactly the behaviour {@code
+     * MotorboatPhysicsTest.bowDeeperThanSternProducesARestoringPitchTorqueTowardLevel} proves in pure math,
+     * now proven end to end through the real entity/rigid body.
+     *
+     * <p>Like {@link #motorboatEntersWaterAndMovesAPlausibleDistanceUnderThrottle}, this can intermittently
+     * hit the same pre-existing upstream Sable/GameTest large-AABB broad-phase bug (observed directly: a
+     * run where the roll never changed from its exact starting value at all, consistent with the rigid
+     * body being stalled rather than the righting math being wrong) -- not fixable from this PR, same
+     * explicit dependency hold as that test, not a reason to weaken this one's bound either.
+     */
+    @GameTest(template = "settlement_test", timeoutTicks = 150)
+    public static void motorboatTiltedOnEntryRightsItselfThroughRealPerPointBuoyancy(GameTestHelper helper) {
+        for (int dx = 0; dx <= 10; dx++) {
+            for (int dz = 0; dz <= 10; dz++) {
+                helper.setBlock(new BlockPos(dx, 2, dz), Blocks.WATER);
+                helper.setBlock(new BlockPos(dx, 3, dz), Blocks.AIR);
+                helper.setBlock(new BlockPos(dx, 4, dz), Blocks.AIR);
+            }
+        }
+        MotorboatEntity boat = helper.spawn(DynamicVehiclesMod.MOTORBOAT.get(), new BlockPos(5, 3, 5));
+        org.joml.Quaternionf tilted = new org.joml.Quaternionf().rotateZ((float) Math.toRadians(25.0));
+        boat.setSavedOrientationForTest(tilted);
+        double startRoll = rollDegrees(tilted);
+        helper.runAfterDelay(100L, () -> {
+            org.joml.Quaternionf finalOrientation = boat.currentOrientationForTest();
+            helper.assertTrue(finalOrientation != null, "motorboat lost its rigid-body orientation");
+            double endRoll = rollDegrees(finalOrientation);
+            helper.assertTrue(Double.isFinite(endRoll), "motorboat roll became non-finite while righting itself");
+            helper.assertTrue(Math.abs(endRoll) < Math.abs(startRoll) - 5.0,
+                    "a boat released " + startRoll + " degrees of roll underwater should right itself substantially via real "
+                            + "per-point buoyancy, ended at " + endRoll + " degrees");
+            helper.assertTrue(Math.abs(endRoll) < 15.0,
+                    "motorboat should have settled much closer to level, ended at " + endRoll + " degrees");
+            helper.succeed();
+        });
+    }
+
+    /** Roll (lean left/right), degrees, from a live body orientation -- same derivation {@code
+     * SableMotorboatBody.describe} uses, duplicated here since that class's internals are not test API. */
+    private static double rollDegrees(org.joml.Quaternionf q) {
+        org.joml.Vector3f up = q.transform(new org.joml.Vector3f(0, 1, 0));
+        org.joml.Vector3f right = q.transform(new org.joml.Vector3f(1, 0, 0));
+        return Math.toDegrees(Math.atan2(right.y, up.y));
     }
 
     /** Entry, rotor hover/climb, and landing: nose-up climbs, nose-down (and no pilot) comes back down and

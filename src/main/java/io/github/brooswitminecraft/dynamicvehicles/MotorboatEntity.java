@@ -238,6 +238,30 @@ public class MotorboatEntity extends SimpleVehicleEntity {
         return savedOrientation;
     }
 
+    /** MINECRAFT-410: lets a test start the next-created Sable body from a deliberately tilted pose (e.g.
+     * to exercise the real per-point buoyancy restoring torque starting from a non-level orientation),
+     * rather than always the identity/yaw-only pose. Package-private, test-only -- no production code path
+     * calls this; must be called before the first {@link #driveTick} creates the Sable body. */
+    void setSavedOrientationForTest(org.joml.Quaternionf orientation) {
+        this.savedOrientation = orientation;
+    }
+
+    /** MINECRAFT-410: the rigid body's current live orientation, for tests exercising the real production
+     * per-point sampler/point-force path (same package only -- not a public API; the only other read path
+     * for this is the full NBT-save round trip {@code motorboatOrientationNbtRoundTripsThroughARealTilted
+     * Pose} already exercises). Returns the last saved/known orientation if the Sable body isn't currently
+     * alive. */
+    org.joml.Quaternionf currentOrientationForTest() {
+        if (sableBody != null) {
+            try {
+                return SableCompat.orientationBoat(sableBody);
+            } catch (RuntimeException gone) {
+                // Sable released the body (chunk unload race); fall through to the last known orientation.
+            }
+        }
+        return savedOrientation;
+    }
+
     @Override
     public void remove(Entity.RemovalReason reason) {
         if (sableBody != null) {

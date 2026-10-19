@@ -12,6 +12,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.material.FluidState;
 
 /**
  * MINECRAFT-410: the motorboat's Sable rigid body -- a box registered with Sable's physics system, plus
@@ -159,16 +160,18 @@ final class SableMotorboatBody {
         Double motorSurfaceY = sampleSurface(motorWorldPoint.x, motorWorldPoint.y, motorWorldPoint.z);
         boolean motorWet = motorSurfaceY != null && motorSurfaceY - motorWorldPoint.y > 0.0;
         if (motorWet && throttle != 0.0) {
-            Vector3d forward3d = orientation.transform(new Vector3d(0, 0, 1));
-            double forwardLength = Math.hypot(forward3d.x, forward3d.z);
-            if (forwardLength > 1e-9) {
-                double fx = forward3d.x / forwardLength;
-                double fz = forward3d.z / forwardLength;
-                double steerRad = steer * Math.toRadians(MotorboatConfig.MAX_STEER_DEG.get());
-                MotorboatPhysics.Vector2 thrust = MotorboatPhysics.thrustVector(fx, fz, steerRad, throttle, MotorboatConfig.MAX_THRUST.get());
-                Vector3d localImpulse = inverse.transform(new Vector3d(thrust.x() * dt, 0, thrust.z() * dt));
-                body.applyImpulseAtPoint(new Vector3d(motorMount[0], motorMount[1], motorMount[2]), localImpulse);
-            }
+            // Thrust is built and applied ENTIRELY in the boat's own LOCAL frame: steer rotates the local
+            // forward axis (0,0,1) around the local Y axis exactly as MotorboatPhysics.thrustVector's own
+            // javadoc documents, and the result is applied directly as a local impulse at the local motor
+            // mount -- never projected onto world XZ, never forced to world.y=0, and never routed through
+            // `orientation`/`inverse` at all. That's deliberate: this is what makes steering rotate WITH the
+            // physical motor regardless of the hull's pitch/roll (pitching the boat nose-down still thrusts
+            // along the hull's own nose-down axis, not flattened to horizontal; rolling the boat rotates the
+            // steering plane along with it; there is no orientation at which thrust vanishes).
+            double steerRad = steer * Math.toRadians(MotorboatConfig.MAX_STEER_DEG.get());
+            MotorboatPhysics.Vector2 thrust = MotorboatPhysics.thrustVector(0.0, 1.0, steerRad, throttle, MotorboatConfig.MAX_THRUST.get());
+            Vector3d localImpulse = new Vector3d(thrust.x() * dt, 0, thrust.z() * dt);
+            body.applyImpulseAtPoint(new Vector3d(motorMount[0], motorMount[1], motorMount[2]), localImpulse);
         }
 
         // Re-read velocity: the buoyancy/thrust impulses above already changed it (see SableCarBody's own
@@ -194,16 +197,21 @@ final class SableMotorboatBody {
             body.applyImpulseAtPoint(new Vector3d(0, 0, 0), inverse.transform(dragImpulseWorld));
         }
 
-        // Angular damping (yaw/pitch/roll), same bounded primitive, same immersion scaling. Sable exposes
-        // no inertia-tensor accessor from this API, so the per-axis delta is scaled by the boat's own mass
-        // as a plain stand-in for inertia (a tunable, not a physically exact angular impulse) -- bounded by
-        // boundedDampingDelta regardless, so it can still only ever remove angular momentum.
+        // Angular damping (yaw/pitch/roll), same bounded primitive, same immersion scaling. This directly
+        // ADDS the bounded delta to the body's own angular velocity (RigidBodyHandle.addLinearAndAngular
+        // Velocity), rather than converting it to an impulse: an applied angular impulse only becomes the
+        // angular-velocity change boundedDampingDelta computed after Sable divides it by the body's own
+        // inertia tensor, NOT by mass -- for this hull's box shape the two differ by roughly an order of
+        // magnitude, so scaling by mass (the prior approach) could overshoot the intended delta badly
+        // enough to reverse and amplify roll instead of damping it. Adding directly to angular velocity has
+        // no such conversion step to get wrong, and boundedDampingDelta's own bound still guarantees this
+        // can only ever remove angular momentum, never add it or overshoot past zero.
         double angularRate = MotorboatConfig.ANGULAR_DAMPING_RATE.get() * immersionFraction;
         double dax = MotorboatPhysics.boundedDampingDelta(angular.x, angularRate, dt);
         double day = MotorboatPhysics.boundedDampingDelta(angular.y, angularRate, dt);
         double daz = MotorboatPhysics.boundedDampingDelta(angular.z, angularRate, dt);
         if (dax != 0.0 || day != 0.0 || daz != 0.0) {
-            body.applyAngularImpulse(new Vector3d(dax * massKg, day * massKg, daz * massKg));
+            body.addLinearAndAngularVelocity(new Vector3d(0, 0, 0), new Vector3d(dax, day, daz));
         }
 
         // Extra vertical damping beyond the hull springs' own damping term, also immersion-scaled so an
@@ -256,26 +264,77 @@ final class SableMotorboatBody {
      * MINECRAFT-410: one hull/motor point's own local water surface Y, or {@code null} when none is found
      * -- the point is dry, whether aground, airborne, or merely occluded from nearby water by a solid
      * block. Bounded to {@link #PROBE_UP}/{@link #PROBE_DOWN} blocks either side of the point (never an
-     * unbounded search), scanning top-down so the first water hit is the true (local) surface -- and
-     * stopping the scan the instant ANY solid (collidable) block is seen, in either direction, so this
-     * never "sees" water on the far side of a floor or ceiling from the point: a boat under a bridge with
-     * water on the bridge's roof does not feel that water (the bridge itself is hit first, scanning down
-     * from above); a boat resting on a dry dock over water below a floor does not feel that water either
-     * (the floor is hit before the water further down). This is the same column-probe idea the old
-     * {@code MotorboatEntity.findWaterSurfaceY} used, extended with the occlusion stop and run once per
-     * hull/motor point instead of once for the whole boat.
+     * unbounded search). Scans radiate OUT FROM THE POINT ITSELF in each direction ({@link #scanUpward}, then
+     * {@link #scanDownward}), each stopping the instant it hits a solid (collidable) block -- fixing the
+     * prior version's bug of scanning the whole window top-down regardless of the point's own position,
+     * which could reach a distant water block before ever testing the solid block actually between it and
+     * the point (seeing water "through" a roof) and, symmetrically, could hit a solid block above the point
+     * before ever reaching water the point itself is already submerged in (a dry bridge over a submerged
+     * point reporting dry). Radiating from the point fixes both: a boat under a bridge with water on the
+     * bridge's own roof does not feel that water (the bridge's own block, directly between the point and
+     * that water, is hit first); a point already submerged beneath a dry bridge further up finds its own
+     * water immediately, at {@code dy=0}, before the scan ever reaches the bridge.
+     *
+     * <p>The water surface used is the block's own {@link FluidState#getHeight}, not a flat {@code
+     * blockY+1} -- so a shallow flowing-water block reports its real, lower surface rather than being
+     * treated as a full source block. Collision is checked BEFORE the fluid check at every probe, so a
+     * waterlogged block that still has a blocking collision shape (e.g. a waterlogged slab/stairs) is
+     * correctly treated as a solid occlusion, not as open water.
      */
     private Double sampleSurface(double x, double y, double z) {
         BlockPos base = BlockPos.containing(x, y, z);
-        for (int dy = PROBE_UP; dy >= -PROBE_DOWN; dy--) {
-            BlockPos probe = base.offset(0, dy, 0);
-            if (level.getFluidState(probe).is(FluidTags.WATER)) {
-                return probe.getY() + 1.0;
-            }
-            BlockState state = level.getBlockState(probe);
-            if (!state.isAir() && state.getFluidState().isEmpty() && !state.getCollisionShape(level, probe).isEmpty()) {
+        Double up = scanUpward(base);
+        if (up != null) {
+            return up;
+        }
+        return scanDownward(base);
+    }
+
+    /** Scan from the point's own block ({@code dy=0}) upward to {@link #PROBE_UP}, stopping at the first
+     * solid (collidable) block and returning the first water surface found strictly before that. */
+    private Double scanUpward(BlockPos base) {
+        for (int dy = 0; dy <= PROBE_UP; dy++) {
+            Double surface = probe(base.offset(0, dy, 0));
+            if (surface == OCCLUDED) {
                 return null;
             }
+            if (surface != null) {
+                return surface;
+            }
+        }
+        return null;
+    }
+
+    /** Scan from just below the point's own block ({@code dy=-1}) downward to {@link #PROBE_DOWN},
+     * stopping at the first solid (collidable) block and returning the first water surface found strictly
+     * before that. */
+    private Double scanDownward(BlockPos base) {
+        for (int dy = -1; dy >= -PROBE_DOWN; dy--) {
+            Double surface = probe(base.offset(0, dy, 0));
+            if (surface == OCCLUDED) {
+                return null;
+            }
+            if (surface != null) {
+                return surface;
+            }
+        }
+        return null;
+    }
+
+    /** Sentinel distinguishing "this probe is a blocking solid, stop the scan" from "this probe is open
+     * air, keep going" -- both of which {@link #probe} would otherwise represent as {@code null}. */
+    private static final Double OCCLUDED = Double.NaN;
+
+    /** One probe position: collision is checked FIRST (so a waterlogged-but-solid block still occludes),
+     * then the fluid's own height if it is water. */
+    private Double probe(BlockPos pos) {
+        BlockState state = level.getBlockState(pos);
+        if (!state.getCollisionShape(level, pos).isEmpty()) {
+            return OCCLUDED;
+        }
+        FluidState fluid = state.getFluidState();
+        if (fluid.is(FluidTags.WATER)) {
+            return pos.getY() + (double) fluid.getHeight(level, pos);
         }
         return null;
     }

@@ -512,7 +512,7 @@ final class SableCarBody {
             Vector3d drag = inverse.transform(new Vector3d(subLinear).mul(-dragCoeff * spec.forceScale() * speed * dt));
             body.applyImpulseAtPoint(new Vector3d(0, 0, 0), drag);
         }
-        if (!spec.diffuserTuning().isIdentity()) {
+        if (!car.diffuserTuning().isIdentity()) {
             applyDiffuserAssists(car, position, orientation, inverse, carForward, subLinear, subAngular,
                     touching, steer, handbrake, dt);
         }
@@ -573,7 +573,7 @@ final class SableCarBody {
     private void applyDiffuserAssists(CarEntity car, Vector3d position, Quaterniond orientation, Quaterniond inverse,
             Vector3d carForward, Vector3d linear, Vector3d angular, boolean touching, double steer,
             boolean handbrake, double dt) {
-        VehicleSpec.DiffuserTuning diffuser = spec.diffuserTuning();
+        VehicleSpec.DiffuserTuning diffuser = car.diffuserTuning();
         Vector3d right = orientation.transform(new Vector3d(1, 0, 0));
         Vector3d up = orientation.transform(new Vector3d(0, 1, 0));
         double currentYawDeg = yawOf(orientation);

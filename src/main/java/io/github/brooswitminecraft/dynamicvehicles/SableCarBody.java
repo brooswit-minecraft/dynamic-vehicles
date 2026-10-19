@@ -91,6 +91,10 @@ final class SableCarBody {
     // wrong sign) at the call site is wrong, since the reproduction and the call site would then disagree
     // with the real world identically. Same "last sub-step wins" snapshot convention as wheelForce itself.
     private final double[] wheelReactionForce;
+    // Review, round 9: the friction circle is longitudinal+lateral combined (hypot), not longitudinal
+    // alone - a test checking only wheelForce against the circle's own ceiling could pass while the
+    // COMBINED force silently exceeds it, if cornering lateral force moved into the budget this tick.
+    private final double[] wheelLateralForce;
     // Per-wheel values published to clients for rendering (MINECRAFT-122). Airborne/zero-load/raycast-miss
     // behaviour differs per value, each deliberate:
     //  - suspensionTravel is replaced wholesale every tick from pass 1's own compressions[] (the single
@@ -123,6 +127,7 @@ final class SableCarBody {
         this.wheelSlip = new double[spec.mounts().length];
         this.wheelForce = new double[spec.mounts().length];
         this.wheelReactionForce = new double[spec.mounts().length];
+        this.wheelLateralForce = new double[spec.mounts().length];
         this.suspensionTravel = new double[spec.mounts().length];
         this.steerAngle = new double[spec.mounts().length];
         this.lastContactBlockPos = new BlockPos[spec.mounts().length];
@@ -401,6 +406,16 @@ final class SableCarBody {
 
                 BlockHitResult hit = wheelHits[wheel];
                 if (hit.getType() == HitResult.Type.MISS) {
+                    // Review, round 9: unlike wheelForce/wheelSpin (which deliberately FREEZE at their
+                    // last grounded value here - see the force<=0 guard's own comment below), a stale
+                    // wheelReactionForce reading is actively wrong, not just stale: wheelSpin freezing
+                    // means THIS tick's own spin delta reads as exactly 0, and a nonzero reaction left
+                    // over from the last tick this wheel was actually grounded would then violate the
+                    // very momentum identity (reaction == -(deltaSpin)*inertia/radius/dt) it exists to let
+                    // a test check - CI caught exactly this. Clear it explicitly; it is not meant to
+                    // persist past the sub-step that actually produced it.
+                    wheelReactionForce[wheel] = 0.0;
+                    wheelLateralForce[wheel] = 0.0;
                     continue;
                 }
                 double force = forces[wheel];
@@ -424,6 +439,9 @@ final class SableCarBody {
                 // extra impulse it contributes over the whole tick is the same order as the un-sub-stepped
                 // case, not growing with N.)
                 if (force <= 0) {
+                    // Same staleness fix as the MISS guard above, for the same reason.
+                    wheelReactionForce[wheel] = 0.0;
+                    wheelLateralForce[wheel] = 0.0;
                     continue;
                 }
                 touching = true;
@@ -586,6 +604,7 @@ final class SableCarBody {
                 // not recovering) is real, applied force that was previously missing from this telemetry.
                 wheelForce[wheel] = tire.longitudinal() + reactionImpulse / subDt;
                 wheelReactionForce[wheel] = reactionImpulse / subDt;
+                wheelLateralForce[wheel] = tire.lateral();
                 // SlipReporter must fire at most once per wheel per tick (not once per sub-step), so we only
                 // track the worst wearSlip seen across this tick's sub-steps here, paired with the force at
                 // the sub-step that produced it (so the reported load matches the reported slip), and report
@@ -816,6 +835,13 @@ final class SableCarBody {
      * separately. */
     double[] wheelReactionForces() {
         return wheelReactionForce.clone();
+    }
+
+    /** Review, round 9: each wheel's own lateral tire force this tick -- the friction circle is
+     * longitudinal+lateral combined (hypot), so a test checking the circle invariant against
+     * {@link #wheelForces()} alone could miss a combined-force overflow a cornering tick introduces. */
+    double[] wheelLateralForces() {
+        return wheelLateralForce.clone();
     }
 
     /** Engine RPM implied by the drivetrain this tick (MINECRAFT-401): idle in NEUTRAL scaled by throttle,

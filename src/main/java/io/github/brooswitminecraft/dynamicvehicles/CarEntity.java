@@ -369,6 +369,12 @@ public class CarEntity extends Entity {
         return sableBody == null ? new double[0] : SableCompat.wheelReactionForces(sableBody);
     }
 
+    /** Review, round 9: each wheel's own lateral tire force this tick, so a test can check the friction
+     * circle's combined (hypot of longitudinal and lateral) ceiling instead of longitudinal alone. */
+    double[] debugWheelLateralForces() {
+        return sableBody == null ? new double[0] : SableCompat.wheelLateralForces(sableBody);
+    }
+
     io.github.brooswitminecraft.dynamicterrain.Erosion.Result debugLastErosionResult() {
         return sableBody == null ? io.github.brooswitminecraft.dynamicterrain.Erosion.Result.SKIPPED : SableCompat.lastErosionResult(sableBody);
     }

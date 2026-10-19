@@ -742,11 +742,13 @@ public final class CarDrivetrainGameTests {
                     double[] spins = carOneStep.debugWheelSpins();
                     double[] reactions = carOneStep.debugWheelReactionForces();
                     double[] forces = carOneStep.debugWheelForces();
+                    double[] lateralForces = carOneStep.debugWheelLateralForces();
                     for (int wheel = 0; wheel < spins.length; wheel++) {
                         try {
-                            helper.assertTrue(Math.abs(forces[wheel]) <= RECOVERY_FRICTION_CIRCLE_CEILING,
-                                    "wheel " + wheel + " delivered force exceeded the friction circle's own worst-case ceiling (1 substep): "
-                                            + forces[wheel] + " N > " + RECOVERY_FRICTION_CIRCLE_CEILING + " N");
+                            double combinedForce = Math.hypot(forces[wheel], lateralForces[wheel]);
+                            helper.assertTrue(combinedForce <= RECOVERY_FRICTION_CIRCLE_CEILING,
+                                    "wheel " + wheel + " delivered combined (longitudinal+lateral) force exceeded the friction circle's own worst-case ceiling (1 substep): "
+                                            + combinedForce + " N > " + RECOVERY_FRICTION_CIRCLE_CEILING + " N");
                             if (havePrevious[0] && reactions[wheel] != 0.0) {
                                 everRecovered[0] = true;
                                 double deltaSpin = spins[wheel] - previousSpin[wheel];
@@ -793,15 +795,23 @@ public final class CarDrivetrainGameTests {
             // a single tick's own spin delta (see this test class's own javadoc above for why the exact
             // momentum identity is restricted to wheelSubSteps=1) -- the friction-circle ceiling, which
             // depends on neither sub-step count nor tick-to-tick spin bookkeeping, still applies every
-            // sub-step regardless, so it is still checked here every tick.
+            // sub-step regardless, so it is still checked here every tick. Real recovery coverage is
+            // still required at this sub-step count too, not just at 1.
+            boolean[] everRecoveredAtFourStep = {false};
             for (long tick = 1; tick <= 50; tick++) {
                 helper.runAfterDelay(tick, () -> {
                     double[] forces = carFourStep.debugWheelForces();
+                    double[] lateralForces = carFourStep.debugWheelLateralForces();
+                    double[] reactions = carFourStep.debugWheelReactionForces();
                     for (int wheel = 0; wheel < forces.length; wheel++) {
                         try {
-                            helper.assertTrue(Math.abs(forces[wheel]) <= RECOVERY_FRICTION_CIRCLE_CEILING,
-                                    "wheel " + wheel + " delivered force exceeded the friction circle's own worst-case ceiling (4 substeps): "
-                                            + forces[wheel] + " N > " + RECOVERY_FRICTION_CIRCLE_CEILING + " N");
+                            double combinedForce = Math.hypot(forces[wheel], lateralForces[wheel]);
+                            helper.assertTrue(combinedForce <= RECOVERY_FRICTION_CIRCLE_CEILING,
+                                    "wheel " + wheel + " delivered combined (longitudinal+lateral) force exceeded the friction circle's own worst-case ceiling (4 substeps): "
+                                            + combinedForce + " N > " + RECOVERY_FRICTION_CIRCLE_CEILING + " N");
+                            if (reactions[wheel] != 0.0) {
+                                everRecoveredAtFourStep[0] = true;
+                            }
                         } catch (RuntimeException e) {
                             CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
                             throw e;
@@ -811,6 +821,8 @@ public final class CarDrivetrainGameTests {
             }
             helper.runAfterDelay(55L, () -> {
                 CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
+                helper.assertTrue(everRecoveredAtFourStep[0],
+                        "test setup invalid at wheelSubSteps=4 -- the car never actually recovered from a wheelspin while pinned, so the friction-circle invariant above was never exercised during a real recovery event");
                 helper.succeed();
             });
         } catch (RuntimeException e) {

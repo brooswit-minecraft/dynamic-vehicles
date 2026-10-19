@@ -14,10 +14,25 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Per-car config files (MINECRAFT-443): {@code config/dynamicvehicles/cars/<id>.json} overrides a subset
  * of a stock {@link VehicleSpec}'s already-implemented tuning fields &mdash; ride height, damping rate,
- * anti-roll scale, rolling-resistance scale, and the five {@link VehicleSpec.VehicleTuning} dials (LSD
- * lock, front/rear torque split, torque-vectoring gain, camber, toe). Everything else about a car
- * (geometry, mass, seats, drive force, top speed, tire/downforce tuning) is not file-configurable by this
- * ticket; see {@code docs/per-car-config.md} for the full rationale and schema.
+ * anti-roll scale, rolling-resistance scale, handbrake-strength scale, and the five
+ * {@link VehicleSpec.VehicleTuning} dials (LSD lock, front/rear torque split, torque-vectoring gain,
+ * camber, toe). Everything else about a car (geometry, mass, seats, drive force, top speed, tire/downforce
+ * tuning) is not file-configurable by this ticket; see {@code docs/per-car-config.md} for the full
+ * rationale and schema.
+ *
+ * <p><b>The five {@code VehicleTuning} fields only affect a car the first time it is ever saved.</b> They
+ * are also this mod's existing, pre-this-ticket per-ENTITY player tuning dials ({@link
+ * CarEntity#setVehicleTuning}): {@code CarEntity#addAdditionalSaveData} unconditionally writes {@code
+ * Tuning*} NBT tags on every save (whether or not a player ever customized them), and {@code
+ * readAdditionalSaveData} always restores from those tags when present, never from the spec's current
+ * defaults. So a config file's LSD/split/vectoring/camber/toe values apply to a newly-spawned car (which
+ * has no saved tags yet) but NOT retroactively to a car that was ever saved before the file existed or
+ * changed &mdash; that car's own saved values keep winning, by the same rule that already makes a
+ * player's own in-game retune persist across restarts. This is not a bug this ticket introduces or fixes;
+ * it is the pre-existing persistence contract, now documented against this new config path (see {@code
+ * VehicleSpecOverridesGameTests#aSavedCarsTuningTagsOutliveALaterConfigOverride} for the regression that
+ * pins it). {@code rideHeight}/{@code dampingRate}/{@code antiRollScale}/{@code rollingScale}/{@code
+ * handbrakeScale} carry no such per-entity persistence and so do not have this limitation.
  *
  * <p><b>Loaded once, at server start</b> ({@link #load}, called from a {@code ServerAboutToStartEvent}
  * listener, before any level loads) &mdash; not re-read while the server runs. A file edited while the
@@ -134,6 +149,9 @@ final class VehicleSpecOverrides {
         double rollingScale = file.rollingScale == null ? stock.rollingScale()
                 : VehicleSpecLimits.clamp(file.rollingScale, VehicleSpecLimits.MIN_ROLLING_SCALE,
                         VehicleSpecLimits.MAX_ROLLING_SCALE, stock.rollingScale());
+        double handbrakeScale = file.handbrakeScale == null ? stock.handbrakeScale()
+                : VehicleSpecLimits.clamp(file.handbrakeScale, VehicleSpecLimits.MIN_HANDBRAKE_SCALE,
+                        VehicleSpecLimits.MAX_HANDBRAKE_SCALE, stock.handbrakeScale());
 
         VehicleSpec.VehicleTuning stockTuning = stock.vehicleTuning();
         VehicleSpec.VehicleTuning requestedTuning = new VehicleSpec.VehicleTuning(
@@ -153,6 +171,6 @@ final class VehicleSpecOverrides {
                 stock.seatY(), stock.seatZ(),
                 stock.looseGrip(), rollingScale,
                 stock.tireTuning(), stock.downforceGripPerSpeed(), antiRollScale,
-                stock.seats(), vehicleTuning);
+                stock.seats(), vehicleTuning, handbrakeScale);
     }
 }

@@ -28,6 +28,11 @@ final class VehicleSpecLimits {
     static final double MIN_ROLLING_SCALE = 0.0;
     static final double MAX_ROLLING_SCALE = 5.0;
 
+    /** Identity is 1.0 (every vehicle today). 0.0 (no handbrake braking force at all, though the fixed
+     * lateral-slide cut in {@code SableCarBody.tick} still applies) is a valid, finite configuration. */
+    static final double MIN_HANDBRAKE_SCALE = 0.0;
+    static final double MAX_HANDBRAKE_SCALE = 5.0;
+
     private VehicleSpecLimits() {}
 
     /** A non-finite value falls back to {@code fallback} so malformed config can never leak NaN/Infinity

@@ -52,13 +52,14 @@ Every field is optional; an absent field keeps that car's stock value.
 | `dampingRate` | N·s/m | 0.0 – 40,000.0 | Suspension damper rate. |
 | `antiRollScale` | multiplier | 0.0 – 5.0 | Identity 1.0; see `VehicleSpec#antiRollScale`. |
 | `rollingScale` | multiplier | 0.0 – 5.0 | Identity 1.0; soft-ground rolling resistance scale. |
-| `lsdLockPercent` | fraction | 0.0 – 1.0 | LSD lock, see `VehicleTuning`. |
+| `handbrakeScale` | multiplier | 0.0 – 5.0 | Identity 1.0; scales the handbrake's brake force (`SableCarBody.tick`'s `HANDBRAKE_FORCE * forceScale() * handbrakeScale()`). Distinct from, and does not touch, the separate live `CarConfig.driftHandbrakeRearGripCut`, which scales the handbrake's lateral-grip cut on drift-tuned cars only. |
+| `lsdLockPercent` | fraction | 0.0 – 1.0 | LSD lock, see `VehicleTuning`. Only applies to a car the first time it is ever saved — see "Saved-car precedence" below. |
 | `frontTorqueSplit` | fraction | 0.0 – 1.0 | Identity 0.5 (even split). |
 | `vectoringGain` | fraction | 0.0 – 1.0 | Torque-vectoring gain. |
 | `camberDeg` | degrees | -8.0 – 8.0 | Static camber. |
 | `toeDeg` | degrees | -5.0 – 5.0 | Static toe. |
 
-Ranges live in code as `VehicleSpecLimits` (the first four) and the pre-existing
+Ranges live in code as `VehicleSpecLimits` (the first five) and the pre-existing
 `VehicleTuningLimits` (the last five, shared with the in-game per-entity tuning
 command). Example, retuning just the rock crawler's ride height and LSD lock,
 leaving every other field (including its own stock `antiRollScale` of 2.0) as
@@ -79,18 +80,23 @@ are not file-configurable — they define a car's identity, not its stock tuning
 and changing them here would risk the "preserve identity and currently
 enjoyable stock driving feel" requirement this ticket is built around.
 
-**Handbrake is explicitly NOT migrated.** The acceptance list names it, but
-there is no per-car handbrake *strength* field in the existing baseline to
-migrate: `SableCarBody.tick`'s handbrake behavior (`HANDBRAKE_FORCE`, a
-`0.35` lateral-grip multiplier) is one hardcoded constant shared by every car,
-scaled only by `forceScale` (not file-configurable). The one handbrake-shaped
-field that does exist per vehicle, `TireTuning#handbrakeRearGripCut`, belongs
-only to drift-tuned cars and is already explicitly owned by the live
-`CarConfig.driftHandbrakeRearGripCut` value, not a per-car file, per that
-field's own doc comment. Rather than invent a new strength field with no
-existing baseline behind it, this is flagged here for confirmation instead —
-see the ticket's own instruction to report missing design decisions rather
-than invent them.
+### Saved-car precedence (`lsdLockPercent`/`frontTorqueSplit`/`vectoringGain`/`camberDeg`/`toeDeg`)
+
+These five fields are also this mod's existing, pre-this-ticket per-ENTITY
+player tuning dials (`CarEntity#setVehicleTuning`, a command). `CarEntity`
+unconditionally writes `Tuning*` NBT tags on every save — whether or not a
+player ever customized them — and restores from those tags whenever they are
+present, never from the spec's current defaults. A config file's values for
+these five fields therefore apply to a **newly-spawned** car (no saved tags
+yet), but **not retroactively** to a car that was ever saved before the file
+existed or changed: that car's own saved values keep winning, by the same
+rule that already makes a player's own in-game retune persist across
+restarts. This is the pre-existing persistence contract, not something this
+ticket changes — see `VehicleSpecOverridesGameTests
+#aSavedCarsTuningTagsOutliveALaterConfigOverride` for the regression that
+pins it. `rideHeight`/`dampingRate`/`antiRollScale`/`rollingScale`/
+`handbrakeScale` carry no per-entity persistence and so have no such
+limitation: they always reflect whatever was loaded at the last server start.
 
 **`camberDeg`/`toeDeg` have no effect on a drift-tuned car.** Per
 `VehicleTuning`'s own doc comment, camber and toe are read by

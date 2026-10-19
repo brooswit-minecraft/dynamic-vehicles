@@ -340,7 +340,7 @@ final class SableCarBody {
                     brakeGain = 6.0;
                 }
                 if (handbrake && !front) {
-                    brake = HANDBRAKE_FORCE * spec.forceScale();
+                    brake = HANDBRAKE_FORCE * spec.forceScale() * spec.handbrakeScale();
                     drive = 0.0;
                     lateralScale = 0.35;
                 }

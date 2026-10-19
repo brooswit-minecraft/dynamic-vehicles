@@ -17,6 +17,7 @@ final class VehicleCarConfigFile {
     Double dampingRate;
     Double antiRollScale;
     Double rollingScale;
+    Double handbrakeScale;
     Double lsdLockPercent;
     Double frontTorqueSplit;
     Double vectoringGain;

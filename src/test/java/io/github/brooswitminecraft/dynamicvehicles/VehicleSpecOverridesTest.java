@@ -78,9 +78,22 @@ class VehicleSpecOverridesTest {
         // Every field the file did not mention keeps the stock car's own value, unchanged.
         assertEquals(VehicleSpec.ROCK_CRAWLER.dampingRate(), resolved.dampingRate());
         assertEquals(VehicleSpec.ROCK_CRAWLER.rollingScale(), resolved.rollingScale());
+        assertEquals(VehicleSpec.ROCK_CRAWLER.handbrakeScale(), resolved.handbrakeScale());
         assertEquals(VehicleSpec.ROCK_CRAWLER.vehicleTuning().frontTorqueSplit(), resolved.vehicleTuning().frontTorqueSplit());
         assertEquals(VehicleSpec.ROCK_CRAWLER.massKg(), resolved.massKg());
         assertEquals(VehicleSpec.ROCK_CRAWLER.seats(), resolved.seats());
+    }
+
+    @Test
+    void handbrakeScaleOverridesAndClampsIndependentlyOfTheOtherFields(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "truck", "{\"handbrakeScale\": -3.0}");
+
+        VehicleSpecOverrides.load(configDir);
+        VehicleSpec resolved = VehicleSpecOverrides.resolve(VehicleIds.TRUCK, VehicleSpec.TRUCK);
+
+        // -3.0 is out of VehicleSpecLimits' range -- clamped, not rejected outright.
+        assertEquals(VehicleSpecLimits.MIN_HANDBRAKE_SCALE, resolved.handbrakeScale());
+        assertEquals(VehicleSpec.TRUCK.rideHeight(), resolved.rideHeight());
     }
 
     @Test

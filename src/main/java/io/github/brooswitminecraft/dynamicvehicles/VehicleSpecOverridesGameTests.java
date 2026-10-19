@@ -46,17 +46,58 @@ public final class VehicleSpecOverridesGameTests {
     }
 
     /** A real {@code rideHeight} override must move {@code restLength} with it by the same ratio (the
-     * reviewed "rideHeight left disconnected from suspension geometry" fix), observed through the actual
-     * resolved spec a real entity receives. */
+     * reviewed "rideHeight left disconnected from suspension geometry" fix), observed through a real
+     * {@link CarEntity}'s own resolved {@link VehicleSpec} -- not by calling {@code resolve} directly -- so
+     * this exercises the exact constructor path {@code CarEntity} uses in production. */
     @GameTest(template = "settlement_test")
     public static void aRideHeightOverrideScalesRestLengthByTheSameRatio(GameTestHelper helper) {
         double requestedRideHeight = VehicleSpec.ROCK_CRAWLER.rideHeight() / 2.0;
         withLoadedOverride(VehicleIds.ROCK_CRAWLER, "{\"rideHeight\": " + requestedRideHeight + "}", () -> {
-            VehicleSpec resolved = VehicleSpecOverrides.resolve(VehicleIds.ROCK_CRAWLER, VehicleSpec.ROCK_CRAWLER);
+            CarEntity crawler = helper.spawn(DynamicVehiclesMod.ROCK_CRAWLER.get(), new BlockPos(5, 3, 5));
             double expectedRestLength = VehicleSpec.ROCK_CRAWLER.restLength() * 0.5;
-            helper.assertTrue(Math.abs(resolved.restLength() - expectedRestLength) < 1e-9,
+            helper.assertTrue(Math.abs(crawler.spec().rideHeight() - requestedRideHeight) < 1e-9,
+                    "spawned rock crawler did not receive the overridden rideHeight");
+            helper.assertTrue(Math.abs(crawler.spec().restLength() - expectedRestLength) < 1e-9,
                     "restLength did not scale with the rideHeight override: expected " + expectedRestLength
-                            + " got " + resolved.restLength());
+                            + " got " + crawler.spec().restLength());
+            helper.succeed();
+        });
+    }
+
+    /**
+     * MINECRAFT-443 review fix (comment 48812, gap 2): a per-car config override to
+     * {@code lsdLockPercent}/etc. must NOT retroactively change a car that was already saved before the
+     * override existed -- {@code CarEntity} always writes {@code Tuning*} NBT tags on every save (the
+     * pre-existing per-entity player-tuning persistence, {@link CarEntity#setVehicleTuning}) and always
+     * restores from them when present, never from the spec's current defaults. This pins that documented
+     * precedence as a regression: the OLD saved tag keeps winning over a NEWER override, while a
+     * brand-new car (no saved tag yet) DOES pick up that same override.
+     */
+    @GameTest(template = "settlement_test")
+    public static void aSavedCarsTuningTagsOutliveALaterConfigOverride(GameTestHelper helper) {
+        // No override loaded yet: this car's tuning is the plain stock default, and saving it bakes that
+        // stock value into NBT tags exactly as it would for any car saved before this ticket existed.
+        CarEntity savedBeforeOverride = helper.spawn(DynamicVehiclesMod.ROCK_CRAWLER.get(), new BlockPos(5, 3, 5));
+        double stockLsdLock = VehicleSpec.ROCK_CRAWLER.vehicleTuning().lsdLockPercent();
+        helper.assertTrue(savedBeforeOverride.vehicleTuning().lsdLockPercent() == stockLsdLock,
+                "test setup assumption failed: spawned car did not start at the stock LSD lock");
+        net.minecraft.nbt.CompoundTag savedTag = new net.minecraft.nbt.CompoundTag();
+        savedBeforeOverride.addAdditionalSaveData(savedTag);
+
+        double overriddenLsdLock = Math.min(1.0, stockLsdLock + 0.2);
+        withLoadedOverride(VehicleIds.ROCK_CRAWLER, "{\"lsdLockPercent\": " + overriddenLsdLock + "}", () -> {
+            // A brand-new car (no saved tag) DOES pick up the override, through the exact same
+            // CarEntity constructor path the identity/rideHeight tests above exercise.
+            CarEntity spawnedAfterOverride = helper.spawn(DynamicVehiclesMod.ROCK_CRAWLER.get(), new BlockPos(5, 3, 9));
+            helper.assertTrue(Math.abs(spawnedAfterOverride.vehicleTuning().lsdLockPercent() - overriddenLsdLock) < 1e-9,
+                    "a newly-spawned car did not pick up the per-car config override");
+
+            // The car saved BEFORE the override existed must reload at its own saved (stock) value, not
+            // the new override -- restoring its saved tag is exactly what a real server restart does.
+            savedBeforeOverride.readAdditionalSaveData(savedTag);
+            helper.assertTrue(savedBeforeOverride.vehicleTuning().lsdLockPercent() == stockLsdLock,
+                    "a previously-saved car's LSD lock changed to the new override instead of keeping its saved value: expected "
+                            + stockLsdLock + " got " + savedBeforeOverride.vehicleTuning().lsdLockPercent());
             helper.succeed();
         });
     }

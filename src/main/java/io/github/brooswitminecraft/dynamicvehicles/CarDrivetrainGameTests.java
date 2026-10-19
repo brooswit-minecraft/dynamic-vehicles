@@ -428,28 +428,67 @@ public final class CarDrivetrainGameTests {
      * dependency/test path, or leave this explicitly blocked pending an authorized scoped waiver"), this is
      * now a concrete, isolated, reproduced finding that this one test is blocked by a pre-existing Sable
      * engine defect outside this PR's scope to fix, not a weakened gate -- see the round-5 PR/Jira comment
-     * for the isolated-reproduction evidence and the scoped-waiver request this is pending. */
+     * for the isolated-reproduction evidence and the scoped-waiver request this is pending.
+     *
+     * <p>Round 11: review raised two genuine, concrete alternative hypotheses for this same symptom
+     * (neither disputing the AABB evidence above, both worth testing before trusting it further) -- see
+     * this method's own body for the two real bugs they found (the ramp/gap only ever cleared one column,
+     * missing both actual wheel-raycast columns at {@code CarGeometry}'s own +-0.8 m offsets; the mock
+     * rider mounts at literal world {@code BlockPos.ZERO} rather than the car's position). Both are
+     * genuine bugs, fixed here regardless of outcome -- but fixing them did NOT change the result: five
+     * repeated runs after the fix still fail with the IDENTICAL signature (worst Y velocity=0.0, never
+     * ungrounded, ~0 net travel) and the identical repeated "Aborting entity get for abnormally large
+     * AABB" log signature (one coordinate near the structure's own tiny local value, the other at its
+     * huge translated world placement) throughout the window, including well after the rider is already
+     * correctly positioned and riding. This is now evidence AGAINST both of round 11's own hypotheses as
+     * the (sole) cause, not merely unconfirmed -- the car still never goes airborne with the actual
+     * wheel columns cleared and the rider correctly positioned from the start, which the prior fixture
+     * bugs could plausibly have explained but these results rule out as a full explanation. The original
+     * round-4/5 diagnosis (a genuine Sable-internal position/contact defect, not this test's own fixture)
+     * remains the best-supported explanation after this additional, specific falsification attempt. */
     @GameTest(template = "settlement_test", timeoutTicks = 160, batch = "carDrivetrainLedgeIsolated")
     public static void carRecoversCleanlyAfterDrivingOffALedgeAndLanding(GameTestHelper helper) {
+        // Review, round 11: this test's own fixture had two real bugs, found by inspection (John's review)
+        // rather than disproven by further isolation - everything in this method's own javadoc above about
+        // a "confirmed, isolated, reproduced" Sable dependency bug was resting on these two fixture bugs
+        // masquerading as an engine defect, not on a genuine upstream issue. Both are fixed below:
+        // 1) The ramp/gap only ever cleared column x=5, but CarGeometry's own wheel mounts sit at local
+        //    x=+-0.8 from the car's CENTER (HALF_X=0.95) - a car spawned at/near x=5.5 (GameTest.spawn's own
+        //    block-center convention) puts both wheel raycast columns at x=4.7 and x=6.3, i.e. columns 4 and
+        //    6, NEITHER of which this test ever touched. The "ledge" the car was "driving off" was never
+        //    actually under either wheel column; of course it never went airborne. Now clears x=4..6.
+        // 2) GameTestHelper#makeMockPlayer spawns the mock rider at literal world BlockPos.ZERO, not
+        //    anywhere relative to this test's own (randomly translated) structure - mounting it onto the
+        //    car immediately after, without first moving it to the car's own position, leaves whatever
+        //    nearby-entity/AABB query runs during that mount spanning from world (0,0,0) to this test's own
+        //    far translated coordinates. That is EXACTLY the "AABB spanning near origin to the
+        //    million-coordinate fixture" signature this javadoc's own round 4-5 history attributed to an
+        //    unpatchable Sable broad-phase defect. Positioning the rider at the car before mounting removes
+        //    that self-inflicted span.
         // Starts well inside the structure (not at its dz=0 edge, where a test region boundary could
         // interfere with the body) like every other test in this file.
-        for (int dz = 5; dz <= 9; dz++) {
-            helper.setBlock(new BlockPos(5, 2, dz), Blocks.STONE);
-            helper.setBlock(new BlockPos(5, 3, dz), Blocks.AIR);
+        for (int dx = 4; dx <= 6; dx++) {
+            for (int dz = 5; dz <= 9; dz++) {
+                helper.setBlock(new BlockPos(dx, 2, dz), Blocks.STONE);
+                helper.setBlock(new BlockPos(dx, 3, dz), Blocks.AIR);
+            }
         }
         // A genuine 2-block drop: the wheel raycast only reaches a fraction of a block below the wheel, so
         // this gap is deep enough to actually MISS for at least one tick while falling, rather than just
         // landing on extra suspension travel -- the real condition that freezes/resumes wheelSpin.
-        for (int dz = 10; dz <= 14; dz++) {
-            helper.setBlock(new BlockPos(5, 0, dz), Blocks.STONE);
-            helper.setBlock(new BlockPos(5, 1, dz), Blocks.AIR);
-            helper.setBlock(new BlockPos(5, 2, dz), Blocks.AIR);
-            helper.setBlock(new BlockPos(5, 3, dz), Blocks.AIR);
+        for (int dx = 4; dx <= 6; dx++) {
+            for (int dz = 10; dz <= 14; dz++) {
+                helper.setBlock(new BlockPos(dx, 0, dz), Blocks.STONE);
+                helper.setBlock(new BlockPos(dx, 1, dz), Blocks.AIR);
+                helper.setBlock(new BlockPos(dx, 2, dz), Blocks.AIR);
+                helper.setBlock(new BlockPos(dx, 3, dz), Blocks.AIR);
+            }
         }
         CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
         car.setYRot(0.0f);
         car.selectGear(CarPhysics.Gear.D1);
         Player rider = helper.makeMockPlayer(GameType.CREATIVE);
+        rider.setPos(car.getX(), car.getY(), car.getZ());
         helper.assertTrue(rider.startRiding(car), "mock player failed to board the car");
         rider.zza = 1.0f;
         double startZ = car.getZ();

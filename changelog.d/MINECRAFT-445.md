@@ -7,7 +7,9 @@ bump: minor
   knee speed) and a fast rate beyond it, plus a progressive bump stop past a configurable amount of
   compression travel. The existing flat `dampingRate` key keeps working and is now specifically the
   slow-compression rate: every new field defaults to it, so a car with no `tireKit` damps at one
-  single rate exactly as before — every car on the roster ships with that identity tuning, so stock
+  single rate exactly as before — bit for bit, not merely to a tolerance, which matters because a
+  last-bits difference in a car's spawn-settling transient is enough to change a chaotic rigid-body
+  outcome dozens of ticks later. Every car on the roster ships with that identity tuning, so stock
   driving feel is unchanged. Out-of-range values are clamped and non-finite ones fall back to stock,
   the same as every other field in this format. See `docs/per-car-config.md` for units, ranges and
   defaults, including which parts of MINECRAFT-445's scope (caster, roll center, anti-dive/anti-squat,

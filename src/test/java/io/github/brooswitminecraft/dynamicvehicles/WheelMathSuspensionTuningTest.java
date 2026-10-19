@@ -61,6 +61,34 @@ class WheelMathSuspensionTuningTest {
         }
     }
 
+    /**
+     * MINECRAFT-445 review fix (comment 49018, the failing D1-vs-D5 drivetrain GameTest): the single-rate
+     * reduction must hold BIT FOR BIT, not merely to a tolerance. A tolerance-only equality still let the
+     * four-rate path return a last-bits-different force from the single-rate one for compression rates
+     * ABOVE the knee ({@code slowRate * knee + fastRate * (speed - knee)} is not the same floating-point
+     * expression as {@code rate * speed}, even when every rate is equal). That difference is far below any
+     * physical significance, but it is NOT nothing in a chaotic rigid-body sim: a car dropping onto its
+     * springs at spawn exceeds the knee, so every stock car's settling transient diverged in its last
+     * bits, and {@code CarDrivetrainGameTests#d1ReachesAHigherSpeedThanD5OverTheSameShortWindow} -- which
+     * applies throttle to a car that is merely "settled" to within 1.5 m/s and compares two cars' speeds
+     * 20 ticks later -- flipped as a result. Pinning raw bits here keeps "no existing car's stock feel
+     * changes" a mechanical fact rather than an algebraic argument.
+     */
+    @Test
+    void reducesToSingleRateBitForBitAboveTheKneeWhereTheArithmeticDiffers() {
+        // Sweep the compression rates a car actually sees dropping onto its springs, all above the knee.
+        for (double compressionRate = KNEE_SPEED + 1e-4; compressionRate < 6.0; compressionRate += 3.7e-4) {
+            for (double signedRate : new double[] {compressionRate, -compressionRate}) {
+                double single = WheelMath.suspensionForce(TOUCHING_COMPRESSION, signedRate, SPRING_RATE,
+                        DAMPING_RATE, WheelMath.MAX_FORCE);
+                double fourRate = singleRateForce(TOUCHING_COMPRESSION, signedRate, DAMPING_RATE, KNEE_SPEED,
+                        WheelMath.MAX_FORCE);
+                assertEquals(Double.doubleToRawLongBits(single), Double.doubleToRawLongBits(fourRate),
+                        "compressionRate=" + signedRate + " single=" + single + " fourRate=" + fourRate);
+            }
+        }
+    }
+
     @Test
     void reducesToSingleRateForAnyKneeSpeedWhenEveryDampingRateMatches() {
         // The algebraic reduction must not depend on where the knee sits, since every rate on both sides of

@@ -571,6 +571,166 @@ public final class CarDrivetrainGameTests {
         });
     }
 
+    /** Review round 13 (MINECRAFT-410's own sibling finding, adopted here per John's direction): the
+     * ledge test above is genuinely blocked on a Sable-internal defect, not this PR's own code -- Rapier's
+     * native broad-phase is float32 internally, and {@code GameTestServer.startTests} (vanilla, hardcoded)
+     * randomizes every structure's placement out past float32's safe precision envelope
+     * ({@code net.minecraft.gametest.framework.GameTestServer#startTests}' own
+     * {@code nextIntBetweenInclusive(-14_999_992, 14_999_992)}), which is the exact signature the class
+     * javadoc's round-12 pose-vs-velocity-integration diagnostic confirmed: {@code car.getZ()} freezes bit
+     * for bit while velocity keeps integrating. {@code dynamic-whips} (MINECRAFT-255) and MINECRAFT-410's
+     * own motorboat PR both independently confirm the fix: build the rig directly on the
+     * {@link net.minecraft.server.level.ServerLevel} at fixed, small, absolute coordinates --
+     * {@code setBlock}/{@code setChunkForced}/raw entity spawn -- bypassing {@code GameTestHelper}'s
+     * structure-relative placement (which still randomizes far away; it is simply never used for anything
+     * that matters here) rather than the GameTest template system itself.
+     *
+     * <p>This mirrors {@link #carRecoversCleanlyAfterDrivingOffALedgeAndLanding}'s own geometry exactly
+     * (same 5-block ramp, same 2-block-deep 5-block gap, same spawn offset, same sample window and
+     * assertions, including the SAME finalSpeed &lt; 100.0 sanity bound) -- deliberately NOT lengthened.
+     * An earlier attempt at this fix lengthened the ramp to 30 blocks to "let the car build real speed,"
+     * which drove debugSpeed() to 164 m/s and forced a choice between loosening the sanity bound (masking
+     * a possible real problem) or proving the 164 m/s itself was real. It was neither: a dedicated flat-
+     * ground diagnostic (sustained full D1 throttle for 400+ ticks on a straight run with no gap at all --
+     * not kept in this file; see the round-13 PR/Jira comment) never exceeded a few m/s past
+     * {@code VehicleSpec.CAR}'s own documented 32.0 m/s maxSpeed, and this very test's own far-coordinate
+     * sibling above independently peaks at ~15.9 m/s forward velocity over the SAME 5-block ramp. The 164
+     * m/s was this test's own fixture artifact (an unphysically long drag strip bolted onto a
+     * ledge-recovery test, not anything the ledge/landing/governor actually do) -- not a fixture/input bug
+     * in the sense of a wiring mistake, but a geometry choice that was never "physically justified" for
+     * what this test is actually meant to exercise. Restoring the original geometry removes the artifact
+     * at its source rather than papering over its symptom with a wider bound.
+     *
+     * <p>Chunk-boundary note: the structure spans more than one 16-block chunk on the Z axis at an
+     * arbitrary, non-chunk-aligned origin, so every chunk the block range actually touches must be force-
+     * loaded, not just the one under the origin corner -- an earlier attempt that force-loaded only the
+     * origin's own chunk left the car barely moving (peak velocity ~0.46 m/s) for exactly this reason. */
+    @GameTest(template = "settlement_test", timeoutTicks = 165)
+    public static void carRecoversCleanlyAfterDrivingOffALedgeAndLandingNearOrigin(GameTestHelper helper) {
+        net.minecraft.server.level.ServerLevel level = helper.getLevel();
+        int originX = 0;
+        int originY = 100;
+        int originZ = 20_000;
+        int minChunkX = (originX - 2) >> 4;
+        int maxChunkX = (originX + 2) >> 4;
+        int minChunkZ = originZ >> 4;
+        int maxChunkZ = (originZ + 14) >> 4;
+        forceChunksNearOrigin(level, minChunkX, maxChunkX, minChunkZ, maxChunkZ, true);
+        try {
+            // Review, round 13 follow-up: a FORCED ticket is added to the chunk instantly, but the chunk
+            // itself does not finish loading/reach a ticking FullChunkStatus synchronously in the same
+            // tick the ticket is added -- building the ramp/gap and spawning the car immediately after
+            // forceChunksNearOrigin left every wheel raycast reporting MISS against a chunk that was not
+            // actually ready yet (peak forward velocity ~0.46 m/s, identical to the earlier single-chunk
+            // bug's own symptom, even after the chunk RANGE was already correct). Waiting a few ticks
+            // after forcing the chunk, before touching it at all, is the fix: by the time this runs the
+            // chunk is genuinely loaded and the wheel raycasts hit real blocks.
+            helper.runAfterDelay(5L, () -> {
+                try {
+                    // Exactly carRecoversCleanlyAfterDrivingOffALedgeAndLanding's own geometry, translated
+                    // from structure-relative (dx 4..6, dz 5..14) to fixed absolute coordinates.
+                    for (int dx = -1; dx <= 1; dx++) {
+                        for (int dz = 0; dz <= 4; dz++) {
+                            level.setBlock(new BlockPos(originX + dx, originY - 1, originZ + dz), Blocks.STONE.defaultBlockState(), 3);
+                            level.setBlock(new BlockPos(originX + dx, originY, originZ + dz), Blocks.AIR.defaultBlockState(), 3);
+                        }
+                    }
+                    for (int dx = -1; dx <= 1; dx++) {
+                        for (int dz = 5; dz <= 9; dz++) {
+                            level.setBlock(new BlockPos(originX + dx, originY - 3, originZ + dz), Blocks.STONE.defaultBlockState(), 3);
+                            level.setBlock(new BlockPos(originX + dx, originY - 2, originZ + dz), Blocks.AIR.defaultBlockState(), 3);
+                            level.setBlock(new BlockPos(originX + dx, originY - 1, originZ + dz), Blocks.AIR.defaultBlockState(), 3);
+                            level.setBlock(new BlockPos(originX + dx, originY, originZ + dz), Blocks.AIR.defaultBlockState(), 3);
+                        }
+                    }
+                    CarEntity car = DynamicVehiclesMod.CAR.get().create(level);
+                    helper.assertTrue(car != null, "car entity failed to construct");
+                    car.moveTo(originX + 0.5, originY, originZ + 0.5, 0.0f, 0.0f);
+                    level.addFreshEntity(car);
+                    car.selectGear(CarPhysics.Gear.D1);
+                    Player rider = helper.makeMockPlayer(GameType.CREATIVE);
+                    rider.setPos(car.getX(), car.getY(), car.getZ());
+                    helper.assertTrue(rider.startRiding(car), "mock player failed to board the car");
+                    rider.zza = 1.0f;
+                    double startZ = car.getZ();
+                    double[] minVerticalVelocity = {0.0};
+                    double[] peakForwardVelocity = {0.0};
+                    boolean[] everUngrounded = {false};
+                    long[] firstUngroundedTick = {-1L};
+                    double[] integratedZ = {startZ};
+                    for (long tick = 1; tick <= 150; tick++) {
+                        helper.runAfterDelay(tick, () -> integratedZ[0] += car.getDeltaMovement().z);
+                    }
+                    long[] sampleTicks = {5, 10, 15, 20, 25, 30, 35, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140};
+                    for (long sampleTick : sampleTicks) {
+                        helper.runAfterDelay(sampleTick, () -> {
+                            Vec3 v = car.getDeltaMovement();
+                            double vy = v.y * 20.0;
+                            double vz = v.z * 20.0;
+                            minVerticalVelocity[0] = Math.min(minVerticalVelocity[0], vy);
+                            peakForwardVelocity[0] = Math.max(peakForwardVelocity[0], vz);
+                            if (!car.debugTouching()) {
+                                everUngrounded[0] = true;
+                                if (firstUngroundedTick[0] < 0) {
+                                    firstUngroundedTick[0] = sampleTick;
+                                }
+                            }
+                        });
+                    }
+                    helper.runAfterDelay(150L, () -> {
+                        try {
+                            Vec3 finalVelocity = car.getDeltaMovement();
+                            double finalVy = finalVelocity.y * 20.0;
+                            double finalSpeed = car.debugSpeed();
+                            helper.assertTrue(Double.isFinite(finalVelocity.x) && Double.isFinite(finalVelocity.y) && Double.isFinite(finalVelocity.z),
+                                    "car velocity diverged after driving off a ledge: " + finalVelocity);
+                            helper.assertTrue(Double.isFinite(finalSpeed) && finalSpeed < 100.0,
+                                    "car speed diverged after driving off a ledge: " + finalSpeed);
+                            helper.assertTrue(peakForwardVelocity[0] > 1.0,
+                                    "car never actually built real forward speed under its own drive -- test setup invalid: peak forward velocity="
+                                            + peakForwardVelocity[0]);
+                            double traveled = car.getZ() - startZ;
+                            double integratedTraveled = integratedZ[0] - startZ;
+                            helper.assertTrue(minVerticalVelocity[0] < -2.0,
+                                    "car never showed a real falling (negative Y velocity) at any point -- the ledge drop never actually left the ground: worst Y velocity="
+                                            + minVerticalVelocity[0] + " m/s (ever ungrounded=" + everUngrounded[0]
+                                            + ", first ungrounded tick=" + firstUngroundedTick[0] + ", peak forward velocity="
+                                            + peakForwardVelocity[0] + " m/s, distance traveled (pose)=" + traveled
+                                            + " blocks, distance traveled (velocity-integrated)=" + integratedTraveled
+                                            + " blocks (need >5 to clear the ramp onto the gap), final speed=" + finalSpeed + ")");
+                            helper.assertTrue(finalVy > -2.0,
+                                    "car was still falling at the end of the window instead of having landed: final Y velocity=" + finalVy + " m/s");
+                            forceChunksNearOrigin(level, minChunkX, maxChunkX, minChunkZ, maxChunkZ, false);
+                            helper.succeed();
+                        } catch (RuntimeException | Error e) {
+                            forceChunksNearOrigin(level, minChunkX, maxChunkX, minChunkZ, maxChunkZ, false);
+                            throw e;
+                        }
+                    });
+                } catch (RuntimeException | Error e) {
+                    forceChunksNearOrigin(level, minChunkX, maxChunkX, minChunkZ, maxChunkZ, false);
+                    throw e;
+                }
+            });
+        } catch (RuntimeException | Error e) {
+            forceChunksNearOrigin(level, minChunkX, maxChunkX, minChunkZ, maxChunkZ, false);
+            throw e;
+        }
+    }
+
+    /** Force-loads (or releases) every chunk a near-origin absolute-coordinate rig's own block range
+     * actually touches -- not just the chunk under the origin corner, which an earlier attempt at this
+     * same fix got wrong for a structure spanning more than one 16-block chunk on an axis at a
+     * non-chunk-aligned origin. */
+    private static void forceChunksNearOrigin(net.minecraft.server.level.ServerLevel level,
+            int minChunkX, int maxChunkX, int minChunkZ, int maxChunkZ, boolean forced) {
+        for (int cx = minChunkX; cx <= maxChunkX; cx++) {
+            for (int cz = minChunkZ; cz <= maxChunkZ; cz++) {
+                level.setChunkForced(cx, cz, forced);
+            }
+        }
+    }
+
     /** Review, round 2: production-path coverage for GearDrive's removed opposing-direction gate
      * (MINECRAFT-401's core ask), mirrored in both directions, through a real tick/substep path -- not
      * only {@code GearDriveTest}'s pure-function checks. Builds real forward speed in D1, then switches to

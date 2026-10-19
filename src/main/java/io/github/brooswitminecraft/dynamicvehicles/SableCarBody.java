@@ -8,6 +8,7 @@ import dev.ryanhcode.sable.api.physics.object.box.BoxPhysicsObject;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.Pose3d;
+import io.github.brooswitminecraft.dynamicterrain.Erosion;
 import io.github.brooswitminecraft.dynamicterrain.SurfaceProperties;
 import io.github.brooswitminecraft.dynamicterrain.Surfaces;
 import io.github.brooswitminecraft.dynamicterrain.TireContactSampler;
@@ -42,14 +43,15 @@ final class SableCarBody {
     private final RigidBodyHandle body;
     private double lastSlipSpeed;
     private double lastSpinSlip;
-    /** Whether any wheel had a positive suspension force on the last tick (MINECRAFT-447 GameTest support):
-     * {@code CarEntity}'s own vanilla {@code onGround()} is never updated for this entity (its position is
-     * set directly from the Sable body, not through vanilla's move/collision path that normally maintains
-     * that flag) -- observed directly: a GameTest polling {@code car.onGround()} never saw it become true
-     * even long after the car had visibly landed and settled. This is the real signal {@code tick}'s own
-     * {@code touching} local already computes every tick; it only needed persisting to be readable between
-     * ticks. */
-    private boolean lastTouching;
+    // MINECRAFT-401 review, round 4: the REAL arguments the production path actually passed to
+    // SlipReporter.report() this tick, and the REAL Erosion.Result it actually returned -- captured at
+    // the one real call site below, not recomputed by a test from a peak value and an assumed load.
+    // DISABLED/SKIPPED/RESISTED whenever no wheel's wearSlipMax crossed the report threshold this tick
+    // (the loop below never calls report() at all, so these simply hold their last real value, same as
+    // lastSlipSpeed above).
+    private double lastErosionReportSlipSpeed;
+    private double lastErosionReportLoadKg;
+    private Erosion.Result lastErosionResult = Erosion.Result.SKIPPED;
     // One real spin rate per wheel (rad/s), persisted tick to tick and advanced sub-step to sub-step by
     // WheelMath.spinRate - state, not a value re-derived from scratch each call. See spinRate's own
     // javadoc for why a gripping wheel is pulled to ground speed rather than carrying forward a stale slip.
@@ -59,6 +61,47 @@ final class SableCarBody {
     // this state into it would re-entangle the tick-dt-evaluated reporting contract with a value that is
     // itself integrated sub-step by sub-step, which is exactly what that contract exists to avoid.
     private final double[] wheelSpin;
+    // Drivetrain state (MINECRAFT-401), persisted tick to tick like wheelSpin above. automaticGearIndex is
+    // only ever advanced while gear == AUTOMATIC (see tick()'s own call to DrivetrainMath.automaticGearIndex);
+    // it otherwise holds whatever it last was, so re-selecting AUTOMATIC resumes from a sensible gear
+    // instead of always restarting at D1. engineRpm is read by SableCompat for the client-facing sound/debug
+    // telemetry the ticket asks for; both are derived once per tick, not per sub-step, from the SAME
+    // wheelSpin snapshot the sub-step loop below starts from -- one tick's lag behind the spin the loop
+    // itself produces, the same lag every other "fixed for the whole tick" value in this method already has.
+    private int automaticGearIndex;
+    private double engineRpm = DrivetrainMath.IDLE_RPM;
+    private double gearRatio = DrivetrainMath.ratioFor(DrivetrainMath.GEAR_RATIOS.length - 1);
+    // Diagnostic only (MINECRAFT-401 review, round 5 ledge-test investigation): whether ANY wheel's
+    // suspension force was positive (the exact same `touching` condition that gates box.wakeUp() below)
+    // as of the end of the last tick -- lets a caller distinguish "genuinely airborne" from "still grounded
+    // but not yet falling fast" when a fall isn't showing up in velocity.
+    // Also MINECRAFT-447's own grounded signal: CarEntity's vanilla onGround() is never updated for this
+    // entity (its position is set straight from the Sable body, bypassing the move/collision path that
+    // normally maintains that flag), so a GameTest polling onGround() never sees it become true at all.
+    private boolean lastTouching;
+    // Per-wheel telemetry for /dtcar debug (MINECRAFT-401 review: the ticket's own acceptance criteria
+    // calls these out by name -- contact speed, slip, applied force/torque -- not just gear/RPM). Written
+    // alongside wheelSpin, below the same force<=0 guard, so they freeze with it for an
+    // airborne/zero-load/raycast-miss wheel rather than reading as live for a wheel nothing is touching.
+    private final double[] wheelContactSpeed;
+    private final double[] wheelSlip;
+    private final double[] wheelForce;
+    // Review, round 8: isolates JUST the recovery reaction's own contribution to wheelForce (0 whenever
+    // this sub-step did not recover, i.e. excessForce != 0), so a test can check the reaction's own
+    // momentum/Newton's-third-law identity directly against this tick's actual production application,
+    // not against a reproduction of the formula that computed it - a unit test reproducing the formula
+    // cannot catch a bug where the formula is right but applying it (or applying it twice, or with the
+    // wrong sign) at the call site is wrong, since the reproduction and the call site would then disagree
+    // with the real world identically. Same "last sub-step wins" snapshot convention as wheelForce itself.
+    private final double[] wheelReactionForce;
+    // Review, round 9: the friction circle is longitudinal+lateral combined (hypot), not longitudinal
+    // alone - a test checking only wheelForce against the circle's own ceiling could pass while the
+    // COMBINED force silently exceeds it, if cornering lateral force moved into the budget this tick.
+    private final double[] wheelLateralForce;
+    // Review, round 10: this tick's own actual mu*normalForce circle (Tire#frictionLimit), so a test can
+    // check the delivered force against the REAL per-wheel-per-tick budget instead of a fixed global
+    // worst-case ceiling - tighter, and catches a smaller overflow the generous global bound would miss.
+    private final double[] wheelFrictionLimit;
     // Per-wheel values published to clients for rendering (MINECRAFT-122). Airborne/zero-load/raycast-miss
     // behaviour differs per value, each deliberate:
     //  - suspensionTravel is replaced wholesale every tick from pass 1's own compressions[] (the single
@@ -102,6 +145,12 @@ final class SableCarBody {
         this.box = box;
         this.body = body;
         this.wheelSpin = new double[spec.mounts().length];
+        this.wheelContactSpeed = new double[spec.mounts().length];
+        this.wheelSlip = new double[spec.mounts().length];
+        this.wheelForce = new double[spec.mounts().length];
+        this.wheelReactionForce = new double[spec.mounts().length];
+        this.wheelLateralForce = new double[spec.mounts().length];
+        this.wheelFrictionLimit = new double[spec.mounts().length];
         this.suspensionTravel = new double[spec.mounts().length];
         this.steerAngle = new double[spec.mounts().length];
         this.lastContactBlockPos = new BlockPos[spec.mounts().length];
@@ -153,6 +202,61 @@ final class SableCarBody {
         Vector3d down = orientation.transform(new Vector3d(0, -1, 0));
 
         Vector3d carForward = orientation.transform(new Vector3d(0, 0, 1));
+
+        // Drivetrain (MINECRAFT-401): resolve the gear ratio actually engaged this tick, once, from the
+        // driven wheels' own spin as it stood at the end of the LAST tick (wheelSpin is only updated inside
+        // the sub-step loop below) -- see the field's own comment for why that one-tick lag is acceptable.
+        // All four wheels are driven (DRIVE_FORCE's own comment: "per wheel, all-wheel drive"), so the
+        // average of their magnitudes is the drivetrain's own input speed; averaging rather than picking one
+        // wheel keeps a single wheel's momentary wheelspin from single-handedly forcing an automatic shift.
+        int wheelCountForDrivetrain = spec.mounts().length;
+        double drivenWheelSpin = 0.0;
+        for (int w = 0; w < wheelCountForDrivetrain; w++) {
+            drivenWheelSpin += Math.abs(wheelSpin[w]);
+        }
+        drivenWheelSpin /= wheelCountForDrivetrain;
+        // There is exactly one engine regardless of gear, so exactly one rawEngineRpm reading feeds the
+        // limiter below -- computed from whichever ratio is actually engaged this tick (REVERSE's own
+        // ratio, the resolved manual/automatic ratio, or NEUTRAL's decoupled free-rev, which bypasses the
+        // engine's rotational inertia entirely since nothing couples it to a wheel to have inertia against).
+        //
+        // Review, round 5: this used to ALSO smooth this value through DrivetrainMath.smoothedRpm (round
+        // 2's fix) before the limiter read it, on top of the round-5 fix below that already bounds how
+        // fast wheelSpin itself (and so drivenWheelSpin, and so this rawTarget) can change per step. Doing
+        // both compounded into enough extra lag to fail opposingDirectionThrottleDecelerateAndReverseInBothMirroredDirections
+        // and starve carRecoversCleanlyAfterDrivingOffALedgeAndLanding of real acceleration within its own
+        // window -- the SAME physical inertia counted twice. The wheel-level fix (DrivetrainMath.
+        // boundedSpinTowardSnap, applied to wheelSpin[] itself below in the per-wheel loop) is the
+        // physically-grounded one the round-5 review asked for; it already makes drivenWheelSpin change
+        // gradually at the SOURCE, which is sufficient on its own to keep rawRpm/engineRpm/
+        // limiterTorqueFactor gradual too (the gradual-recovery GameTest's own per-wheel assertions confirm
+        // this end-to-end) -- so the separate engine-side smoothing step is now redundant and removed.
+        double rawEngineRpm;
+        if (gear == CarPhysics.Gear.NEUTRAL) {
+            gearRatio = 0.0;
+            rawEngineRpm = DrivetrainMath.freeRevRpm(throttle);
+        } else {
+            if (gear == CarPhysics.Gear.REVERSE) {
+                gearRatio = DrivetrainMath.REVERSE_RATIO;
+            } else if (gear == CarPhysics.Gear.AUTOMATIC) {
+                automaticGearIndex = DrivetrainMath.automaticGearIndex(automaticGearIndex, drivenWheelSpin);
+                gearRatio = DrivetrainMath.ratioFor(automaticGearIndex);
+            } else {
+                gearRatio = DrivetrainMath.ratioFor(gear.manualIndex());
+            }
+            rawEngineRpm = DrivetrainMath.rawRpm(drivenWheelSpin, gearRatio);
+        }
+        engineRpm = DrivetrainMath.clampRpm(rawEngineRpm);
+        // Couples the rev limiter to delivered torque, not just to the displayed RPM number: forceMultiplier
+        // scales the engaged ratio's own force, limiterTorqueFactor cuts it toward 0 as RPM nears the
+        // limiter -- gradually, because drivenWheelSpin (and so rawEngineRpm) is itself now bounded by the
+        // wheel-level fix below, not because this value is separately smoothed. Reverse's own fixed force
+        // is cut by the exact same factor; harmless when not actually in REVERSE, since GearDrive.drive
+        // only ever reads whichever of the two its own gear branch applies.
+        double limiterTorqueFactor = DrivetrainMath.limiterTorqueFactor(rawEngineRpm);
+        double driveForceMultiplier = DrivetrainMath.forceMultiplier(gearRatio) * limiterTorqueFactor;
+        double effectiveReverseForce = REVERSE_FORCE * limiterTorqueFactor;
+
         boolean touching = false;
         double slipThisTick = 0.0;
         double spinSlipThisTick = 0.0;
@@ -270,6 +374,19 @@ final class SableCarBody {
         Vector3d subAngular = new Vector3d(angular);
         double[] wearSlipMax = new double[wheelCount];
         double[] wearSlipForce = new double[wheelCount];
+        // Review, round 7: the wheel-spin-recovery reaction (below) is a real contact-patch sliding event
+        // (the wheel surface differs from ground speed while it's being despun/respun), so it belongs in
+        // the SAME slip/erosion accounting every other sliding event already feeds, not a parallel one.
+        // Accumulated as an IMPULSE (summed across sub-steps, exactly like the chassis's own delivered
+        // impulse) rather than read per-sub-step, for the same substep-count-invariance reason
+        // WheelSubStepper.subStepSlipSpeed evaluates reportedSlip at the tick's own dt: a sum of impulses
+        // is exact regardless of how many sub-steps it was split across, where a per-sub-step force/spin
+        // read is not. Converted to an equivalent slip SPEED (impulse / effectiveMass, m/s - the same unit
+        // tire().slipSpeed()/reportedSlip already use) once, after the sub-step loop, and folded into the
+        // existing wearSlipMax/wearSlipForce bookkeeping below - the existing ">0.3"/once-per-tick/
+        // SlipReporter guards apply to it exactly as they already do to reportedSlip, unmodified.
+        double[] recoveryImpulseAccum = new double[wheelCount];
+        double[] recoveryLoadForce = new double[wheelCount];
 
         for (int sub = 0; sub < subSteps; sub++) {
             double forwardSpeed = subLinear.dot(carForward);
@@ -312,6 +429,17 @@ final class SableCarBody {
 
                 BlockHitResult hit = wheelHits[wheel];
                 if (hit.getType() == HitResult.Type.MISS) {
+                    // Review, round 9: unlike wheelForce/wheelSpin (which deliberately FREEZE at their
+                    // last grounded value here - see the force<=0 guard's own comment below), a stale
+                    // wheelReactionForce reading is actively wrong, not just stale: wheelSpin freezing
+                    // means THIS tick's own spin delta reads as exactly 0, and a nonzero reaction left
+                    // over from the last tick this wheel was actually grounded would then violate the
+                    // very momentum identity (reaction == -(deltaSpin)*inertia/radius/dt) it exists to let
+                    // a test check - CI caught exactly this. Clear it explicitly; it is not meant to
+                    // persist past the sub-step that actually produced it.
+                    wheelReactionForce[wheel] = 0.0;
+                    wheelLateralForce[wheel] = 0.0;
+                    wheelFrictionLimit[wheel] = 0.0;
                     continue;
                 }
                 double force = forces[wheel];
@@ -335,6 +463,10 @@ final class SableCarBody {
                 // extra impulse it contributes over the whole tick is the same order as the un-sub-stepped
                 // case, not growing with N.)
                 if (force <= 0) {
+                    // Same staleness fix as the MISS guard above, for the same reason.
+                    wheelReactionForce[wheel] = 0.0;
+                    wheelLateralForce[wheel] = 0.0;
+                    wheelFrictionLimit[wheel] = 0.0;
                     continue;
                 }
                 touching = true;
@@ -354,7 +486,7 @@ final class SableCarBody {
 
                 // Accelerator direction follows the selected gear, and the brake always just brakes --
                 // see GearDrive's own javadoc (MINECRAFT-382).
-                double drive = GearDrive.drive(throttle, forwardSpeed, gear, DRIVE_FORCE, REVERSE_FORCE, spec.forceScale(), spec.maxSpeed());
+                double drive = GearDrive.drive(throttle, forwardSpeed, gear, driveForceMultiplier, DRIVE_FORCE, effectiveReverseForce, spec.forceScale(), spec.maxSpeed());
                 double brake = GearDrive.brake(throttle, forwardSpeed, BRAKE_FORCE, spec.forceScale());
                 double lateralScale = 1.0;
                 double brakeGain = 1.0;
@@ -388,7 +520,7 @@ final class SableCarBody {
                     double[] partnerMount = spec.mounts()[partner];
                     boolean left = mount[0] < 0.0;
                     double partnerDrive = TorqueDistribution.distribute(
-                            GearDrive.drive(throttle, forwardSpeed, gear, DRIVE_FORCE, REVERSE_FORCE, spec.forceScale(), spec.maxSpeed()),
+                            GearDrive.drive(throttle, forwardSpeed, gear, driveForceMultiplier, DRIVE_FORCE, effectiveReverseForce, spec.forceScale(), spec.maxSpeed()),
                             partnerMount[2] > 0.0, partnerMount[0] < 0.0, tuning, steer);
                     LimitedSlipDifferential.DrivePair axleDrive = left
                             ? LimitedSlipDifferential.distribute(drive, partnerDrive,
@@ -435,8 +567,49 @@ final class SableCarBody {
                 // make excessForce nonzero even while gripping, so a gripping wheel would never stop
                 // "spinning" rather than snapping to ground speed - see WheelMath.spinRate's javadoc.
                 double excessForce = tire.commandLongitudinal() - tire.longitudinal();
-                wheelSpin[wheel] = WheelMath.spinRate(wheelSpin[wheel], spec.wheelRadius(), vLong, excessForce,
+                double priorSpin = wheelSpin[wheel];
+                double snappedSpin = WheelMath.spinRate(priorSpin, spec.wheelRadius(), vLong, excessForce,
                         WheelMath.WHEEL_INERTIA, subDt);
+                // Review, round 5: bound WheelMath.spinRate's own zero-excess snap to what kinetic friction
+                // could actually despin this wheel by this step -- see DrivetrainMath.boundedSpinTowardSnap's
+                // own javadoc. Only this one branch changes; excessForce != 0 still reads spinRate's own
+                // return value exactly as before, untouched.
+                //
+                // Review, round 6: two things round 5 missed about WHERE that bounding torque comes from.
+                // First, the excessForce != 0 branch needs no chassis reaction because its extra torque is
+                // the ENGINE's own (driveForce exceeding what the circle delivers) - entirely internal to
+                // the driveline, already fully accounted by handing the chassis exactly tire.longitudinal()
+                // and nothing more. This branch is different: the wheel isn't gripping because it's being
+                // driven within the circle, it's gripping because excessForce reads exactly 0 - any torque
+                // that still changes its spin here can only come from the GROUND (kinetic friction against
+                // the leftover spin/ground-speed mismatch), and a ground-sourced torque demands an equal and
+                // opposite reaction on the chassis (Newton's third law) - round 5 bounded the torque but
+                // never paid that reaction, conjuring momentum. Second, that friction is drawn from the SAME
+                // circle this step's longitudinal/lateral tire forces already spent part of, not a second,
+                // independent mu*normalForce budget - bound by the circle's remaining headroom instead.
+                double reactionImpulse = 0.0;
+                if (excessForce == 0.0) {
+                    double frictionHeadroom = Math.max(0.0,
+                            tire.frictionLimit() - Math.hypot(tire.longitudinal(), tire.lateral()));
+                    double recoveredSpin = DrivetrainMath.boundedSpinTowardSnap(priorSpin, snappedSpin,
+                            frictionHeadroom, spec.wheelRadius(), WheelMath.WHEEL_INERTIA, subDt);
+                    // The same torque balance WheelMath.spinRate itself uses (a force F at the contact
+                    // produces Δspin = F*radius/inertia*dt) relates a GROUND force to a WHEEL-torque
+                    // reaction of the OPPOSITE sign on this model's own sign convention (a positive, forward
+                    // drive force resists being spun up, per spinRate's existing excessForce contract) -
+                    // solving that same relation for the force that would have produced THIS step's actual
+                    // (bounded) Δspin gives the one-time chassis impulse below: spin decreasing (overspin
+                    // bleeding off) pays out as a FORWARD impulse, spin increasing (a locked wheel catching
+                    // back up) as a backward one, matching the two cases driving/braking already use the
+                    // opposite sign for.
+                    reactionImpulse = -(recoveredSpin - priorSpin) * WheelMath.WHEEL_INERTIA / spec.wheelRadius();
+                    impulseWorld.fma(reactionImpulse, forward);
+                    wheelSpin[wheel] = recoveredSpin;
+                    recoveryImpulseAccum[wheel] += Math.abs(reactionImpulse);
+                    recoveryLoadForce[wheel] = force;
+                } else {
+                    wheelSpin[wheel] = snappedSpin;
+                }
                 double spinSlip = WheelMath.slipFromSpin(wheelSpin[wheel], spec.wheelRadius(), vLong);
                 spinSlipThisTick = Math.max(spinSlipThisTick, Math.abs(spinSlip));
                 // Reported slip (feeds slipThisTick/lastSlipSpeed/wearSlip/SlipReporter) is evaluated at the
@@ -446,6 +619,18 @@ final class SableCarBody {
                 double reportedSlip = WheelSubStepper.subStepSlipSpeed(vLong, vLat, force, gripMu, rollingCoefficient,
                         lateralScale, drive, brake, brakeGain, effectiveMass, dt);
                 slipThisTick = Math.max(slipThisTick, reportedSlip);
+                // MINECRAFT-401 review: debug telemetry naming contact speed, per-wheel slip and applied
+                // force explicitly. Last-sub-step-wins, same as every other per-wheel value below this
+                // force<=0 guard -- these are a snapshot for /dtcar debug, not integrated state.
+                wheelContactSpeed[wheel] = vLong;
+                wheelSlip[wheel] = reportedSlip;
+                // Review, round 7: this must report the TOTAL longitudinal force actually delivered to the
+                // chassis this sub-step, not just tire.longitudinal() -- the recovery reaction above (0 when
+                // not recovering) is real, applied force that was previously missing from this telemetry.
+                wheelForce[wheel] = tire.longitudinal() + reactionImpulse / subDt;
+                wheelReactionForce[wheel] = reactionImpulse / subDt;
+                wheelLateralForce[wheel] = tire.lateral();
+                wheelFrictionLimit[wheel] = tire.frictionLimit();
                 // SlipReporter must fire at most once per wheel per tick (not once per sub-step), so we only
                 // track the worst wearSlip seen across this tick's sub-steps here, paired with the force at
                 // the sub-step that produced it (so the reported load matches the reported slip), and report
@@ -474,9 +659,35 @@ final class SableCarBody {
             subLinear = body.getLinearVelocity(new Vector3d());
             subAngular = body.getAngularVelocity(new Vector3d());
         }
+        double recoveryEffectiveMass = spec.massKg() / 4.0;
+        // forwardSpeed itself is sub-step-loop-local; this re-derives it the same way (subLinear.dot
+        // (carForward)) from the loop's own final velocity, consistent with every other "last sub-step
+        // wins" value already read after that loop ends.
+        double finalForwardSpeed = subLinear.dot(carForward);
         for (int wheel = 0; wheel < wheelCount; wheel++) {
+            // Review, round 7: fold the recovery reaction's own equivalent slip speed (this tick's total
+            // accumulated reaction impulse / effectiveMass - see the accumulator's own comment above) into
+            // the EXISTING wearSlipMax/wearSlipForce bookkeeping once, exactly like any other slip source
+            // already competing for that same "worst this tick" slot - no separate threshold, no separate
+            // SlipReporter call.
+            if (recoveryImpulseAccum[wheel] > 0.0) {
+                double recoverySlipSpeed = recoveryImpulseAccum[wheel] / recoveryEffectiveMass;
+                double recoveryWear = CarConfig.WEAR_ENABLED.get()
+                        ? CarEffectsMath.wearSlip(throttle, finalForwardSpeed, recoverySlipSpeed, CarConfig.WEAR_STRENGTH.get())
+                        : recoverySlipSpeed;
+                if (recoveryWear > wearSlipMax[wheel]) {
+                    wearSlipMax[wheel] = recoveryWear;
+                    wearSlipForce[wheel] = recoveryLoadForce[wheel];
+                }
+                slipThisTick = Math.max(slipThisTick, recoverySlipSpeed);
+                wheelSlip[wheel] = Math.max(wheelSlip[wheel], recoverySlipSpeed);
+            }
             if (wearSlipMax[wheel] > 0.3) {
-                SlipReporter.report(level, wheelHits[wheel].getBlockPos(), wearSlipMax[wheel], wearSlipForce[wheel] / GRAVITY);
+                double loadKg = wearSlipForce[wheel] / GRAVITY;
+                Erosion.Result result = SlipReporter.report(level, wheelHits[wheel].getBlockPos(), wearSlipMax[wheel], loadKg);
+                lastErosionReportSlipSpeed = wearSlipMax[wheel];
+                lastErosionReportLoadKg = loadKg;
+                lastErosionResult = result;
             }
         }
         // MINECRAFT-259: water/lava buoyancy, independent of speed -- a car sitting still in a flooded
@@ -536,13 +747,13 @@ final class SableCarBody {
         }
         lastSlipSpeed = slipThisTick;
         lastSpinSlip = spinSlipThisTick;
-        lastTouching = touching;
         if (CarDebug.enabled) {
             drawDebug(position, orientation, hits);
         }
         if (touching || throttle != 0 || steer != 0 || handbrake) {
             box.wakeUp();
         }
+        lastTouching = touching;
     }
 
     /** Downward speed (m/s) below which a body counts as "not actually falling", so a time-to-touchdown
@@ -766,12 +977,6 @@ final class SableCarBody {
         return lastSlipSpeed;
     }
 
-    /** Whether any wheel had a positive suspension force on the last tick -- see {@link #lastTouching}'s
-     * own javadoc for why this exists instead of using vanilla's {@code onGround()}. */
-    boolean touching() {
-        return lastTouching;
-    }
-
     /** GameTest-only hook (MINECRAFT-447 review): seeds {@link #lastGroundedYawDeg} directly, so a
      * direction-only heading-alignment regression can exercise a clean single-axis case (spawned airborne,
      * zero initial angular velocity, no tumble) without needing an actual prior grounded tick to establish
@@ -792,6 +997,20 @@ final class SableCarBody {
         body.addLinearAndAngularVelocity(linear, new Vector3d());
     }
 
+    /** The REAL slip speed (m/s), load (kg) and {@link Erosion.Result} the production tick last actually
+     * passed to/got back from {@link SlipReporter#report} -- not a value a caller recomputes itself. */
+    double lastErosionReportSlipSpeed() {
+        return lastErosionReportSlipSpeed;
+    }
+
+    double lastErosionReportLoadKg() {
+        return lastErosionReportLoadKg;
+    }
+
+    Erosion.Result lastErosionResult() {
+        return lastErosionResult;
+    }
+
     /** Each wheel's suspension travel as of the last tick's single raycast, metres (a copy; not live state). */
     double[] suspensionTravel() {
         return suspensionTravel.clone();
@@ -807,9 +1026,65 @@ final class SableCarBody {
         return wheelSpin.clone();
     }
 
+    /** Each wheel's own contact-patch speed (m/s) and applied longitudinal force (N) as of the last tick
+     * it was grounded (MINECRAFT-401 review, round 5: evidence for actual wheel/contact torque-cut
+     * recovery, not just smoothed engine audio). Copies; not live state. */
+    double[] wheelContactSpeeds() {
+        return wheelContactSpeed.clone();
+    }
+
+    double[] wheelForces() {
+        return wheelForce.clone();
+    }
+
+    /** Review, round 8: JUST the recovery reaction's own contribution to {@link #wheelForces()} (0 when
+     * not recovering) -- see {@link #wheelReactionForce}'s own comment for why this is tracked
+     * separately. */
+    double[] wheelReactionForces() {
+        return wheelReactionForce.clone();
+    }
+
+    /** Review, round 9: each wheel's own lateral tire force this tick -- the friction circle is
+     * longitudinal+lateral combined (hypot), so a test checking the circle invariant against
+     * {@link #wheelForces()} alone could miss a combined-force overflow a cornering tick introduces. */
+    double[] wheelLateralForces() {
+        return wheelLateralForce.clone();
+    }
+
+    /** Review, round 10: this tick's own actual {@code Tire#frictionLimit()} per wheel (0 when not
+     * gripping at all), so a test can check the delivered force against the REAL per-tick circle instead
+     * of a fixed global worst-case ceiling. */
+    double[] wheelFrictionLimits() {
+        return wheelFrictionLimit.clone();
+    }
+
+    /** Engine RPM implied by the drivetrain this tick (MINECRAFT-401): idle in NEUTRAL scaled by throttle,
+     * otherwise {@link DrivetrainMath#engineRpm} through whichever ratio is actually engaged. */
+    double engineRpm() {
+        return engineRpm;
+    }
+
+    /** 0-based index into {@link DrivetrainMath#GEAR_RATIOS} that automatic mode is currently holding,
+     * regardless of whether {@link CarPhysics.Gear#AUTOMATIC} is the gear actually selected right now. */
+    int automaticGearIndex() {
+        return automaticGearIndex;
+    }
+
+    /** The gear ratio actually engaged this tick (the manual gear's own ratio, automatic mode's current
+     * pick, or {@link DrivetrainMath#REVERSE_RATIO}); 0.0 in NEUTRAL. */
+    double gearRatio() {
+        return gearRatio;
+    }
+
     /** The body's speed, m/s. */
     double speed() {
         return body.getLinearVelocity(new Vector3d()).length();
+    }
+
+    /** Diagnostic only (MINECRAFT-401 review, round 5): whether any wheel had a positive suspension
+     * force as of the end of the last tick -- see {@link #lastTouching}. */
+    boolean touching() {
+        return lastTouching;
     }
 
     /** The body's current orientation, for saving. */
@@ -819,13 +1094,14 @@ final class SableCarBody {
         return new org.joml.Quaternionf((float) q.x(), (float) q.y(), (float) q.z(), (float) q.w());
     }
 
-    /** Debug summary: height of the body centre above the ground below it, pitch and roll in degrees, and
-     * (MINECRAFT-447) each Diffuser KIT assist's own last-applied torque, N*m -- {@code diffuserRoll} (R16),
-     * {@code diffuserPitch} (R17), {@code diffuserHeading} (R18), {@code diffuserTrajectory} (R19), always
-     * 0.00 for every stock car today (none carries a non-identity {@code DiffuserTuning}) and never the
-     * same quantity as any MINECRAFT-446 wing/downforce number, which is a grip multiplier applied inside
-     * {@code WheelMath}/{@code CamberToeGripModel}, not a torque, and is not read or reported here. */
-    String describe() {
+    /** Debug summary: height of the body centre above the ground below it, pitch and roll in degrees, the
+     * drivetrain state (MINECRAFT-401, see below), and (MINECRAFT-447) each Diffuser KIT assist's own
+     * last-applied torque, N*m -- {@code diffuserRoll} (R16), {@code diffuserPitch} (R17),
+     * {@code diffuserHeading} (R18), {@code diffuserTrajectory} (R19), always 0.0 for every stock car today
+     * (none carries a non-identity {@code DiffuserTuning}) and never the same quantity as any
+     * MINECRAFT-446 wing/downforce number, which is a grip multiplier applied inside {@code WheelMath}/
+     * {@code CamberToeGripModel}, not a torque, and is not read or reported here. */
+    String describe(CarPhysics.Gear gear, double throttle) {
         box.updatePose();
         Pose3d pose = new Pose3d(box.getPose());
         Quaterniond q = new Quaterniond(pose.orientation());
@@ -834,10 +1110,30 @@ final class SableCarBody {
         double pitch = Math.toDegrees(Math.asin(Math.max(-1, Math.min(1, fwd.y))));
         double roll = Math.toDegrees(Math.atan2(q.transform(new Vector3d(1, 0, 0)).y, up.y));
         Vector3d v = body.getLinearVelocity(new Vector3d());
-        return String.format(
-                "body y=%.3f pitch=%.2f roll=%.2f speed=%.2f spinSlip=%.2f "
-                        + "diffuserRoll=%.1f diffuserPitch=%.1f diffuserHeading=%.1f diffuserTrajectory=%.1f",
-                pose.position().y, pitch, roll, v.length(), lastSpinSlip,
-                lastDiffuserRollTorque, lastDiffuserPitchTorque, lastDiffuserHeadingTorque, lastDiffuserTrajectoryTorque);
+        // MINECRAFT-401 (review: complete the telemetry the ticket's own acceptance criteria names):
+        // requested mode/gear, the effective gear/ratio it resolves to (AUTOMATIC's own current pick, or
+        // the manual gear itself), engine RPM, throttle/brake, and every wheel's own angular (spin) and
+        // linear speed, this tick's contact-patch speed, slip and applied force/torque -- see the class
+        // javadoc for which values are "fixed for the whole tick" versus live.
+        String effective = gear == CarPhysics.Gear.AUTOMATIC
+                ? "D" + (automaticGearIndex + 1) + "(auto)"
+                : gear.name();
+        double brakeInput = Math.max(0.0, -throttle);
+        double throttleInput = Math.max(0.0, throttle);
+        StringBuilder wheels = new StringBuilder();
+        for (int wheel = 0; wheel < wheelSpin.length; wheel++) {
+            double wheelLinear = wheelSpin[wheel] * spec.wheelRadius();
+            double torque = wheelForce[wheel] * spec.wheelRadius();
+            wheels.append(String.format(" w%d(spin=%.2f linear=%.2f contact=%.2f slip=%.2f force=%.0f torque=%.0f)",
+                    wheel, wheelSpin[wheel], wheelLinear, wheelContactSpeed[wheel], wheelSlip[wheel],
+                    wheelForce[wheel], torque));
+        }
+        return String.format("body y=%.3f pitch=%.2f roll=%.2f speed=%.2f spinSlip=%.2f slip=%.2f "
+                + "requestedGear=%s effectiveGear=%s ratio=%.2f rpm=%.0f throttle=%.2f brake=%.2f"
+                + " diffuserRoll=%.1f diffuserPitch=%.1f diffuserHeading=%.1f diffuserTrajectory=%.1f%s",
+                pose.position().y, pitch, roll, v.length(), lastSpinSlip, lastSlipSpeed,
+                gear.name(), effective, gearRatio, engineRpm, throttleInput, brakeInput,
+                lastDiffuserRollTorque, lastDiffuserPitchTorque, lastDiffuserHeadingTorque,
+                lastDiffuserTrajectoryTorque, wheels);
     }
 }

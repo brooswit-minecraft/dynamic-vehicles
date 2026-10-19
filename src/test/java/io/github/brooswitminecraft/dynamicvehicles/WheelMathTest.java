@@ -171,6 +171,34 @@ class WheelMathTest {
     }
 
     @Test
+    void frictionLimitReportsTheCircleThisCallActuallyUsed() {
+        // Review, round 6: SableCarBody's own wheel-spin-recovery reaction derives the circle's remaining
+        // HEADROOM this step from frictionLimit() and the already-delivered longitudinal/lateral force --
+        // it must be exactly mu*normalForce while gripping (not 0, and not some other value), or that
+        // headroom computation would be silently wrong.
+        WheelMath.Tire tire = WheelMath.tire(0, 0, N, 1.1, 1, 1500, 0, DT);
+        assertEquals(1.1 * N, tire.frictionLimit(), 1e-9);
+    }
+
+    @Test
+    void frictionLimitIsZeroWhenNotGripping() {
+        WheelMath.Tire airborne = WheelMath.tire(0, 0, 0, 1.1, 1, 1500, 0, DT);
+        assertEquals(0.0, airborne.frictionLimit(), 1e-9);
+        WheelMath.Tire noGrip = WheelMath.tire(0, 0, N, 0, 1, 1500, 0, DT);
+        assertEquals(0.0, noGrip.frictionLimit(), 1e-9);
+    }
+
+    @Test
+    void frictionLimitTracksTheOverflowingCaseToo() {
+        // Even once the circle is saturated (longitudinal+lateral clamped below the raw demand),
+        // frictionLimit() is still the circle itself, not the (necessarily smaller) demand.
+        WheelMath.Tire tire = WheelMath.tire(0, 0, N, 1.1, 1, 6000, 0, DT);
+        assertEquals(1.1 * N, tire.frictionLimit(), 1e-9);
+        assertEquals(tire.frictionLimit(), Math.hypot(tire.longitudinal(), tire.lateral()), 1e-6,
+                "fully saturated: the circle's headroom (frictionLimit - hypot(...)) must read as exactly 0");
+    }
+
+    @Test
     void gripLimitScalesLinearlyWithVerticalLoad() {
         // MUST-HAVE: grip (the friction limit mu*normalForce) scales with the wheel's own vertical load.
         // Demand (6000 N) must overflow the friction circle at every load compared here (mu*load < 6000,

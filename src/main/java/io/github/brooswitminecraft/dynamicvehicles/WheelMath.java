@@ -56,8 +56,16 @@ public final class WheelMath {
      *        the honest basis for {@link #spinRate}'s own torque balance (not a value a caller should
      *        try to approximate itself: it already folds in rolling resistance and the brake's own
      *        relaxation clamp, both of which a drive/brake-force-only approximation misses).
+     * @param frictionLimit {@code mu * normalForce} as THIS call actually used it (0 when not gripping at
+     *        all) -- the same circle {@code longitudinal}/{@code lateral} were clamped to, exposed so a
+     *        caller computing the circle's remaining HEADROOM this step ({@code frictionLimit -
+     *        hypot(longitudinal, lateral)}, see {@code SableCarBody}'s own wheel-spin-recovery call site)
+     *        does not have to recompute {@code mu * normalForce} itself: {@link DriftTireModel} tunes
+     *        {@code mu} before calling {@link #tire}, so recomputing it at a caller would silently use
+     *        the wrong (untuned) circle for a drift-tuned vehicle.
      */
-    public record Tire(double longitudinal, double lateral, double slipSpeed, double commandLongitudinal) {}
+    public record Tire(double longitudinal, double lateral, double slipSpeed, double commandLongitudinal,
+            double frictionLimit) {}
 
     /**
      * A friction-circle tire: it wants to cancel sideways sliding and to deliver the drive or brake force,
@@ -93,7 +101,7 @@ public final class WheelMath {
     public static Tire tire(double vLong, double vLat, double normalForce, double mu, double rollingCoefficient,
             double lateralScale, double driveForce, double brakeForce, double brakeGain, double effectiveMass, double dt) {
         if (!(normalForce > 0) || !(mu > 0)) {
-            return new Tire(0.0, 0.0, 0.0, 0.0);
+            return new Tire(0.0, 0.0, 0.0, 0.0, 0.0);
         }
         double limit = mu * normalForce;
         double wantLat = -effectiveMass * vLat / dt * RELAXATION * lateralScale;
@@ -121,7 +129,7 @@ public final class WheelMath {
         double demand = Math.hypot(wantLong, wantLat);
         double scale = demand > limit ? limit / demand : 1.0;
         double slip = demand > limit ? (demand - limit) * dt / effectiveMass : 0.0;
-        return new Tire(wantLong * scale, wantLat * scale, slip, wantLong);
+        return new Tire(wantLong * scale, wantLat * scale, slip, wantLong, limit);
     }
 
     /** As above, applying the vehicle's static camber/toe setup before the existing friction-circle math.

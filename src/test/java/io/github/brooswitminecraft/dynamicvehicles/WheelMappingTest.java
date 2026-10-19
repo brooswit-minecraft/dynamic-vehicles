@@ -144,7 +144,7 @@ class WheelMappingTest {
     void physicalShifterMapsEveryExplicitGearAndLeavesUnmappedButtonsAlone() {
         var mapping = new WheelMapping.ShifterButtons(0, 1, 2, 3, 4, 5, 6, 7);
         CarPhysics.Gear[] expected = {CarPhysics.Gear.NEUTRAL, CarPhysics.Gear.REVERSE, CarPhysics.Gear.D1, CarPhysics.Gear.D2,
-                CarPhysics.Gear.D3, CarPhysics.Gear.D4, CarPhysics.Gear.D5, CarPhysics.Gear.D6};
+                CarPhysics.Gear.D3, CarPhysics.Gear.D4, CarPhysics.Gear.D5, CarPhysics.Gear.AUTOMATIC};
         for (int button = 0; button < expected.length; button++) {
             byte[] sample = new byte[8]; sample[button] = 1;
             assertEquals(expected[button], WheelMapping.shifterGear(sample, mapping));
@@ -158,8 +158,10 @@ class WheelMappingTest {
 
     @Test
     void measuredG29ShifterMapsForwardReverseAndNeutralRelease() {
-        // Measured live on the user's G29 (MINECRAFT-382): forward 1-6 = buttons 12-17, reverse = 18, no
-        // dedicated neutral button -- releasing every gear button is the device's own neutral.
+        // Measured live on the user's G29 (MINECRAFT-382, MINECRAFT-401): positions 1-5 = buttons 12-16
+        // select the manual ratios, position 6 = button 17 selects AUTOMATIC (not a sixth manual ratio),
+        // reverse = 18, no dedicated neutral button -- releasing every gear button is the device's own
+        // neutral.
         var mapping = new WheelMapping.ShifterButtons(-1, 18, 12, 13, 14, 15, 16, 17);
         byte[] sample = new byte[19];
         assertEquals(CarPhysics.Gear.NEUTRAL, WheelMapping.shifterGear(sample, mapping));
@@ -170,7 +172,8 @@ class WheelMappingTest {
         assertEquals(CarPhysics.Gear.D1, WheelMapping.shifterGear(sample, mapping));
         sample[12] = 0;
         sample[17] = 1;
-        assertEquals(CarPhysics.Gear.D6, WheelMapping.shifterGear(sample, mapping));
+        assertEquals(CarPhysics.Gear.AUTOMATIC, WheelMapping.shifterGear(sample, mapping),
+                "MINECRAFT-401: physical position 6 selects automatic mode, not a sixth manual gear");
         sample[17] = 0;
         assertEquals(CarPhysics.Gear.NEUTRAL, WheelMapping.shifterGear(sample, mapping), "releasing a gear button returns to neutral, not the stale gear");
     }
@@ -215,13 +218,14 @@ class WheelMappingTest {
     @Test
     void shifterReverseWinsOverEveryOtherSimultaneousGearButton() {
         // Deterministic conflict resolution (MINECRAFT-382): reverse first, then the dedicated neutral
-        // button, then D1..D6 in order, regardless of what else is held at the same time.
+        // button, then D1..D5 then the sixth (AUTOMATIC) position, regardless of what else is held at the
+        // same time.
         var mapping = new WheelMapping.ShifterButtons(0, 1, 2, 3, 4, 5, 6, 7);
         byte[] everythingDown = {1, 1, 1, 1, 1, 1, 1, 1};
         assertEquals(CarPhysics.Gear.REVERSE, WheelMapping.shifterGear(everythingDown, mapping));
         byte[] neutralAndD1 = {1, 0, 1, 0, 0, 0, 0, 0};
         assertEquals(CarPhysics.Gear.NEUTRAL, WheelMapping.shifterGear(neutralAndD1, mapping));
-        byte[] d2AndD6 = {0, 0, 0, 1, 0, 0, 0, 1};
-        assertEquals(CarPhysics.Gear.D2, WheelMapping.shifterGear(d2AndD6, mapping));
+        byte[] d2AndAutomatic = {0, 0, 0, 1, 0, 0, 0, 1};
+        assertEquals(CarPhysics.Gear.D2, WheelMapping.shifterGear(d2AndAutomatic, mapping));
     }
 }

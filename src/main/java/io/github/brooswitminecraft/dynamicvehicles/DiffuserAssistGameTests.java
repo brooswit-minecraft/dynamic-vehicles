@@ -424,7 +424,7 @@ public final class DiffuserAssistGameTests {
         CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), ON_FLOOR_SPAWN);
         car.setDiffuserTuningForTest(VehicleSpec.DiffuserTuning.IDENTITY);
         helper.runAfterDelay(TELEMETRY_TICKS, () -> {
-            String description = SableCompat.describe(car.sableBody());
+            String description = SableCompat.describe(car.sableBody(), CarPhysics.Gear.AUTOMATIC, 0.0);
             for (String key : new String[] {"diffuserRoll=", "diffuserPitch=", "diffuserHeading=", "diffuserTrajectory="}) {
                 helper.assertTrue(description.contains(key),
                         "describe() telemetry is missing its own \"" + key + "\" key, saw: " + description);

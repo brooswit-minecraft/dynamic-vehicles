@@ -257,6 +257,67 @@ public final class WheelMath {
     }
 
     /**
+     * MINECRAFT-445: as the single-rate overload above, but with independent damping for the compression
+     * and rebound strokes, each itself split into a "slow" rate (at or below {@code dampingKneeSpeed}) and
+     * a "fast" one beyond it, plus a progressive bump stop once compression travels past {@code
+     * bumpStopTravel}. This is a strict generalisation, not a parallel formula: when every one of
+     * {@code slowCompressionDamping}/{@code fastCompressionDamping}/{@code slowReboundDamping}/
+     * {@code fastReboundDamping} is the same value, the damping term below reduces algebraically to exactly
+     * {@code dampingRate * compressionRate} for ANY {@code dampingKneeSpeed} (see {@code
+     * WheelMathTest#fourRateSuspensionForceReducesToSingleRateWhenEveryRateMatches}) -- {@code
+     * VehicleSpec.SuspensionTuning#singleRate} builds exactly that degenerate case for every vehicle on the
+     * roster that has not opted into this ticket's tuning, so this overload changes no existing vehicle's
+     * stock feel.
+     *
+     * @param compression metres the spring is shorter than its rest length (negative: not touching)
+     * @param compressionRate m/s the spring is being squeezed (positive: compressing toward the body,
+     *        negative: extending/rebounding)
+     * @param springRate N/m
+     * @param slowCompressionDamping N*s/m applied to the compressing speed up to {@code dampingKneeSpeed}
+     * @param fastCompressionDamping N*s/m applied to the compressing speed ABOVE {@code dampingKneeSpeed},
+     *        on top of (not instead of) the slow rate's own contribution up to the knee -- a continuous,
+     *        classic digressive damper curve, not a step function
+     * @param slowReboundDamping N*s/m applied to the extending speed up to {@code dampingKneeSpeed}
+     * @param fastReboundDamping N*s/m applied to the extending speed ABOVE {@code dampingKneeSpeed}
+     * @param dampingKneeSpeed m/s, the compression-rate magnitude separating "slow" from "fast" for BOTH
+     *        directions
+     * @param maxForce N, the same spring-force cap the single-rate overload uses
+     * @param bumpStopTravel metres of compression beyond which the progressive bump stop engages, on top of
+     *        the regular spring/damper force; a value at or above the car's own maximum reachable
+     *        compression (the stock {@link VehicleSpec.SuspensionTuning#singleRate}'s {@code
+     *        Double.MAX_VALUE}) disables it entirely, since compression can never exceed it
+     * @param bumpStopRate N/m applied only to the compression PAST {@code bumpStopTravel} (0 disables it,
+     *        same effect as an unreachable {@code bumpStopTravel})
+     * @return the force the spring+damper+bump-stop assembly pushes the car up with, N (never negative)
+     */
+    public static double suspensionForce(double compression, double compressionRate, double springRate,
+            double slowCompressionDamping, double fastCompressionDamping,
+            double slowReboundDamping, double fastReboundDamping, double dampingKneeSpeed,
+            double maxForce, double bumpStopTravel, double bumpStopRate) {
+        if (!(compression > 0)) {
+            return 0.0;
+        }
+        double dampingForce = compressionRate >= 0
+                ? digressiveDamperForce(compressionRate, slowCompressionDamping, fastCompressionDamping, dampingKneeSpeed)
+                : -digressiveDamperForce(-compressionRate, slowReboundDamping, fastReboundDamping, dampingKneeSpeed);
+        double bumpStopForce = compression > bumpStopTravel ? bumpStopRate * (compression - bumpStopTravel) : 0.0;
+        double force = springRate * compression + dampingForce + bumpStopForce;
+        return Math.max(0.0, Math.min(maxForce, force));
+    }
+
+    /** One direction (compression or rebound) of {@link #suspensionForce}'s digressive damper curve: {@code
+     * slowRate * speed} up to {@code kneeSpeed}, then {@code slowRate}'s own contribution at the knee plus
+     * {@code fastRate} for the speed beyond it -- continuous at the knee by construction, so a caller never
+     * sees a force discontinuity as {@code speed} crosses it. {@code speed} is always non-negative here;
+     * {@link #suspensionForce} itself handles the compression/rebound sign split. */
+    private static double digressiveDamperForce(double speed, double slowRate, double fastRate, double kneeSpeed) {
+        if (speed <= kneeSpeed) {
+            return slowRate * speed;
+        }
+        return slowRate * kneeSpeed + fastRate * (speed - kneeSpeed);
+    }
+
+    /**
      * MINECRAFT-443: the production seam a per-car {@code handbrakeScale} config override actually
      * reaches, extracted out of {@code SableCarBody.tick}'s handbrake branch (which calls this exact
      * method, not a reimplementation of it) so the multiplication is itself directly testable without

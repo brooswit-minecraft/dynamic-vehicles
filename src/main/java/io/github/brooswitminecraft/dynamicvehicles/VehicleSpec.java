@@ -82,12 +82,41 @@ public record VehicleSpec(
          * them. Distinct from (and does not touch) the separate, drift-only, already-live {@code
          * TireTuning#handbrakeRearGripCut}, which scales the handbrake's lateral-grip cut, not its brake
          * force, and is owned by {@code CarConfig}, not this per-vehicle field. */
-        double handbrakeScale) {
+        double handbrakeScale,
+        /** Per-vehicle two-rate (compression/rebound) damping and bump stop (MINECRAFT-445), layered on top
+         * of {@link #dampingRate}: see {@link SuspensionTuning} for the full field list and {@link
+         * WheelMath#suspensionForce(double, double, double, double, double, double, double, double, double,
+         * double, double)} for how {@code SableCarBody} consumes it. {@link SuspensionTuning#singleRate}
+         * built from this spec's own {@link #dampingRate} for every vehicle that has not opted in &mdash;
+         * today, every vehicle on the roster &mdash; so that overload reduces to exactly this spec's
+         * existing {@link #dampingRate} behaviour and {@code SableCarBody.tick} is unchanged for them. */
+        SuspensionTuning suspensionTuning) {
 
-    /** As the full (canonical) constructor above, minus the trailing {@link #handbrakeScale} (MINECRAFT-443):
-     * exactly the field list every vehicle spec used before this ticket. Every existing vehicle still calls
-     * this constructor (directly or through a shorter overload below it), with {@link #handbrakeScale}
-     * defaulted to {@code 1.0} (identity). */
+    /** As the full (canonical) constructor above, minus the trailing {@link #suspensionTuning}
+     * (MINECRAFT-445): every existing call site keeps compiling unchanged, with {@link #suspensionTuning}
+     * defaulted to {@link SuspensionTuning#singleRate} of this spec's own {@code dampingRate}. */
+    public VehicleSpec(double halfX, double halfY, double halfZ,
+            double[][] mounts, double wheelRadius, double wheelWidth,
+            double rideHeight, double restLength,
+            double massKg, double springRate, double dampingRate, double maxSpringForce,
+            double wheelbase, double maxSpeed,
+            double forceScale, double enginePitch,
+            double seatY, double seatZ,
+            double looseGrip, double rollingScale,
+            TireTuning tireTuning, double downforceGripPerSpeed, double antiRollScale,
+            List<Seat> seats, VehicleTuning vehicleTuning, double handbrakeScale) {
+        this(halfX, halfY, halfZ, mounts, wheelRadius, wheelWidth, rideHeight, restLength,
+                massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
+                forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
+                downforceGripPerSpeed, antiRollScale, seats, vehicleTuning, handbrakeScale,
+                SuspensionTuning.singleRate(dampingRate));
+    }
+
+    /** As the full (canonical) constructor above, minus the trailing {@link #handbrakeScale} (MINECRAFT-443)
+     * and {@link #suspensionTuning} (MINECRAFT-445): exactly the field list every vehicle spec used before
+     * MINECRAFT-443. Every existing vehicle still calls this constructor (directly or through a shorter
+     * overload below it), with {@link #handbrakeScale} defaulted to {@code 1.0} (identity) and {@link
+     * #suspensionTuning} to {@link SuspensionTuning#singleRate} of its own {@code dampingRate}. */
     public VehicleSpec(double halfX, double halfY, double halfZ,
             double[][] mounts, double wheelRadius, double wheelWidth,
             double rideHeight, double restLength,
@@ -293,6 +322,42 @@ public record VehicleSpec(
         /** Whether this tuning is exactly {@link #IDENTITY}. */
         public boolean isIdentity() {
             return this.equals(IDENTITY);
+        }
+    }
+
+    /**
+     * Per-vehicle two-rate (compression/rebound) damping and bump stop (MINECRAFT-445), layered on top of
+     * the existing {@link VehicleSpec#dampingRate}: {@link WheelMath#suspensionForce(double, double,
+     * double, double, double, double, double, double, double, double, double)} is the production seam that
+     * reads every field here. Grouped into its own small type for the same reason {@link TireTuning} and
+     * {@link VehicleTuning} already are: a different physical domain from either, with its own identity
+     * concept ({@link #singleRate}) rather than a universal constant, since that identity depends on this
+     * particular car's own {@link VehicleSpec#dampingRate}.
+     *
+     * @param fastCompressionDamping N*s/m applied to the compressing speed above {@code dampingKneeSpeed}
+     * @param slowReboundDamping N*s/m applied to the extending (rebound) speed at or below {@code
+     *        dampingKneeSpeed}
+     * @param fastReboundDamping N*s/m applied to the extending (rebound) speed above {@code
+     *        dampingKneeSpeed}
+     * @param dampingKneeSpeed m/s, the compression-rate magnitude separating "slow" from "fast" for both
+     *        compression and rebound
+     * @param bumpStopTravel metres of compression beyond which the progressive bump stop engages, on top
+     *        of the regular spring/damper force
+     * @param bumpStopRate N/m applied only to the compression past {@code bumpStopTravel}
+     */
+    public record SuspensionTuning(double fastCompressionDamping, double slowReboundDamping,
+            double fastReboundDamping, double dampingKneeSpeed, double bumpStopTravel, double bumpStopRate) {
+
+        /** Single-rate damping, no bump stop: {@code fastCompressionDamping}/{@code slowReboundDamping}/
+         * {@code fastReboundDamping} all equal {@code dampingRate} itself (the car's existing, unsplit
+         * damper rate), so {@link WheelMath}'s four-rate {@code suspensionForce} overload reduces
+         * algebraically to exactly {@code dampingRate * compressionRate} regardless of {@code
+         * dampingKneeSpeed} -- see that method's own javadoc for the reduction. {@code bumpStopTravel} is
+         * {@link Double#MAX_VALUE} (compression can never reach it, so the bump stop never engages) and
+         * {@code bumpStopRate} is {@code 0.0}. Every vehicle on the roster that has not opted into this
+         * ticket's tuning uses exactly this, built from its own stock {@code dampingRate}. */
+        public static SuspensionTuning singleRate(double dampingRate) {
+            return new SuspensionTuning(dampingRate, dampingRate, dampingRate, 1.0, Double.MAX_VALUE, 0.0);
         }
     }
 

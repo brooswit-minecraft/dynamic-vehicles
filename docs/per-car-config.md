@@ -149,19 +149,83 @@ architecture this ticket does not change — `drift_car.json` can still set
 `camberDeg`/`toeDeg` (and they will be clamped and stored), but they will be
 inert until a future ticket connects `DriftTireModel` to them.
 
-### Reserved for downstream tasks
+## `tireKit`: two-rate damping and bump stops (MINECRAFT-445)
 
-The schema reserves five top-level keys for the sibling tasks that own those
-systems; this loader tolerates them existing in a file today (Gson ignores any
-key with no matching field) but does not read, validate or apply any of them —
-adding a field under one of these sections with no behaviour behind it would
-itself be "unused config fields," which this ticket's acceptance explicitly
-rules out. Each task adds its own fields here when it implements real
-behaviour, rather than inventing a parallel file or format:
+MINECRAFT-445 owns the `tireKit` section and has begun filling it. **Only the
+fields listed below are implemented**; the rest of that ticket's acceptance
+scope (caster, roll center, anti-dive/anti-squat, tire pressure and rear
+steering) is not in this section yet, and no key for it is read, validated or
+applied — see "Still reserved" at the end of this section.
+
+Every field is optional and nested under a single `tireKit` object. An absent
+`tireKit`, or an absent field within it, keeps that car's stock value for
+exactly the fields it did not mention, by the same rule as the flat fields
+above. Out-of-range values are clamped; non-finite values fall back to stock.
+
+The pre-existing flat `dampingRate` key keeps its meaning as that car's damper
+rate, and is now specifically its **slow-compression** rate: every field below
+defaults to `dampingRate` itself, so a car with no `tireKit` (or a car that
+only overrides `dampingRate`) still damps compression and rebound at one single
+rate, exactly as it did before this ticket. `WheelMath.suspensionForce`'s
+four-rate overload reduces algebraically to `dampingRate * compressionRate`
+whenever all four rates match, for any knee speed — pinned by
+`WheelMathSuspensionTuningTest#reducesToSingleRateForAnyKneeSpeedWhenEveryDampingRateMatches`.
+
+| Key | Unit | Range | Notes |
+|---|---|---|---|
+| `compressionDampingFast` | N·s/m | 0.0 – 40,000.0 | Damping applied to the compression speed ABOVE `dampingKneeSpeed`, on top of (not instead of) the slow rate's own contribution up to the knee — a continuous digressive curve, not a step. Defaults to `dampingRate`. |
+| `reboundDampingSlow` | N·s/m | 0.0 – 40,000.0 | Damping on the extending (rebound) stroke at or below `dampingKneeSpeed`. Defaults to `dampingRate`. |
+| `reboundDampingFast` | N·s/m | 0.0 – 40,000.0 | Damping on the extending stroke above `dampingKneeSpeed`. Defaults to `dampingRate`. |
+| `dampingKneeSpeed` | m/s | 0.0 – 10.0 | The compression-rate magnitude separating "slow" from "fast", for BOTH directions. `0.0` means every speed is "fast". Irrelevant (no observable effect) while all four rates are equal. Defaults to `1.0`. |
+| `bumpStopTravel` | metres | 0.0 – 5.0 | Compression travel beyond which the progressive bump stop engages, on top of the regular spring/damper force. Unlike `rideHeight` this needs no per-car geometry check: a value a car's own suspension can never actually reach is simply inert (the stop never engages), not degenerate. Defaults to `Double.MAX_VALUE` (never engages). |
+| `bumpStopRate` | N/m | 0.0 – 500,000.0 | Applied only to the compression PAST `bumpStopTravel`. `0.0` disables the bump stop regardless of `bumpStopTravel`. Defaults to `0.0`. |
+
+Ranges live in code as `VehicleSpecLimits`' `MIN/MAX_TIRE_KIT_DAMPING`,
+`MIN/MAX_DAMPING_KNEE_SPEED`, `MIN/MAX_BUMP_STOP_TRAVEL` and
+`MIN/MAX_BUMP_STOP_RATE`; the resolved values live on
+`VehicleSpec.SuspensionTuning`, whose `singleRate(dampingRate)` factory is the
+stock (identity) value every car on the roster carries today.
+
+**Every existing car's stock default for this whole section is the identity
+one**: `compressionDampingFast`/`reboundDampingSlow`/`reboundDampingFast` all
+equal that car's own `dampingRate` from the table above, `dampingKneeSpeed` is
+`1.0` (inert), `bumpStopTravel` is unreachable and `bumpStopRate` is `0.0`. No
+car has opted into two-rate damping or a bump stop, so stock driving feel is
+unchanged.
+
+Example, giving the trophy truck a soft slow-compression stroke that firms up
+over fast hits, a stiffer rebound so it does not pogo on landings, and a bump
+stop near the end of its long travel:
+
+```json
+{
+  "dampingRate": 2000.0,
+  "tireKit": {
+    "compressionDampingFast": 9000.0,
+    "reboundDampingSlow": 4000.0,
+    "reboundDampingFast": 11000.0,
+    "dampingKneeSpeed": 1.2,
+    "bumpStopTravel": 0.45,
+    "bumpStopRate": 90000.0
+  }
+}
+```
+
+### Still reserved for downstream tasks
+
+The schema reserves four more top-level keys for the sibling tasks that own
+those systems; this loader tolerates them existing in a file today (Gson
+ignores any key with no matching field) but does not read, validate or apply
+any of them — adding a field under one of these sections with no behaviour
+behind it would be "unused config fields," which MINECRAFT-443's acceptance
+explicitly rules out and MINECRAFT-445's repeats. Each task adds its own fields
+here when it implements real behaviour, rather than inventing a parallel file
+or format. The same rule applies within `tireKit` above: its remaining
+MINECRAFT-445 fields (caster, roll center, anti-dive/anti-squat, tire pressure,
+rear steering) appear there only as that behaviour lands.
 
 | Key | Owner |
 |---|---|
-| `tireKit` | MINECRAFT-445 (suspension/wheel geometry) |
 | `wing` | MINECRAFT-446 (downforce/drag) |
 | `diffuser` | MINECRAFT-447 (orientation assists) |
 | `computer` | MINECRAFT-448 (assists/auto-shift) |

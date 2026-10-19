@@ -171,6 +171,67 @@ class VehicleSpecOverridesTest {
     }
 
     @Test
+    void tireKitOverridesOnlyTheFieldsItSetsAndClampsThem(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", """
+                {
+                  "tireKit": {
+                    "compressionDampingFast": 999999.0,
+                    "reboundDampingSlow": 500.0,
+                    "bumpStopTravel": 0.1,
+                    "bumpStopRate": 60000.0
+                  }
+                }
+                """);
+
+        VehicleSpecOverrides.load(configDir);
+        VehicleSpec.SuspensionTuning tuning = VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR).suspensionTuning();
+
+        // 999999.0 is out of VehicleSpecLimits' range -- clamped, not rejected outright.
+        assertEquals(VehicleSpecLimits.MAX_TIRE_KIT_DAMPING, tuning.fastCompressionDamping());
+        assertEquals(500.0, tuning.slowReboundDamping());
+        assertEquals(0.1, tuning.bumpStopTravel());
+        assertEquals(60000.0, tuning.bumpStopRate());
+        // Fields the tireKit section did not mention keep the stock car's own value.
+        assertEquals(VehicleSpec.CAR.suspensionTuning().fastReboundDamping(), tuning.fastReboundDamping());
+        assertEquals(VehicleSpec.CAR.suspensionTuning().dampingKneeSpeed(), tuning.dampingKneeSpeed());
+    }
+
+    @Test
+    void anAbsentTireKitSectionKeepsTheStockSuspensionTuningInstance(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", "{\"rideHeight\": 1.0}");
+
+        VehicleSpecOverrides.load(configDir);
+
+        assertSame(VehicleSpec.CAR.suspensionTuning(),
+                VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR).suspensionTuning());
+    }
+
+    @Test
+    void overridingDampingRateWithNoTireKitSectionStillActsAsSingleRate(@TempDir Path configDir) throws IOException {
+        // A file that only sets the flat dampingRate (no tireKit at all) must still behave as single-rate
+        // damping at its NEW dampingRate, not the stock car's old one.
+        writeCarsFile(configDir, "car", "{\"dampingRate\": 5000.0}");
+
+        VehicleSpecOverrides.load(configDir);
+        VehicleSpec resolved = VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR);
+
+        assertEquals(5000.0, resolved.dampingRate());
+        assertEquals(5000.0, resolved.suspensionTuning().fastCompressionDamping());
+        assertEquals(5000.0, resolved.suspensionTuning().slowReboundDamping());
+        assertEquals(5000.0, resolved.suspensionTuning().fastReboundDamping());
+    }
+
+    @Test
+    void nonFiniteTireKitFieldsFallBackToTheStockValue(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", "{\"tireKit\": {\"bumpStopRate\": 1e400}}");
+
+        VehicleSpecOverrides.load(configDir);
+        VehicleSpec resolved = VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR);
+
+        assertEquals(VehicleSpec.CAR.suspensionTuning().bumpStopRate(), resolved.suspensionTuning().bumpStopRate());
+    }
+
+    @Test
     void oneCorruptFileDoesNotAffectAnotherCarsValidFile(@TempDir Path configDir) throws IOException {
         writeCarsFile(configDir, "car", "{ not valid json");
         writeCarsFile(configDir, "truck", "{\"rideHeight\": 2.0}");

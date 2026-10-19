@@ -384,7 +384,11 @@ final class SableCarBody {
                 }
                 Vector3d pointVelocity = new Vector3d(subAngular).cross(wheelOffsets[wheel]).add(subLinear);
                 double rate = pointVelocity.dot(down);
-                subSuspension[wheel] = WheelMath.suspensionForce(compressions[wheel], rate, spec.springRate(), spec.dampingRate(), spec.maxSpringForce());
+                VehicleSpec.SuspensionTuning suspTuning = spec.suspensionTuning();
+                subSuspension[wheel] = WheelMath.suspensionForce(compressions[wheel], rate, spec.springRate(),
+                        spec.dampingRate(), suspTuning.fastCompressionDamping(),
+                        suspTuning.slowReboundDamping(), suspTuning.fastReboundDamping(), suspTuning.dampingKneeSpeed(),
+                        spec.maxSpringForce(), suspTuning.bumpStopTravel(), suspTuning.bumpStopRate());
             }
             double[] forces = WheelSubStepper.afterAntiRoll(subSuspension, compressions, partners, barRate);
             double[] gripForces = new double[wheelCount];

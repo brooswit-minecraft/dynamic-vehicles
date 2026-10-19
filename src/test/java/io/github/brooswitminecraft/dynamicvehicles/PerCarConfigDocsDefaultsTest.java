@@ -31,6 +31,22 @@ class PerCarConfigDocsDefaultsTest {
         assertRow("cargo_truck", VehicleSpec.CARGO_TRUCK, new Expected(1.1, 13600.0, 1.0, 0.7, 1.0, 0.0, 0.5, 0.0, 0.0, 0.0));
     }
 
+    /**
+     * MINECRAFT-445: the {@code tireKit} section's documented claim that every car on the roster still
+     * ships identity (single-rate, no bump stop) suspension tuning, so adding two-rate damping and bump
+     * stops changed no existing car's stock feel. A future ticket that genuinely tunes one of these cars
+     * is expected to fail this and update both the doc and this list.
+     */
+    @Test
+    void everyCarStillShipsSingleRateDampingAndNoBumpStop() {
+        for (VehicleSpec spec : new VehicleSpec[] {VehicleSpec.CAR, VehicleSpec.TRUCK, VehicleSpec.TROPHY,
+                VehicleSpec.DRIFT, VehicleSpec.MUSCLE, VehicleSpec.ROCK_CRAWLER, VehicleSpec.MONSTER_TRUCK,
+                VehicleSpec.INDY, VehicleSpec.BUS, VehicleSpec.CARGO_TRUCK}) {
+            assertEquals(VehicleSpec.SuspensionTuning.singleRate(spec.dampingRate()), spec.suspensionTuning(),
+                    "suspensionTuning must still be singleRate(dampingRate) (docs/per-car-config.md, tireKit)");
+        }
+    }
+
     private static void assertRow(String id, VehicleSpec spec, Expected expected) {
         VehicleSpec.VehicleTuning tuning = spec.vehicleTuning();
         assertEquals(expected.rideHeight(), spec.rideHeight(), 1e-9, id + ".rideHeight (docs/per-car-config.md)");

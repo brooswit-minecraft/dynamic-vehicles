@@ -153,11 +153,13 @@ public final class VehicleSpecOverridesGameTests {
         // re-running the real loader against the real dir in whatever state that leaves it -- never
         // wiped to "nothing loaded", which would be a regression for any other car's real fixture.
         boolean fixtureExistedBefore = Files.isRegularFile(fixtureFile);
-        String previousFixtureContent = null;
+        // MINECRAFT-443 review fix (comment 48891): a genuine byte snapshot (not a String decode/encode
+        // round trip, which is not actually "byte-for-byte" for an arbitrary pre-existing file) --
+        // read BEFORE this method writes anything, so a read failure here aborts before any mutation.
+        byte[] previousFixtureBytes = fixtureExistedBefore ? readBytesOrFail(fixtureFile) : null;
+        RuntimeException testFailure = null;
         try {
-            if (fixtureExistedBefore) {
-                previousFixtureContent = Files.readString(fixtureFile);
-            } else {
+            if (!fixtureExistedBefore) {
                 Files.createDirectories(realCarsDir);
             }
             Files.writeString(fixtureFile, "{\"rollingScale\": " + fixtureRollingScale + "}");
@@ -170,22 +172,48 @@ public final class VehicleSpecOverridesGameTests {
                     "posting the real ServerAboutToStartEvent through the real registered listener did not "
                             + "load the fixture from the real config dir before this new CarEntity was constructed: "
                             + "expected rollingScale " + fixtureRollingScale + " got " + bus.spec().rollingScale());
-            helper.succeed();
         } catch (IOException e) {
-            throw new RuntimeException(e);
-        } finally {
-            try {
-                if (fixtureExistedBefore) {
-                    Files.writeString(fixtureFile, previousFixtureContent);
-                } else {
-                    Files.deleteIfExists(fixtureFile);
-                }
-            } catch (IOException ignored) {
-                // Best-effort restoration of a file under the run's own config dir.
+            testFailure = new RuntimeException(e);
+        } catch (RuntimeException e) {
+            // Covers a failed helper.assertTrue above: caught here (rather than left to propagate past
+            // this method) only so restoration below still runs and a restoration failure can be attached
+            // to THIS exception as suppressed, instead of a finally-block throw silently replacing it.
+            testFailure = e;
+        }
+
+        // MINECRAFT-443 review fix (comment 48891): a failed restoration must fail this GameTest, not be
+        // swallowed -- a silently-kept 0.42 fixture overwriting whatever an operator's real bus.json held
+        // is exactly the destructive-fixture risk the review flagged. The table is reloaded from the real
+        // dir ONLY after restoration is confirmed to have actually succeeded, never unconditionally.
+        try {
+            if (fixtureExistedBefore) {
+                Files.write(fixtureFile, previousFixtureBytes);
+            } else {
+                Files.delete(fixtureFile);
             }
-            // Restores the table to whatever the real config dir actually holds now (its pre-existing,
-            // just-restored state), not to empty -- the real production loader, pointed at the real dir.
-            VehicleSpecOverrides.load(realConfigDir);
+        } catch (IOException restoreFailure) {
+            RuntimeException wrapped = new RuntimeException(
+                    "failed to restore " + fixtureFile + " to its pre-test state; it may still hold this "
+                            + "test's 0.42 fixture instead of its real prior content", restoreFailure);
+            if (testFailure != null) {
+                testFailure.addSuppressed(wrapped);
+                throw testFailure;
+            }
+            throw wrapped;
+        }
+        VehicleSpecOverrides.load(realConfigDir);
+        if (testFailure != null) {
+            throw testFailure;
+        }
+        helper.succeed();
+    }
+
+    private static byte[] readBytesOrFail(java.nio.file.Path file) {
+        try {
+            return Files.readAllBytes(file);
+        } catch (IOException e) {
+            throw new RuntimeException("failed to snapshot pre-existing " + file + " before this test "
+                    + "overwrites it; refusing to proceed without a restorable backup", e);
         }
     }
 

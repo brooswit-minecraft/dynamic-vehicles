@@ -34,7 +34,9 @@ final class SableCarBody {
     private static final double REVERSE_FORCE = 1_400.0;
     private static final double BRAKE_FORCE = 3_000.0;
     private static final double HANDBRAKE_FORCE = 6_000.0;
-    private static final double AIR_DRAG = 0.4; // N per (m/s)^2
+    // MINECRAFT-446: the old hardcoded "AIR_DRAG = 0.4 N per (m/s)^2" constant moved to
+    // VehicleSpec#wingDragCoeff (defaulted to 0.4 for the whole roster), so it is per-car configurable
+    // through the wing section of a per-car config file.
 
     private final VehicleSpec spec;
     private final Vector3d halfExtents;
@@ -714,14 +716,56 @@ final class SableCarBody {
         }
         // Air drag (plus any fluid/foliage drag above) along the velocity: once per tick in total, at the
         // full dt, not once per sub-step - using the velocity as it stands after every sub-step's impulses.
+        // MINECRAFT-446: spec.wingDragCoeff() replaces the old hardcoded AIR_DRAG global constant -- 0.4
+        // for every vehicle that has not opted into a different per-car wing config, so this is
+        // byte-for-byte the same impulse as before for the whole roster until an operator overrides it.
         double speed = subLinear.length();
         if (speed > 0.5) {
             double fluidDrag = fluidScale * (
                     EnvironmentMath.fluidDragCoefficient(waterFraction, EnvironmentMath.WATER_DRAG)
                     + EnvironmentMath.fluidDragCoefficient(lavaFraction, EnvironmentMath.LAVA_DRAG));
-            double dragCoeff = AIR_DRAG + fluidDrag + foliageDragTotal;
+            double dragCoeff = spec.wingDragCoeff() + fluidDrag + foliageDragTotal;
             Vector3d drag = inverse.transform(new Vector3d(subLinear).mul(-dragCoeff * spec.forceScale() * speed * dt));
             body.applyImpulseAtPoint(new Vector3d(0, 0, 0), drag);
+        }
+        // Wing downforce (MINECRAFT-446): a genuine downward impulse, once per tick at the full dt (same
+        // cadence as air drag above), applied at each axle's own mount point rather than at the CoG so a
+        // front/rear split also produces a genuine pitch moment, not just a vertical force. The airflow
+        // speed used is the body's own forward speed (signed, but squared below so direction never
+        // matters) read AFTER every sub-step's impulses, exactly like drag above. Purely vertical
+        // (world -Y), unlike drag, so it injects no energy along the car's own direction of travel; zero at
+        // zero speed, and zero for every vehicle on the roster today (both coefficients default to 0.0).
+        double airflowSpeed = subLinear.dot(carForward);
+        if (spec.frontWingDownforceCoeff() > 0.0 || spec.rearWingDownforceCoeff() > 0.0) {
+            Vector3d frontAxlePoint = new Vector3d();
+            Vector3d rearAxlePoint = new Vector3d();
+            int frontCount = 0;
+            int rearCount = 0;
+            for (double[] mount : spec.mounts()) {
+                if (mount[2] > 0) {
+                    frontAxlePoint.add(mount[0], mount[1], mount[2]);
+                    frontCount++;
+                } else {
+                    rearAxlePoint.add(mount[0], mount[1], mount[2]);
+                    rearCount++;
+                }
+            }
+            if (frontCount > 0) {
+                frontAxlePoint.div(frontCount);
+            }
+            if (rearCount > 0) {
+                rearAxlePoint.div(rearCount);
+            }
+            double frontDownforce = VehicleSpec.wingDownforceNewtons(spec.frontWingDownforceCoeff(), airflowSpeed);
+            double rearDownforce = VehicleSpec.wingDownforceNewtons(spec.rearWingDownforceCoeff(), airflowSpeed);
+            if (frontDownforce > 0.0 && frontCount > 0) {
+                Vector3d impulse = inverse.transform(new Vector3d(0, -frontDownforce * spec.forceScale() * dt, 0));
+                body.applyImpulseAtPoint(frontAxlePoint, impulse);
+            }
+            if (rearDownforce > 0.0 && rearCount > 0) {
+                Vector3d impulse = inverse.transform(new Vector3d(0, -rearDownforce * spec.forceScale() * dt, 0));
+                body.applyImpulseAtPoint(rearAxlePoint, impulse);
+            }
         }
         lastSlipSpeed = slipThisTick;
         lastSpinSlip = spinSlipThisTick;

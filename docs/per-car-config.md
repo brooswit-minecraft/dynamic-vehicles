@@ -149,20 +149,69 @@ architecture this ticket does not change — `drift_car.json` can still set
 `camberDeg`/`toeDeg` (and they will be clamped and stored), but they will be
 inert until a future ticket connects `DriftTireModel` to them.
 
+### `wing` (MINECRAFT-446): downforce and aerodynamic drag
+
+Genuine aerodynamic forces in the real rigid-body path (`SableCarBody.tick`)
+— distinct from `downforceGripPerSpeed` (MINECRAFT-184, listed under "Not
+covered by this ticket" above), which is a tire-grip multiplier with no
+downward force or moment at all, and left exactly as it is: it is a separate,
+already-shipped mechanism this ticket does not touch or supersede.
+
+| Key | Unit | Range | Notes |
+|---|---|---|---|
+| `wing.frontDownforceCoeff` | N per (m/s)^2 | 0.0 – 5.0 | Downward force applied at the front axle's own mount point: `coeff * forwardSpeed^2`. Identity/stock default `0.0` (no wing) for every existing car. |
+| `wing.rearDownforceCoeff` | N per (m/s)^2 | 0.0 – 5.0 | As `frontDownforceCoeff`, applied at the rear axle's own mount point instead. Identity/stock default `0.0`. |
+| `wing.dragCoeff` | N per (m/s)^2 | 0.0 – 5.0 | Aerodynamic drag opposing the car's own velocity, combined with the existing fluid/foliage drag coefficients before being scaled by `forceScale()` and speed — the exact point in `SableCarBody.tick` that already applied air drag. Stock default `0.4` for every existing car: the old hardcoded, global `AIR_DRAG` constant every vehicle shared before this field existed, now per-car configurable. |
+
+Ranges live in code as `VehicleSpecLimits.MIN_WING_DOWNFORCE_COEFF`/
+`MAX_WING_DOWNFORCE_COEFF` and `MIN_WING_DRAG_COEFF`/`MAX_WING_DRAG_COEFF`,
+clamped the same way as every other scale field in this schema (a finite
+out-of-range value is clamped, not rejected; a missing or non-finite value
+falls back to that car's stock value — `0.0`/`0.0`/`0.4`). Read and applied
+on exactly the same "once, at server start" timing as every other field in
+this schema (see "File location and timing" above) — there is no separate
+timing for this section.
+
+**Front/rear split produces a genuine pitch moment, not just a vertical
+force**: each coefficient's force is applied as an impulse at that axle's
+own mount point (averaged across its wheels), off the car's centre of mass,
+exactly like the existing per-wheel suspension/tire forces already are — a
+front-heavy wing config pitches the nose down under speed, a rear-heavy one
+pitches the tail down, the same way a real car's aero balance would.
+
+**Speed/airflow dependence**: both downforce and drag scale with the square
+of the car's own forward speed (signed, but squared, so reversing does not
+flip or cancel either one) — zero at a standstill, and stable there (no
+discontinuity, no division). Downforce is applied purely vertically
+(world-down), never along the direction of travel, so unlike drag it injects
+no energy into the car's own forward motion.
+
+Example, a front-heavy drift car with a modest rear wing and slightly more
+drag than stock:
+
+```json
+{
+  "wing": {
+    "frontDownforceCoeff": 1.5,
+    "rearDownforceCoeff": 0.8,
+    "dragCoeff": 0.6
+  }
+}
+```
+
 ### Reserved for downstream tasks
 
-The schema reserves five top-level keys for the sibling tasks that own those
-systems; this loader tolerates them existing in a file today (Gson ignores any
-key with no matching field) but does not read, validate or apply any of them —
-adding a field under one of these sections with no behaviour behind it would
-itself be "unused config fields," which this ticket's acceptance explicitly
-rules out. Each task adds its own fields here when it implements real
-behaviour, rather than inventing a parallel file or format:
+The schema reserves four more top-level keys for the sibling tasks that own
+those systems; this loader tolerates them existing in a file today (Gson
+ignores any key with no matching field) but does not read, validate or apply
+any of them — adding a field under one of these sections with no behaviour
+behind it would itself be "unused config fields," which this ticket's
+acceptance explicitly rules out. Each task adds its own fields here when it
+implements real behaviour, rather than inventing a parallel file or format:
 
 | Key | Owner |
 |---|---|
 | `tireKit` | MINECRAFT-445 (suspension/wheel geometry) |
-| `wing` | MINECRAFT-446 (downforce/drag) |
 | `diffuser` | MINECRAFT-447 (orientation assists) |
 | `computer` | MINECRAFT-448 (assists/auto-shift) |
 | `engine` | MINECRAFT-449 (engine limits/turbo/nitrous/ballast) |

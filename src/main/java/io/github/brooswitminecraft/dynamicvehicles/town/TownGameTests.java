@@ -375,6 +375,19 @@ public final class TownGameTests {
     // Review round 2 regressions
     // ---------------------------------------------------------------------------------------
 
+    /** TEMP DIAGNOSTIC - remove before merge. */
+    @GameTest(template = "settlement_test")
+    public static void diagnosticFloorYVsCampfireY(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos campfireCell = ANCHOR;
+        helper.setBlock(campfireCell, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(campfireCell);
+        int floorY = TownTerrain.estimateGroundHeight(helper.getLevel(), absoluteCampfire.getX(), absoluteCampfire.getZ());
+        int rawTop = TownTerrain.rawCanopyTop(helper.getLevel(), absoluteCampfire.getX(), absoluteCampfire.getZ());
+        helper.fail("DIAGNOSTIC campfireY=" + absoluteCampfire.getY() + " floorY=" + floorY + " rawCanopyTop=" + rawTop
+                + " minBuild=" + helper.getLevel().getMinBuildHeight() + " maxBuild=" + helper.getLevel().getMaxBuildHeight());
+    }
+
     /** Review round 2, finding #1: the claim must be the villager's real JOB_SITE memory, NEVER
      *  spatial proximity - an employed villager far outside the old 2-block search radius (here,
      *  diagonally opposite corners of the prepared footprint, ~9.9 blocks apart, while still

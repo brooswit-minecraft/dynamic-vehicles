@@ -104,22 +104,47 @@ public final class NewVehicleGameTests {
      * RigidBodyHandle}'s own linear velocity (temporary, reverted before this commit): Z sits BIT-IDENTICAL
      * to 9 decimal places across 100+ consecutive ticks while {@code vz} is simultaneously non-zero and
      * climbing (e.g. {@code 0.069 -> 0.197 -> 0.282 m/s}), which at {@code dt=0.05s} implies a real per-tick
-     * delta on the order of {@code 0.003-0.01} blocks -- many orders of magnitude above where EITHER
-     * float32's (~0.9 blocks) or double's (~2e-9 blocks) ULP floor would sit at this coordinate's magnitude
-     * (~1.1e7). No floating-point rounding floor, of any precision, can explain a real, nonzero, evolving
-     * velocity producing an EXACTLY zero position delta every single tick. Y, in the exact same object on
+     * delta on the order of {@code 0.003-0.01} blocks -- many orders of magnitude above where a
+     * {@code double}'s own ULP floor sits at this coordinate's magnitude (~1.1e7), which is on the order of
+     * {@code 2e-9} blocks. That specific, narrow claim -- a double-precision rounding floor in {@code
+     * Pose3d.position} itself cannot explain this exact tick-over-tick freeze -- is what was actually
+     * checked and is what this paragraph asserts. It is NOT a claim that every precision boundary anywhere
+     * in the wider pipeline is excluded: this PR has not audited every intermediate transform, cast, or
+     * sync path between Sable's own integration step and the entity's exposed position for a narrower
+     * float32 (or other) boundary that could still exist somewhere else in that chain -- only that
+     * {@code Pose3d.position} itself, the field this javadoc's own earlier (withdrawn) theory named, is a
+     * double and so cannot be the site of that specific withdrawn mechanism. Y, in the exact same object on
      * the exact same ticks, updates normally throughout.
      *
-     * <p>What this rules out: any precision-floor theory. What it does NOT establish: the actual mechanism.
-     * The most likely remaining explanation given what {@code SubLevelPhysicsSystem}'s own decompiled
-     * method signatures expose (a {@code PhysicsChunkTicketManager}, a {@code paused} flag, and a {@code
-     * storagePose}/local-origin-shaped field layout) is that Sable re-bases a rigid body's horizontal
-     * position against some kind of local/resident sub-level origin, and that re-basing may not be applying
-     * correctly for a body freshly created at an extreme absolute coordinate -- but this is an UNVERIFIED
-     * HYPOTHESIS, not a finding: Sable ships as a {@code compileOnly}/{@code runtimeOnly} binary dependency
-     * (PolyForm Shield 1.0.0, "compiled against only" per this project's own {@code build.gradle} comment)
-     * with no bundled source, and decompiling bytecode signatures (done) is not the same as reading real
-     * method bodies (not done, and not attempted further this round -- flagging rather than guessing).
+     * <p>What this rules out: a double-precision rounding floor in {@code Pose3d.position} as the
+     * mechanism, and (separately, the original withdrawn claim) a float32 ULP floor, since the field is not
+     * a float. What it does NOT establish: the actual mechanism, and it does NOT establish that no other,
+     * narrower precision boundary exists anywhere else in the pipeline -- that was not checked.
+     *
+     * <p><b>Round-6 review follow-up: the earlier "Sable re-bases against a local sub-level origin"
+     * hypothesis above is WITHDRAWN too -- it was never verified, and tracing the actual call path shows it
+     * does not even apply to this object.</b> {@code BoxPhysicsObject} (what {@code SableMotorboatBody}
+     * uses) is registered via {@code SubLevelPhysicsSystem.addObject}, which for an {@code
+     * ArbitraryPhysicsObject} simply calls {@code object.onAddition(this)} with no sub-level/plot
+     * involvement at all -- the {@code storagePose}/local-origin re-basing machinery inspected last round
+     * lives in a completely different code path ({@code SubLevelPhysicsSystem}'s handling of an actual
+     * {@code SubLevel}, i.e. a group of blocks moving together as a structure/ship), not in how a bare
+     * rigid-body box's pose is stored or read. Traced the box's real pose path to its actual end instead:
+     * {@code BoxPhysicsObject.updatePose} calls {@code BoxHandle.readPose}, whose only implementation
+     * ({@code RapierBoxHandle}, decompiled from the bundled {@code sable_rapier} jarjar module) calls
+     * {@code native Rapier3D.getPose(long sceneHandle, int id, double[] dest)} directly -- a JNI
+     * call straight into the compiled Rust {@code sable_rapier_*} native library, with no Java-side
+     * caching, staleness, or special-casing anywhere in between. {@code getLinearVelocity} (used for this
+     * test's own climbing-velocity readings) is the exact same shape: a sibling {@code native} method on
+     * the same class, reading from the same native scene handle. Both position and velocity come from the
+     * same native call boundary with parallel, symmetric Java-side plumbing -- there is no remaining
+     * Java-side code in this call chain, in this PR or in Sable's own Java layer, that could explain one
+     * advancing while the other does not. Whatever causes it happens inside the closed-source native
+     * physics step itself (most plausibly the same broad-phase AABB system already logging "abnormally
+     * large AABB" at these same coordinates in this same run, though that specific link is still
+     * correlation, not confirmed causation). That native code has no bundled source and was not further
+     * decompilable from this environment (compiled machine code, not JVM bytecode) -- this is where real
+     * investigation from this codebase genuinely ends, not an unverified guess dressed up as one.
      *
      * <p>This is consistent with (not a new, unrelated theory alongside) the already-documented upstream
      * Sable "abnormally large AABB" broad-phase errors this same run logs at these same huge coordinates,

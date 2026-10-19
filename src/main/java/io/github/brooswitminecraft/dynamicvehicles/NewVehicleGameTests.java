@@ -14,6 +14,11 @@ import net.minecraft.world.level.block.Blocks;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
 /**
  * MINECRAFT-380: dev-runtime verification for Motorboat/Chopper/Biplane, run headlessly by {@code
  * ./gradlew runGameTestServer} (the same CI step {@code DispatcherGameTests}' own javadoc documents) --
@@ -242,53 +247,101 @@ public final class NewVehicleGameTests {
      * bound throughout this entire investigation.
      */
     /**
-     * MINECRAFT-410 review follow-up (bounded P2): the two fixed-absolute-coordinate rigs below bypass
-     * GameTestHelper's normal structure-relative placement entirely (see their own javadoc for why), which
-     * also means they bypass the normal structure teardown that would otherwise discard their raw-spawned
-     * entities, restore their raw-placed fixture blocks and release their forced chunk -- a prior version
-     * of this fix only released the forced chunk on the success path, leaving it (and the entities/blocks)
-     * leaked on any assertion failure or timeout. {@link GameTestInfo#tick} fires every registered {@link
-     * GameTestListener#testPassed}/{@link GameTestListener#testFailed} exactly once the test is done,
-     * covering ALL three outcomes uniformly: an explicit {@code helper.succeed()}, an uncaught {@code
-     * AssertionError}/{@code GameTestAssertException} from a failed {@code helper.assertTrue} (caught by
-     * {@code GameTestInfo}'s own tick/run machinery and turned into {@code fail(...)}), and a timeout
-     * (also turned into {@code fail(...)} by the same machinery) -- so registering one listener here is a
-     * single, uniform mechanism rather than three separate paths to keep in sync by hand.
+     * MINECRAFT-410 review follow-up (bounded P2, completing the fixture-isolation finding): the two
+     * fixed-absolute-coordinate rigs below bypass GameTestHelper's normal structure-relative placement
+     * entirely (see their own javadoc for why), which also means they bypass the normal structure
+     * teardown that would otherwise discard their raw-spawned entities, restore their raw-placed fixture
+     * blocks and release their forced chunk. Two earlier versions of this fix were each incomplete in a
+     * different way: the first only released the forced chunk on the success path; the second added a
+     * {@link GameTestListener} covering the test's pass/fail/timeout outcomes, but registered it only
+     * AFTER the rig's own setup (chunk forcing, block writes, entity construction) had already run --
+     * leaving every one of those early steps unprotected if a LATER setup step (e.g. a failed
+     * {@code boat != null} assertion) threw before the listener ever got attached.
+     *
+     * <p>This rig instead tracks everything it has actually done so far, incrementally, as setup
+     * proceeds -- {@link #forceChunk}, {@link #placeBlock} and {@link #own} each record their own
+     * effect immediately, before the next step runs -- so {@link #cleanup} can always undo exactly what
+     * has really happened, however far setup got. Every rig's full setup additionally runs inside a
+     * {@code try}/{@code catch (Throwable)} in its own test method that calls {@link #cleanup} and
+     * rethrows on ANY synchronous setup failure, since that failure can happen before the test-outcome
+     * listener below even exists to catch it. Once setup finishes without throwing, {@link
+     * #registerTestOutcomeCleanup} attaches that listener for the three outcomes {@link GameTestInfo#tick}
+     * drives afterward -- an explicit {@code helper.succeed()}, an uncaught assertion from the delayed
+     * {@code helper.assertTrue} calls, or a timeout -- so cleanup is covered uniformly across all three
+     * failure windows: early synchronous setup, the ticked run itself, and success. {@link #cleanup}
+     * itself is safe to run twice (e.g. once from the {@code catch} and again from a listener that was
+     * in fact already registered) -- entities are only discarded while still {@code isAlive()}, blocks
+     * are restored to their one captured prior state idempotently, and the chunk is only un-forced if
+     * this rig actually forced it.
      */
-    private static void registerFixedCoordinateRigCleanup(
-            GameTestHelper helper, int chunkX, int chunkZ, BlockPos fixtureMin, BlockPos fixtureMax, Entity... ownedEntities) {
-        Runnable cleanup = () -> {
+    private static final class FixedCoordinateRig {
+        private final GameTestHelper helper;
+        private final List<Entity> ownedEntities = new ArrayList<>();
+        private final Map<BlockPos, net.minecraft.world.level.block.state.BlockState> capturedBlockStates = new LinkedHashMap<>();
+        private int forcedChunkX;
+        private int forcedChunkZ;
+        private boolean chunkForced;
+
+        FixedCoordinateRig(GameTestHelper helper) {
+            this.helper = helper;
+        }
+
+        /** Forces the chunk and records that this rig did so, before anything else can throw. */
+        void forceChunk(int chunkX, int chunkZ) {
+            helper.getLevel().setChunkForced(chunkX, chunkZ, true);
+            this.forcedChunkX = chunkX;
+            this.forcedChunkZ = chunkZ;
+            this.chunkForced = true;
+        }
+
+        /** Captures the block's real prior state (once per position) before overwriting it, so {@link
+         * #cleanup} restores exactly what was there -- not an assumed {@code AIR}. */
+        void placeBlock(BlockPos pos, net.minecraft.world.level.block.state.BlockState newState) {
+            BlockPos immutable = pos.immutable();
+            capturedBlockStates.computeIfAbsent(immutable, p -> helper.getLevel().getBlockState(p));
+            helper.getLevel().setBlock(immutable, newState, 3);
+        }
+
+        /** Records an entity this rig is responsible for discarding on cleanup. */
+        void own(Entity entity) {
+            ownedEntities.add(entity);
+        }
+
+        /** Undoes exactly what this rig has actually recorded so far -- safe to call more than once. */
+        void cleanup() {
             for (Entity entity : ownedEntities) {
                 if (entity != null && entity.isAlive()) {
                     entity.discard();
                 }
             }
-            for (int x = fixtureMin.getX(); x <= fixtureMax.getX(); x++) {
-                for (int y = fixtureMin.getY(); y <= fixtureMax.getY(); y++) {
-                    for (int z = fixtureMin.getZ(); z <= fixtureMax.getZ(); z++) {
-                        helper.getLevel().setBlock(new BlockPos(x, y, z), Blocks.AIR.defaultBlockState(), 3);
-                    }
+            for (Map.Entry<BlockPos, net.minecraft.world.level.block.state.BlockState> entry : capturedBlockStates.entrySet()) {
+                helper.getLevel().setBlock(entry.getKey(), entry.getValue(), 3);
+            }
+            if (chunkForced) {
+                helper.getLevel().setChunkForced(forcedChunkX, forcedChunkZ, false);
+            }
+        }
+
+        /** Covers the test's own pass/fail/timeout outcomes, once setup has finished without throwing. */
+        void registerTestOutcomeCleanup() {
+            helper.testInfo.addListener(new GameTestListener() {
+                @Override
+                public void testStructureLoaded(GameTestInfo testInfo) {}
+
+                @Override
+                public void testPassed(GameTestInfo testInfo, GameTestRunner runner) {
+                    cleanup();
                 }
-            }
-            helper.getLevel().setChunkForced(chunkX, chunkZ, false);
-        };
-        helper.testInfo.addListener(new GameTestListener() {
-            @Override
-            public void testStructureLoaded(GameTestInfo testInfo) {}
 
-            @Override
-            public void testPassed(GameTestInfo testInfo, GameTestRunner runner) {
-                cleanup.run();
-            }
+                @Override
+                public void testFailed(GameTestInfo testInfo, GameTestRunner runner) {
+                    cleanup();
+                }
 
-            @Override
-            public void testFailed(GameTestInfo testInfo, GameTestRunner runner) {
-                cleanup.run();
-            }
-
-            @Override
-            public void testAddedForRerun(GameTestInfo testInfo, GameTestInfo newTestInfo, GameTestRunner runner) {}
-        });
+                @Override
+                public void testAddedForRerun(GameTestInfo testInfo, GameTestInfo newTestInfo, GameTestRunner runner) {}
+            });
+        }
     }
 
     @GameTest(template = "settlement_test", timeoutTicks = 150, batch = "motorboat_throttle_travel")
@@ -304,57 +357,64 @@ public final class NewVehicleGameTests {
         // builds its rig directly on the level at FIXED, small, absolute coordinates -- bypassing
         // GameTestHelper's structure-relative placement entirely, the same technique dynamic-whips' own
         // RopeGameTests#reelInCompletesNearGroundWhenUnobstructed uses for an analogous near-origin probe.
-        int originX = 0;
-        int originY = 100;
-        int originZ = 2000;
-        helper.getLevel().setChunkForced(originX >> 4, originZ >> 4, true);
-        // Water must span the hull's full width (halfWidth=0.7, so the hull's corners land as far as
-        // x=originX-0.7 and x=originX+0.7), not just a single column: a narrower strip leaves two of
-        // the four hull corners resting on dry/solid ground outside it, which props the whole rigid
-        // body up level and keeps even the water-side corners and the motor mount above the real
-        // surface -- zero immersion, zero thrust, zero travel, with nothing wrong in the physics code.
-        for (int dx = -2; dx <= 2; dx++) {
-            for (int dz = 0; dz <= 20; dz++) {
-                helper.getLevel().setBlock(new BlockPos(originX + dx, originY - 1, originZ + dz),
-                        Blocks.WATER.defaultBlockState(), 3);
-                helper.getLevel().setBlock(new BlockPos(originX + dx, originY, originZ + dz),
-                        Blocks.AIR.defaultBlockState(), 3);
+        FixedCoordinateRig rig = new FixedCoordinateRig(helper);
+        try {
+            int originX = 0;
+            int originY = 100;
+            int originZ = 2000;
+            rig.forceChunk(originX >> 4, originZ >> 4);
+            // Water must span the hull's full width (halfWidth=0.7, so the hull's corners land as far as
+            // x=originX-0.7 and x=originX+0.7), not just a single column: a narrower strip leaves two of
+            // the four hull corners resting on dry/solid ground outside it, which props the whole rigid
+            // body up level and keeps even the water-side corners and the motor mount above the real
+            // surface -- zero immersion, zero thrust, zero travel, with nothing wrong in the physics code.
+            for (int dx = -2; dx <= 2; dx++) {
+                for (int dz = 0; dz <= 20; dz++) {
+                    rig.placeBlock(new BlockPos(originX + dx, originY - 1, originZ + dz), Blocks.WATER.defaultBlockState());
+                    rig.placeBlock(new BlockPos(originX + dx, originY, originZ + dz), Blocks.AIR.defaultBlockState());
+                }
             }
+            // z=originZ+2, not +0: the hull's half-length (1.6) means a boat spawned at dz=0 has its
+            // stern/motor mount at dz=-1.6, BEHIND where the water bed above actually starts -- the motor
+            // would never be wet at spawn, so there would be no initial thrust to ever move it. +2 puts
+            // the full hull footprint (dz=0.4..3.6) inside the water from the start.
+            MotorboatEntity boat = DynamicVehiclesMod.MOTORBOAT.get().create(helper.getLevel());
+            helper.assertTrue(boat != null, "failed to construct a motorboat entity for the absolute-coordinate rig");
+            boat.moveTo(originX + 0.5, originY, originZ + 2.5, 0.0f, 0.0f);
+            helper.getLevel().addFreshEntity(boat);
+            rig.own(boat);
+            Player rider = helper.makeMockPlayer(GameType.CREATIVE);
+            // GameTestHelper#makeMockPlayer constructs the mock Player at absolute world BlockPos.ZERO.
+            // That is now close to (not millions of blocks from) this rig's own absolute coordinates, but
+            // still move it explicitly to the boat's exact position before mounting, as established in
+            // the prior review round, so it never carries even a small stale-position AABB.
+            rider.moveTo(boat.getX(), boat.getY(), boat.getZ(), boat.getYRot(), 0.0f);
+            rig.own(rider);
+            // Registered only once setup above has finished without throwing: covers success, a failed
+            // helper.assertTrue below, and a timeout uniformly (see FixedCoordinateRig's own javadoc) --
+            // the surrounding try/catch below covers the setup steps that ran BEFORE this registration
+            // could happen.
+            rig.registerTestOutcomeCleanup();
+            helper.assertTrue(rider.startRiding(boat), "mock player failed to board the motorboat");
+            double startZ = boat.getZ();
+            pinThrottleEachTick(helper, rider, 1.0f, 0.0f, 100, () -> {
+                helper.assertTrue(boat.getControllingPassenger() == rider, "motorboat lost its rider mid-drive");
+                double traveled = Math.abs(boat.getZ() - startZ);
+                helper.assertTrue(Double.isFinite(traveled) && Double.isFinite(boat.getX()) && Double.isFinite(boat.getY()),
+                        "motorboat position became non-finite after full throttle");
+                helper.assertTrue(traveled > 0.5,
+                        "motorboat under full throttle should have travelled a real distance, got only " + traveled + " blocks");
+                helper.assertTrue(traveled < 20.0,
+                        "motorboat covered an unrealistic distance (the pre-fix unit-mismatch regression): " + traveled + " blocks");
+                helper.succeed();
+            });
+        } catch (Throwable t) {
+            // Covers any synchronous setup failure above, including one before rig.registerTestOutcomeCleanup()
+            // ever ran -- see FixedCoordinateRig's own javadoc. cleanup() is safe to run again if the
+            // listener (once registered) also fires for the same failure.
+            rig.cleanup();
+            throw t;
         }
-        // z=originZ+2, not +0: the hull's half-length (1.6) means a boat spawned at dz=0 has its
-        // stern/motor mount at dz=-1.6, BEHIND where the water bed above actually starts -- the motor
-        // would never be wet at spawn, so there would be no initial thrust to ever move it. +2 puts
-        // the full hull footprint (dz=0.4..3.6) inside the water from the start.
-        MotorboatEntity boat = DynamicVehiclesMod.MOTORBOAT.get().create(helper.getLevel());
-        helper.assertTrue(boat != null, "failed to construct a motorboat entity for the absolute-coordinate rig");
-        boat.moveTo(originX + 0.5, originY, originZ + 2.5, 0.0f, 0.0f);
-        helper.getLevel().addFreshEntity(boat);
-        Player rider = helper.makeMockPlayer(GameType.CREATIVE);
-        // GameTestHelper#makeMockPlayer constructs the mock Player at absolute world BlockPos.ZERO.
-        // That is now close to (not millions of blocks from) this rig's own absolute coordinates, but
-        // still move it explicitly to the boat's exact position before mounting, as established in
-        // the prior review round, so it never carries even a small stale-position AABB.
-        rider.moveTo(boat.getX(), boat.getY(), boat.getZ(), boat.getYRot(), 0.0f);
-        // Registered BEFORE the delayed assertions run, and before any assertion can throw: covers
-        // success, a failed helper.assertTrue below, and a timeout uniformly (see this method's own
-        // javadoc) -- discarding the boat/rider, restoring the raw-placed fixture blocks to air, and
-        // releasing the forced chunk, regardless of which of those three ways the test ends.
-        registerFixedCoordinateRigCleanup(helper, originX >> 4, originZ >> 4,
-                new BlockPos(originX - 2, originY - 1, originZ), new BlockPos(originX + 2, originY, originZ + 20),
-                boat, rider);
-        helper.assertTrue(rider.startRiding(boat), "mock player failed to board the motorboat");
-        double startZ = boat.getZ();
-        pinThrottleEachTick(helper, rider, 1.0f, 0.0f, 100, () -> {
-            helper.assertTrue(boat.getControllingPassenger() == rider, "motorboat lost its rider mid-drive");
-            double traveled = Math.abs(boat.getZ() - startZ);
-            helper.assertTrue(Double.isFinite(traveled) && Double.isFinite(boat.getX()) && Double.isFinite(boat.getY()),
-                    "motorboat position became non-finite after full throttle");
-            helper.assertTrue(traveled > 0.5,
-                    "motorboat under full throttle should have travelled a real distance, got only " + traveled + " blocks");
-            helper.assertTrue(traveled < 20.0,
-                    "motorboat covered an unrealistic distance (the pre-fix unit-mismatch regression): " + traveled + " blocks");
-            helper.succeed();
-        });
     }
 
     /** Re-sets {@code rider.zza}/{@code rider.xxa} every tick for {@code ticks} ticks, then runs {@code
@@ -468,45 +528,49 @@ public final class NewVehicleGameTests {
      */
     @GameTest(template = "settlement_test", timeoutTicks = 150)
     public static void motorboatTiltedOnEntryRightsItselfThroughRealPerPointBuoyancy(GameTestHelper helper) {
-        int originX = 0;
-        int originY = 100;
-        int originZ = 2200;
-        helper.getLevel().setChunkForced(originX >> 4, originZ >> 4, true);
-        for (int dx = -5; dx <= 5; dx++) {
-            for (int dz = -5; dz <= 5; dz++) {
-                helper.getLevel().setBlock(new BlockPos(originX + dx, originY - 1, originZ + dz),
-                        Blocks.WATER.defaultBlockState(), 3);
-                helper.getLevel().setBlock(new BlockPos(originX + dx, originY, originZ + dz),
-                        Blocks.AIR.defaultBlockState(), 3);
-                helper.getLevel().setBlock(new BlockPos(originX + dx, originY + 1, originZ + dz),
-                        Blocks.AIR.defaultBlockState(), 3);
+        FixedCoordinateRig rig = new FixedCoordinateRig(helper);
+        try {
+            int originX = 0;
+            int originY = 100;
+            int originZ = 2200;
+            rig.forceChunk(originX >> 4, originZ >> 4);
+            for (int dx = -5; dx <= 5; dx++) {
+                for (int dz = -5; dz <= 5; dz++) {
+                    rig.placeBlock(new BlockPos(originX + dx, originY - 1, originZ + dz), Blocks.WATER.defaultBlockState());
+                    rig.placeBlock(new BlockPos(originX + dx, originY, originZ + dz), Blocks.AIR.defaultBlockState());
+                    rig.placeBlock(new BlockPos(originX + dx, originY + 1, originZ + dz), Blocks.AIR.defaultBlockState());
+                }
             }
+            MotorboatEntity boat = DynamicVehiclesMod.MOTORBOAT.get().create(helper.getLevel());
+            helper.assertTrue(boat != null, "failed to construct a motorboat entity for the absolute-coordinate rig");
+            boat.moveTo(originX + 0.5, originY, originZ + 0.5, 0.0f, 0.0f);
+            helper.getLevel().addFreshEntity(boat);
+            rig.own(boat);
+            // Registered only once setup above has finished without throwing -- see
+            // motorboatEntersWaterAndMovesAPlausibleDistanceUnderThrottle's javadoc and FixedCoordinateRig's
+            // own javadoc: covers success, a failed helper.assertTrue below, and a timeout uniformly; the
+            // surrounding try/catch below covers the setup steps that ran before this registration could
+            // happen.
+            rig.registerTestOutcomeCleanup();
+            org.joml.Quaternionf tilted = new org.joml.Quaternionf().rotateZ((float) Math.toRadians(25.0));
+            boat.setSavedOrientationForTest(tilted);
+            double startRoll = rollDegrees(tilted);
+            helper.runAfterDelay(100L, () -> {
+                org.joml.Quaternionf finalOrientation = boat.currentOrientationForTest();
+                helper.assertTrue(finalOrientation != null, "motorboat lost its rigid-body orientation");
+                double endRoll = rollDegrees(finalOrientation);
+                helper.assertTrue(Double.isFinite(endRoll), "motorboat roll became non-finite while righting itself");
+                helper.assertTrue(Math.abs(endRoll) < Math.abs(startRoll) - 5.0,
+                        "a boat released " + startRoll + " degrees of roll underwater should right itself substantially via real "
+                                + "per-point buoyancy, ended at " + endRoll + " degrees");
+                helper.assertTrue(Math.abs(endRoll) < 15.0,
+                        "motorboat should have settled much closer to level, ended at " + endRoll + " degrees");
+                helper.succeed();
+            });
+        } catch (Throwable t) {
+            rig.cleanup();
+            throw t;
         }
-        MotorboatEntity boat = DynamicVehiclesMod.MOTORBOAT.get().create(helper.getLevel());
-        helper.assertTrue(boat != null, "failed to construct a motorboat entity for the absolute-coordinate rig");
-        boat.moveTo(originX + 0.5, originY, originZ + 0.5, 0.0f, 0.0f);
-        helper.getLevel().addFreshEntity(boat);
-        // Registered before the delayed assertions run -- see motorboatEntersWaterAndMovesAPlausibleDistanceUnderThrottle's
-        // javadoc on registerFixedCoordinateRigCleanup: covers success, a failed helper.assertTrue below,
-        // and a timeout uniformly, discarding the boat and restoring/releasing this rig's raw fixture.
-        registerFixedCoordinateRigCleanup(helper, originX >> 4, originZ >> 4,
-                new BlockPos(originX - 5, originY - 1, originZ - 5), new BlockPos(originX + 5, originY + 1, originZ + 5),
-                boat);
-        org.joml.Quaternionf tilted = new org.joml.Quaternionf().rotateZ((float) Math.toRadians(25.0));
-        boat.setSavedOrientationForTest(tilted);
-        double startRoll = rollDegrees(tilted);
-        helper.runAfterDelay(100L, () -> {
-            org.joml.Quaternionf finalOrientation = boat.currentOrientationForTest();
-            helper.assertTrue(finalOrientation != null, "motorboat lost its rigid-body orientation");
-            double endRoll = rollDegrees(finalOrientation);
-            helper.assertTrue(Double.isFinite(endRoll), "motorboat roll became non-finite while righting itself");
-            helper.assertTrue(Math.abs(endRoll) < Math.abs(startRoll) - 5.0,
-                    "a boat released " + startRoll + " degrees of roll underwater should right itself substantially via real "
-                            + "per-point buoyancy, ended at " + endRoll + " degrees");
-            helper.assertTrue(Math.abs(endRoll) < 15.0,
-                    "motorboat should have settled much closer to level, ended at " + endRoll + " degrees");
-            helper.succeed();
-        });
     }
 
     /**

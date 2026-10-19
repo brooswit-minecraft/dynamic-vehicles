@@ -545,6 +545,14 @@ final class SableCarBody {
         }
     }
 
+    /** Downward speed (m/s) below which a body counts as "not actually falling", so a time-to-touchdown
+     * estimate from it would be meaningless or point the probe the wrong way (MINECRAFT-447). */
+    private static final double DIFFUSER_FALLING_SPEED_EPSILON = 0.01;
+    /** How far down (m) R17's own touchdown probe looks before reporting "no ground in range"; generous
+     * enough to cover any realistic jump arc in this mod's own terrain without casting the full world
+     * height every tick. */
+    private static final double DIFFUSER_TOUCHDOWN_PROBE_RANGE = 256.0;
+
     /** Ground probe for R17's time-to-touchdown (MINECRAFT-447): straight down in WORLD space -- unlike
      * the per-wheel suspension raycasts above, which deliberately follow the body's own tilted "down" so
      * suspension travel means the same thing on a slope, this assist is about gravity actually bringing the
@@ -554,11 +562,11 @@ final class SableCarBody {
      * is not currently falling (fma with a zero/positive {@code -fallSpeed} would point the probe upward or
      * not move it at all, never a meaningful "time to touchdown"). */
     private double timeToTouchdownSeconds(CarEntity car, Vector3d position, double verticalSpeed) {
-        if (!(verticalSpeed < -0.01)) {
+        if (!(verticalSpeed < -DIFFUSER_FALLING_SPEED_EPSILON)) {
             return Double.NaN;
         }
         Vector3d worldDown = new Vector3d(0, -1, 0);
-        Vector3d probeTo = new Vector3d(position).fma(256.0, worldDown);
+        Vector3d probeTo = new Vector3d(position).fma(DIFFUSER_TOUCHDOWN_PROBE_RANGE, worldDown);
         BlockHitResult hit = level.clip(new ClipContext(new Vec3(position.x, position.y, position.z),
                 new Vec3(probeTo.x, probeTo.y, probeTo.z), ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, car));
         if (hit.getType() == HitResult.Type.MISS) {
@@ -666,14 +674,21 @@ final class SableCarBody {
      * (any nonzero choice realises the same net torque, since the force below is scaled by
      * {@code 1/(2*LEVER)|} to compensate) -- it carries no physical meaning and is unrelated to vehicle size. */
     private static final double DIFFUSER_COUPLE_LEVER = 1.0;
+    /** Torque magnitudes (N*m) at or below this are treated as exactly zero -- below any physically
+     * meaningful correction, and it keeps the couple construction from normalizing a near-zero vector. */
+    private static final double DIFFUSER_TORQUE_EPSILON = 1e-6;
+    /** How closely the torque axis may align with world up before the couple construction picks a different
+     * helper axis for its cross product (any value short of parallel works; this keeps the cross product
+     * well conditioned). */
+    private static final double DIFFUSER_COUPLE_AXIS_ALIGNMENT_LIMIT = 0.9;
 
     private void applyWorldTorqueAsCouple(Vector3d torqueWorld, Quaterniond inverse, double dt) {
         double magnitude = torqueWorld.length();
-        if (!(magnitude > 1e-6)) {
+        if (!(magnitude > DIFFUSER_TORQUE_EPSILON)) {
             return;
         }
         Vector3d axis = new Vector3d(torqueWorld).normalize();
-        Vector3d helper = Math.abs(axis.dot(new Vector3d(0, 1, 0))) < 0.9
+        Vector3d helper = Math.abs(axis.dot(new Vector3d(0, 1, 0))) < DIFFUSER_COUPLE_AXIS_ALIGNMENT_LIMIT
                 ? new Vector3d(0, 1, 0) : new Vector3d(1, 0, 0);
         Vector3d n = new Vector3d(axis).cross(helper).normalize();
         Vector3d leverWorld = new Vector3d(n).mul(DIFFUSER_COUPLE_LEVER);

@@ -23,21 +23,93 @@ import org.joml.Vector3f;
  * is the GameTest-only hook that lets a real CAR entity opt in without touching any car's own stock spec --
  * see that method's own javadoc for why this is not a second config mechanism.
  *
- * <p>R16 (roll self-righting) has no GameTest here right now -- see the comment block at the end of this
- * class for why (a genuine, re-examined chaotic-equilibrium-capture issue, unrelated to the sign defect
- * below). R17 (pitch/landing), R18 (heading alignment) and R19 (trajectory alignment) each have a
- * direction-only regression: {@link #pitchLandingTurnsTowardLevelNotAwayFromIt},
- * {@link #headingAlignmentTurnsTowardATargetAheadOfCurrentYawNotAwayFromIt} and
- * {@link #trajectoryAlignmentTurnsNoseTowardRealVelocityDirectionNotAwayFromIt}. PR #180 review comment
- * 6278664198 found a real coordinate-convention bug in these three assists' proportional feedback (fixed in
- * {@code SableCarBody.applyDiffuserAssists}, see its own comments) that this ticket's own earlier sessions
- * had misdiagnosed as physics-solver nondeterminism -- see the comment block at the end of this class for
- * the corrected account of what each earlier attempt actually ran into.
+ * <p>All four assists (R16 roll, R17 pitch/landing, R18 heading, R19 trajectory) have a direction-only
+ * production regression here, each run for BOTH signs of its own error: a clean single-axis fixture (car
+ * dropped from height, zero initial angular velocity, no ground contact in the window) asserting that the
+ * real Sable body's real angle moves TOWARD the assist's target rather than away from it. PR #180 review
+ * comment 6278664198 found a real coordinate-convention bug in three of the four assists' proportional
+ * feedback (fixed in {@code SableCarBody.applyDiffuserAssists}, see its own comments) that this ticket's
+ * own earlier sessions had misdiagnosed as physics-solver nondeterminism; these fixtures are what pins the
+ * direction now.
+ *
+ * <p>Still NOT covered here, and deliberately not claimed: R16's own full "inverted car recovers AND lands
+ * upright" scenario (as opposed to the bank-angle direction check), which runs into a separate, genuine
+ * chaotic-equilibrium-capture problem -- see the comment block at the end of this class for the full
+ * account of that and of what each earlier attempt actually ran into.
  */
 @GameTestHolder(DynamicVehiclesMod.MODID)
 @PrefixGameTestTemplate(false)
 public final class DiffuserAssistGameTests {
     private DiffuserAssistGameTests() {}
+
+    /** High enough above the template's own floor that every drop-based fixture here stays airborne for its
+     * whole observation window (no landing, so no dependence on the landing tick -- see the comment block
+     * at the end of this class for why that matters), and the same height the pre-existing inverted-car
+     * fixture already used. */
+    private static final BlockPos DROP_SPAWN = new BlockPos(5, 12, 5);
+    /** Where a fixture that needs a real floor puts one, and the spawn just above it. */
+    private static final BlockPos FLOOR_BLOCK = new BlockPos(5, 2, 5);
+    private static final BlockPos ON_FLOOR_SPAWN = new BlockPos(5, 3, 5);
+
+    /** Shared tuning for every direction-only fixture: the same moderate bound/gain/damping triple across
+     * all four assists, so one assist's test is not quietly stronger than another's. Chosen around what the
+     * roll fixture needed when it was first built (4,000 N*m was enough to recover a fully inverted car);
+     * well inside {@link DiffuserTuningLimits}' own range, and these fixtures only ever assert on the
+     * DIRECTION of the response, so none of them is sensitive to the exact magnitude. */
+    private static final double ASSIST_MAX_TORQUE = 8000.0;
+    private static final double ASSIST_GAIN = 6000.0;
+    private static final double ASSIST_DAMPING = 1200.0;
+    /** Deliberately far longer than any fall in these fixtures, so R17's authority ramp is never the thing
+     * under test here -- {@link DiffuserAssistMathTest} already covers the ramp itself. */
+    private static final double PITCH_LANDING_HORIZON_SECONDS = 30.0;
+    /** Below the speed these fixtures seed, so the speed gate is satisfied rather than exercised. */
+    private static final double TRAJECTORY_MIN_SPEED = 1.0;
+
+    /** Starting tilt for the pitch/roll direction fixtures: far enough off level to be unambiguous, far
+     * enough from &plusmn;&pi;/2 (gimbal) and &plusmn;&pi; (the roll equilibrium) to avoid either. */
+    private static final float START_TILT_RAD = 0.3f;
+    /** How far off exactly &pi; the inverted fixture starts -- see {@link #startUpsideDown}. */
+    private static final double INVERTED_START_OFFSET_RAD = 0.2;
+    /** Heading alignment's seeded target, degrees off the car's own spawn yaw. */
+    private static final double HEADING_TARGET_OFFSET_DEG = 10.0;
+    /** Horizontal speed (m/s) seeded into the body for the trajectory fixtures. */
+    private static final double SEEDED_SPEED = 5.0;
+
+    /** The template every fixture here uses -- a largely open test structure, so a dropped car falls freely
+     * unless the fixture itself places a floor under it. */
+    private static final String TEMPLATE = "settlement_test";
+    /** GameTest timeouts: comfortably above each fixture's own scheduled work, never load-bearing for any
+     * assertion (nothing here is keyed to a deadline, only to its own observation window). */
+    private static final int DIRECTION_TIMEOUT_TICKS = 100;
+    private static final int INVERTED_TIMEOUT_TICKS = 200;
+    private static final int TELEMETRY_TIMEOUT_TICKS = 20;
+
+    /** One tick, the point at which a spawned car's Sable body exists and can be read or seeded. */
+    private static final long BODY_EXISTS_TICK = 1L;
+    /** Observation window for a direction-only check: long enough for a real bounded torque to move the
+     * angle measurably, short enough that a drop from {@link #DROP_SPAWN} is still airborne throughout. */
+    private static final long OBSERVE_TICKS = 15L;
+    /** Window for the inverted no-op fixture, which deliberately runs long enough to land. */
+    private static final long INVERTED_OBSERVE_TICKS = 150L;
+    /** Long enough for the telemetry line to have been produced for a real, ticking body. */
+    private static final long TELEMETRY_TICKS = 2L;
+
+    /** Minimum starting tilt a fixture must actually have before its assertion means anything. */
+    private static final double MIN_START_TILT_RAD = 0.2;
+    /** Minimum tilt reduction (radians) that counts as "moved toward level", comfortably above per-tick
+     * numeric noise while far below the full recovery these assists eventually produce. */
+    private static final double MIN_TILT_RECOVERY_RAD = 0.02;
+    /** Minimum yaw-error reduction (degrees) that counts as "turned toward the target". */
+    private static final double MIN_YAW_RECOVERY_DEG = 0.5;
+    /** Minimum initial yaw/travel gap for a trajectory fixture to be a meaningful test at all. */
+    private static final double MIN_MEANINGFUL_GAP_DEG = 30.0;
+    /** How inverted a car with the assist DISABLED must still be, to prove it did not self-right. */
+    private static final double STILL_INVERTED_ROLL_RAD = 1.5;
+
+    /** Negligible forced throttle, held for the fixture's whole duration, purely to keep the body awake --
+     * see {@link #startUpsideDown} for why this is necessary. */
+    private static final double KEEP_AWAKE_THROTTLE = 0.001;
+    private static final int KEEP_AWAKE_TICKS = 999;
 
     /** Roll angle (radians, 0 = upright, &plusmn;&pi; = inverted) of a car's current real Sable body
      * orientation, using exactly the same {@code atan2(right.y, up.y)} formula
@@ -67,7 +139,7 @@ public final class DiffuserAssistGameTests {
     private static void startUpsideDown(CarEntity car) {
         CompoundTag tag = new CompoundTag();
         car.save(tag);
-        Quaternionf upsideDown = new Quaternionf().rotateZ((float) (Math.PI - 0.2));
+        Quaternionf upsideDown = new Quaternionf().rotateZ((float) (Math.PI - INVERTED_START_OFFSET_RAD));
         tag.putFloat("OrientationX", upsideDown.x);
         tag.putFloat("OrientationY", upsideDown.y);
         tag.putFloat("OrientationZ", upsideDown.z);
@@ -82,7 +154,7 @@ public final class DiffuserAssistGameTests {
         // forced throttle (2.3 N per wheel at this magnitude, versus thousands of N of suspension/gravity
         // force -- not enough to meaningfully drive the car even once grounded) asserted for the test's
         // entire duration guarantees a real, continuously-awake simulation instead.
-        car.forceDrive(0.001, 0.0, 999);
+        car.forceDrive(KEEP_AWAKE_THROTTLE, 0.0, KEEP_AWAKE_TICKS);
     }
 
     /** Disabled-is-truly-inactive, on a REAL server (the acceptance criteria's own explicit requirement,
@@ -91,16 +163,16 @@ public final class DiffuserAssistGameTests {
      * stay substantially inverted after real ticks, falling and landing however gravity/collision alone
      * take it. This is also the regression guarantee for every existing car: since no car's own stock spec
      * differs from this tuning, this is exactly their own real-server behavior, unchanged. */
-    @GameTest(template = "settlement_test", timeoutTicks = 200)
+    @GameTest(template = TEMPLATE, timeoutTicks = INVERTED_TIMEOUT_TICKS)
     public static void identityDiffuserTuningLeavesAnInvertedCarInverted(GameTestHelper helper) {
-        helper.setBlock(new BlockPos(5, 2, 5), Blocks.STONE);
-        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 12, 5));
+        helper.setBlock(FLOOR_BLOCK, Blocks.STONE);
+        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), DROP_SPAWN);
         // No setDiffuserTuningForTest call: this car's diffuserTuning() is exactly spec.diffuserTuning(),
         // VehicleSpec.CAR's own IDENTITY -- the same value every existing car ships today.
         startUpsideDown(car);
-        helper.runAfterDelay(150L, () -> {
+        helper.runAfterDelay(INVERTED_OBSERVE_TICKS, () -> {
             double roll = rollAngleRad(car);
-            helper.assertTrue(Math.abs(roll) > 1.5,
+            helper.assertTrue(Math.abs(roll) > STILL_INVERTED_ROLL_RAD,
                     "identity Diffuser tuning should not self-right an inverted car, but roll recovered to " + roll + " rad");
             helper.succeed();
         });
@@ -132,25 +204,40 @@ public final class DiffuserAssistGameTests {
      * risk here -- only a direction check, not a magnitude or exact-tick assertion, so it does not need one
      * either. {@link CarEntity#setLastGroundedYawDegForTest} seeds the target directly (this assist
      * normally only acquires one from a prior grounded tick), avoiding the need to first land and relaunch
-     * the car just to set up the test. */
-    @GameTest(template = "settlement_test", timeoutTicks = 100)
-    public static void headingAlignmentTurnsTowardATargetAheadOfCurrentYawNotAwayFromIt(GameTestHelper helper) {
-        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 12, 5));
-        helper.runAfterDelay(1L, () -> {
+     * the car just to set up the test.
+     *
+     * <p>Run for BOTH signs of the target offset (the review's own explicit ask): a single-sign direction
+     * test cannot distinguish a correctly-signed controller from one that happens to push the right way for
+     * one sign only -- e.g. a term that ignores the error's sign entirely, or a wrap-around defect that only
+     * bites on one side of the convention. */
+    private static void assertHeadingTurnsTowardTarget(GameTestHelper helper, double targetOffsetDeg) {
+        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), DROP_SPAWN);
+        helper.runAfterDelay(BODY_EXISTS_TICK, () -> {
             helper.assertTrue(car.sableBody() != null, "car's Sable body was never created on its first real tick");
             double startYaw = car.getYRot();
-            double targetYaw = startYaw + 10.0;
-            car.setDiffuserTuningForTest(headingOnly(8000.0, 6000.0, 1200.0));
+            double targetYaw = startYaw + targetOffsetDeg;
+            car.setDiffuserTuningForTest(headingOnly(ASSIST_MAX_TORQUE, ASSIST_GAIN, ASSIST_DAMPING));
             car.setLastGroundedYawDegForTest(targetYaw);
             double errorBefore = Math.abs(wrapDeg(targetYaw - startYaw));
-            helper.runAfterDelay(15L, () -> {
+            helper.runAfterDelay(OBSERVE_TICKS, () -> {
                 double errorAfter = Math.abs(wrapDeg(targetYaw - car.getYRot()));
-                helper.assertTrue(errorAfter < errorBefore - 0.5,
-                        "heading alignment should have turned the car toward its +10 degree target, not held "
-                                + "still or turned away from it: errorBefore=" + errorBefore + " errorAfter=" + errorAfter);
+                helper.assertTrue(errorAfter < errorBefore - MIN_YAW_RECOVERY_DEG,
+                        "heading alignment should have turned the car toward its " + targetOffsetDeg
+                                + " degree target, not held still or turned away from it: errorBefore="
+                                + errorBefore + " errorAfter=" + errorAfter);
                 helper.succeed();
             });
         });
+    }
+
+    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    public static void headingAlignmentTurnsTowardATargetAheadOfCurrentYawNotAwayFromIt(GameTestHelper helper) {
+        assertHeadingTurnsTowardTarget(helper, HEADING_TARGET_OFFSET_DEG);
+    }
+
+    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    public static void headingAlignmentTurnsTowardATargetBehindCurrentYawNotAwayFromIt(GameTestHelper helper) {
+        assertHeadingTurnsTowardTarget(helper, -HEADING_TARGET_OFFSET_DEG);
     }
 
     private static VehicleSpec.DiffuserTuning headingOnly(double maxTorque, double gain, double damping) {
@@ -173,28 +260,38 @@ public final class DiffuserAssistGameTests {
      * horizontal velocity directly -- no grounded phase, no tire slip, no turning, so nothing perturbs roll
      * or pitch at all. The car's spawn yaw and the velocity's own direction are essentially guaranteed to
      * differ (an arbitrary horizontal vector has no reason to line up with the entity's default facing), so
-     * there is a real, known gap for the assist to close from the very first active tick. */
-    @GameTest(template = "settlement_test", timeoutTicks = 100)
-    public static void trajectoryAlignmentTurnsNoseTowardRealVelocityDirectionNotAwayFromIt(GameTestHelper helper) {
-        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 12, 5));
-        helper.runAfterDelay(1L, () -> {
+     * there is a real, known gap for the assist to close from the very first active tick. Run for velocity
+     * on BOTH sides of the car's own facing, for the same reason the heading pair above does. */
+    private static void assertTrajectoryTurnsTowardVelocity(GameTestHelper helper, double vx) {
+        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), DROP_SPAWN);
+        helper.runAfterDelay(BODY_EXISTS_TICK, () -> {
             helper.assertTrue(car.sableBody() != null, "car's Sable body was never created on its first real tick");
-            car.addLinearVelocityForTest(5.0, 0.0, 0.0);
-            car.setDiffuserTuningForTest(trajectoryOnly(8000.0, 6000.0, 1200.0, 1.0));
-            double travelYawDeg = Math.toDegrees(Math.atan2(-5.0, 0.0));
+            car.addLinearVelocityForTest(vx, 0.0, 0.0);
+            car.setDiffuserTuningForTest(trajectoryOnly(ASSIST_MAX_TORQUE, ASSIST_GAIN, ASSIST_DAMPING, TRAJECTORY_MIN_SPEED));
+            double travelYawDeg = Math.toDegrees(Math.atan2(-vx, 0.0));
             double errorBefore = Math.abs(wrapDeg(travelYawDeg - car.getYRot()));
-            helper.assertTrue(errorBefore > 30.0,
+            helper.assertTrue(errorBefore > MIN_MEANINGFUL_GAP_DEG,
                     "test setup's spawn yaw happened to already nearly match the seeded velocity direction -- "
                             + "not a meaningful gap for this assist to close: errorBefore=" + errorBefore);
-            helper.runAfterDelay(15L, () -> {
+            helper.runAfterDelay(OBSERVE_TICKS, () -> {
                 double errorAfter = Math.abs(wrapDeg(travelYawDeg - car.getYRot()));
-                helper.assertTrue(errorAfter < errorBefore - 0.5,
+                helper.assertTrue(errorAfter < errorBefore - MIN_YAW_RECOVERY_DEG,
                         "trajectory alignment should have turned the car's nose toward its own real velocity "
-                                + "direction, not held still or turned away from it: errorBefore=" + errorBefore
-                                + " errorAfter=" + errorAfter);
+                                + "direction (vx=" + vx + "), not held still or turned away from it: errorBefore="
+                                + errorBefore + " errorAfter=" + errorAfter);
                 helper.succeed();
             });
         });
+    }
+
+    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    public static void trajectoryAlignmentTurnsNoseTowardRealVelocityDirectionNotAwayFromIt(GameTestHelper helper) {
+        assertTrajectoryTurnsTowardVelocity(helper, SEEDED_SPEED);
+    }
+
+    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    public static void trajectoryAlignmentTurnsNoseTowardVelocityOnTheOtherSideToo(GameTestHelper helper) {
+        assertTrajectoryTurnsTowardVelocity(helper, -SEEDED_SPEED);
     }
 
     /** Pitch angle (radians, 0 = level, positive = nose up) of a car's current real Sable body orientation,
@@ -206,20 +303,20 @@ public final class DiffuserAssistGameTests {
         return Math.asin(Math.max(-1f, Math.min(1f, forward.y())));
     }
 
-    /** Spawns {@code car}, forces its real Sable body to start tilted nose-up (a modest 0.3 rad, well clear
-     * of either level or the &plusmn;&pi;/2 gimbal extreme) via the same before-first-tick NBT orientation
-     * path {@link #startUpsideDown} uses, and keeps it continuously awake the same way (see that method's
-     * own javadoc for why the forced throttle is necessary). */
-    private static void startPitchedUp(CarEntity car, float pitchRad) {
+    /** Forces {@code car}'s real Sable body to start at {@code tilted} (callers pass a modest single-axis
+     * rotation -- {@code rotateX} for pitch, {@code rotateZ} for roll -- well clear of both level and any
+     * &plusmn;&pi;/2 gimbal or &plusmn;&pi; equilibrium extreme) via the same before-first-tick NBT
+     * orientation path {@link #startUpsideDown} uses, and keeps it continuously awake the same way (see
+     * that method's own javadoc for why the forced throttle is necessary). */
+    private static void startTilted(CarEntity car, Quaternionf tilted) {
         CompoundTag tag = new CompoundTag();
         car.save(tag);
-        Quaternionf tilted = new Quaternionf().rotateX(pitchRad);
         tag.putFloat("OrientationX", tilted.x);
         tag.putFloat("OrientationY", tilted.y);
         tag.putFloat("OrientationZ", tilted.z);
         tag.putFloat("OrientationW", tilted.w);
         car.load(tag);
-        car.forceDrive(0.001, 0.0, 999);
+        car.forceDrive(KEEP_AWAKE_THROTTLE, 0.0, KEEP_AWAKE_TICKS);
     }
 
     private static VehicleSpec.DiffuserTuning pitchOnly(double maxTorque, double horizonSeconds, double gain, double damping) {
@@ -236,24 +333,79 @@ public final class DiffuserAssistGameTests {
      * landing at all: a car falling from height, with a generous {@code pitchLandingHorizonSeconds} (so the
      * authority ramp is not itself gated on being close to the ground), only needs to check that its pitch
      * magnitude is trending back toward level over a short window -- true in the air long before any
-     * landing-tick question comes up. */
-    @GameTest(template = "settlement_test", timeoutTicks = 100)
-    public static void pitchLandingTurnsTowardLevelNotAwayFromIt(GameTestHelper helper) {
-        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 12, 5));
-        car.setDiffuserTuningForTest(pitchOnly(8000.0, 30.0, 6000.0, 1200.0));
-        startPitchedUp(car, 0.3f);
-        helper.runAfterDelay(1L, () -> {
+     * landing-tick question comes up. Run nose-up AND nose-down, for the same reason the heading/trajectory
+     * pairs above are run on both sides. */
+    private static void assertPitchReturnsTowardLevel(GameTestHelper helper, float startPitchRad) {
+        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), DROP_SPAWN);
+        car.setDiffuserTuningForTest(pitchOnly(ASSIST_MAX_TORQUE, PITCH_LANDING_HORIZON_SECONDS, ASSIST_GAIN, ASSIST_DAMPING));
+        startTilted(car, new Quaternionf().rotateX(startPitchRad));
+        helper.runAfterDelay(BODY_EXISTS_TICK, () -> {
             double pitchBefore = Math.abs(pitchAngleRad(car));
-            helper.assertTrue(pitchBefore > 0.2,
-                    "sanity: car did not actually start pitched up, pitch=" + pitchAngleRad(car));
-            helper.runAfterDelay(15L, () -> {
+            helper.assertTrue(pitchBefore > MIN_START_TILT_RAD,
+                    "sanity: car did not actually start pitched (" + startPitchRad + " rad), pitch=" + pitchAngleRad(car));
+            helper.runAfterDelay(OBSERVE_TICKS, () -> {
                 double pitchAfter = Math.abs(pitchAngleRad(car));
-                helper.assertTrue(pitchAfter < pitchBefore - 0.02,
+                helper.assertTrue(pitchAfter < pitchBefore - MIN_TILT_RECOVERY_RAD,
                         "pitch landing help should have turned the car back toward level, not held still or "
                                 + "tipped further: pitchBefore=" + pitchBefore + " pitchAfter=" + pitchAfter);
                 helper.succeed();
             });
         });
+    }
+
+    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    public static void pitchLandingTurnsTowardLevelNotAwayFromIt(GameTestHelper helper) {
+        assertPitchReturnsTowardLevel(helper, START_TILT_RAD);
+    }
+
+    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    public static void pitchLandingTurnsTowardLevelFromNoseDownToo(GameTestHelper helper) {
+        assertPitchReturnsTowardLevel(helper, -START_TILT_RAD);
+    }
+
+    private static VehicleSpec.DiffuserTuning rollOnly(double maxTorque, double gain, double damping) {
+        return new VehicleSpec.DiffuserTuning(true, maxTorque, gain, damping, false, 0, 0, 0, 0,
+                false, 0, 0, 0, 0, false, 0, 0, 0, 0);
+    }
+
+    /** R16 (roll self-righting), the assist this ticket's acceptance criteria leads with -- covered here as
+     * a direction-only check for the same reason {@link #pitchLandingTurnsTowardLevelNotAwayFromIt} is.
+     *
+     * <p>This is NOT the full "upside-down car recovers and lands upright" scenario: that fixture
+     * (documented in the comment block at the end of this class) really did fail 3 times in 7 runs by
+     * getting captured near the roll=&pi; unstable equilibrium during a genuine 3-axis tumble, and nothing
+     * here claims to have solved that. What this does cover is the part that failure mode obscured and that
+     * no production-path test covered at all: a car banked a modest amount off upright, in clean single-axis
+     * freefall with zero initial angular velocity, must have its real Sable body rolled back TOWARD upright
+     * by the real assist -- a bank angle nowhere near the degenerate point, so there is no capture risk, and
+     * no landing in the window, so there is no landing-tick question either. Both roll directions, same
+     * reasoning as the heading/pitch/trajectory pairs above. */
+    private static void assertRollReturnsTowardUpright(GameTestHelper helper, float startRollRad) {
+        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), DROP_SPAWN);
+        car.setDiffuserTuningForTest(rollOnly(ASSIST_MAX_TORQUE, ASSIST_GAIN, ASSIST_DAMPING));
+        startTilted(car, new Quaternionf().rotateZ(startRollRad));
+        helper.runAfterDelay(BODY_EXISTS_TICK, () -> {
+            double rollBefore = Math.abs(rollAngleRad(car));
+            helper.assertTrue(rollBefore > MIN_START_TILT_RAD,
+                    "sanity: car did not actually start banked (" + startRollRad + " rad), roll=" + rollAngleRad(car));
+            helper.runAfterDelay(OBSERVE_TICKS, () -> {
+                double rollAfter = Math.abs(rollAngleRad(car));
+                helper.assertTrue(rollAfter < rollBefore - MIN_TILT_RECOVERY_RAD,
+                        "roll self-righting should have rolled the car back toward upright, not held still or "
+                                + "banked further: rollBefore=" + rollBefore + " rollAfter=" + rollAfter);
+                helper.succeed();
+            });
+        });
+    }
+
+    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    public static void rollSelfRightingRollsBackTowardUprightNotFurtherOver(GameTestHelper helper) {
+        assertRollReturnsTowardUpright(helper, START_TILT_RAD);
+    }
+
+    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    public static void rollSelfRightingRollsBackTowardUprightFromTheOtherSideToo(GameTestHelper helper) {
+        assertRollReturnsTowardUpright(helper, -START_TILT_RAD);
     }
 
     /** Telemetry (open item from the ticket's own acceptance criteria): {@code SableCarBody.describe()}'s
@@ -266,12 +418,12 @@ public final class DiffuserAssistGameTests {
      * car), not specific numeric values -- deliberately, after this ticket's other GameTests here found
      * that asserting on an EXACT post-launch/post-tumble number in this environment is not reliable; a
      * stationary car on flat ground (no drop, no launch, no pit) has no such risk. */
-    @GameTest(template = "settlement_test", timeoutTicks = 20)
+    @GameTest(template = TEMPLATE, timeoutTicks = TELEMETRY_TIMEOUT_TICKS)
     public static void describeReportsEachDiffuserAssistsOwnTorqueUnderItsOwnKey(GameTestHelper helper) {
-        helper.setBlock(new BlockPos(5, 2, 5), Blocks.STONE);
-        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
+        helper.setBlock(FLOOR_BLOCK, Blocks.STONE);
+        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), ON_FLOOR_SPAWN);
         car.setDiffuserTuningForTest(VehicleSpec.DiffuserTuning.IDENTITY);
-        helper.runAfterDelay(2L, () -> {
+        helper.runAfterDelay(TELEMETRY_TICKS, () -> {
             String description = SableCompat.describe(car.sableBody());
             for (String key : new String[] {"diffuserRoll=", "diffuserPitch=", "diffuserHeading=", "diffuserTrajectory="}) {
                 helper.assertTrue(description.contains(key),
@@ -304,9 +456,11 @@ public final class DiffuserAssistGameTests {
     // point a correctly-signed restoring force cannot (and should not) pull away from, not a bug in this
     // ticket's own code. Ruled out directly, not guessed: widening the landing pad 1x1 to 7x7, and a fully
     // fresh run/world before a run -- neither changed the failure signature. No GameTest for the full
-    // upside-down-to-landed recovery is included here for that reason; DiffuserAssistMathTest's own
-    // zero-at-equilibrium pure-function coverage stands in for it. A reliable full-recovery production
-    // check would need either a non-chaotic fixture (a 2D-only drop with no yaw/pitch coupling, if this
+    // upside-down-to-landed recovery is included here for that reason. What IS covered, by
+    // rollSelfRightingRollsBackTowardUpright* above, is the part that failure mode was obscuring: a modest
+    // bank angle (nowhere near the degenerate point) in clean single-axis freefall really is rolled back
+    // toward upright by the real assist, both directions. A reliable FULL-recovery production check would
+    // still need either a non-chaotic tumble fixture (a 2D-only drop with no yaw/pitch coupling, if this
     // engine's wrapper exposes one) or a verified deterministic-stepping solver configuration this repo
     // does not currently have a call site for.
     //

@@ -95,9 +95,12 @@ public record VehicleSpec(
         /** As {@link #frontWingDownforceCoeff}, applied at the rear axle's own mount point instead. {@code
          * 0.0} for every vehicle that has not opted in &mdash; today, every vehicle on the roster. */
         double rearWingDownforceCoeff,
-        /** Aerodynamic drag (MINECRAFT-446): newtons per (m/s)^2 of forward speed, opposing the body's own
-         * velocity &mdash; the generalized, per-vehicle form of the single hardcoded {@code AIR_DRAG}
-         * constant {@link SableCarBody#tick} used before this field existed. {@code 0.4} (the old global
+        /** Aerodynamic drag (MINECRAFT-446): newtons per (m/s)^2 of the body's own TOTAL speed (the full
+         * 3D velocity vector's magnitude, {@code subLinear.length()} in {@link SableCarBody#tick} &mdash;
+         * NOT just the forward component {@link #frontWingDownforceCoeff}/{@link #rearWingDownforceCoeff}
+         * use), opposing that same velocity vector exactly &mdash; the generalized, per-vehicle form of the
+         * single hardcoded {@code AIR_DRAG} constant {@code SableCarBody.tick} used before this field
+         * existed, at exactly the same point in that method, unchanged. {@code 0.4} (the old global
          * constant's own value) for every vehicle that has not opted into a different value via its own
          * wing config, so {@code SableCarBody.tick}'s drag impulse is byte-for-byte unchanged for the whole
          * roster until an operator overrides it. */

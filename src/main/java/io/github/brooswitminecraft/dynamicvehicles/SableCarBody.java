@@ -733,8 +733,13 @@ final class SableCarBody {
         // front/rear split also produces a genuine pitch moment, not just a vertical force. The airflow
         // speed used is the body's own forward speed (signed, but squared below so direction never
         // matters) read AFTER every sub-step's impulses, exactly like drag above. Purely vertical
-        // (world -Y), unlike drag, so it injects no energy along the car's own direction of travel; zero at
-        // zero speed, and zero for every vehicle on the roster today (both coefficients default to 0.0).
+        // (world -Y), unlike drag (which opposes the full 3D velocity vector, not just its forward
+        // component): on ordinary horizontal travel this does no work on the car's own forward motion,
+        // since a vertical force is perpendicular to a horizontal velocity -- but world-down is NOT
+        // generally perpendicular to velocity on a slope or while airborne, so on sloped/vertical travel
+        // this genuinely can add or remove vertical kinetic energy, exactly the way gravity already does;
+        // that is expected, real physics, not an injected-energy bug. Zero at zero speed, and zero for
+        // every vehicle on the roster today (both coefficients default to 0.0).
         double airflowSpeed = subLinear.dot(carForward);
         if (spec.frontWingDownforceCoeff() > 0.0 || spec.rearWingDownforceCoeff() > 0.0) {
             Vector3d frontAxlePoint = new Vector3d();

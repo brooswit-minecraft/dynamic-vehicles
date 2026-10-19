@@ -161,7 +161,7 @@ already-shipped mechanism this ticket does not touch or supersede.
 |---|---|---|---|
 | `wing.frontDownforceCoeff` | N per (m/s)^2 | 0.0 – 5.0 | Downward force applied at the front axle's own mount point: `coeff * forwardSpeed^2`. Identity/stock default `0.0` (no wing) for every existing car. |
 | `wing.rearDownforceCoeff` | N per (m/s)^2 | 0.0 – 5.0 | As `frontDownforceCoeff`, applied at the rear axle's own mount point instead. Identity/stock default `0.0`. |
-| `wing.dragCoeff` | N per (m/s)^2 | 0.0 – 5.0 | Aerodynamic drag opposing the car's own velocity, combined with the existing fluid/foliage drag coefficients before being scaled by `forceScale()` and speed — the exact point in `SableCarBody.tick` that already applied air drag. Stock default `0.4` for every existing car: the old hardcoded, global `AIR_DRAG` constant every vehicle shared before this field existed, now per-car configurable. |
+| `wing.dragCoeff` | N per (m/s)^2 of the car's TOTAL speed | 0.0 – 5.0 | Aerodynamic drag opposing the car's own full 3D velocity vector (`subLinear.length()` in `SableCarBody.tick` — the body's total speed, not just its forward component), combined with the existing fluid/foliage drag coefficients before being scaled by `forceScale()` and speed — the exact point in `SableCarBody.tick` that already applied air drag. Stock default `0.4` for every existing car: the old hardcoded, global `AIR_DRAG` constant every vehicle shared before this field existed, now per-car configurable. |
 
 Ranges live in code as `VehicleSpecLimits.MIN_WING_DOWNFORCE_COEFF`/
 `MAX_WING_DOWNFORCE_COEFF` and `MIN_WING_DRAG_COEFF`/`MAX_WING_DRAG_COEFF`,
@@ -179,12 +179,23 @@ exactly like the existing per-wheel suspension/tire forces already are — a
 front-heavy wing config pitches the nose down under speed, a rear-heavy one
 pitches the tail down, the same way a real car's aero balance would.
 
-**Speed/airflow dependence**: both downforce and drag scale with the square
-of the car's own forward speed (signed, but squared, so reversing does not
-flip or cancel either one) — zero at a standstill, and stable there (no
-discontinuity, no division). Downforce is applied purely vertically
-(world-down), never along the direction of travel, so unlike drag it injects
-no energy into the car's own forward motion.
+**Speed/airflow dependence**: downforce scales with the square of the car's
+own forward speed (the forward component of velocity, signed but squared, so
+reversing does not flip or cancel it); drag scales with the square of the
+car's own TOTAL speed (the full 3D velocity vector's magnitude — the same
+quantity the pre-existing global `AIR_DRAG` constant always used, unchanged
+by this ticket). Both are exactly zero at a standstill, and stable there (no
+discontinuity, no division).
+
+Downforce is applied purely vertically (world-down), drag strictly opposing
+the full velocity vector. On ordinary horizontal travel, a purely vertical
+force does no work on the car's own forward motion, so downforce adds no
+energy there — but world-down is **not** generally perpendicular to velocity
+on a slope or while airborne, so on sloped or vertical travel downforce can
+genuinely add or remove vertical kinetic energy, exactly the way gravity
+already does; that is expected real physics, not an injected-energy bug.
+Drag, by contrast, always opposes the body's own velocity directly, so it
+can only remove kinetic energy, never add it, regardless of travel direction.
 
 Example, a front-heavy drift car with a modest rear wing and slightly more
 drag than stock:

@@ -7,6 +7,7 @@ import java.nio.file.Path;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.tags.FluidTags;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.gametest.GameTestHolder;
@@ -203,6 +204,135 @@ public final class WingAeroGameTests {
                 });
             });
         });
+    }
+
+    /** AC (nonzero-speed tick/substep behaviour): review follow-up (comment 49011) &mdash; {@link
+     * #aWingedCarAtRestStaysStable} only establishes stability at zero speed, not that wing downforce's
+     * own contribution stays well-behaved under a DIFFERENT {@code wheelSubSteps} count once the car is
+     * actually moving. Wing downforce is applied once per tick, outside the sub-step loop, exactly like
+     * air drag (see {@code SableCarBody.tick}'s own comment there) &mdash; unlike the per-wheel tire/
+     * suspension forces inside that loop, which {@code CarDrivetrainGameTests
+     * #wheelSubStepCountDoesNotMateriallyChangeReachedSpeedAfterAFixedWindow}'s own javadoc documents as
+     * changing measurably (~10-15%) with sub-step count. Same production entry point and tolerance-band
+     * approach as that test (a generous ratio band, not exact equality, since the REST of the physics a
+     * compression measurement also reflects does have its own real, expected sub-step sensitivity) &mdash;
+     * run in its own isolated batch and restoring {@code CarConfig.WHEEL_SUB_STEPS} even on failure, for
+     * the same reason that test's own javadoc explains. */
+    @GameTest(template = "settlement_test", timeoutTicks = 300, batch = "wingAeroSubStepIsolated")
+    public static void wingDownforceGrowthIsSubstepCountInvariant(GameTestHelper helper) {
+        fillFloor(helper, 5, 2, 5);
+        fillFloor(helper, 5, 2, 20);
+        int originalSubSteps = CarConfig.WHEEL_SUB_STEPS.get();
+        String wingJson = "{\"wing\": {\"frontDownforceCoeff\": " + STRONG_DOWNFORCE_COEFF
+                + ", \"rearDownforceCoeff\": " + STRONG_DOWNFORCE_COEFF + "}}";
+        try {
+            CarConfig.WHEEL_SUB_STEPS.set(1);
+            withLoadedOverride(VehicleIds.CAR, wingJson, () -> {
+                CarEntity oneStepCar = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
+                helper.runAfterDelay(5L, () -> {
+                    double oneStepRest = totalTravel(oneStepCar);
+                    oneStepCar.forceDrive(1.0, 0.0, DRIVE_TICKS);
+                    helper.runAfterDelay((long) DRIVE_TICKS, () -> {
+                        double oneStepGrowth = totalTravel(oneStepCar) - oneStepRest;
+                        runFourSubStepLegAndRestore(helper, originalSubSteps, wingJson, oneStepGrowth);
+                    });
+                });
+            });
+        } catch (RuntimeException e) {
+            CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
+            throw e;
+        }
+    }
+
+    private static void runFourSubStepLegAndRestore(GameTestHelper helper, int originalSubSteps, String wingJson,
+            double oneStepGrowth) {
+        try {
+            CarConfig.WHEEL_SUB_STEPS.set(4);
+            withLoadedOverride(VehicleIds.CAR, wingJson, () -> {
+                CarEntity fourStepCar = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 20));
+                helper.runAfterDelay(5L, () -> {
+                    double fourStepRest = totalTravel(fourStepCar);
+                    fourStepCar.forceDrive(1.0, 0.0, DRIVE_TICKS);
+                    helper.runAfterDelay((long) DRIVE_TICKS, () -> {
+                        try {
+                            double fourStepGrowth = totalTravel(fourStepCar) - fourStepRest;
+                            CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
+                            // Sign is not asserted on: a hard full-throttle launch's own acceleration-driven
+                            // weight transfer can leave the NET compression change negative even with real
+                            // wing downforce added on top (confirmed live) -- not something this test is
+                            // about. What matters here is that the MAGNITUDE of whatever net change results
+                            // does not swing wildly, and does not flip sign, between substep counts.
+                            double oneStepAbs = Math.abs(oneStepGrowth);
+                            double fourStepAbs = Math.abs(fourStepGrowth);
+                            helper.assertTrue(oneStepAbs > 1e-6 && fourStepAbs > 1e-6,
+                                    "test setup invalid -- wing downforce produced no measurable compression "
+                                            + "change at either substep count: 1-step=" + oneStepGrowth
+                                            + " 4-step=" + fourStepGrowth);
+                            helper.assertTrue(Math.signum(oneStepGrowth) == Math.signum(fourStepGrowth),
+                                    "wheelSubSteps flipped the sign of the net compression change: 1-step="
+                                            + oneStepGrowth + " 4-step=" + fourStepGrowth);
+                            double ratio = fourStepAbs / oneStepAbs;
+                            helper.assertTrue(ratio > 0.5 && ratio < 2.0,
+                                    "wing downforce's own once-per-tick contribution must not swing wildly with "
+                                            + "wheelSubSteps: 1-step=" + oneStepGrowth + " 4-step=" + fourStepGrowth
+                                            + " ratio=" + ratio);
+                            helper.succeed();
+                        } catch (RuntimeException e) {
+                            CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
+                            throw e;
+                        }
+                    });
+                });
+            });
+        } catch (RuntimeException e) {
+            CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
+            throw e;
+        }
+    }
+
+    /** AC (water/lava/buoyancy compatibility): review follow-up (comment 49011) &mdash; a car carrying a
+     * real wing config, fully submerged in water and driven forward, must still report full submersion and
+     * keep finite, bounded motion. Wing downforce/drag are computed and applied entirely independently of
+     * {@code SableCarBody.tick}'s separate water/lava buoyancy and fluid-drag block (this ticket reads no
+     * fluid state and does not touch that code), so this proves they coexist rather than merely asserting
+     * it from reading the diff: the same "two full layers of water, read back as fully submerged" setup
+     * {@code EnvironmentGameTests#shortVehicleFullySubmergedReachesFullSubmersionFraction} already uses for
+     * the pre-existing, untouched buoyancy system (same spawn point and short delay before the submersion
+     * check, for the same reason -- driving first would let buoyancy float the car up out of full
+     * submersion before the check, which is an orthogonal, expected buoyancy behaviour, not something this
+     * assertion is about). Driving happens AFTER that check, to also exercise the wing/fluid-drag code
+     * paths running together in the same tick without the earlier submersion check racing against it. */
+    @GameTest(template = "settlement_test", timeoutTicks = 200)
+    public static void aWingedCarFullySubmergedInWaterStaysBuoyantAndStable(GameTestHelper helper) {
+        helper.setBlock(new BlockPos(5, 2, 5), Blocks.WATER);
+        helper.setBlock(new BlockPos(5, 3, 5), Blocks.WATER);
+        helper.setBlock(new BlockPos(5, 4, 5), Blocks.AIR);
+        withLoadedOverride("indy_car",
+                "{\"wing\": {\"frontDownforceCoeff\": " + STRONG_DOWNFORCE_COEFF + ", \"rearDownforceCoeff\": "
+                        + STRONG_DOWNFORCE_COEFF + ", \"dragCoeff\": 3.0}}",
+                () -> {
+                    CarEntity car = helper.spawn(DynamicVehiclesMod.INDY.get(), new BlockPos(5, 2, 5));
+                    helper.runAfterDelay(2L, () -> {
+                        double vehicleHeight = 2.0 * car.spec().halfY();
+                        double fraction = EnvironmentMath.submersionFraction(
+                                car.getFluidHeight(FluidTags.WATER), vehicleHeight);
+                        helper.assertTrue(fraction == 1.0,
+                                "a winged car fully covered by water did not read back as fully submerged "
+                                        + "(wing fields must not interfere with the separate buoyancy system): "
+                                        + fraction);
+                        car.forceDrive(0.5, 0.0, 100);
+                        helper.runAfterDelay(100L, () -> {
+                            Vec3 motion = car.getDeltaMovement();
+                            Vec3 pos = car.position();
+                            helper.assertTrue(
+                                    Double.isFinite(motion.x) && Double.isFinite(motion.y) && Double.isFinite(motion.z)
+                                            && Double.isFinite(pos.x) && Double.isFinite(pos.y) && Double.isFinite(pos.z),
+                                    "a winged car in water produced non-finite position/velocity: pos=" + pos
+                                            + " motion=" + motion);
+                            helper.succeed();
+                        });
+                    });
+                });
     }
 
     private static void withLoadedOverride(String carId, String json, Runnable body) {

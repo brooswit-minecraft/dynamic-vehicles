@@ -12,6 +12,7 @@ import java.util.List;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.OfferDistanceFormat;
 import io.github.brooswitminecraft.dynamicvehicles.hud.CountdownFormat;
 import io.github.brooswitminecraft.dynamicvehicles.hud.MissionPresentation;
+import io.github.brooswitminecraft.dynamicvehicles.hud.MissionWaypointLayout;
 import io.github.brooswitminecraft.dynamicvehicles.hud.MissionWaypointRenderer;
 import io.github.brooswitminecraft.dynamicvehicles.hud.ProgressFormat;
 
@@ -41,11 +42,15 @@ public final class PathfinderWaypointOverlay implements LayeredDraw.Layer {
     public void render(GuiGraphics graphics, DeltaTracker deltaTracker) {
         PathfinderHudPayload hud = PathfinderClientHud.current();
         if (!hud.active()) {
+            // No marker occupies screen space this frame; clear so Dispatcher (rendered before this
+            // overlay, next frame) never avoids a now-stale Pathfinder panel (MINECRAFT-411 PR #177 review).
+            MissionWaypointLayout.clear(MissionWaypointLayout.Mission.PATHFINDER);
             return;
         }
         Minecraft minecraft = Minecraft.getInstance();
         LocalPlayer player = minecraft.player;
         if (player == null || minecraft.level == null) {
+            MissionWaypointLayout.clear(MissionWaypointLayout.Mission.PATHFINDER);
             return;
         }
 
@@ -55,6 +60,7 @@ public final class PathfinderWaypointOverlay implements LayeredDraw.Layer {
             // A marker computed in a different coordinate space would be meaningless; there is no
             // world position here to project, so fall back to a compact status line instead of a
             // misleading projected target.
+            MissionWaypointLayout.clear(MissionWaypointLayout.Mission.PATHFINDER);
             String wrongDimensionText = Component.translatable("gui.dynamicvehicles.pathfinder.wrong_dimension").getString();
             MissionWaypointRenderer.renderStatus(graphics, minecraft, wrongDimensionText, 0xFFFF55);
             return;
@@ -67,7 +73,7 @@ public final class PathfinderWaypointOverlay implements LayeredDraw.Layer {
         long remainingTicks = hud.deadlineTick() - minecraft.level.getGameTime();
         String timeText = CountdownFormat.format(remainingTicks);
 
-        MissionWaypointRenderer.renderMarker(graphics, minecraft,
+        MissionWaypointRenderer.renderMarker(graphics, minecraft, MissionWaypointLayout.Mission.PATHFINDER,
                 hud.nextX(), hud.nextY(), hud.nextZ(), MARKER_COLOR_ARGB, distance,
                 List.of(progressText, timeText));
     }

@@ -8,8 +8,10 @@ bump: minor
   navigating. A wrong-dimension attempt shows an explicit top-centre status line instead of a
   misleading projected target. The marker uses a fixed colour (Pathfinder has no danger value to
   reuse Dispatcher's threat colouring for) and its own count/countdown lines, so an active
-  delivery contract and an active Pathfinder attempt stay visually distinguishable even when both
-  markers land close together on screen.
+  delivery contract and an active Pathfinder attempt stay visually distinguishable - and never
+  paint over each other - even when both markers land at or near the same screen position.
+  Each marker's own panel also stays entirely on screen, including when its edge-clamped dot
+  sits right at a screen edge or corner.
 - `showLegacyPathfinderHud` client config option (default off) restores the old fixed-corner
   Pathfinder HUD alongside the new marker, mirroring the existing `showLegacyContractHud` toggle.
 

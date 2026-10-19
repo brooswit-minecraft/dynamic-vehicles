@@ -129,15 +129,28 @@ public class CarEntity extends Entity {
 
     public CarEntity(EntityType<? extends CarEntity> type, Level level) {
         super(type, level);
-        this.spec = DynamicVehiclesMod.TRUCK.isBound() && type == DynamicVehiclesMod.TRUCK.get() ? VehicleSpec.TRUCK
-                : DynamicVehiclesMod.TROPHY.isBound() && type == DynamicVehiclesMod.TROPHY.get() ? VehicleSpec.TROPHY
-                : DynamicVehiclesMod.DRIFT.isBound() && type == DynamicVehiclesMod.DRIFT.get() ? VehicleSpec.DRIFT
-                : DynamicVehiclesMod.MUSCLE.isBound() && type == DynamicVehiclesMod.MUSCLE.get() ? VehicleSpec.MUSCLE
-                : DynamicVehiclesMod.ROCK_CRAWLER.isBound() && type == DynamicVehiclesMod.ROCK_CRAWLER.get() ? VehicleSpec.ROCK_CRAWLER
-                : DynamicVehiclesMod.MONSTER_TRUCK.isBound() && type == DynamicVehiclesMod.MONSTER_TRUCK.get() ? VehicleSpec.MONSTER_TRUCK
-                : DynamicVehiclesMod.INDY.isBound() && type == DynamicVehiclesMod.INDY.get() ? VehicleSpec.INDY
-                : DynamicVehiclesMod.BUS.isBound() && type == DynamicVehiclesMod.BUS.get() ? VehicleSpec.BUS
-                : DynamicVehiclesMod.CARGO_TRUCK.isBound() && type == DynamicVehiclesMod.CARGO_TRUCK.get() ? VehicleSpec.CARGO_TRUCK : VehicleSpec.CAR;
+        // MINECRAFT-443: each branch resolves through any per-car config file override loaded for that
+        // car id (VehicleSpecOverrides.resolve falls straight back to the stock constant when no file was
+        // loaded for it, so this is behaviourally identical to the plain stock lookup it replaces).
+        this.spec = DynamicVehiclesMod.TRUCK.isBound() && type == DynamicVehiclesMod.TRUCK.get()
+                        ? VehicleSpecOverrides.resolve(VehicleIds.TRUCK, VehicleSpec.TRUCK)
+                : DynamicVehiclesMod.TROPHY.isBound() && type == DynamicVehiclesMod.TROPHY.get()
+                        ? VehicleSpecOverrides.resolve(VehicleIds.TROPHY_TRUCK, VehicleSpec.TROPHY)
+                : DynamicVehiclesMod.DRIFT.isBound() && type == DynamicVehiclesMod.DRIFT.get()
+                        ? VehicleSpecOverrides.resolve(VehicleIds.DRIFT_CAR, VehicleSpec.DRIFT)
+                : DynamicVehiclesMod.MUSCLE.isBound() && type == DynamicVehiclesMod.MUSCLE.get()
+                        ? VehicleSpecOverrides.resolve("muscle_car", VehicleSpec.MUSCLE)
+                : DynamicVehiclesMod.ROCK_CRAWLER.isBound() && type == DynamicVehiclesMod.ROCK_CRAWLER.get()
+                        ? VehicleSpecOverrides.resolve("rock_crawler", VehicleSpec.ROCK_CRAWLER)
+                : DynamicVehiclesMod.MONSTER_TRUCK.isBound() && type == DynamicVehiclesMod.MONSTER_TRUCK.get()
+                        ? VehicleSpecOverrides.resolve("monster_truck", VehicleSpec.MONSTER_TRUCK)
+                : DynamicVehiclesMod.INDY.isBound() && type == DynamicVehiclesMod.INDY.get()
+                        ? VehicleSpecOverrides.resolve("indy_car", VehicleSpec.INDY)
+                : DynamicVehiclesMod.BUS.isBound() && type == DynamicVehiclesMod.BUS.get()
+                        ? VehicleSpecOverrides.resolve("bus", VehicleSpec.BUS)
+                : DynamicVehiclesMod.CARGO_TRUCK.isBound() && type == DynamicVehiclesMod.CARGO_TRUCK.get()
+                        ? VehicleSpecOverrides.resolve("cargo_truck", VehicleSpec.CARGO_TRUCK)
+                        : VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR);
         this.vehicleTuning = spec.vehicleTuning();
         this.seats = new SeatAssignment<>(spec.seatCount());
     }

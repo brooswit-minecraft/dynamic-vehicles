@@ -395,220 +395,41 @@ public final class CarDrivetrainGameTests {
      * some point during the fall (exercising the real freeze/resume wheelSpin path, MINECRAFT-73/118), and
      * be back in solid contact by the end, all without diverging (NaN/infinite position or speed).
      *
-     * <p>Known pre-existing dependency bug, unrelated to this test's own logic or to MINECRAFT-401's own
-     * code: Sable's own broad-phase entity query
-     * ({@code dev.ryanhcode.sable.util.SubLevelInclusiveLevelEntityGetter}) logs
-     * {@code "Aborting entity get for abnormally large AABB"}. Round 4 assumed this was a malformed
-     * cross-structure query between concurrently-running tests and tried isolating this test into its own
-     * GameTest batch to route around it ({@code batch = "carDrivetrainLedgeIsolated"} below) -- that
-     * assumption was wrong. Round 5 proved it directly: with every OTHER {@code @GameTest} method in the
-     * project temporarily disabled and only this one running (so nothing else is concurrently placed, and
-     * {@code GameTestServer} still picks its usual random, far-from-origin base point for this structure),
-     * the identical error still fires, with the identical symptom below -- batching this test alone was
-     * never actually isolating it from a concurrent structure; it cannot be, because the defect is not
-     * about concurrency at all. The logged AABB's own two corners give it away: one corner sits at the
-     * structure's huge world-space placement coordinate, the other at a tiny value consistent with a
-     * STRUCTURE-LOCAL coordinate that was never translated to world space -- a genuine coordinate-frame
-     * bug inside Sable's own query construction, reproducing every time, triggered specifically by a
-     * wheel's raycast finding a genuine MISS (empty space) under the vehicle, which is exactly the
-     * airborne condition this test exists to exercise and is otherwise rare across this project's other
-     * GameTests (all of which keep every wheel grounded throughout).
-     *
-     * <p>When it fires, {@code box.getPose()} (position/orientation sync, used by {@code getX/Y/Z} and the
-     * raycast-derived {@code wheelTravel()}) freezes -- but {@code body.getLinearVelocity()}, a SEPARATE
-     * Sable call, keeps integrating correctly regardless. Round 5 confirmed this is not merely a display
-     * quirk but corrupts the wheel's own ground-contact determination too: {@code debugTouching()} (this
-     * body's own {@code touching} flag, the same one that gates suspension force/impulses) reads grounded
-     * for the ENTIRE window even while {@code debugSpeed()}/{@code getDeltaMovement()} report a real,
-     * sustained ~13 m/s forward velocity that should have carried the car well past the 5-block ramp onto
-     * the gap -- yet {@code getZ()} shows essentially zero net displacement over the whole 150-tick window.
-     * A real body cannot sustain 13 m/s for 7.5 real seconds and travel essentially nowhere; this is Sable's
-     * own position/contact machinery stuck, not a drivetrain force/physics problem, and not something any
-     * further rewrite of THIS test's assertions (position-based, then velocity-based, now consistency-
-     * checked) can route around, since the car going airborne at all is gated by wheel-raycast ground
-     * detection built on the exact same corrupted position state every rewrite has ultimately read from.
-     * The framework's own flaky-retry mechanism (tried in round 4) was found to have both a real
-     * annotation-swap bug in this exact NeoForge build and a race against headless completion detection,
-     * so it is not a usable workaround either. Marking this {@code required = false} (round 4) was
-     * explicitly rejected by review ("Do not weaken required coverage to obtain green") -- rightly, since
-     * at that point the claim rested on dependency difficulties and assumption, not reproduction.
-     *
-     * <p>Left {@code required = true} (the default): per round 5's own instruction ("repair/isolate the
-     * dependency/test path, or leave this explicitly blocked pending an authorized scoped waiver"), this is
-     * now a concrete, isolated, reproduced finding that this one test is blocked by a pre-existing Sable
-     * engine defect outside this PR's scope to fix, not a weakened gate -- see the round-5 PR/Jira comment
-     * for the isolated-reproduction evidence and the scoped-waiver request this is pending.
-     *
-     * <p>Round 11: review raised two genuine, concrete alternative hypotheses for this same symptom
-     * (neither disputing the AABB evidence above, both worth testing before trusting it further) -- see
-     * this method's own body for the two real bugs they found (the ramp/gap only ever cleared one column,
-     * missing both actual wheel-raycast columns at {@code CarGeometry}'s own +-0.8 m offsets; the mock
-     * rider mounts at literal world {@code BlockPos.ZERO} rather than the car's position). Both are
-     * genuine bugs, fixed here regardless of outcome -- but fixing them did NOT change the result: five
-     * repeated runs after the fix still fail with the IDENTICAL signature (worst Y velocity=0.0, never
-     * ungrounded, ~0 net travel) and the identical repeated "Aborting entity get for abnormally large
-     * AABB" log signature (one coordinate near the structure's own tiny local value, the other at its
-     * huge translated world placement) throughout the window, including well after the rider is already
-     * correctly positioned and riding. This is now evidence AGAINST both of round 11's own hypotheses as
-     * the (sole) cause, not merely unconfirmed -- the car still never goes airborne with the actual
-     * wheel columns cleared and the rider correctly positioned from the start, which the prior fixture
-     * bugs could plausibly have explained but these results rule out as a full explanation. The original
-     * round-4/5 diagnosis (a genuine Sable-internal position/contact defect, not this test's own fixture)
-     * remains the best-supported explanation after this additional, specific falsification attempt. */
-    @GameTest(template = "settlement_test", timeoutTicks = 160, batch = "carDrivetrainLedgeIsolated")
-    public static void carRecoversCleanlyAfterDrivingOffALedgeAndLanding(GameTestHelper helper) {
-        // Review, round 11: this test's own fixture had two real bugs, found by inspection (John's review)
-        // rather than disproven by further isolation - everything in this method's own javadoc above about
-        // a "confirmed, isolated, reproduced" Sable dependency bug was resting on these two fixture bugs
-        // masquerading as an engine defect, not on a genuine upstream issue. Both are fixed below:
-        // 1) The ramp/gap only ever cleared column x=5, but CarGeometry's own wheel mounts sit at local
-        //    x=+-0.8 from the car's CENTER (HALF_X=0.95) - a car spawned at/near x=5.5 (GameTest.spawn's own
-        //    block-center convention) puts both wheel raycast columns at x=4.7 and x=6.3, i.e. columns 4 and
-        //    6, NEITHER of which this test ever touched. The "ledge" the car was "driving off" was never
-        //    actually under either wheel column; of course it never went airborne. Now clears x=4..6.
-        // 2) GameTestHelper#makeMockPlayer spawns the mock rider at literal world BlockPos.ZERO, not
-        //    anywhere relative to this test's own (randomly translated) structure - mounting it onto the
-        //    car immediately after, without first moving it to the car's own position, leaves whatever
-        //    nearby-entity/AABB query runs during that mount spanning from world (0,0,0) to this test's own
-        //    far translated coordinates. That is EXACTLY the "AABB spanning near origin to the
-        //    million-coordinate fixture" signature this javadoc's own round 4-5 history attributed to an
-        //    unpatchable Sable broad-phase defect. Positioning the rider at the car before mounting removes
-        //    that self-inflicted span.
-        // Starts well inside the structure (not at its dz=0 edge, where a test region boundary could
-        // interfere with the body) like every other test in this file.
-        for (int dx = 4; dx <= 6; dx++) {
-            for (int dz = 5; dz <= 9; dz++) {
-                helper.setBlock(new BlockPos(dx, 2, dz), Blocks.STONE);
-                helper.setBlock(new BlockPos(dx, 3, dz), Blocks.AIR);
-            }
-        }
-        // A genuine 2-block drop: the wheel raycast only reaches a fraction of a block below the wheel, so
-        // this gap is deep enough to actually MISS for at least one tick while falling, rather than just
-        // landing on extra suspension travel -- the real condition that freezes/resumes wheelSpin.
-        for (int dx = 4; dx <= 6; dx++) {
-            for (int dz = 10; dz <= 14; dz++) {
-                helper.setBlock(new BlockPos(dx, 0, dz), Blocks.STONE);
-                helper.setBlock(new BlockPos(dx, 1, dz), Blocks.AIR);
-                helper.setBlock(new BlockPos(dx, 2, dz), Blocks.AIR);
-                helper.setBlock(new BlockPos(dx, 3, dz), Blocks.AIR);
-            }
-        }
-        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
-        car.setYRot(0.0f);
-        car.selectGear(CarPhysics.Gear.D1);
-        Player rider = helper.makeMockPlayer(GameType.CREATIVE);
-        rider.setPos(car.getX(), car.getY(), car.getZ());
-        helper.assertTrue(rider.startRiding(car), "mock player failed to board the car");
-        rider.zza = 1.0f;
-        double startZ = car.getZ();
-        double[] minVerticalVelocity = {0.0};
-        double[] peakForwardVelocity = {0.0};
-        boolean[] everUngrounded = {false};
-        long[] firstUngroundedTick = {-1L};
-        // Review, round 12: "correlate rider/car positions and bounding boxes at that actual query with
-        // independently observed body pose/integration" - a dense per-tick System.out diagnostic run
-        // (not kept here; see the round-12 PR/Jira comment for the full log) found and reproduced across
-        // two independent runs at completely different structure placements: car.getZ() (pose) stays
-        // EXACTLY, bit-for-bit frozen at its spawn value for the entire 150-tick window - not merely
-        // imprecise, literally zero change - while velocity (getDeltaMovement(), integrated tick by tick
-        // below, entirely independent of pose) implies ~90+ blocks of real forward travel, and
-        // car.getY() (pose, the SAME sync path) visibly moves by the small amount suspension settling
-        // alone would produce. That Y moves while Z does not, by exactly zero, rules out "pose sync is
-        // globally broken this run" - it is specifically this axis's own position component that never
-        // gets written back, confirming (with much sharper evidence than the original round-4/5 velocity-
-        // only check) that this is the same Sable-internal pose/position defect already diagnosed, not a
-        // new one and not this test's own fixture.
-        double[] integratedZ = {startZ};
-        for (long tick = 1; tick <= 150; tick++) {
-            long diagTick = tick;
-            helper.runAfterDelay(diagTick, () -> integratedZ[0] += car.getDeltaMovement().z);
-        }
-        long[] sampleTicks = {5, 10, 15, 20, 25, 30, 35, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140};
-        for (long sampleTick : sampleTicks) {
-            helper.runAfterDelay(sampleTick, () -> {
-                Vec3 v = car.getDeltaMovement();
-                double vy = v.y * 20.0;
-                double vz = v.z * 20.0;
-                minVerticalVelocity[0] = Math.min(minVerticalVelocity[0], vy);
-                peakForwardVelocity[0] = Math.max(peakForwardVelocity[0], vz);
-                // Review, round 5 (ledge-test investigation): if the car is still reading as GROUNDED
-                // (touching == true) throughout the whole ramp-then-gap window, it never actually left the
-                // ramp surface in the physics model's own terms -- distinct from, and diagnosed BEFORE,
-                // whether that is this PR's own code or the pre-existing Sable broad-phase bug (see the
-                // class javadoc / round-4-5 history) silently keeping the raycast reporting ground contact.
-                if (!car.debugTouching()) {
-                    everUngrounded[0] = true;
-                    if (firstUngroundedTick[0] < 0) {
-                        firstUngroundedTick[0] = sampleTick;
-                    }
-                }
-            });
-        }
-        helper.runAfterDelay(150L, () -> {
-            Vec3 finalVelocity = car.getDeltaMovement();
-            double finalVy = finalVelocity.y * 20.0;
-            double finalSpeed = car.debugSpeed();
-            helper.assertTrue(Double.isFinite(finalVelocity.x) && Double.isFinite(finalVelocity.y) && Double.isFinite(finalVelocity.z),
-                    "car velocity diverged after driving off a ledge: " + finalVelocity);
-            helper.assertTrue(Double.isFinite(finalSpeed) && finalSpeed < 100.0,
-                    "car speed diverged after driving off a ledge: " + finalSpeed);
-            helper.assertTrue(peakForwardVelocity[0] > 1.0,
-                    "car never actually built real forward speed under its own drive -- test setup invalid: peak forward velocity="
-                            + peakForwardVelocity[0]);
-            // A real fall under gravity shows up as a clearly negative Y-velocity at some point -- this is
-            // the actual "went airborne" evidence, read from velocity (not corrupted by the Sable AABB bug
-            // above) rather than from the raycast-derived wheelTravel() or getY() (both corrupted by it).
-            double traveled = car.getZ() - startZ;
-            // Review, round 12: integratedZ (velocity summed tick by tick, never reading pose) alongside
-            // the pose-based "traveled" above - see this method's own round-12 javadoc note for why the
-            // GAP between these two numbers is itself the diagnostic: reproduced across two independent
-            // runs, "traveled" (pose) reads ~0 while this reads 90+ blocks, confirming car.getZ() itself
-            // never updates in this test, not merely that the car failed to actually move.
-            double integratedTraveled = integratedZ[0] - startZ;
-            helper.assertTrue(minVerticalVelocity[0] < -2.0,
-                    "car never showed a real falling (negative Y velocity) at any point -- the ledge drop never actually left the ground: worst Y velocity="
-                            + minVerticalVelocity[0] + " m/s (ever ungrounded=" + everUngrounded[0]
-                            + ", first ungrounded tick=" + firstUngroundedTick[0] + ", peak forward velocity="
-                            + peakForwardVelocity[0] + " m/s, distance traveled (pose)=" + traveled
-                            + " blocks, distance traveled (velocity-integrated)=" + integratedTraveled
-                            + " blocks (need >5 to clear the ramp onto the gap), final speed=" + finalSpeed + ")");
-            // Landed, not still falling: the suspension's own upward force must have arrested the descent
-            // by the end of the window.
-            helper.assertTrue(finalVy > -2.0,
-                    "car was still falling at the end of the window instead of having landed: final Y velocity=" + finalVy + " m/s");
-            helper.succeed();
-        });
-    }
-
-    /** Review round 13 (MINECRAFT-410's own sibling finding, adopted here per John's direction): the
-     * ledge test above is genuinely blocked on a Sable-internal defect, not this PR's own code -- Rapier's
-     * native broad-phase is float32 internally, and {@code GameTestServer.startTests} (vanilla, hardcoded)
-     * randomizes every structure's placement out past float32's safe precision envelope
+     * <p>History: an earlier, far-coordinate version of this test (rounds 2-12) was genuinely blocked on
+     * a Sable-internal defect, not this PR's own code -- Rapier's native broad-phase is float32
+     * internally, and {@code GameTestServer.startTests} (vanilla, hardcoded) randomizes every structure's
+     * placement out past float32's safe precision envelope
      * ({@code net.minecraft.gametest.framework.GameTestServer#startTests}' own
-     * {@code nextIntBetweenInclusive(-14_999_992, 14_999_992)}), which is the exact signature the class
-     * javadoc's round-12 pose-vs-velocity-integration diagnostic confirmed: {@code car.getZ()} freezes bit
-     * for bit while velocity keeps integrating. {@code dynamic-whips} (MINECRAFT-255) and MINECRAFT-410's
-     * own motorboat PR both independently confirm the fix: build the rig directly on the
+     * {@code nextIntBetweenInclusive(-14_999_992, 14_999_992)}). Round 12's own pose-vs-velocity-
+     * integration diagnostic confirmed it directly: {@code car.getZ()} froze bit for bit while velocity
+     * kept integrating. {@code dynamic-whips} (sibling mod, same native Sable/Rapier library) had already
+     * diagnosed and shipped the fix for this exact class of defect as MINECRAFT-255
+     * ({@code RopeConstants.MAX_SAFE_RAPIER_COORDINATE = 1,000,000.0}): build the rig directly on the
      * {@link net.minecraft.server.level.ServerLevel} at fixed, small, absolute coordinates --
      * {@code setBlock}/{@code setChunkForced}/raw entity spawn -- bypassing {@code GameTestHelper}'s
      * structure-relative placement (which still randomizes far away; it is simply never used for anything
-     * that matters here) rather than the GameTest template system itself.
+     * that matters here) rather than the GameTest template system itself. Round 13 adopted that recipe
+     * here as a second, near-origin test alongside the original; rounds 14-16 (below) made it actually
+     * pass. John explicitly approved replacing the original far-coordinate test with this one on
+     * 2026-10-19 21:27 UTC (comment 48989) -- a scoped waiver of far-coordinate recovery coverage
+     * specifically, not an independently-proven claim about the float32 hypothesis; large-coordinate
+     * production behavior remains tracked separately from this test.
      *
-     * <p>This mirrors {@link #carRecoversCleanlyAfterDrivingOffALedgeAndLanding}'s own geometry exactly
-     * (same 5-block ramp, same 2-block-deep 5-block gap, same spawn offset, same sample window and
-     * assertions, including the SAME finalSpeed &lt; 100.0 sanity bound) -- deliberately NOT lengthened.
-     * An earlier attempt at this fix lengthened the ramp to 30 blocks to "let the car build real speed,"
-     * which drove debugSpeed() to 164 m/s and forced a choice between loosening the sanity bound (masking
-     * a possible real problem) or proving the 164 m/s itself was real. It was neither: a dedicated flat-
-     * ground diagnostic (sustained full D1 throttle for 400+ ticks on a straight run with no gap at all --
-     * not kept in this file; see the round-13 PR/Jira comment) never exceeded a few m/s past
-     * {@code VehicleSpec.CAR}'s own documented 32.0 m/s maxSpeed, and this very test's own far-coordinate
-     * sibling above independently peaks at ~15.9 m/s forward velocity over the SAME 5-block ramp. The 164
-     * m/s was this test's own fixture artifact (an unphysically long drag strip bolted onto a
-     * ledge-recovery test, not anything the ledge/landing/governor actually do) -- not a fixture/input bug
-     * in the sense of a wiring mistake, but a geometry choice that was never "physically justified" for
-     * what this test is actually meant to exercise. Restoring the original geometry removes the artifact
-     * at its source rather than papering over its symptom with a wider bound.
+     * <p>Geometry mirrors the original far-coordinate test exactly (same 5-block ramp, same 2-block-deep
+     * gap, same spawn offset, same sample window and assertions, including the SAME finalSpeed &lt; 100.0
+     * sanity bound) -- deliberately NOT lengthened. An earlier attempt at this fix lengthened the ramp to
+     * 30 blocks to "let the car build real speed," which drove debugSpeed() to 164 m/s and forced a
+     * choice between loosening the sanity bound (masking a possible real problem) or proving the 164 m/s
+     * itself was real. It was neither: a dedicated flat-ground diagnostic (sustained full D1 throttle for
+     * 400+ ticks on a straight run with no gap at all -- not kept in this file; see the round-13 PR/Jira
+     * comment) never exceeded a few m/s past {@code VehicleSpec.CAR}'s own documented 32.0 m/s maxSpeed,
+     * and the original far-coordinate test independently peaked at ~15.9 m/s forward velocity over the
+     * SAME 5-block ramp. The 164 m/s was this test's own fixture artifact (an unphysically long drag
+     * strip bolted onto a ledge-recovery test, not anything the ledge/landing/governor actually do) --
+     * not a fixture/input bug in the sense of a wiring mistake, but a geometry choice that was never
+     * "physically justified" for what this test is actually meant to exercise. Restoring the original
+     * geometry removes the artifact at its source rather than papering over its symptom with a wider
+     * bound.
      *
      * <p>Chunk-boundary note: the structure spans more than one 16-block chunk on the Z axis at an
      * arbitrary, non-chunk-aligned origin, so every chunk the block range actually touches must be force-
@@ -671,9 +492,22 @@ public final class CarDrivetrainGameTests {
      * every run regardless of how long the chunk-readiness wait takes (which is exactly what three
      * independent runs showed). Fixed by extending the floor and the forced chunk range three blocks
      * behind {@code originZ} -- comfortably past the {@code originZ - 1.0} minimum -- rather than
-     * lengthening the ramp or touching the sanity bound. */
+     * lengthening the ramp or touching the sanity bound.
+     *
+     * <p>Round-16 (same review): with real speed restored by round-15's fix, the car then outran the
+     * pit's original 5-block landing floor into true unbuilt void and never landed within the window
+     * (CI: "still falling", final Y velocity around -17 m/s). The original far-coordinate test's own
+     * "distance traveled (velocity-integrated)" figure (~94 blocks) is cumulative over the whole 150-tick
+     * window, mostly spent cruising on flat ground AFTER landing (nothing stops the car once landed with
+     * throttle still applied) -- its shared structure template supplied that ground implicitly; this bare
+     * near-origin rig needs it built explicitly. Extended the landing floor to 120 blocks, well past that
+     * figure, rather than tuning it to the exact number (ordinary run-to-run speed variance shouldn't
+     * reopen this gap). Also finishes review 48900's cleanup finding: the terminal {@link GameTestListener}
+     * now discards the car entity, restores every touched block to its actual prior state (captured
+     * before any write, not assumed air), and restores each force-loaded chunk's own actual prior forced
+     * state (captured before forcing, not assumed false) -- on every terminal outcome including a rerun. */
     @GameTest(template = "settlement_test", timeoutTicks = 300, batch = "carDrivetrainLedgeIsolated")
-    public static void carRecoversCleanlyAfterDrivingOffALedgeAndLandingNearOrigin(GameTestHelper helper) {
+    public static void carRecoversCleanlyAfterDrivingOffALedgeAndLanding(GameTestHelper helper) {
         ServerLevel level = helper.getLevel();
         int originX = 0;
         int originY = 100;
@@ -786,9 +620,9 @@ public final class CarDrivetrainGameTests {
                 // (GameTestInfo#ticksToWaitForChunkLoading = 20) rather than a smaller guessed number.
                 .thenIdle(20)
                 .thenExecute(() -> {
-                    // Exactly carRecoversCleanlyAfterDrivingOffALedgeAndLanding's own geometry,
-                    // translated from structure-relative (dx 4..6, dz 5..14) to fixed absolute
-                    // coordinates, plus a solid floor behind the car's own rear footprint (round-15).
+                    // The original far-coordinate test's own geometry, translated from structure-relative
+                    // (dx 4..6, dz 5..14) to fixed absolute coordinates, plus a solid floor behind the
+                    // car's own rear footprint (round-15) and an extended landing floor (round-16).
                     for (int dx = -1; dx <= 1; dx++) {
                         for (int dz = -rearMargin; dz <= 4; dz++) {
                             level.setBlock(new BlockPos(originX + dx, originY - 1, originZ + dz), Blocks.STONE.defaultBlockState(), 3);

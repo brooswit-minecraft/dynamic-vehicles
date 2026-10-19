@@ -4,10 +4,12 @@ import io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.GlobalPos;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.ai.memory.MemoryModuleType;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.npc.VillagerProfession;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.neoforge.event.tick.LevelTickEvent;
@@ -44,17 +46,28 @@ public final class TownConstructionService {
                 || level.getGameTime() % TownConstants.CONSTRUCTION_TICK_INTERVAL_TICKS != 0) {
             return;
         }
+        runConstructionAndRoadsTick(level);
+    }
 
-        Map<BlockPos, Villager> claimedCampfires = findClaimedCampfireSites(level);
-        if (claimedCampfires.isEmpty()) {
+    /** The core per-tick work, factored out from {@link #onLevelTick} so it is directly GameTest-
+     *  able without needing to construct a real {@link LevelTickEvent.Post} - the same shape
+     *  {@code TownFounder#tryFoundNear}/{@code #tryFoundAt} already use for their own bootstrap
+     *  logic. [Review round 4, finding #3] exercises this directly to prove road construction for a
+     *  FOUNDED region keeps progressing with NO claimed campfire present at all. */
+    public static void runConstructionAndRoadsTick(ServerLevel level) {
+        // [Review round 4, finding #4] Dynamic Towns (founding, building, and road construction
+        // alike) is an Overworld-only feature, matching vanilla's own village generation never
+        // occurring in the Nether/End - an explicit, documented scope decision rather than letting
+        // the same sea-level-biased road/terrain policy silently misbehave in every dimension.
+        if (!level.dimension().equals(Level.OVERWORLD)) {
             return;
         }
 
         TownStorage storage = TownStorage.of(level.getServer());
-        Set<RegionCoord> regionsWithActivity = new HashSet<>();
+
+        Map<BlockPos, Villager> claimedCampfires = findClaimedCampfireSites(level);
         for (Map.Entry<BlockPos, Villager> entry : claimedCampfires.entrySet()) {
             BlockPos campfire = entry.getKey();
-            regionsWithActivity.add(TownRegion.fromBlockCoords(campfire.getX(), campfire.getZ()));
             if (!level.getBlockState(campfire).is(Blocks.CAMPFIRE)) {
                 // Already fully built - the campfire cell itself was already replaced by its final
                 // planned block, so there is nothing left to do at this site.
@@ -63,12 +76,35 @@ public final class TownConstructionService {
             buildAt(level, campfire, storage);
         }
 
-        for (RegionCoord region : regionsWithActivity) {
+        // [Review round 4, finding #3] Road construction must not stop just because the single
+        // building whose claimed campfire originally triggered it has since replaced/released that
+        // campfire - a ~100-block building finishes in a few dozen ticks while the region's road
+        // network needs thousands of cells at ROAD_BLOCKS_PER_TICK. Roads are therefore driven from
+        // nearby-player presence in any already-FOUNDED region, the exact same periodic-handler
+        // shape {@link TownFounder#onLevelTick} already uses for bootstrap, independent of whether
+        // any campfire is currently claimed there.
+        for (RegionCoord region : regionsWithNearbyPlayerActivity(level, storage)) {
             TownResourceStore store = storage.storeFor(TownKeys.keyFor(level.dimension(), region));
-            if (TownRoadConstructionService.buildRoadsForRegion(level, region, store)) {
+            if (TownRoadConstructionService.buildRoadsForRegion(level, region, storage, store)) {
                 storage.setDirty();
             }
         }
+    }
+
+    /** [Review round 4, finding #3] Which regions currently have a nearby online player AND are
+     *  already founded - the sole, campfire-independent driver for road construction, exposed so a
+     *  GameTest can prove this selection is genuinely independent of any claimed campfire without
+     *  depending on a seed-derived road route actually landing inside a tiny loaded GameTest
+     *  structure. */
+    static Set<RegionCoord> regionsWithNearbyPlayerActivity(ServerLevel level, TownStorage storage) {
+        Set<RegionCoord> regions = new HashSet<>();
+        for (ServerPlayer player : level.players()) {
+            RegionCoord region = TownRegion.fromBlockCoords(player.blockPosition().getX(), player.blockPosition().getZ());
+            if (storage.hasFoundedTown(TownKeys.keyFor(level.dimension(), region))) {
+                regions.add(region);
+            }
+        }
+        return regions;
     }
 
     /**
@@ -131,9 +167,16 @@ public final class TownConstructionService {
             return;
         }
 
+        // [Review round 4, finding #8] The workstation (and, on completion, the claimant's own
+        // final job) for a commercial/industrial site is the ZONE's own deterministically-assigned
+        // final profession - a pure function of this site's own seed/position - never the
+        // claimant's current (always, in production, the temporary Builder) profession. "Another
+        // campfire" was never a real workstation.
+        Optional<VillagerProfession> finalProfession =
+                TownProfessionWorkstations.finalProfessionFor(kind, level.getSeed(), campfire.getX(), campfire.getZ());
         List<TownBuildingTemplates.Placement> template = new ArrayList<>(TownBuildingTemplates.generate(
                 kind, campfire.getX(), floorY, campfire.getZ(), plan.storehouseVariant(),
-                claimant.getVillagerData().getProfession()));
+                finalProfession.orElse(null)));
         int radius = footprintRadius(kind);
 
         Map<String, TownBuildingTemplates.Placement> byPosition = new HashMap<>();
@@ -169,21 +212,23 @@ public final class TownConstructionService {
         // anything: a protected, player-built, or otherwise-occupied block anywhere in the
         // footprint (including another live claimed campfire), OR a cell outside the dimension's
         // build height, aborts this site for this tick, with no partial mutation and no resource
-        // charge at all. A cell that already holds exactly what THIS site's own template planned
-        // there (a previous tick's progress) is explicitly allowed, so an in-progress site does
-        // not fail its own preflight forever once its walls start going up.
+        // charge at all. A cell this mod has ALREADY placed and paid for (per
+        // {@link TownStorage#isCellPlaced}, a previous tick's own persisted progress) is explicitly
+        // allowed, so an in-progress site does not fail its own preflight forever once its walls
+        // start going up.
         // [Review round 3, finding #3] The preflight must cover the WHOLE planned footprint
         // volume - floor through the tallest planned cell, walls and roof included - not merely
         // today's terrain/canopy top. Otherwise protected content above the current terrain but
         // still within the planned building (e.g. inside a tree canopy above the roofline, or a
         // player build overhead) is only discovered mid-build, after earlier cells are already
         // placed and charged.
+        // [Review round 4, finding #2] "Already done" is now the PERSISTED progress record, never
+        // merely "the live block happens to match the plan" - a player who pre-places the template's
+        // own wall/floor material no longer bypasses protected-site rejection or resource cost,
+        // because that foreign block was never recorded as this mod's own paid-for progress.
         int plannedTopY = floorY + TownBuildingTemplates.heightFor(kind, plan.storehouseVariant());
         if (!TownSitePreflight.isSiteSafe(level, campfire, radius, floorY, plannedTopY,
-                pos -> {
-                    TownBuildingTemplates.Placement planned = byPosition.get(key(pos.getX(), pos.getY(), pos.getZ()));
-                    return planned != null && level.getBlockState(pos).is(planned.block());
-                })) {
+                pos -> storage.isCellPlaced(level.dimension(), pos))) {
             return;
         }
 
@@ -210,8 +255,15 @@ public final class TownConstructionService {
             }
             BlockPos pos = new BlockPos(block.x(), block.y(), block.z());
             TownBuildingTemplates.Placement placement = byPosition.get(key(block.x(), block.y(), block.z()));
-            if (placement == null || level.getBlockState(pos).is(placement.block())) {
-                // Already placed (or, degenerately, no template entry) - nothing to do here.
+            if (placement == null) {
+                continue; // degenerately, no template entry - nothing to do here
+            }
+            // [Review round 4, finding #2] "Already placed" is the PERSISTED progress record, not a
+            // live-world diff: only a cell THIS mod already placed and paid for (and whose block
+            // still matches) is skipped for free - a foreign block that merely matches the planned
+            // material is never treated as already-paid progress.
+            boolean alreadyPlaced = storage.isCellPlaced(level.dimension(), pos);
+            if (alreadyPlaced && level.getBlockState(pos).is(placement.block())) {
                 continue;
             }
             if (!claimant.isAlive() || !TownCampfireClaims.isClaimedBy(claimant, level, campfire)) {
@@ -248,7 +300,10 @@ public final class TownConstructionService {
             // affordability (a non-mutating peek, never itself a charge), attempt the mutation, and
             // re-read the block to confirm it actually landed before the store is ever touched. A
             // rejected/failed mutation costs nothing and places nothing.
-            if (!store.canAfford(block.cost(), TownConstants.CONSTRUCTION_COST_PER_BLOCK)) {
+            // [Review round 4, finding #2] A cell already recorded as paid-for progress (the
+            // griefed-then-rebuilt case above) is never charged again - only a cell not yet in the
+            // persisted progress record pays.
+            if (!alreadyPlaced && !store.canAfford(block.cost(), TownConstants.CONSTRUCTION_COST_PER_BLOCK)) {
                 // Insufficient resources: pause construction at this site for this tick without
                 // charging anything, per MINECRAFT-388 ("no free construction, no negative stores").
                 break;
@@ -259,21 +314,33 @@ public final class TownConstructionService {
                 // is charged; try again next tick rather than aborting the whole site.
                 continue;
             }
-            ConstructionSitePlan.tryPayForBlock(store, block, TownConstants.CONSTRUCTION_COST_PER_BLOCK);
+            if (!alreadyPlaced) {
+                ConstructionSitePlan.tryPayForBlock(store, block, TownConstants.CONSTRUCTION_COST_PER_BLOCK);
+            }
+            storage.markCellPlaced(level.dimension(), pos);
             placedThisTick++;
         }
         if (placedThisTick > 0) {
             storage.setDirty();
         }
 
-        // [Review round 3, finding #5] "Handle the actual Builder-to-final-site transition": once
-        // every planned cell (the former campfire cell included) actually matches the finished
-        // build, this claimant's Builder job here is done - release it back to NONE so vanilla can
-        // let it pick up a fresh job site elsewhere, rather than leaving it a permanently jobless
-        // Builder tied to a POI that is no longer a campfire at all (and so, per the finding #2 fix
-        // above, can never be re-discovered as an active construction site again anyway).
+        // [Review round 3, finding #5 / round 4, finding #8] "Handle the actual Builder-to-final-
+        // site transition": once every planned cell (the former campfire cell included) actually
+        // matches the finished build, this claimant's temporary Builder job here is done. A
+        // commercial/industrial site hands the claimant off to the zone's own real final profession
+        // (job-site memory pointed at the real vanilla workstation this same template just built,
+        // per {@link TownBuildingTemplates#workstationPosition}) rather than releasing it to NONE
+        // with nothing real to do there; a residential/storehouse site (no workplace to hand off
+        // to) still releases the claimant to NONE so vanilla can let it pick up a fresh job site
+        // elsewhere.
         if (claimant.isAlive() && isSiteFullyBuilt(level, template)) {
-            claimant.setVillagerData(claimant.getVillagerData().setProfession(VillagerProfession.NONE));
+            if (finalProfession.isPresent()) {
+                BlockPos workstationPos = TownBuildingTemplates.workstationPosition(campfire.getX(), floorY, campfire.getZ());
+                claimant.setVillagerData(claimant.getVillagerData().setProfession(finalProfession.get()));
+                claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), workstationPos));
+            } else {
+                claimant.setVillagerData(claimant.getVillagerData().setProfession(VillagerProfession.NONE));
+            }
         }
     }
 

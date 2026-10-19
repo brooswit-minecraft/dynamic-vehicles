@@ -66,6 +66,13 @@ public final class TownSitePreflight {
                     if (!isSafeToOverwrite(level, pos, campfire) && !matchesPlannedBlock.test(pos)) {
                         return false;
                     }
+                    // [Review round 4, finding #6] The whole-site preflight must reject an occupied
+                    // footprint, not merely scan blocks: a player, mob, or other villager anywhere
+                    // in the planned volume means this tick is not safe to start mutating, the same
+                    // way protected block content already aborts the whole site.
+                    if (isEntityBlocking(level, pos, campfire)) {
+                        return false;
+                    }
                 }
             }
         }
@@ -77,21 +84,34 @@ public final class TownSitePreflight {
      * mutation (construction places incrementally over many ticks, unlike the legacy mechanic's
      * single instantaneous placement, so a single whole-footprint occupancy snapshot taken once
      * would either go stale over the build's lifetime or make any bystander permanently stall an
-     * entire site). {@code true} when something other than the villager claiming this exact
-     * campfire physically occupies {@code pos} right now, in which case the caller should skip
-     * just this cell for this tick rather than enclose it.
+     * entire site). {@code true} when something occupies {@code pos} right now that this site is
+     * not allowed to place over.
+     *
+     * <p>[Review round 4, finding #6] The claiming villager's own exemption is narrowed to ONLY its
+     * reserved campfire cell - {@code pos.equals(campfire)} - never the whole footprint. Before this
+     * fix, the claimant read as "allowed to stand here" at EVERY planned cell merely because its
+     * JOB_SITE memory pointed at the campfire, which meant construction could place a floor/wall
+     * cell directly into the claimant's own body wherever it happened to be standing at the time.
+     * The claimant is only ever expected to occupy the campfire cell itself (where it parks while
+     * working its job site, and where {@link #isSafeToOverwrite} already treats the cell as safe
+     * regardless of entities so the final campfire-replacement can still land); anywhere else in
+     * the footprint, the claimant blocks exactly like any other occupant.
      */
     public static boolean isEntityBlocking(ServerLevel level, BlockPos pos, BlockPos campfire) {
-        AABB cell = new AABB(pos);
-        for (Entity entity : level.getEntities((Entity) null, cell)) {
-            if (entity instanceof net.minecraft.world.entity.npc.Villager villager
-                    && villager.getBrain().getMemory(net.minecraft.world.entity.ai.memory.MemoryModuleType.JOB_SITE)
-                            .map(gp -> gp.pos().equals(campfire)).orElse(false)) {
-                continue; // the claiming villager itself is allowed to stand in its own site
+        if (pos.equals(campfire)) {
+            AABB cell = new AABB(pos);
+            for (Entity entity : level.getEntities((Entity) null, cell)) {
+                if (entity instanceof net.minecraft.world.entity.npc.Villager villager
+                        && villager.getBrain().getMemory(net.minecraft.world.entity.ai.memory.MemoryModuleType.JOB_SITE)
+                                .map(gp -> gp.pos().equals(campfire)).orElse(false)) {
+                    continue; // the claiming villager parking at its own reserved campfire cell
+                }
+                return true;
             }
-            return true;
+            return false;
         }
-        return false;
+        AABB cell = new AABB(pos);
+        return !level.getEntities((Entity) null, cell).isEmpty();
     }
 
     /**

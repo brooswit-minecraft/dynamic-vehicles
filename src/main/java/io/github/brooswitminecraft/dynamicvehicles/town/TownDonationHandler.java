@@ -1,12 +1,16 @@
 package io.github.brooswitminecraft.dynamicvehicles.town;
 
 import io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord;
+import net.minecraft.core.GlobalPos;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.ai.memory.MemoryModuleType;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.trading.MerchantOffer;
 import net.neoforged.neoforge.event.entity.player.TradeWithVillagerEvent;
+
+import java.util.Optional;
 
 /**
  * Generalizes {@code delivery.BuilderTradeHandler}'s "a completed Builder donation trade" hook from
@@ -46,9 +50,19 @@ public final class TownDonationHandler {
             return;
         }
 
-        RegionCoord region = TownRegion.fromBlockCoords(villager.blockPosition().getX(), villager.blockPosition().getZ());
+        // [Review round 4, finding #7] Credit the town the villager is actually CLAIMED/working
+        // for - its own JOB_SITE memory's position AND dimension - never wherever it happens to be
+        // geometrically standing right now. A villager that has wandered across a region boundary
+        // (384 blocks) since taking its job must still credit its own real town, not whichever
+        // region its current position happens to fall in.
+        Optional<GlobalPos> jobSite = villager.getBrain().getMemory(MemoryModuleType.JOB_SITE);
+        if (jobSite.isEmpty()) {
+            return; // not actually working anywhere identifiable - no town to credit
+        }
+        GlobalPos site = jobSite.get();
+        RegionCoord region = TownRegion.fromBlockCoords(site.pos().getX(), site.pos().getZ());
         TownStorage storage = TownStorage.of(level.getServer());
-        TownResourceStore store = storage.storeFor(TownKeys.keyFor(level.dimension(), region));
+        TownResourceStore store = storage.storeFor(TownKeys.keyFor(site.dimension(), region));
         store.credit(credit.category(), credit.amount() * consumedCount);
         storage.setDirty();
     }

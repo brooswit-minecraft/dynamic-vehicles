@@ -55,13 +55,16 @@ public final class TownBuildingTemplates {
      *        current Y; construction builds up from here)
      * @param storehouseVariant only consulted for {@link Kind#STOREHOUSE}; see
      *        {@link TownConstants#STOREHOUSE_VARIATIONS}
-     * @param claimantProfession the claiming villager's profession, consulted only for
-     *        {@link Kind#COMMERCIAL}/{@link Kind#INDUSTRIAL} to pick the work-site block; may be
-     *        {@code null} (e.g. {@link Kind#STOREHOUSE}, or no mapped workstation for that
-     *        profession) in which case no work-site block is added.
+     * @param finalWorkstationProfession [Review round 4, finding #8] the ZONE's own final,
+     *        deterministically-assigned profession (see {@link TownProfessionWorkstations#finalProfessionFor}),
+     *        consulted only for {@link Kind#COMMERCIAL}/{@link Kind#INDUSTRIAL} to pick the
+     *        work-site block - deliberately NEVER the claiming villager's own current (in
+     *        production, always the temporary Builder) profession, since that could only ever
+     *        resolve to "place another campfire". May be {@code null} (e.g. {@link Kind#STOREHOUSE},
+     *        or {@link Kind#RESIDENTIAL}) in which case no work-site block is added.
      */
     public static List<Placement> generate(Kind kind, int centerX, int baseY, int centerZ, int storehouseVariant,
-            VillagerProfession claimantProfession) {
+            VillagerProfession finalWorkstationProfession) {
         int width = kind == Kind.STOREHOUSE ? TownConstants.STOREHOUSE_FOOTPRINT_WIDTH : 5;
         int radius = (width - 1) / 2;
         int height = heightFor(kind, storehouseVariant);
@@ -91,7 +94,7 @@ public final class TownBuildingTemplates {
                         if (cellX == doorX && cellZ == doorZ && (y == 1 || y == 2)) {
                             continue; // doorway opening, placed explicitly below instead
                         }
-                        placements.add(new Placement(cellX, y, cellZ, wallBlock, cost));
+                        placements.add(new Placement(cellX, baseY + y, cellZ, wallBlock, cost));
                     }
                 }
             }
@@ -101,7 +104,7 @@ public final class TownBuildingTemplates {
         if (kind == Kind.RESIDENTIAL) {
             addBed(placements, centerX, baseY, centerZ, cost);
         } else if (kind == Kind.COMMERCIAL || kind == Kind.INDUSTRIAL) {
-            addWorkstation(placements, centerX, baseY, centerZ, cost, claimantProfession);
+            addWorkstation(placements, centerX, baseY, centerZ, cost, finalWorkstationProfession);
             // [Review round 3, finding #5] This site's own claimant lives here too, not only
             // works here: a workplace zoned commercial/industrial must not leave its claimant
             // without a bed anywhere. Full town-wide multi-villager housing allocation (counting
@@ -141,17 +144,25 @@ public final class TownBuildingTemplates {
         placements.add(new Placement(centerX - 1, baseY + 1, centerZ, Blocks.RED_BED, cost, head));
     }
 
-    /** The claimant's profession-appropriate vanilla work-site block, placed one interior cell
-     *  away from the bed's own interior cell so the two never collide. Omitted entirely when the
-     *  claimant has no mapped workstation (e.g. unemployed, or a profession this mapping does not
-     *  recognise) - never substituted with an invented block. */
+    /** The zone's own final-profession-appropriate vanilla work-site block (see
+     *  {@link TownProfessionWorkstations#finalProfessionFor}), placed one interior cell away from
+     *  the bed's own interior cell so the two never collide. Omitted entirely when no final
+     *  profession is given (e.g. this kind has none) or this mapping does not recognise it - never
+     *  substituted with an invented block (per review round 3/4, NEVER another campfire). */
     private static void addWorkstation(List<Placement> placements, int centerX, int baseY, int centerZ,
-            TownResourceCategory cost, VillagerProfession claimantProfession) {
-        if (claimantProfession == null) {
+            TownResourceCategory cost, VillagerProfession finalWorkstationProfession) {
+        if (finalWorkstationProfession == null) {
             return;
         }
-        TownProfessionWorkstations.blockFor(claimantProfession).ifPresent(workstation ->
+        TownProfessionWorkstations.blockFor(finalWorkstationProfession).ifPresent(workstation ->
                 placements.add(new Placement(centerX + 1, baseY + 1, centerZ + 1, workstation, cost)));
+    }
+
+    /** The exact interior cell {@link #addWorkstation} places its work-site block at, exposed so
+     *  {@link TownConstructionService} can point the claimant's own {@code JOB_SITE} memory at the
+     *  SAME cell once construction completes, rather than duplicating this offset. */
+    public static net.minecraft.core.BlockPos workstationPosition(int centerX, int baseY, int centerZ) {
+        return new net.minecraft.core.BlockPos(centerX + 1, baseY + 1, centerZ + 1);
     }
 
     /** The planned height (floor to roof, inclusive span) a {@link #generate} call for this

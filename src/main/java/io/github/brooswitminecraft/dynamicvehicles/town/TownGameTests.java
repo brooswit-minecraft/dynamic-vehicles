@@ -1,12 +1,14 @@
 package io.github.brooswitminecraft.dynamicvehicles.town;
 
 import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderProfession;
+import io.github.brooswitminecraft.dynamicvehicles.delivery.GameTestMockPlayers;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.GlobalPos;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.entity.ai.memory.MemoryModuleType;
@@ -322,7 +324,7 @@ public final class TownGameTests {
         TownResourceStore store = storage.storeFor("test:road");
         store.credit(TownResourceCategory.STONE, 1000);
 
-        int placed = TownRoadConstructionService.buildRoadCells(helper.getLevel(), cells, store);
+        int placed = TownRoadConstructionService.buildRoadCells(helper.getLevel(), cells, storage, store);
 
         helper.assertTrue(placed > 0 && placed <= TownConstants.ROAD_BLOCKS_PER_TICK,
                 "placed count should be bounded by the per-tick road budget, found " + placed);
@@ -363,7 +365,7 @@ public final class TownGameTests {
         TownResourceStore store = storage.storeFor("test:road-blocked");
         store.credit(TownResourceCategory.STONE, 1000);
 
-        int placed = TownRoadConstructionService.buildRoadCells(helper.getLevel(), cells, store);
+        int placed = TownRoadConstructionService.buildRoadCells(helper.getLevel(), cells, storage, store);
 
         helper.assertTrue(placed == 0, "the single protected cell must be skipped, not placed, found " + placed);
         helper.assertTrue(helper.getBlockState(chestCell).is(Blocks.CHEST), "the chest must never be overwritten by a road");
@@ -506,40 +508,41 @@ public final class TownGameTests {
     }
 
     /**
-     * MINECRAFT-388 review round 3, finding #5: real Dynamic Towns campfire claimants hold this
-     * mod's own custom Builder profession, never a vanilla one - the previous test only covered
-     * vanilla ARMORER/MASON combinations production cannot naturally create. A commercial/
-     * industrial building for a REAL Builder claimant must include both the Builder's own
-     * workstation (the campfire, per {@code delivery.BuilderPoiTypes}) AND a bed, since that
-     * claimant lives there too; a residential building for the same real claimant must likewise
-     * include a bed. Every generated building must also include an actual door (both halves),
-     * not a sealed shell.
+     * MINECRAFT-388 review round 4, finding #8: a commercial/industrial building's workstation is
+     * the ZONE's own deterministically-assigned FINAL profession's real vanilla work-site block -
+     * NEVER another campfire, and NEVER derived from whatever profession the claiming villager
+     * currently holds (in production, always the temporary Builder - exactly the case the old,
+     * wrong behaviour hard-coded to "place another campfire"). A residential building for the same
+     * real claimant must still include a bed. Every generated building must also include an actual
+     * door (both halves), not a sealed shell.
      */
     @GameTest(template = "settlement_test")
-    public static void realBuilderClaimantGetsAReachableWorkstationAndBedAcrossEveryZoneKind(GameTestHelper helper) {
-        VillagerProfession builder = BuilderProfession.BUILDER.get();
-
+    public static void commercialAndIndustrialWorkstationsAreTheZonesRealFinalProfessionNeverAnotherCampfire(GameTestHelper helper) {
         List<TownBuildingTemplates.Placement> commercial = TownBuildingTemplates.generate(
-                TownBuildingTemplates.Kind.COMMERCIAL, 0, 0, 0, 0, builder);
-        helper.assertTrue(commercial.stream().anyMatch(p -> p.block() == Blocks.CAMPFIRE),
-                "a commercial building for a REAL Builder claimant must include the Builder's own (campfire) workstation");
+                TownBuildingTemplates.Kind.COMMERCIAL, 0, 0, 0, 0, VillagerProfession.FLETCHER);
+        helper.assertTrue(commercial.stream().noneMatch(p -> p.block() == Blocks.CAMPFIRE),
+                "a commercial building's workstation must never be another campfire");
+        helper.assertTrue(commercial.stream().anyMatch(p -> p.block() == Blocks.FLETCHING_TABLE),
+                "a commercial building must include the assigned final profession's real vanilla workstation");
         helper.assertTrue(commercial.stream().anyMatch(p -> p.block() == Blocks.RED_BED),
                 "a commercial building's own claimant must not go without a bed just because the workplace is zoned commercial");
 
         List<TownBuildingTemplates.Placement> industrial = TownBuildingTemplates.generate(
-                TownBuildingTemplates.Kind.INDUSTRIAL, 0, 0, 0, 0, builder);
-        helper.assertTrue(industrial.stream().anyMatch(p -> p.block() == Blocks.CAMPFIRE),
-                "an industrial building for a REAL Builder claimant must include the Builder's own (campfire) workstation");
+                TownBuildingTemplates.Kind.INDUSTRIAL, 0, 0, 0, 0, VillagerProfession.MASON);
+        helper.assertTrue(industrial.stream().noneMatch(p -> p.block() == Blocks.CAMPFIRE),
+                "an industrial building's workstation must never be another campfire");
+        helper.assertTrue(industrial.stream().anyMatch(p -> p.block() == Blocks.STONECUTTER),
+                "an industrial building must include the assigned final profession's real vanilla workstation");
         helper.assertTrue(industrial.stream().anyMatch(p -> p.block() == Blocks.RED_BED),
                 "an industrial building's own claimant must not go without a bed just because the workplace is zoned industrial");
 
         List<TownBuildingTemplates.Placement> residential = TownBuildingTemplates.generate(
-                TownBuildingTemplates.Kind.RESIDENTIAL, 0, 0, 0, 0, builder);
+                TownBuildingTemplates.Kind.RESIDENTIAL, 0, 0, 0, 0, null);
         helper.assertTrue(residential.stream().anyMatch(p -> p.block() == Blocks.RED_BED),
-                "a residential building for a REAL Builder claimant must still include a bed");
+                "a residential building must still include a bed");
 
         for (TownBuildingTemplates.Kind kind : TownBuildingTemplates.Kind.values()) {
-            List<TownBuildingTemplates.Placement> generated = TownBuildingTemplates.generate(kind, 0, 0, 0, 0, builder);
+            List<TownBuildingTemplates.Placement> generated = TownBuildingTemplates.generate(kind, 0, 0, 0, 0, VillagerProfession.FARMER);
             long doorHalves = generated.stream().filter(p -> p.block() == Blocks.OAK_DOOR).count();
             helper.assertTrue(doorHalves == 2, kind + " building must have exactly one functional (two-half) door, found " + doorHalves);
         }
@@ -547,12 +550,14 @@ public final class TownGameTests {
     }
 
     /**
-     * MINECRAFT-388 review round 3, finding #5 (production-path half): drives
-     * {@link TownConstructionService#buildAt} to full completion for a REAL Builder claimant (the
-     * only profession production can ever actually hand this method, per
+     * MINECRAFT-388 review round 3, finding #5 / round 4, finding #8 (production-path half):
+     * drives {@link TownConstructionService#buildAt} to full completion for a REAL Builder claimant
+     * (the only profession production can ever actually hand this method, per
      * {@code TownCampfireClaims}), then checks the "Builder-to-final-site transition": once every
-     * planned cell matches (door included), the claimant must be released back to
-     * {@code VillagerProfession.NONE} rather than left a permanently jobless Builder.
+     * planned cell matches (door included), the claimant must never be left a permanently jobless
+     * Builder - released to {@code VillagerProfession.NONE} for a residential/storehouse site, or
+     * handed off to the zone's own assigned final profession (with its JOB_SITE memory pointed at
+     * the real vanilla workstation this same build just placed) for a commercial/industrial site.
      */
     @GameTest(template = "settlement_test")
     public static void realBuilderClaimantCompletesASiteAndIsReleasedFromItsJobAfterward(GameTestHelper helper) {
@@ -569,6 +574,16 @@ public final class TownGameTests {
         TownStorage storage = new TownStorage();
         TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
 
+        // Work out, exactly as production does, which kind/final-profession this site resolves to.
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
+        TownPlan plan = TownPlanner.generate(region, helper.getLevel().getSeed());
+        boolean isStorehouseSite = Math.abs(absoluteCampfire.getX() - plan.townCenterX()) <= TownConstants.STOREHOUSE_FOOTPRINT_WIDTH
+                && Math.abs(absoluteCampfire.getZ() - plan.townCenterZ()) <= TownConstants.STOREHOUSE_FOOTPRINT_WIDTH;
+        TownBuildingTemplates.Kind kind = isStorehouseSite ? TownBuildingTemplates.Kind.STOREHOUSE
+                : TownBuildingTemplates.kindFor(plan.zoneAt(absoluteCampfire.getX(), absoluteCampfire.getZ()));
+        java.util.Optional<VillagerProfession> expectedFinalProfession = TownProfessionWorkstations.finalProfessionFor(
+                kind, helper.getLevel().getSeed(), absoluteCampfire.getX(), absoluteCampfire.getZ());
+
         // Bounded but generous: large enough to finish even the biggest (storehouse) template at
         // CONSTRUCTION_BLOCKS_PER_TICK per call, with headroom to spare.
         boolean sawCampfireDisappear = false;
@@ -580,9 +595,22 @@ public final class TownGameTests {
         }
 
         helper.assertTrue(sawCampfireDisappear, "the site never actually finished replacing its own campfire cell");
-        helper.assertTrue(claimant.getVillagerData().getProfession() == VillagerProfession.NONE,
-                "a claimant whose site is fully built must be released back to NONE, found "
-                        + claimant.getVillagerData().getProfession());
+        helper.assertTrue(claimant.getVillagerData().getProfession() != BuilderProfession.BUILDER.get(),
+                "a claimant whose site is fully built must never be left a permanently jobless Builder");
+        if (expectedFinalProfession.isPresent()) {
+            helper.assertTrue(claimant.getVillagerData().getProfession() == expectedFinalProfession.get(),
+                    "a commercial/industrial claimant must be handed off to the zone's own assigned final profession, expected "
+                            + expectedFinalProfession.get() + " found " + claimant.getVillagerData().getProfession());
+            BlockPos expectedWorkstation = TownBuildingTemplates.workstationPosition(
+                    absoluteCampfire.getX(), TownTerrain.estimateGroundHeightBelow(helper.getLevel(), absoluteCampfire), absoluteCampfire.getZ());
+            helper.assertTrue(claimant.getBrain().getMemory(MemoryModuleType.JOB_SITE)
+                            .map(gp -> gp.pos().equals(expectedWorkstation)).orElse(false),
+                    "the handed-off claimant's JOB_SITE must point at the real workstation this build just placed");
+        } else {
+            helper.assertTrue(claimant.getVillagerData().getProfession() == VillagerProfession.NONE,
+                    "a residential/storehouse claimant whose site is fully built must be released back to NONE, found "
+                            + claimant.getVillagerData().getProfession());
+        }
         helper.assertTrue(store.balance(TownResourceCategory.STONE) < 100000 || store.balance(TownResourceCategory.WOOD) < 100000,
                 "a completed site should have actually debited some resource category");
         helper.succeed();
@@ -608,7 +636,7 @@ public final class TownGameTests {
         TownResourceStore store = storage.storeFor("test:road-headroom");
         store.credit(TownResourceCategory.STONE, 1000);
 
-        int placed = TownRoadConstructionService.buildRoadCells(helper.getLevel(), cells, store);
+        int placed = TownRoadConstructionService.buildRoadCells(helper.getLevel(), cells, storage, store);
 
         helper.assertTrue(placed == 0, "every width cell has blocked headroom and must be skipped, found " + placed);
         helper.assertTrue(helper.getBlockState(cell).isAir(), "the surface cell must not be placed when headroom above it is blocked");
@@ -634,7 +662,7 @@ public final class TownGameTests {
         TownResourceStore store = storage.storeFor("test:road-support");
         store.credit(TownResourceCategory.STONE, 1000);
 
-        int placed = TownRoadConstructionService.buildRoadCells(helper.getLevel(), cells, store);
+        int placed = TownRoadConstructionService.buildRoadCells(helper.getLevel(), cells, storage, store);
 
         helper.assertTrue(placed == 3, "all three width cells should place once support is filled, found " + placed);
         for (int x = -1; x <= 1; x++) {
@@ -662,7 +690,7 @@ public final class TownGameTests {
         TownResourceStore store = storage.storeFor("test:road-entity");
         store.credit(TownResourceCategory.STONE, 1000);
 
-        TownRoadConstructionService.buildRoadCells(helper.getLevel(), cells, store);
+        TownRoadConstructionService.buildRoadCells(helper.getLevel(), cells, storage, store);
 
         helper.assertTrue(!helper.getBlockState(cell).is(Blocks.DIRT_PATH),
                 "a cell occupied by an entity must never be paved under it");
@@ -683,7 +711,7 @@ public final class TownGameTests {
         TownStorage minorStorage = new TownStorage();
         TownResourceStore minorStore = minorStorage.storeFor("test:minor-width");
         minorStore.credit(TownResourceCategory.STONE, 1000);
-        int minorPlaced = TownRoadConstructionService.buildRoadCells(helper.getLevel(), singleCell, TownConstants.MINOR_ROAD_WIDTH, minorStore);
+        int minorPlaced = TownRoadConstructionService.buildRoadCells(helper.getLevel(), singleCell, TownConstants.MINOR_ROAD_WIDTH, minorStorage, minorStore);
 
         for (int x = -3; x <= 3; x++) {
             helper.setBlock(ANCHOR.offset(x, 0, 0), Blocks.AIR); // reset for a clean major-width attempt
@@ -692,13 +720,303 @@ public final class TownGameTests {
         TownStorage majorStorage = new TownStorage();
         TownResourceStore majorStore = majorStorage.storeFor("test:major-width");
         majorStore.credit(TownResourceCategory.STONE, 1000);
-        int majorPlaced = TownRoadConstructionService.buildRoadCells(helper.getLevel(), singleCell, TownConstants.MAJOR_ROAD_WIDTH, majorStore);
+        int majorPlaced = TownRoadConstructionService.buildRoadCells(helper.getLevel(), singleCell, TownConstants.MAJOR_ROAD_WIDTH, majorStorage, majorStore);
 
         helper.assertTrue(minorPlaced == TownConstants.MINOR_ROAD_WIDTH,
                 "minor width should place exactly MINOR_ROAD_WIDTH cells for a single route cell, found " + minorPlaced);
         helper.assertTrue(majorPlaced == Math.min(TownConstants.MAJOR_ROAD_WIDTH, TownConstants.ROAD_BLOCKS_PER_TICK),
                 "major width should place more (budget-capped) cells than minor, found " + majorPlaced);
         helper.assertTrue(majorPlaced > minorPlaced, "major width must place strictly more cells than minor width");
+        helper.succeed();
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Review round 4 regressions
+    // ---------------------------------------------------------------------------------------
+
+    /** Finds the kind/final-profession this ANCHOR-based site would resolve to, exactly as
+     *  production does - shared by several round 4 regressions below. */
+    private static TownBuildingTemplates.Kind kindAt(GameTestHelper helper, BlockPos absoluteCampfire) {
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
+        TownPlan plan = TownPlanner.generate(region, helper.getLevel().getSeed());
+        boolean isStorehouseSite = Math.abs(absoluteCampfire.getX() - plan.townCenterX()) <= TownConstants.STOREHOUSE_FOOTPRINT_WIDTH
+                && Math.abs(absoluteCampfire.getZ() - plan.townCenterZ()) <= TownConstants.STOREHOUSE_FOOTPRINT_WIDTH;
+        return isStorehouseSite ? TownBuildingTemplates.Kind.STOREHOUSE
+                : TownBuildingTemplates.kindFor(plan.zoneAt(absoluteCampfire.getX(), absoluteCampfire.getZ()));
+    }
+
+    /** MINECRAFT-388 review round 4, finding #1: at a non-trivial base height, every wall AND door
+     *  coordinate must be offset by {@code baseY} exactly like the floor/roof already are - the old
+     *  bug hardcoded walls to absolute Y=1..3 regardless of {@code baseY}. */
+    @GameTest(template = "settlement_test")
+    public static void wallOffsetAtNonzeroBaseYMatchesEveryWallDoorAndRoofCoordinate(GameTestHelper helper) {
+        int baseY = 50;
+        int height = TownBuildingTemplates.heightFor(TownBuildingTemplates.Kind.STOREHOUSE, 0);
+        List<TownBuildingTemplates.Placement> placements = TownBuildingTemplates.generate(
+                TownBuildingTemplates.Kind.STOREHOUSE, 0, baseY, 0, 0, null);
+
+        int radius = (TownConstants.STOREHOUSE_FOOTPRINT_WIDTH - 1) / 2;
+        for (TownBuildingTemplates.Placement placement : placements) {
+            if (placement.block() == Blocks.OAK_DOOR) {
+                helper.assertTrue(placement.y() == baseY + 1 || placement.y() == baseY + 2,
+                        "a door half must be offset by baseY, found absolute Y " + placement.y());
+                continue;
+            }
+            boolean isPerimeter = Math.abs(placement.x()) == radius || Math.abs(placement.z()) == radius;
+            if (placement.y() == baseY || placement.y() == baseY + height) {
+                continue; // floor or roof plane - already known correct
+            }
+            // The old bug hardcoded walls to absolute Y=1..3 regardless of baseY; at baseY=50 that
+            // would show up here as a wall-plane placement far below baseY, which the bound below
+            // (y > baseY) already catches directly.
+            helper.assertTrue(isPerimeter && placement.y() > baseY && placement.y() < baseY + height,
+                    "every non-floor/roof/door placement must be a perimeter wall cell offset by baseY, found (x="
+                            + placement.x() + ", y=" + placement.y() + ", z=" + placement.z() + ") for baseY=" + baseY);
+        }
+        helper.succeed();
+    }
+
+    /** Production-path half of the same finding: a real construction site at a non-trivial base
+     *  height must actually show walls at the correct offset once built, not near the world
+     *  bottom, and must not have corrupted the unrelated low-Y cells the old bug wrote into. */
+    @GameTest(template = "settlement_test")
+    public static void productionShellAtNonzeroBaseYHasWallsAtTheCorrectOffset(GameTestHelper helper) {
+        // Elevated flat ground (real surface at Y=9) instead of the usual Y~2 ground, so a wall-
+        // offset bug (walls hardcoded near absolute Y=1..3) is obviously wrong rather than
+        // coincidentally right, and so the unrelated cells at absolute Y=1..3 can be checked for
+        // corruption afterward.
+        for (int x = 0; x < 10; x++) {
+            for (int z = 0; z < 10; z++) {
+                for (int y = 0; y <= 12; y++) {
+                    helper.setBlock(new BlockPos(x, y, z), y < 9 ? Blocks.DIRT : Blocks.AIR);
+                }
+            }
+        }
+        BlockPos campfireCell = new BlockPos(5, 9, 5);
+        helper.setBlock(campfireCell, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(campfireCell);
+        spawnClaimedVillager(helper, absoluteCampfire);
+
+        TownStorage storage = new TownStorage();
+        TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
+        TownBuildingTemplates.Kind kind = kindAt(helper, absoluteCampfire);
+
+        for (int i = 0; i < 500; i++) {
+            TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
+        }
+
+        int radius = kind == TownBuildingTemplates.Kind.STOREHOUSE ? (TownConstants.STOREHOUSE_FOOTPRINT_WIDTH - 1) / 2 : 2;
+        BlockPos wallCellAboveFloor = campfireCell.offset(radius, 1, 0); // a perimeter wall, one above the real floor
+        helper.assertTrue(helper.getBlockState(wallCellAboveFloor).is(TownBuildingTemplates.wallBlockFor(kind)),
+                "expected a wall at (x+radius, baseY+1, z) once built, found " + helper.getBlockState(wallCellAboveFloor));
+        BlockPos oldBuggyAbsoluteWallCell = new BlockPos(campfireCell.getX() + radius, 2, campfireCell.getZ());
+        helper.assertTrue(!helper.getBlockState(oldBuggyAbsoluteWallCell).is(TownBuildingTemplates.wallBlockFor(kind)),
+                "the old bug's absolute Y=1..3 wall plane must never have been written to - that column's real ground must be untouched");
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-388 review round 4, finding #2: a foreign block that merely happens to match the
+     * planned material (here, pre-placed at a wall cell before any construction has ever run) must
+     * never be silently adopted as "already placed/paid progress" - it must abort the whole site
+     * exactly like any other protected/foreign content, never be silently skipped as free progress.
+     */
+    @GameTest(template = "settlement_test")
+    public static void foreignMatchingMaterialAbortsTheWholeSiteRatherThanBeingAdoptedAsFreeProgress(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos campfireCell = ANCHOR;
+        helper.setBlock(campfireCell, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(campfireCell);
+        spawnClaimedVillager(helper, absoluteCampfire);
+        TownBuildingTemplates.Kind kind = kindAt(helper, absoluteCampfire);
+
+        // The exact material this site's own template would plan here anyway - a player (or
+        // another mod) who happened to pre-place the matching block, never Dynamic Towns itself.
+        BlockPos wallCell = campfireCell.offset(2, 1, 0);
+        helper.setBlock(wallCell, TownBuildingTemplates.wallBlockFor(kind));
+
+        TownStorage storage = new TownStorage();
+        TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 1000);
+
+        TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
+
+        helper.assertTrue(helper.getBlockState(campfireCell).is(Blocks.CAMPFIRE), "an aborted site must leave the campfire untouched");
+        helper.assertTrue(helper.getBlockState(campfireCell.offset(-2, 1, -2)).isAir(),
+                "no other cell in the footprint should have been built either - a foreign matching block must abort the WHOLE site");
+        helper.assertTrue(store.balance(TownResourceCategory.STONE) == 1000 && store.balance(TownResourceCategory.WOOD) == 1000,
+                "a foreign matching block must never let the site bypass resource cost - no charge at all");
+        helper.succeed();
+    }
+
+    /** Direct coverage of the new persisted-progress primitives {@link TownConstructionService}
+     *  and {@link TownRoadConstructionService} now use instead of live-world diffing. */
+    @GameTest(template = "settlement_test")
+    public static void townStorageTracksPlacedCellsIndependentlyPerPosition(GameTestHelper helper) {
+        TownStorage storage = new TownStorage();
+        BlockPos a = helper.absolutePos(ANCHOR);
+        BlockPos b = a.offset(1, 0, 0);
+        helper.assertTrue(!storage.isCellPlaced(helper.getLevel().dimension(), a), "a fresh store must not report any cell as placed");
+
+        storage.markCellPlaced(helper.getLevel().dimension(), a);
+
+        helper.assertTrue(storage.isCellPlaced(helper.getLevel().dimension(), a), "a marked cell must read back as placed");
+        helper.assertTrue(!storage.isCellPlaced(helper.getLevel().dimension(), b), "marking one cell must not affect a different position");
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-388 review round 4, finding #3: road construction's region-selection must be driven
+     * purely by nearby-player presence in an already-FOUNDED region, entirely independent of
+     * whether any campfire is claimed ANYWHERE in the level - exercises
+     * {@link TownConstructionService#regionsWithNearbyPlayerActivity} directly, the exact piece
+     * factored out of the per-tick driver for this. A real seed-derived road ROUTE is deliberately
+     * NOT exercised end-to-end here (the existing {@code roadConstructionPlacesSurfaceBlocksAndDebitsStonePerPlacedCell}
+     * test already explains why: {@link TownPlanner}'s real town centre cannot be relied on to land
+     * inside this tiny GameTest structure's own loaded footprint) - this proves the SELECTION logic
+     * itself never again depends on a claimed campfire, which is exactly what regressed.
+     */
+    @GameTest(template = "settlement_test")
+    public static void roadRegionSelectionIsDrivenByNearbyPlayersInAFoundedRegionNeverByAClaimedCampfire(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos absoluteAnchor = helper.absolutePos(ANCHOR);
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteAnchor.getX(), absoluteAnchor.getZ());
+        String key = TownKeys.keyFor(helper.getLevel().dimension(), region);
+
+        TownStorage storage = new TownStorage();
+        ServerPlayer player = GameTestMockPlayers.create(helper);
+        player.teleportTo(absoluteAnchor.getX() + 0.5, absoluteAnchor.getY(), absoluteAnchor.getZ() + 0.5);
+
+        // Not yet founded: a nearby player in an UN-founded region must not count as active.
+        helper.assertTrue(!TownConstructionService.regionsWithNearbyPlayerActivity(helper.getLevel(), storage).contains(region),
+                "an un-founded region must never count as road-active even with a player nearby");
+
+        storage.markTownFounded(key);
+
+        // No claimed campfire exists anywhere in the level at all - region selection must still
+        // include this region purely because it is founded and a player is nearby.
+        helper.assertTrue(TownConstructionService.regionsWithNearbyPlayerActivity(helper.getLevel(), storage).contains(region),
+                "a founded region with a nearby player must count as road-active, even with NO claimed campfire anywhere in the level");
+        helper.succeed();
+    }
+
+    /** MINECRAFT-388 review round 4, finding #4: support fill must dig DOWN through a deep gap
+     *  (not just one cell) until real solid ground is found, so a route crossing a valley/gap does
+     *  not leave the surface floating. */
+    @GameTest(template = "settlement_test")
+    public static void roadConstructionFillsDeepSupportGapsNotJustOneCell(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        // At Y=8, the flat-ground helper already leaves 6 cells of open air below (down to the
+        // Y<2 dirt floor) - well beyond the single-cell fix round 2 already covered.
+        BlockPos cell = new BlockPos(5, 8, 5);
+        BlockPos absoluteCell = helper.absolutePos(cell);
+        List<TownRoadPlanner.RoadCell> cells = List.of(
+                new TownRoadPlanner.RoadCell(absoluteCell.getX(), absoluteCell.getZ(), absoluteCell.getY()));
+
+        TownStorage storage = new TownStorage();
+        TownResourceStore store = storage.storeFor("test:road-deep-support");
+        store.credit(TownResourceCategory.STONE, 1000);
+
+        int placed = TownRoadConstructionService.buildRoadCells(helper.getLevel(), cells, storage, store);
+
+        helper.assertTrue(placed == 3, "all three width cells should place once the deep gap is filled, found " + placed);
+        for (int x = -1; x <= 1; x++) {
+            helper.assertTrue(helper.getBlockState(cell.offset(x, -1, 0)).is(Blocks.DIRT),
+                    "the cell immediately below the surface must be filled with support");
+            helper.assertTrue(helper.getBlockState(cell.offset(x, -5, 0)).is(Blocks.DIRT),
+                    "support fill must reach all the way down through the deep gap, not stop after one cell");
+            helper.assertTrue(helper.getBlockState(cell.offset(x, 0, 0)).is(Blocks.DIRT_PATH),
+                    "the road surface itself must still be placed once the deep gap is filled");
+        }
+        helper.succeed();
+    }
+
+    /** MINECRAFT-388 review round 4, finding #5: a successfully-cleared headroom block must credit
+     *  {@link TownClearingYields} salvage exactly once, the same way building clearing already does
+     *  - previously discarded entirely for roads. */
+    @GameTest(template = "settlement_test")
+    public static void roadConstructionCreditsClearingSalvageForClearedHeadroomExactlyOnce(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos cell = ANCHOR;
+        helper.setBlock(cell.above(), Blocks.OAK_LOG);
+        BlockPos absoluteCell = helper.absolutePos(cell);
+        List<TownRoadPlanner.RoadCell> cells = List.of(
+                new TownRoadPlanner.RoadCell(absoluteCell.getX(), absoluteCell.getZ(), absoluteCell.getY()));
+
+        TownStorage storage = new TownStorage();
+        TownResourceStore store = storage.storeFor("test:road-salvage");
+        store.credit(TownResourceCategory.STONE, 1000);
+        int woodBefore = store.balance(TownResourceCategory.WOOD);
+
+        int placed = TownRoadConstructionService.buildRoadCells(helper.getLevel(), cells, storage, store);
+
+        helper.assertTrue(placed > 0, "the cell should still place despite the log in its headroom (natural terrain, clearable)");
+        helper.assertTrue(!helper.getBlockState(cell.above()).is(Blocks.OAK_LOG), "the log must have actually been cleared");
+        int expectedWoodCredit = TownClearingYields.creditsFor(TownClearingYields.ClearedMaterial.LOG, 1);
+        helper.assertTrue(store.balance(TownResourceCategory.WOOD) == woodBefore + expectedWoodCredit,
+                "clearing the log from headroom must credit WOOD salvage exactly once, expected +" + expectedWoodCredit
+                        + " found +" + (store.balance(TownResourceCategory.WOOD) - woodBefore));
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-388 review round 4, finding #6: the claimant's exemption from occupancy-blocking
+     * must be narrowed to ONLY its reserved campfire cell - standing in a planned WALL cell must
+     * still block that cell from being built (never place a wall into the claimant's own body).
+     */
+    @GameTest(template = "settlement_test")
+    public static void constructionAbortsWhenTheClaimantIsStandingInAPlannedWallCellNotTheCampfireCell(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos campfireCell = ANCHOR;
+        helper.setBlock(campfireCell, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(campfireCell);
+
+        BlockPos wallCell = campfireCell.offset(2, 1, 0);
+        BlockPos absoluteWallCell = helper.absolutePos(wallCell);
+        Villager claimant = EntityType.VILLAGER.create(helper.getLevel(), null, absoluteWallCell, MobSpawnType.EVENT, false, false);
+        helper.getLevel().addFreshEntity(claimant);
+        claimant.setVillagerData(claimant.getVillagerData().setProfession(VillagerProfession.FARMER));
+        claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteCampfire));
+
+        TownStorage storage = new TownStorage();
+        TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 1000);
+
+        TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
+
+        helper.assertTrue(helper.getBlockState(campfireCell).is(Blocks.CAMPFIRE), "an aborted site must leave the campfire untouched");
+        helper.assertTrue(helper.getBlockState(wallCell).isAir(),
+                "the wall cell the claimant itself is standing in must never be built into - the claimant's exemption is only its OWN campfire cell");
+        helper.assertTrue(store.balance(TownResourceCategory.STONE) == 1000 && store.balance(TownResourceCategory.WOOD) == 1000,
+                "an aborted site must not charge any resources at all");
+        helper.succeed();
+    }
+
+    /** MINECRAFT-388 review round 4, finding #6: the whole-site preflight must reject an occupied
+     *  footprint even for an entity with no relationship to this claim at all - entity occupancy was
+     *  previously never checked by the whole-site preflight (only blocks were). */
+    @GameTest(template = "settlement_test")
+    public static void constructionAbortsWhenAnUnrelatedEntityOccupiesTheFootprint(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos campfireCell = ANCHOR;
+        helper.setBlock(campfireCell, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(campfireCell);
+        spawnClaimedVillager(helper, absoluteCampfire);
+
+        BlockPos bystanderCell = campfireCell.offset(-2, 0, -2);
+        BlockPos absoluteBystander = helper.absolutePos(bystanderCell);
+        Villager bystander = EntityType.VILLAGER.create(helper.getLevel(), null, absoluteBystander, MobSpawnType.EVENT, false, false);
+        helper.getLevel().addFreshEntity(bystander); // unemployed, no relationship to this claim at all
+
+        TownStorage storage = new TownStorage();
+        TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 1000);
+
+        TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
+
+        helper.assertTrue(helper.getBlockState(campfireCell).is(Blocks.CAMPFIRE), "an aborted site must leave the campfire untouched");
+        helper.assertTrue(helper.getBlockState(bystanderCell).isAir(), "the bystander's own cell must never be built over");
+        helper.assertTrue(helper.getBlockState(campfireCell.offset(2, 0, 2)).isAir(),
+                "no other cell in the footprint should have been built either - an occupied footprint aborts the whole site");
+        helper.assertTrue(store.balance(TownResourceCategory.STONE) == 1000 && store.balance(TownResourceCategory.WOOD) == 1000,
+                "an aborted site must not charge any resources at all");
         helper.succeed();
     }
 }

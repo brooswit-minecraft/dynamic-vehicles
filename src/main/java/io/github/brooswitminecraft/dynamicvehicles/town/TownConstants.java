@@ -54,6 +54,11 @@ public final class TownConstants {
      *  and at most this many road cells are placed per site per construction tick. */
     public static final int ROAD_COST_PER_BLOCK = 1;
     public static final int ROAD_BLOCKS_PER_TICK = 4;
+    /** [Review round 4, finding #4] How many cells a road cell's own support fill will dig DOWN
+     *  looking for real solid ground before giving up, so a route crossing a shallow valley/gap
+     *  does not leave the surface floating over open air - bounded so a pathological column (a
+     *  deep ravine, a cave) cannot make this dig all the way toward the void. */
+    public static final int ROAD_SUPPORT_FILL_MAX_DEPTH = 8;
     /** [Review round 2, finding #4] How far apart along a major thoroughfare minor branch roads
      *  are spawned, and how far each branch runs perpendicular into the zoned area on either side. */
     public static final int MINOR_BRANCH_INTERVAL_BLOCKS = PARCEL_SIZE_BLOCKS * 2;

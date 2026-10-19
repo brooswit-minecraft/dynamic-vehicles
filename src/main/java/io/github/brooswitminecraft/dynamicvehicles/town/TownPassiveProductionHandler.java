@@ -32,14 +32,30 @@ public final class TownPassiveProductionHandler {
                 || level.getGameTime() % TownConstants.PASSIVE_PRODUCTION_INTERVAL_TICKS != 0) {
             return;
         }
+        runPassiveProductionTick(level);
+    }
+
+    /** The core per-tick work, factored out from {@link #onLevelTick} so it is directly GameTest-
+     *  able without needing to construct a real {@link LevelTickEvent.Post}. */
+    public static void runPassiveProductionTick(ServerLevel level) {
+        // [Review round 4, finding #4's scope decision, applied consistently] Dynamic Towns is an
+        // Overworld-only feature (see TownConstructionService's own gate) - passive production
+        // must not credit any town in a dimension the rest of the feature never builds in.
+        if (!level.dimension().equals(net.minecraft.world.level.Level.OVERWORLD)) {
+            return;
+        }
 
         Map<RegionCoord, Integer> workersByRegion = new HashMap<>();
         for (Entity entity : level.getEntities().getAll()) {
             if (!(entity instanceof Villager villager) || villager.getVillagerData().getProfession() == VillagerProfession.NONE) {
                 continue;
             }
+            // [Review round 4, finding #7] A JOB_SITE memory's own DIMENSION must actually match
+            // this tick's level before its position is trusted - a stale or cross-dimension memory
+            // must never credit a region in the wrong dimension just because the coordinates
+            // happen to overlap.
             Optional<GlobalPos> jobSite = villager.getBrain().getMemory(MemoryModuleType.JOB_SITE);
-            if (jobSite.isEmpty()) {
+            if (jobSite.isEmpty() || !jobSite.get().dimension().equals(level.dimension())) {
                 continue;
             }
             RegionCoord region = TownRegion.fromBlockCoords(jobSite.get().pos().getX(), jobSite.get().pos().getZ());

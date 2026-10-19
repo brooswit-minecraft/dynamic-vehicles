@@ -1,7 +1,10 @@
 package io.github.brooswitminecraft.dynamicvehicles.town;
 
+import net.minecraft.server.level.ServerLevel;
+
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.ToIntFunction;
 
 /**
  * MINECRAFT-388 review finding #3: {@code TownPlanner}'s thoroughfare geometry was a plain cross
@@ -43,7 +46,16 @@ public final class TownRoadPlanner {
      * real elevation work getting to that point.
      */
     public static List<List<RoadCell>> minorBranchesForEdge(TownPlan plan, TownEdge edge, int centerReferenceHeight) {
-        List<RoadCell> majorRoute = routeForEdge(plan, edge, centerReferenceHeight);
+        return minorBranchesFromRoute(routeForEdge(plan, edge, centerReferenceHeight));
+    }
+
+    /** As above, but using the real terrain-sampled route (see
+     *  {@link #routeForEdge(ServerLevel, TownPlan, TownEdge, int)}) - production's own call path. */
+    public static List<List<RoadCell>> minorBranchesForEdge(ServerLevel level, TownPlan plan, TownEdge edge, int centerReferenceHeight) {
+        return minorBranchesFromRoute(routeForEdge(level, plan, edge, centerReferenceHeight));
+    }
+
+    private static List<List<RoadCell>> minorBranchesFromRoute(List<RoadCell> majorRoute) {
         List<List<RoadCell>> branches = new ArrayList<>();
         int interval = TownConstants.MINOR_BRANCH_INTERVAL_BLOCKS;
         int length = TownConstants.MINOR_BRANCH_LENGTH_BLOCKS;
@@ -70,13 +82,48 @@ public final class TownRoadPlanner {
         return interpolateHeights(xz, edgeHeight, centerReferenceHeight);
     }
 
+    /**
+     * [Review round 4, finding #4] Production's own terrain-aware route: the edge's own real
+     * (tree-excluded) terrain height, graded toward {@code centerReferenceHeight} (itself already
+     * resolved from real centre terrain by {@link #resolveSharedCenterHeight(ServerLevel, TownPlan, int)}) -
+     * so a genuinely high or low column at either end of the route is reflected in the plan, rather
+     * than starting from an arbitrary fixed ~{@code ROAD_EDGE_BASE_HEIGHT}. Mid-route terrain that
+     * undulates between those two real endpoints is still followed by the SAME grade-limited walk
+     * as the pure overload (never a straight unlimited jump) - a documented, bounded simplification:
+     * this does not re-sample terrain at every intermediate cell, so an unusually dramatic mid-route
+     * feature (a short, deep ravine or a sharp spike between two otherwise-ordinary endpoints) can
+     * still be graded past rather than literally hugging it; {@link TownRoadConstructionService}'s
+     * own per-cell support fill (now digging down to real solid ground, not just one block) is what
+     * keeps the placed surface itself from floating over such a feature even when the planned grade
+     * line runs above it.
+     */
+    public static List<RoadCell> routeForEdge(ServerLevel level, TownPlan plan, TownEdge edge, int centerReferenceHeight) {
+        int edgeHeight = edgeHeightFor(level, plan, edge);
+        List<int[]> xz = buildEdgeXZ(plan, edge);
+        return interpolateHeights(xz, edgeHeight, centerReferenceHeight);
+    }
+
     /** The agreed-by-both-neighbours elevation this edge's route starts from - see the class
-     *  javadoc's "Height interpolation" section. */
+     *  javadoc's "Height interpolation" section. Pure/level-free fallback, used by unit tests and
+     *  by {@link #resolveSharedCenterHeight(TownPlan, int)}'s own pure overload. */
     public static int edgeHeightFor(TownPlan plan, TownEdge edge) {
         // Anchored to a FIXED base (TownConstants.ROAD_EDGE_BASE_HEIGHT), never to either region's
         // own town-centre height: that is what makes two neighbouring regions agree on the
         // elevation at their shared boundary even when their own local terrain genuinely differs.
         return TownConstants.ROAD_EDGE_BASE_HEIGHT + plan.edgeConnections().get(edge).heightOffset();
+    }
+
+    /**
+     * [Review round 4, finding #4] The REAL (tree-excluded) terrain height at this edge's own
+     * agreed absolute column, rather than an arbitrary fixed base - production's own source of
+     * "deterministic shared-edge surface height" the review asks for. This is automatically
+     * agreed-by-both-neighbours (never needing a fixed base to force the agreement) because both
+     * regions sharing this edge resolve the exact SAME absolute (x, z) via
+     * {@link TownPlan#edgeConnectionAbsolute} and therefore sample the exact same world column.
+     */
+    public static int edgeHeightFor(ServerLevel level, TownPlan plan, TownEdge edge) {
+        int[] edgePos = plan.edgeConnectionAbsolute(edge);
+        return TownTerrain.estimateGroundHeight(level, edgePos[0], edgePos[1]);
     }
 
     /**
@@ -97,14 +144,26 @@ public final class TownRoadPlanner {
      * deliberately, documented here as the intended behaviour rather than a rejection/retry.
      */
     public static int resolveSharedCenterHeight(TownPlan plan, int desiredCenterHeight) {
+        return resolveSharedCenterHeight(plan, desiredCenterHeight, edge -> edgeHeightFor(plan, edge));
+    }
+
+    /** As above, but resolving each edge's own real terrain-sampled height (see
+     *  {@link #edgeHeightFor(ServerLevel, TownPlan, TownEdge)}) - production's own call path, so the
+     *  convergence invariant (every edge reaches the SAME centre height) holds against real terrain
+     *  too, not just the pure fixed-base edge heights. */
+    public static int resolveSharedCenterHeight(ServerLevel level, TownPlan plan, int desiredCenterHeight) {
+        return resolveSharedCenterHeight(plan, desiredCenterHeight, edge -> edgeHeightFor(level, plan, edge));
+    }
+
+    private static int resolveSharedCenterHeight(TownPlan plan, int desiredCenterHeight, ToIntFunction<TownEdge> edgeHeight) {
         int lo = Integer.MIN_VALUE;
         int hi = Integer.MAX_VALUE;
         for (TownEdge edge : TownEdge.values()) {
-            int edgeHeight = edgeHeightFor(plan, edge);
+            int height = edgeHeight.applyAsInt(edge);
             int steps = Math.max(0, buildEdgeXZ(plan, edge).size() - 1);
             int maxDelta = steps / TownConstants.ROAD_GRADE_RUN_PER_RISE_BLOCK;
-            lo = Math.max(lo, edgeHeight - maxDelta);
-            hi = Math.min(hi, edgeHeight + maxDelta);
+            lo = Math.max(lo, height - maxDelta);
+            hi = Math.min(hi, height + maxDelta);
         }
         if (lo > hi) {
             return (lo + hi) / 2;

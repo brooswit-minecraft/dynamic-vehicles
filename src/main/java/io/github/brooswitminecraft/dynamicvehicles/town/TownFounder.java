@@ -35,6 +35,13 @@ public final class TownFounder {
         if (!(event.getLevel() instanceof ServerLevel level) || level.getGameTime() % EVALUATE_INTERVAL_TICKS != 0) {
             return;
         }
+        // [Review round 4, finding #4's scope decision, applied consistently] Dynamic Towns only
+        // ever bootstraps in the Overworld, matching vanilla's own village generation - never the
+        // Nether/End/a custom dimension (see TownConstructionService's own gate for the full
+        // rationale).
+        if (!level.dimension().equals(net.minecraft.world.level.Level.OVERWORLD)) {
+            return;
+        }
         TownStorage storage = TownStorage.of(level.getServer());
         for (ServerPlayer player : level.players()) {
             tryFoundNear(level, player, storage);

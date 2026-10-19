@@ -54,4 +54,35 @@ final class SableCompat {
     static void remove(Object body) {
         ((SableCarBody) body).remove();
     }
+
+    // MINECRAFT-410: the motorboat's own rigid body, same door, same invariant -- nothing outside this
+    // class may mention SableMotorboatBody/Sable types either.
+
+    static Object createBoat(ServerLevel level, MotorboatEntity boat) {
+        return SableMotorboatBody.create(level, boat);
+    }
+
+    static void tickBoat(Object body, MotorboatEntity boat, double throttle, double steer, double dt) {
+        ((SableMotorboatBody) body).tick(boat, throttle, steer, dt);
+    }
+
+    static void syncEntityBoat(Object body, MotorboatEntity boat) {
+        ((SableMotorboatBody) body).syncEntity(boat);
+    }
+
+    static org.joml.Quaternionf orientationBoat(Object body) {
+        return ((SableMotorboatBody) body).orientationF();
+    }
+
+    static double speedBoat(Object body) {
+        return ((SableMotorboatBody) body).speed();
+    }
+
+    static String describeBoat(Object body) {
+        return ((SableMotorboatBody) body).describe();
+    }
+
+    static void removeBoat(Object body) {
+        ((SableMotorboatBody) body).remove();
+    }
 }

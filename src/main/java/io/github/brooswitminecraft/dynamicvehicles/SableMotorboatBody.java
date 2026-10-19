@@ -277,40 +277,76 @@ final class SableMotorboatBody {
      *
      * <p>The water surface used is the block's own {@link FluidState#getHeight}, not a flat {@code
      * blockY+1} -- so a shallow flowing-water block reports its real, lower surface rather than being
-     * treated as a full source block. Collision is checked BEFORE the fluid check at every probe, so a
-     * waterlogged block that still has a blocking collision shape (e.g. a waterlogged slab/stairs) is
-     * correctly treated as a solid occlusion, not as open water.
+     * treated as a full source block. {@link #scanUpward} additionally climbs through consecutive water
+     * blocks to find a multi-block-deep column's real top (see its own javadoc), rather than returning the
+     * first submerged block's own single-block height, which would otherwise invert the relative depth of
+     * two points more than one block apart in the same column.
+     *
+     * <p>Collision is checked at every probe ({@link #probe}) against the block's actual {@code
+     * VoxelShape}: a shape spanning the block's full vertical extent always occludes, but a block whose
+     * shape only PARTIALLY fills the block (a slab, stairs) occludes only when it is not also waterlogged --
+     * a waterlogged partial shape is still open water, clipped to its own real geometry rather than treated
+     * as wholly solid by a flat "any collision shape occludes" check.
      */
     private Double sampleSurface(double x, double y, double z) {
+        return sampleSurface(level, x, y, z);
+    }
+
+    /** Test-only entry point for {@link #sampleSurface(double, double, double)} against a real {@code
+     * ServerLevel} (e.g. a GameTest's), without needing a constructed rigid body -- exercises the actual
+     * production sampler, not a reimplementation, for the two review-flagged regression cases: a
+     * multi-block-deep water column's relative point depth, and a partially-occupied waterlogged block's
+     * collision clipping. */
+    static Double sampleSurfaceForTest(ServerLevel level, double x, double y, double z) {
+        return sampleSurface(level, x, y, z);
+    }
+
+    private static Double sampleSurface(ServerLevel level, double x, double y, double z) {
         BlockPos base = BlockPos.containing(x, y, z);
-        Double up = scanUpward(base);
+        Double up = scanUpward(level, base);
         if (up != null) {
             return up;
         }
-        return scanDownward(base);
+        return scanDownward(level, base);
     }
 
-    /** Scan from the point's own block ({@code dy=0}) upward to {@link #PROBE_UP}, stopping at the first
-     * solid (collidable) block and returning the first water surface found strictly before that. */
-    private Double scanUpward(BlockPos base) {
+    /** Scan from the point's own block ({@code dy=0}) upward to {@link #PROBE_UP}. Unlike {@link
+     * #scanDownward}, this must keep climbing through CONSECUTIVE water blocks once it finds the first one,
+     * rather than returning that first block's own single-block height immediately: a multi-block-deep
+     * water column's blocks all individually report a height of "their own top" (e.g. {@code blockY+1} for
+     * a full source block), which is NOT the column's real free surface for any point sitting more than one
+     * block below it. Returning the first hit's own height instead of the column's true top inverts the
+     * relative depth of two points that differ by more than one block within the same column (the deeper
+     * point can come out LESS deep than a shallower one, because each is compared against its own
+     * immediate block's height rather than the one real surface above both). Climbing through consecutive
+     * water and only returning once a non-water block (air -> found the real top; solid -> the column is
+     * capped there, which is still its real surface) is hit fixes this, while still never searching across
+     * a DRY gap for unrelated water (an air block reached before any water stops the climb and returns
+     * {@code null} exactly as before -- it does not keep hoping for water further up). */
+    private static Double scanUpward(ServerLevel level, BlockPos base) {
+        Double columnSurface = null;
         for (int dy = 0; dy <= PROBE_UP; dy++) {
-            Double surface = probe(base.offset(0, dy, 0));
-            if (surface == OCCLUDED) {
-                return null;
+            Double probed = probe(level, base.offset(0, dy, 0));
+            if (probed == OCCLUDED) {
+                return columnSurface;
             }
-            if (surface != null) {
-                return surface;
+            if (probed != null) {
+                columnSurface = probed;
+                continue;
+            }
+            if (columnSurface != null) {
+                return columnSurface;
             }
         }
-        return null;
+        return columnSurface;
     }
 
     /** Scan from just below the point's own block ({@code dy=-1}) downward to {@link #PROBE_DOWN},
      * stopping at the first solid (collidable) block and returning the first water surface found strictly
      * before that. */
-    private Double scanDownward(BlockPos base) {
+    private static Double scanDownward(ServerLevel level, BlockPos base) {
         for (int dy = -1; dy >= -PROBE_DOWN; dy--) {
-            Double surface = probe(base.offset(0, dy, 0));
+            Double surface = probe(level, base.offset(0, dy, 0));
             if (surface == OCCLUDED) {
                 return null;
             }
@@ -325,15 +361,29 @@ final class SableMotorboatBody {
      * air, keep going" -- both of which {@link #probe} would otherwise represent as {@code null}. */
     private static final Double OCCLUDED = Double.NaN;
 
-    /** One probe position: collision is checked FIRST (so a waterlogged-but-solid block still occludes),
-     * then the fluid's own height if it is water. */
-    private Double probe(BlockPos pos) {
+    /** One probe position: a block whose collision shape spans the block's FULL vertical extent (e.g. a
+     * plain solid cube) always occludes. A block whose shape only covers PART of the vertical extent (e.g.
+     * a slab, stairs) only occludes that way when it is NOT also waterlogged -- a waterlogged partial shape
+     * (the slab's solid half plus the fluid filling the rest) is still open water for this probe's purposes
+     * (clipped against its own real collision geometry rather than treated as wholly solid the way a flat
+     * "any non-empty shape occludes" check would). The fluid height used is the block's own real {@link
+     * FluidState#getHeight}, never a flat {@code blockY+1}. */
+    private static Double probe(ServerLevel level, BlockPos pos) {
         BlockState state = level.getBlockState(pos);
-        if (!state.getCollisionShape(level, pos).isEmpty()) {
-            return OCCLUDED;
-        }
+        var shape = state.getCollisionShape(level, pos);
         FluidState fluid = state.getFluidState();
-        if (fluid.is(FluidTags.WATER)) {
+        boolean isWater = fluid.is(FluidTags.WATER);
+        if (!shape.isEmpty()) {
+            var bounds = shape.bounds();
+            boolean fullyBlocksColumn = bounds.minY <= 1.0e-6 && bounds.maxY >= 1.0 - 1.0e-6;
+            if (fullyBlocksColumn || !isWater) {
+                return OCCLUDED;
+            }
+            // Partial collision shape (e.g. a waterlogged slab/stairs): its solid portion does not occlude
+            // the whole block for this point-sample purpose -- fall through and report the real water
+            // surface, same as an unobstructed water block would.
+        }
+        if (isWater) {
             return pos.getY() + (double) fluid.getHeight(level, pos);
         }
         return null;

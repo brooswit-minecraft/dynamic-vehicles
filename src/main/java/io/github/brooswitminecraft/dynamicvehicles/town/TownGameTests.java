@@ -749,14 +749,86 @@ public final class TownGameTests {
     }
 
     /**
-     * MINECRAFT-388 review round 13, finding #1: a workstation or bed already reserved by some
-     * other (unrelated) villager must never be double-assigned to this claimant just because this
-     * site's own construction happens to also target that same fixture - the claimant's profession
-     * still updates (it genuinely IS no longer Builder), but it must come away with no JOB_SITE/HOME
-     * for a fixture it was never actually able to reserve.
+     * MINECRAFT-388 review round 14, finding #3: a claimant's existing HOME in a DIFFERENT
+     * dimension must be released from ITS OWN actual level's {@code PoiManager}, never silently
+     * skipped (which would permanently leak that reservation) just because it does not match the
+     * level this handoff happens to be running on.
      */
     @GameTest(template = "settlement_test")
-    public static void aContestedWorkstationOrBedIsNeverDoubleAssignedToTheHandedOffClaimant(GameTestHelper helper) {
+    public static void aCrossDimensionHomeIsReleasedFromItsOwnActualLevelNotSilentlyLeaked(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos campfireCell = ANCHOR;
+        helper.setBlock(campfireCell, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(campfireCell);
+
+        Villager claimant = EntityType.VILLAGER.create(helper.getLevel(), null, absoluteCampfire, MobSpawnType.EVENT, false, false);
+        helper.getLevel().addFreshEntity(claimant);
+        claimant.setVillagerData(claimant.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
+        claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteCampfire));
+
+        // A real, pre-existing home in a DIFFERENT dimension from the one this handoff runs on.
+        net.minecraft.server.level.ServerLevel otherDimensionLevel = helper.getLevel().getServer().getLevel(Level.NETHER);
+        helper.assertTrue(otherDimensionLevel != null, "test setup: the nether dimension must be loaded in this GameTest server");
+        BlockPos oldHomeInOtherDimension = new BlockPos(0, 70, 0);
+        net.minecraft.world.level.block.state.BlockState head = Blocks.RED_BED.defaultBlockState()
+                .setValue(BedBlock.FACING, net.minecraft.core.Direction.SOUTH)
+                .setValue(BedBlock.PART, BedPart.HEAD);
+        net.minecraft.world.level.block.state.BlockState foot = Blocks.RED_BED.defaultBlockState()
+                .setValue(BedBlock.FACING, net.minecraft.core.Direction.SOUTH)
+                .setValue(BedBlock.PART, BedPart.FOOT);
+        otherDimensionLevel.setBlock(oldHomeInOtherDimension, head, net.minecraft.world.level.block.Block.UPDATE_ALL);
+        otherDimensionLevel.setBlock(oldHomeInOtherDimension.north(), foot, net.minecraft.world.level.block.Block.UPDATE_ALL);
+        net.minecraft.world.entity.ai.village.poi.PoiTypes.forState(otherDimensionLevel.getBlockState(oldHomeInOtherDimension))
+                .ifPresent(type -> {
+                    otherDimensionLevel.getPoiManager().add(oldHomeInOtherDimension, type);
+                    otherDimensionLevel.getPoiManager().take(t -> true, (t, p) -> p.equals(oldHomeInOtherDimension), oldHomeInOtherDimension, 1);
+                });
+        helper.assertTrue(otherDimensionLevel.getPoiManager().getFreeTickets(oldHomeInOtherDimension) == 0,
+                "test setup: the cross-dimension old home's ticket must actually be held before construction starts");
+        claimant.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(Level.NETHER, oldHomeInOtherDimension));
+
+        TownStorage storage = new TownStorage();
+        TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
+
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
+        TownPlan plan = TownPlanner.generate(region, helper.getLevel().getSeed());
+        boolean isStorehouseSite = Math.abs(absoluteCampfire.getX() - plan.townCenterX()) <= TownConstants.STOREHOUSE_FOOTPRINT_WIDTH
+                && Math.abs(absoluteCampfire.getZ() - plan.townCenterZ()) <= TownConstants.STOREHOUSE_FOOTPRINT_WIDTH;
+        TownBuildingTemplates.Kind kind = isStorehouseSite ? TownBuildingTemplates.Kind.STOREHOUSE
+                : TownBuildingTemplates.kindFor(plan.zoneAt(absoluteCampfire.getX(), absoluteCampfire.getZ()));
+        if (kind == TownBuildingTemplates.Kind.STOREHOUSE) {
+            // No bed of its own to ever replace the cross-dimension home with this run - the other
+            // kinds/slots already cover the replacement path.
+            helper.succeed();
+            return;
+        }
+
+        for (int i = 0; i < 500 && claimant.getVillagerData().getProfession() == BuilderProfession.BUILDER.get(); i++) {
+            TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
+        }
+
+        helper.assertTrue(claimant.getVillagerData().getProfession() != BuilderProfession.BUILDER.get(),
+                "test setup: the site never actually finished (kind=" + kind + ")");
+        int floorY = TownTerrain.estimateGroundHeightBelow(helper.getLevel(), absoluteCampfire);
+        BlockPos expectedBed = TownBuildingTemplates.bedPosition(absoluteCampfire.getX(), floorY, absoluteCampfire.getZ());
+        helper.assertTrue(claimant.getBrain().getMemory(MemoryModuleType.HOME)
+                        .map(gp -> gp.pos().equals(expectedBed) && gp.dimension().equals(helper.getLevel().dimension())).orElse(false),
+                "the claimant's HOME must be replaced with the new, same-dimension bed");
+        helper.assertTrue(otherDimensionLevel.getPoiManager().getFreeTickets(oldHomeInOtherDimension) > 0,
+                "the cross-dimension old home's ticket must actually be released, not permanently leaked just because it was in a different dimension");
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-388 review round 14, finding #1: a workstation or bed already reserved by some
+     * other (unrelated) villager must block the WHOLE handoff, never commit a half-handed-off
+     * terminal state. The claimant must come away EXACTLY as it went in - still Builder, still
+     * claiming this exact campfire, any uncontested fixture rolled back too - so a LATER tick, once
+     * the contested fixture actually frees up, can retry the whole handoff and reach a complete,
+     * internally consistent assignment.
+     */
+    @GameTest(template = "settlement_test")
+    public static void aContestedFixtureBlocksTheWholeHandoffUntilItFreesUpForARetry(GameTestHelper helper) {
         prepareFlatGround(helper);
         BlockPos campfireCell = ANCHOR;
         helper.setBlock(campfireCell, Blocks.CAMPFIRE);
@@ -778,51 +850,79 @@ public final class TownGameTests {
                 : TownBuildingTemplates.kindFor(plan.zoneAt(absoluteCampfire.getX(), absoluteCampfire.getZ()));
         java.util.Optional<VillagerProfession> expectedFinalProfession = TownProfessionWorkstations.finalProfessionFor(
                 kind, helper.getLevel().getSeed(), absoluteCampfire.getX(), absoluteCampfire.getZ());
+        boolean bedApplies = kind != TownBuildingTemplates.Kind.STOREHOUSE;
+        if (!bedApplies && expectedFinalProfession.isEmpty()) {
+            // This grid slot's storehouse has no bed AND no final profession to ever contest -
+            // nothing this test can exercise this run; the other kinds/slots already cover it.
+            helper.succeed();
+            return;
+        }
+
+        int floorY = TownTerrain.estimateGroundHeightBelow(helper.getLevel(), absoluteCampfire);
+        BlockPos workstationPos = expectedFinalProfession.isPresent()
+                ? TownBuildingTemplates.workstationPosition(absoluteCampfire.getX(), floorY, absoluteCampfire.getZ()) : null;
+        BlockPos bedPos = bedApplies
+                ? TownBuildingTemplates.bedPosition(absoluteCampfire.getX(), floorY, absoluteCampfire.getZ()) : null;
+        // Contest whichever ONE fixture this site actually has, preferring the bed - proving that
+        // contesting even ONE required fixture blocks the whole handoff, including any OTHER
+        // (uncontested) fixture the claimant also needed.
+        BlockPos contested = bedApplies ? bedPos : workstationPos;
+        net.minecraft.world.level.block.Block contestedBlock = bedApplies ? Blocks.RED_BED
+                : TownProfessionWorkstations.blockFor(expectedFinalProfession.get()).orElseThrow();
 
         // A pre-existing fixture in the footprint (even one matching what this site will build)
         // reads as foreign/protected content and aborts the WHOLE site outright (same as a chest
         // would, per TownSitePreflight) - so contention has to be staged AFTER this SAME build
         // actually places the fixture itself (construction is bounded to
         // TownConstants.CONSTRUCTION_BLOCKS_PER_TICK blocks per call, so a real multi-cell site
-        // takes many calls - this steals each fixture's ticket the moment it first appears,
-        // standing in for some OTHER, unrelated villager that got there first, well before this
-        // same build's own later completion tick would otherwise reserve it for this claimant.
-        int floorY = TownTerrain.estimateGroundHeightBelow(helper.getLevel(), absoluteCampfire);
-        net.minecraft.world.level.block.Block workstationBlock = expectedFinalProfession.isPresent()
-                ? TownProfessionWorkstations.blockFor(expectedFinalProfession.get()).orElseThrow() : null;
-        BlockPos workstationPos = workstationBlock == null ? null
-                : TownBuildingTemplates.workstationPosition(absoluteCampfire.getX(), floorY, absoluteCampfire.getZ());
-        boolean bedApplies = kind != TownBuildingTemplates.Kind.STOREHOUSE;
-        BlockPos bedPos = bedApplies
-                ? TownBuildingTemplates.bedPosition(absoluteCampfire.getX(), floorY, absoluteCampfire.getZ()) : null;
-
-        boolean[] workstationStolen = {workstationPos == null};
-        boolean[] bedStolen = {bedPos == null};
+        // takes many calls) - steal the ticket the moment it first appears, standing in for some
+        // OTHER, unrelated villager that got there first, well before this same build's own later
+        // completion tick would otherwise reserve it for this claimant.
+        boolean[] stolen = {false};
         for (int i = 0; i < 500 && claimant.getVillagerData().getProfession() == BuilderProfession.BUILDER.get(); i++) {
             TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
-            if (!workstationStolen[0] && helper.getLevel().getBlockState(workstationPos).is(workstationBlock)) {
-                stealExistingFixtureTicket(helper, workstationPos);
-                workstationStolen[0] = true;
+            if (!stolen[0] && helper.getLevel().getBlockState(contested).is(contestedBlock)) {
+                stealExistingFixtureTicket(helper, contested);
+                stolen[0] = true;
             }
-            if (!bedStolen[0] && helper.getLevel().getBlockState(bedPos).is(Blocks.RED_BED)) {
-                stealExistingFixtureTicket(helper, bedPos);
-                bedStolen[0] = true;
-            }
+        }
+
+        helper.assertTrue(stolen[0], "test setup: the contested fixture was never actually placed in time to steal it");
+        helper.assertTrue(claimant.getVillagerData().getProfession() == BuilderProfession.BUILDER.get(),
+                "a contested fixture must leave the claimant retryably as Builder, never a half-handed-off profession");
+        helper.assertTrue(claimant.getBrain().getMemory(MemoryModuleType.JOB_SITE)
+                        .map(gp -> gp.pos().equals(absoluteCampfire)).orElse(false),
+                "a contested fixture must leave JOB_SITE still pointed at this exact campfire, never erased with nothing left to retry from");
+        if (bedApplies && workstationPos != null) {
+            // The bed was contested but the workstation was not - it must still be ROLLED BACK,
+            // never left reserved for a handoff that never actually committed.
+            helper.assertTrue(helper.getLevel().getPoiManager().getFreeTickets(workstationPos) > 0,
+                    "an uncontested workstation must be rolled back when the fixture it's paired with is contested");
+        }
+
+        // The other villager moves on: the contested fixture frees up, so the next retry should
+        // reach a complete, internally consistent assignment - never stuck contested forever.
+        helper.getLevel().getPoiManager().release(contested);
+        for (int i = 0; i < 10 && claimant.getVillagerData().getProfession() == BuilderProfession.BUILDER.get(); i++) {
+            TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
         }
 
         helper.assertTrue(claimant.getVillagerData().getProfession() != BuilderProfession.BUILDER.get(),
-                "the site never actually finished even with its fixtures contested");
-        helper.assertTrue(workstationStolen[0], "test setup: the workstation was never actually placed in time to steal it");
-        helper.assertTrue(bedStolen[0], "test setup: the bed was never actually placed in time to steal it");
+                "once the contested fixture frees up, the retried handoff must actually complete");
         if (expectedFinalProfession.isPresent()) {
             helper.assertTrue(claimant.getVillagerData().getProfession() == expectedFinalProfession.get(),
-                    "the claimant's profession must still update even when its new workstation is contested");
-            helper.assertTrue(claimant.getBrain().getMemory(MemoryModuleType.JOB_SITE).isEmpty(),
-                    "a contested workstation must never be double-assigned as this claimant's own JOB_SITE");
+                    "once retried successfully, the claimant must be handed off to its real final profession");
+            helper.assertTrue(claimant.getBrain().getMemory(MemoryModuleType.JOB_SITE)
+                            .map(gp -> gp.pos().equals(workstationPos)).orElse(false),
+                    "once retried successfully, JOB_SITE must point at the real workstation");
+        } else {
+            helper.assertTrue(claimant.getVillagerData().getProfession() == VillagerProfession.NONE,
+                    "once retried successfully, a claimant with no final profession must be released to NONE");
         }
         if (bedApplies) {
-            helper.assertTrue(claimant.getBrain().getMemory(MemoryModuleType.HOME).isEmpty(),
-                    "a contested bed must never be double-assigned as this claimant's own HOME");
+            helper.assertTrue(claimant.getBrain().getMemory(MemoryModuleType.HOME)
+                            .map(gp -> gp.pos().equals(bedPos)).orElse(false),
+                    "once retried successfully, the claimant must end up with the real bed as its HOME");
         }
         helper.succeed();
     }

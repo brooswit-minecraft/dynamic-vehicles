@@ -410,20 +410,32 @@ public final class TownConstructionService {
     }
 
     /**
-     * MINECRAFT-388 review round 12/13, finding #1: the Builder-to-final-site handoff must go
+     * MINECRAFT-388 review round 12/13/14, finding #1: the Builder-to-final-site handoff must go
      * through the SAME real POI reservation machinery vanilla itself uses, not a raw memory/
      * profession overwrite alone - and must actually honour that machinery's own result:
      * <ul>
      *   <li>[Round 13] A fixture already reserved by someone else (contention) must never be
      *       double-assigned - {@code JOB_SITE}/{@code HOME} are only written once the ticket is
      *       actually acquired, never unconditionally.</li>
+     *   <li>[Round 14] Reservation is now ALL-OR-NOTHING: every required fixture (workstation when
+     *       there is a final profession, bed when this kind has one) is reserved FIRST, before
+     *       anything else is committed. If any required reservation fails, every ticket already
+     *       taken this attempt is rolled back and NOTHING is committed at all - profession, JOB_SITE,
+     *       HOME, XP and level are all left exactly as they were. The claimant stays Builder, still
+     *       claiming this exact campfire, so the next tick's {@link #buildAt} call simply retries
+     *       the whole handoff again once the contested fixture frees up - never a terminal, claimless,
+     *       half-handed-off state with no way back.</li>
      *   <li>[Round 13] {@code HOME} is never blindly erased: a kind with no bed of its own
      *       (storehouse) leaves the claimant's existing home (if any) completely untouched, and a
      *       kind that DOES get a new bed only releases the old home's ticket once the new one is
-     *       actually secured - never erased-then-left-unreplaced on a failed acquisition.</li>
+     *       actually secured.</li>
+     *   <li>[Round 14] That old-home release now resolves the OLD {@code GlobalPos} against its OWN
+     *       actual {@link ServerLevel} (via {@link net.minecraft.server.MinecraftServer#getLevel}),
+     *       not just this level - a same-position release call made against the WRONG level's
+     *       {@code PoiManager} would silently do nothing, permanently leaking a cross-dimension
+     *       reservation with no memory left to ever release it from.</li>
      *   <li>[Round 13] Stale Builder trade state (offers/XP/level) is reset on EVERY path the
-     *       claimant leaves Builder through, not only the hand-off-to-a-real-job branch - the NONE
-     *       path left a released villager with its old Builder trade intact.</li>
+     *       claimant leaves Builder through, not only the hand-off-to-a-real-job branch.</li>
      * </ul>
      *
      * <p>The former campfire cell's own POI record needs no explicit release here: every template
@@ -438,6 +450,31 @@ public final class TownConstructionService {
      */
     private static void finishClaimantLifecycle(ServerLevel level, Villager claimant, BlockPos campfire, int floorY,
             TownBuildingTemplates.Kind kind, Optional<VillagerProfession> finalProfession) {
+        boolean needsWorkstation = finalProfession.isPresent();
+        boolean needsBed = kind == TownBuildingTemplates.Kind.RESIDENTIAL || kind == TownBuildingTemplates.Kind.COMMERCIAL
+                || kind == TownBuildingTemplates.Kind.INDUSTRIAL;
+        BlockPos workstationPos = needsWorkstation
+                ? TownBuildingTemplates.workstationPosition(campfire.getX(), floorY, campfire.getZ()) : null;
+        BlockPos bedPos = needsBed ? TownBuildingTemplates.bedPosition(campfire.getX(), floorY, campfire.getZ()) : null;
+
+        // [Round 14] Reserve EVERY required fixture before committing anything. A claimant that
+        // needs both a workstation AND a bed must end up with BOTH or NEITHER - never a half-handed
+        // state where one was reserved out from under its real future owner for nothing.
+        boolean workstationReserved = !needsWorkstation || acquirePoiTicket(level, workstationPos);
+        boolean bedReserved = !needsBed || acquirePoiTicket(level, bedPos);
+        if (!workstationReserved || !bedReserved) {
+            if (workstationReserved && needsWorkstation) {
+                releasePoiTicket(level, workstationPos);
+            }
+            if (bedReserved && needsBed) {
+                releasePoiTicket(level, bedPos);
+            }
+            // Nothing committed this attempt: claimant stays Builder, still claiming this exact
+            // campfire, so the next tick's buildAt call simply retries once the contested fixture
+            // frees up - never a terminal, claimless, half-handed-off state with no way back.
+            return;
+        }
+
         claimant.getBrain().eraseMemory(MemoryModuleType.JOB_SITE);
         // Reset XP/level on EVERY path, not only a real handoff - stale Builder XP/level must never
         // carry over into a new profession's own trade tier. Offers themselves need no explicit
@@ -449,30 +486,26 @@ public final class TownConstructionService {
         claimant.setVillagerXp(0);
         claimant.setVillagerData(claimant.getVillagerData().setLevel(1));
 
-        if (finalProfession.isPresent()) {
-            BlockPos workstationPos = TownBuildingTemplates.workstationPosition(campfire.getX(), floorY, campfire.getZ());
+        if (needsWorkstation) {
             claimant.setVillagerData(claimant.getVillagerData().setProfession(finalProfession.get()));
-            if (acquirePoiTicket(level, workstationPos)) {
-                claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), workstationPos));
-            }
-            // A contested workstation (ticket already held by someone else) leaves the claimant
-            // with its new profession but no JOB_SITE this cycle - exactly vanilla's own "no site
-            // available yet" state, never a fixture falsely claimed out from under its real holder.
+            claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), workstationPos));
         } else {
             claimant.setVillagerData(claimant.getVillagerData().setProfession(VillagerProfession.NONE));
         }
 
-        if (kind == TownBuildingTemplates.Kind.RESIDENTIAL || kind == TownBuildingTemplates.Kind.COMMERCIAL
-                || kind == TownBuildingTemplates.Kind.INDUSTRIAL) {
-            BlockPos bedPos = TownBuildingTemplates.bedPosition(campfire.getX(), floorY, campfire.getZ());
-            if (acquirePoiTicket(level, bedPos)) {
-                // Only now that the NEW home is actually secured does the OLD one (if any) get
-                // released - a failed acquisition above must never leave the claimant homeless.
-                claimant.getBrain().getMemory(MemoryModuleType.HOME)
-                        .filter(old -> old.dimension().equals(level.dimension()))
-                        .ifPresent(old -> releasePoiTicket(level, old.pos()));
-                claimant.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), bedPos));
-            }
+        if (needsBed) {
+            // The new home is already secured (reserved above) - release whatever old one the
+            // claimant had, resolved against ITS OWN actual level, never assumed to be this one.
+            claimant.getBrain().getMemory(MemoryModuleType.HOME).ifPresent(old -> {
+                ServerLevel oldLevel = old.dimension().equals(level.dimension())
+                        ? level : level.getServer().getLevel(old.dimension());
+                if (oldLevel != null) {
+                    releasePoiTicket(oldLevel, old.pos());
+                }
+                // oldLevel == null: that dimension no longer exists/isn't loaded - there is no
+                // PoiManager left to release anything from; nothing further can be done safely.
+            });
+            claimant.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), bedPos));
         }
         // A kind with no bed of its own (storehouse) touches HOME at all: the claimant keeps
         // whatever home (if any) it already had.

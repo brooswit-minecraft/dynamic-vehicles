@@ -99,7 +99,20 @@ public final class WheelMath {
             double stop = effectiveMass * vLong / dt * RELAXATION * brakeGain;
             wantLong = -Math.max(-brakeForce, Math.min(brakeForce, stop));
         } else {
-            double rolling = Math.abs(vLong) > 0.05 ? -Math.signum(vLong) * rollingCoefficient * normalForce : 0.0;
+            // MINECRAFT-450: capped at the force that would bring vLong to exactly 0 this step
+            // (effectiveMass * |vLong| / dt), not just rollingCoefficient * normalForce outright - a
+            // fixed-magnitude rolling force applied for a full dt/subDt can otherwise remove MORE momentum
+            // than the wheel actually has once vLong is small but still above the 0.05 dead zone (e.g. a
+            // high-rollingCoefficient surface with wheelSubSteps=1, the longest subDt the live config
+            // allows), overshooting past zero into the opposite sign - exactly the "near-rest sign flip"
+            // the dead zone above exists to prevent, just one step later than the dead zone alone catches.
+            // Proven by a failing test before this fix (WheelMathTest.coastingToRestNeverFlipsSignNearZeroSpeed):
+            // repeatedly stepping WheelMath.tire's own output at vLong just above 0.05 made it oscillate
+            // across zero indefinitely instead of settling. Far from zero this cap is a no-op - every
+            // existing coast-down test's rollingCoefficient * normalForce is already far smaller than
+            // effectiveMass * |vLong| / dt there, so this changes no other behaviour.
+            double rollingMagnitude = Math.min(rollingCoefficient * normalForce, effectiveMass * Math.abs(vLong) / dt);
+            double rolling = Math.abs(vLong) > 0.05 ? -Math.signum(vLong) * rollingMagnitude : 0.0;
             wantLong = driveForce + rolling;
         }
         double demand = Math.hypot(wantLong, wantLat);
@@ -126,7 +139,11 @@ public final class WheelMath {
      *
      * @param rollingResistance the surface's {@code SurfaceProperties.rollingResistance()}, 0..1
      * @param deformability the surface's {@code SurfaceProperties.deformability()}, 0..1
-     * @param rollingScale per-vehicle scale for soft-ground rolling resistance ({@code VehicleSpec.rollingScale})
+     * @param rollingScale per-vehicle scale for soft-ground rolling resistance ({@code VehicleSpec.rollingScale()},
+     *        dimensionless, see that field's own javadoc for its range/default/fallback - no clamp is applied here,
+     *        so a caller passing an out-of-range value gets a proportionally out-of-range coefficient back)
+     * @return the dimensionless rolling resistance coefficient {@link #tire} multiplies by the wheel's own
+     *         normal force to get the rolling drag force, N
      */
     public static double rollingCoefficient(double rollingResistance, double deformability, double rollingScale) {
         return rollingResistance * rollingScale * (1.0 + deformability * DEFORMABILITY_ROLLING_GAIN);

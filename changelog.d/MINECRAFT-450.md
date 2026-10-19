@@ -1,0 +1,4 @@
+bump: patch
+
+### Fixed
+- Rolling resistance (`WheelMath.tire`) no longer overshoots a coasting wheel's velocity past zero on a single step. Previously the rolling force was a fixed magnitude (`rollingCoefficient * normalForce`) applied for the whole step/sub-step whenever speed was above the 0.05 m/s dead zone, which could remove more momentum than the wheel actually had at a small-but-above-threshold speed (most reachable on a high-rolling-resistance surface with `wheelSubSteps` set to 1) and flip the wheel's velocity sign, oscillating around zero instead of settling - exactly the "near-rest sign flip" the dead zone itself exists to prevent. The rolling force is now capped at the force that would bring the wheel to exactly zero this step. Delivered force/impulse away from zero speed is unchanged.

@@ -26,7 +26,23 @@ public record VehicleSpec(
          * single-seat {@link #seats} list from exactly these two numbers. */
         double seatY, double seatZ,
         /** Grip on loose surfaces is multiplied by this (capped at the pavement's), and soft ground's rolling resistance by rollingScale. */
-        double looseGrip, double rollingScale,
+        double looseGrip,
+        /** Per-vehicle multiplier (MINECRAFT-62/450) on the surface's own {@code
+         * SurfaceProperties.rollingResistance()}, as consumed by {@link WheelMath#rollingCoefficient}:
+         * {@code rollingCoefficient = rollingResistance * rollingScale * (1 + deformability * DEFORMABILITY_ROLLING_GAIN)}.
+         * Dimensionless, intended range roughly 0.5..1.0 across the roster (e.g. {@code CAR}/{@code INDY}
+         * at the neutral {@code 1.0} &mdash; the surface's own coefficient applies unscaled; {@code
+         * ROCK_CRAWLER}/{@code MONSTER_TRUCK} down near {@code 0.5}..{@code 0.55} for tires tuned to roll
+         * easier on loose ground). {@code 1.0} is both the neutral value (no change from the surface's own
+         * number) and the value every vehicle that has not deliberately tuned this field away from it
+         * carries. There is no runtime "missing data" fallback for this field &mdash; it is a required
+         * constructor argument of this record, always supplied by a {@code VehicleSpec} constant below, so
+         * every vehicle always has a concrete value; the fallback that DOES exist is one layer up, in the
+         * terrain side of this multiplication: {@link io.github.brooswitminecraft.dynamicterrain.Surfaces#at}
+         * returns {@code SurfaceProperties.PAVEMENT} for air and otherwise falls back from a declared
+         * {@code SurfaceOverrides} entry to {@code SurfaceMath}'s automatic inference, never to a missing
+         * value this field would need to compensate for. */
+        double rollingScale,
         /** This vehicle's tire model tuning; {@link TireTuning#IDENTITY} for every vehicle that has not opted in. */
         TireTuning tireTuning,
         /** Downforce (MINECRAFT-184): extra tire grip per m/s of forward speed, applied as a multiplier on

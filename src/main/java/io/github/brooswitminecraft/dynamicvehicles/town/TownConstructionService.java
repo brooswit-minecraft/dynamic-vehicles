@@ -410,12 +410,21 @@ public final class TownConstructionService {
     }
 
     /**
-     * MINECRAFT-388 review round 12, finding #1: the Builder-to-final-site handoff must go through
-     * the SAME real POI reservation machinery vanilla itself uses, not a raw memory/profession
-     * overwrite alone - otherwise the new workstation/bed are never actually reserved against other
-     * villagers, a residential/storehouse claimant released to NONE keeps a stale JOB_SITE memory
-     * pointed at a campfire that no longer exists, and stale trade state (offers/XP/level) survives
-     * a profession the claimant never actually traded under.
+     * MINECRAFT-388 review round 12/13, finding #1: the Builder-to-final-site handoff must go
+     * through the SAME real POI reservation machinery vanilla itself uses, not a raw memory/
+     * profession overwrite alone - and must actually honour that machinery's own result:
+     * <ul>
+     *   <li>[Round 13] A fixture already reserved by someone else (contention) must never be
+     *       double-assigned - {@code JOB_SITE}/{@code HOME} are only written once the ticket is
+     *       actually acquired, never unconditionally.</li>
+     *   <li>[Round 13] {@code HOME} is never blindly erased: a kind with no bed of its own
+     *       (storehouse) leaves the claimant's existing home (if any) completely untouched, and a
+     *       kind that DOES get a new bed only releases the old home's ticket once the new one is
+     *       actually secured - never erased-then-left-unreplaced on a failed acquisition.</li>
+     *   <li>[Round 13] Stale Builder trade state (offers/XP/level) is reset on EVERY path the
+     *       claimant leaves Builder through, not only the hand-off-to-a-real-job branch - the NONE
+     *       path left a released villager with its old Builder trade intact.</li>
+     * </ul>
      *
      * <p>The former campfire cell's own POI record needs no explicit release here: every template
      * this method hands off from always overwrites that exact cell as part of finishing the SAME
@@ -430,18 +439,25 @@ public final class TownConstructionService {
     private static void finishClaimantLifecycle(ServerLevel level, Villager claimant, BlockPos campfire, int floorY,
             TownBuildingTemplates.Kind kind, Optional<VillagerProfession> finalProfession) {
         claimant.getBrain().eraseMemory(MemoryModuleType.JOB_SITE);
-        claimant.getBrain().eraseMemory(MemoryModuleType.HOME);
+        // Reset XP/level on EVERY path, not only a real handoff - stale Builder XP/level must never
+        // carry over into a new profession's own trade tier. Offers themselves need no explicit
+        // clearing: Villager#setVillagerData already nulls its cached offers whenever the
+        // profession actually changes (below), lazily regenerating a fresh, correct trade list for
+        // whatever profession ends up set - explicitly clearing them here would be redundant for
+        // NONE (which has no trades to regenerate anyway) and actively wrong for a real handoff
+        // (it would wipe out the new profession's own legitimately-generated trades).
+        claimant.setVillagerXp(0);
+        claimant.setVillagerData(claimant.getVillagerData().setLevel(1));
 
         if (finalProfession.isPresent()) {
             BlockPos workstationPos = TownBuildingTemplates.workstationPosition(campfire.getX(), floorY, campfire.getZ());
             claimant.setVillagerData(claimant.getVillagerData().setProfession(finalProfession.get()));
-            acquirePoiTicket(level, workstationPos);
-            claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), workstationPos));
-            // A real new job supersedes whatever the temporary Builder trade accumulated - it must
-            // start with its own clean offers/XP/level, never Builder's leftover trade state.
-            claimant.getOffers().clear();
-            claimant.setVillagerXp(0);
-            claimant.setVillagerData(claimant.getVillagerData().setLevel(1));
+            if (acquirePoiTicket(level, workstationPos)) {
+                claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), workstationPos));
+            }
+            // A contested workstation (ticket already held by someone else) leaves the claimant
+            // with its new profession but no JOB_SITE this cycle - exactly vanilla's own "no site
+            // available yet" state, never a fixture falsely claimed out from under its real holder.
         } else {
             claimant.setVillagerData(claimant.getVillagerData().setProfession(VillagerProfession.NONE));
         }
@@ -449,16 +465,26 @@ public final class TownConstructionService {
         if (kind == TownBuildingTemplates.Kind.RESIDENTIAL || kind == TownBuildingTemplates.Kind.COMMERCIAL
                 || kind == TownBuildingTemplates.Kind.INDUSTRIAL) {
             BlockPos bedPos = TownBuildingTemplates.bedPosition(campfire.getX(), floorY, campfire.getZ());
-            acquirePoiTicket(level, bedPos);
-            claimant.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), bedPos));
+            if (acquirePoiTicket(level, bedPos)) {
+                // Only now that the NEW home is actually secured does the OLD one (if any) get
+                // released - a failed acquisition above must never leave the claimant homeless.
+                claimant.getBrain().getMemory(MemoryModuleType.HOME)
+                        .filter(old -> old.dimension().equals(level.dimension()))
+                        .ifPresent(old -> releasePoiTicket(level, old.pos()));
+                claimant.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), bedPos));
+            }
         }
+        // A kind with no bed of its own (storehouse) touches HOME at all: the claimant keeps
+        // whatever home (if any) it already had.
     }
 
     /**
      * Actually reserves (acquires a ticket for) the POI record at {@code pos} - the real vanilla
      * reservation a villager's AI would otherwise acquire on its own, done explicitly here since
      * this handoff is a direct memory/profession assignment, not a goal a villager walked up and
-     * triggered itself.
+     * triggered itself. Returns {@code false} (acquiring nothing) when the fixture has no POI type
+     * at all, OR when it does but every one of its tickets is already held - e.g. by some other,
+     * unrelated villager - in which case the caller must never write a memory claiming it anyway.
      *
      * <p>Registers the record directly (via {@link PoiManager#add}) rather than relying on it
      * already being there: {@link ServerLevel#onBlockStateChange} - the normal hook that would
@@ -468,12 +494,25 @@ public final class TownConstructionService {
      * otherwise still read as unregistered here. {@code add} is idempotent for an already-registered
      * position, so calling it unconditionally is always safe.
      */
-    private static void acquirePoiTicket(ServerLevel level, BlockPos pos) {
+    private static boolean acquirePoiTicket(ServerLevel level, BlockPos pos) {
         net.minecraft.world.entity.ai.village.poi.PoiManager poiManager = level.getPoiManager();
-        net.minecraft.world.entity.ai.village.poi.PoiTypes.forState(level.getBlockState(pos)).ifPresent(type -> {
-            poiManager.add(pos, type);
-            poiManager.take(t -> true, (t, p) -> p.equals(pos), pos, 1);
-        });
+        Optional<net.minecraft.core.Holder<net.minecraft.world.entity.ai.village.poi.PoiType>> type =
+                net.minecraft.world.entity.ai.village.poi.PoiTypes.forState(level.getBlockState(pos));
+        if (type.isEmpty()) {
+            return false;
+        }
+        poiManager.add(pos, type.get());
+        return poiManager.take(t -> true, (t, p) -> p.equals(pos), pos, 1).isPresent();
+    }
+
+    /** Releases a previously-held ticket at {@code pos}, if its POI record still exists - used when
+     *  a claimant's OLD fixture (e.g. a prior home elsewhere) is being given up for a NEW one that
+     *  has already been secured. */
+    private static void releasePoiTicket(ServerLevel level, BlockPos pos) {
+        net.minecraft.world.entity.ai.village.poi.PoiManager poiManager = level.getPoiManager();
+        if (poiManager.exists(pos, type -> true)) {
+            poiManager.release(pos);
+        }
     }
 
     /**

@@ -608,8 +608,9 @@ public final class TownGameTests {
         claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteCampfire));
         // [Review round 12, finding #1] Seed real Builder trade state (offers/XP/level) so the
         // handoff's reset can actually be proven, rather than trivially "still empty".
-        claimant.getOffers().add(new MerchantOffer(
-                new ItemCost(Items.EMERALD, 1), new ItemStack(Items.BREAD), 1, 1, 0.05f));
+        MerchantOffer staleBuilderOffer = new MerchantOffer(
+                new ItemCost(Items.EMERALD, 1), new ItemStack(Items.BREAD), 1, 1, 0.05f);
+        claimant.getOffers().add(staleBuilderOffer);
         claimant.setVillagerXp(50);
         claimant.setVillagerData(claimant.getVillagerData().setLevel(3));
 
@@ -654,10 +655,6 @@ public final class TownGameTests {
             // villager could still freely acquire the same workstation.
             helper.assertTrue(helper.getLevel().getPoiManager().getFreeTickets(expectedWorkstation) == 0,
                     "the new workstation's POI ticket must already be held by the handed-off claimant, not still free");
-            // A real new job must start with its own clean trade state, never Builder's leftovers.
-            helper.assertTrue(claimant.getOffers().isEmpty(), "the handed-off claimant's stale Builder offers must be cleared");
-            helper.assertTrue(claimant.getVillagerXp() == 0, "the handed-off claimant's stale Builder XP must be reset");
-            helper.assertTrue(claimant.getVillagerData().getLevel() == 1, "the handed-off claimant's stale Builder level must be reset");
         } else {
             helper.assertTrue(claimant.getVillagerData().getProfession() == VillagerProfession.NONE,
                     "a residential/storehouse claimant whose site is fully built must be released back to NONE, found "
@@ -665,6 +662,15 @@ public final class TownGameTests {
             helper.assertTrue(claimant.getBrain().getMemory(MemoryModuleType.JOB_SITE).isEmpty(),
                     "a claimant released to NONE must never keep a stale JOB_SITE memory pointed at the old campfire");
         }
+        // [Review round 13] Stale Builder trade state must be reset on EVERY path the claimant
+        // leaves Builder through, not only a real-job handoff. A real new profession legitimately
+        // regenerates its OWN fresh trades (vanilla nulls cached offers on any profession change,
+        // see Villager#setVillagerData) - the thing that must actually be gone is the STALE BUILDER
+        // offer specifically, not every possible offer.
+        helper.assertTrue(!claimant.getOffers().contains(staleBuilderOffer),
+                "the released claimant's stale Builder offer must be gone, not carried into its new life");
+        helper.assertTrue(claimant.getVillagerXp() == 0, "the released claimant's stale Builder XP must be reset");
+        helper.assertTrue(claimant.getVillagerData().getLevel() == 1, "the released claimant's stale Builder level must be reset");
         if (kind != TownBuildingTemplates.Kind.STOREHOUSE) {
             BlockPos expectedBed = TownBuildingTemplates.bedPosition(absoluteCampfire.getX(), floorY, absoluteCampfire.getZ());
             helper.assertTrue(claimant.getBrain().getMemory(MemoryModuleType.HOME)
@@ -676,6 +682,185 @@ public final class TownGameTests {
         helper.assertTrue(store.balance(TownResourceCategory.STONE) < 100000 || store.balance(TownResourceCategory.WOOD) < 100000,
                 "a completed site should have actually debited some resource category");
         helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-388 review round 13, finding #2: a claimant that already had a real HOME before this
+     * construction (e.g. it lived somewhere else first) must never have that memory blindly erased.
+     * A kind with no bed of its own (storehouse) must leave it completely untouched - ticket and
+     * all; a kind that DOES get a new bed must only release the old ticket once the new one is
+     * actually secured, never erase-then-leave-unreplaced.
+     */
+    @GameTest(template = "settlement_test")
+    public static void anExistingHomeIsNeverLeakedOrErasedWithoutAnActualReplacement(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos campfireCell = ANCHOR;
+        helper.setBlock(campfireCell, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(campfireCell);
+
+        Villager claimant = EntityType.VILLAGER.create(helper.getLevel(), null, absoluteCampfire, MobSpawnType.EVENT, false, false);
+        helper.getLevel().addFreshEntity(claimant);
+        claimant.setVillagerData(claimant.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
+        claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteCampfire));
+
+        // A real, pre-existing home this claimant already had BEFORE this construction - well
+        // outside the footprint's own columns AND well above ground, so it is never disturbed by
+        // the build itself and its handling here can be observed in isolation. Deliberately NOT
+        // directly above the campfire's own column: TownSitePreflight's whole-site scan unions the
+        // real terrain top with the planned footprint for EVERY footprint column, so a block
+        // placed high above the campfire's own column would poison that scan and reject the whole
+        // site outright, exactly like foreign/protected content would.
+        BlockPos absoluteOldHome = helper.absolutePos(campfireCell.offset(30, 50, 30));
+        placeStandaloneBedFixture(helper, absoluteOldHome);
+        claimant.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(helper.getLevel().dimension(), absoluteOldHome));
+
+        TownStorage storage = new TownStorage();
+        TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
+
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
+        TownPlan plan = TownPlanner.generate(region, helper.getLevel().getSeed());
+        boolean isStorehouseSite = Math.abs(absoluteCampfire.getX() - plan.townCenterX()) <= TownConstants.STOREHOUSE_FOOTPRINT_WIDTH
+                && Math.abs(absoluteCampfire.getZ() - plan.townCenterZ()) <= TownConstants.STOREHOUSE_FOOTPRINT_WIDTH;
+        TownBuildingTemplates.Kind kind = isStorehouseSite ? TownBuildingTemplates.Kind.STOREHOUSE
+                : TownBuildingTemplates.kindFor(plan.zoneAt(absoluteCampfire.getX(), absoluteCampfire.getZ()));
+
+        for (int i = 0; i < 500 && claimant.getVillagerData().getProfession() == BuilderProfession.BUILDER.get(); i++) {
+            TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
+        }
+
+        helper.assertTrue(claimant.getVillagerData().getProfession() != BuilderProfession.BUILDER.get(),
+                "test setup: the site never actually finished (kind=" + kind + ")");
+        if (kind == TownBuildingTemplates.Kind.STOREHOUSE) {
+            helper.assertTrue(claimant.getBrain().getMemory(MemoryModuleType.HOME)
+                            .map(gp -> gp.pos().equals(absoluteOldHome)).orElse(false),
+                    "a kind with no bed of its own must never touch an already-existing HOME");
+            helper.assertTrue(helper.getLevel().getPoiManager().getFreeTickets(absoluteOldHome) == 0,
+                    "an untouched existing home's ticket must never be released out from under its own resident");
+        } else {
+            int floorY = TownTerrain.estimateGroundHeightBelow(helper.getLevel(), absoluteCampfire);
+            BlockPos expectedBed = TownBuildingTemplates.bedPosition(absoluteCampfire.getX(), floorY, absoluteCampfire.getZ());
+            helper.assertTrue(claimant.getBrain().getMemory(MemoryModuleType.HOME)
+                            .map(gp -> gp.pos().equals(expectedBed)).orElse(false),
+                    "a kind with its own bed must replace the claimant's HOME with the new bed, not keep the stale one");
+            helper.assertTrue(helper.getLevel().getPoiManager().getFreeTickets(absoluteOldHome) > 0,
+                    "the old home's ticket must be released once a real replacement is actually secured");
+        }
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-388 review round 13, finding #1: a workstation or bed already reserved by some
+     * other (unrelated) villager must never be double-assigned to this claimant just because this
+     * site's own construction happens to also target that same fixture - the claimant's profession
+     * still updates (it genuinely IS no longer Builder), but it must come away with no JOB_SITE/HOME
+     * for a fixture it was never actually able to reserve.
+     */
+    @GameTest(template = "settlement_test")
+    public static void aContestedWorkstationOrBedIsNeverDoubleAssignedToTheHandedOffClaimant(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos campfireCell = ANCHOR;
+        helper.setBlock(campfireCell, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(campfireCell);
+
+        Villager claimant = EntityType.VILLAGER.create(helper.getLevel(), null, absoluteCampfire, MobSpawnType.EVENT, false, false);
+        helper.getLevel().addFreshEntity(claimant);
+        claimant.setVillagerData(claimant.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
+        claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteCampfire));
+
+        TownStorage storage = new TownStorage();
+        TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
+
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
+        TownPlan plan = TownPlanner.generate(region, helper.getLevel().getSeed());
+        boolean isStorehouseSite = Math.abs(absoluteCampfire.getX() - plan.townCenterX()) <= TownConstants.STOREHOUSE_FOOTPRINT_WIDTH
+                && Math.abs(absoluteCampfire.getZ() - plan.townCenterZ()) <= TownConstants.STOREHOUSE_FOOTPRINT_WIDTH;
+        TownBuildingTemplates.Kind kind = isStorehouseSite ? TownBuildingTemplates.Kind.STOREHOUSE
+                : TownBuildingTemplates.kindFor(plan.zoneAt(absoluteCampfire.getX(), absoluteCampfire.getZ()));
+        java.util.Optional<VillagerProfession> expectedFinalProfession = TownProfessionWorkstations.finalProfessionFor(
+                kind, helper.getLevel().getSeed(), absoluteCampfire.getX(), absoluteCampfire.getZ());
+
+        // A pre-existing fixture in the footprint (even one matching what this site will build)
+        // reads as foreign/protected content and aborts the WHOLE site outright (same as a chest
+        // would, per TownSitePreflight) - so contention has to be staged AFTER this SAME build
+        // actually places the fixture itself (construction is bounded to
+        // TownConstants.CONSTRUCTION_BLOCKS_PER_TICK blocks per call, so a real multi-cell site
+        // takes many calls - this steals each fixture's ticket the moment it first appears,
+        // standing in for some OTHER, unrelated villager that got there first, well before this
+        // same build's own later completion tick would otherwise reserve it for this claimant.
+        int floorY = TownTerrain.estimateGroundHeightBelow(helper.getLevel(), absoluteCampfire);
+        net.minecraft.world.level.block.Block workstationBlock = expectedFinalProfession.isPresent()
+                ? TownProfessionWorkstations.blockFor(expectedFinalProfession.get()).orElseThrow() : null;
+        BlockPos workstationPos = workstationBlock == null ? null
+                : TownBuildingTemplates.workstationPosition(absoluteCampfire.getX(), floorY, absoluteCampfire.getZ());
+        boolean bedApplies = kind != TownBuildingTemplates.Kind.STOREHOUSE;
+        BlockPos bedPos = bedApplies
+                ? TownBuildingTemplates.bedPosition(absoluteCampfire.getX(), floorY, absoluteCampfire.getZ()) : null;
+
+        boolean[] workstationStolen = {workstationPos == null};
+        boolean[] bedStolen = {bedPos == null};
+        for (int i = 0; i < 500 && claimant.getVillagerData().getProfession() == BuilderProfession.BUILDER.get(); i++) {
+            TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
+            if (!workstationStolen[0] && helper.getLevel().getBlockState(workstationPos).is(workstationBlock)) {
+                stealExistingFixtureTicket(helper, workstationPos);
+                workstationStolen[0] = true;
+            }
+            if (!bedStolen[0] && helper.getLevel().getBlockState(bedPos).is(Blocks.RED_BED)) {
+                stealExistingFixtureTicket(helper, bedPos);
+                bedStolen[0] = true;
+            }
+        }
+
+        helper.assertTrue(claimant.getVillagerData().getProfession() != BuilderProfession.BUILDER.get(),
+                "the site never actually finished even with its fixtures contested");
+        helper.assertTrue(workstationStolen[0], "test setup: the workstation was never actually placed in time to steal it");
+        helper.assertTrue(bedStolen[0], "test setup: the bed was never actually placed in time to steal it");
+        if (expectedFinalProfession.isPresent()) {
+            helper.assertTrue(claimant.getVillagerData().getProfession() == expectedFinalProfession.get(),
+                    "the claimant's profession must still update even when its new workstation is contested");
+            helper.assertTrue(claimant.getBrain().getMemory(MemoryModuleType.JOB_SITE).isEmpty(),
+                    "a contested workstation must never be double-assigned as this claimant's own JOB_SITE");
+        }
+        if (bedApplies) {
+            helper.assertTrue(claimant.getBrain().getMemory(MemoryModuleType.HOME).isEmpty(),
+                    "a contested bed must never be double-assigned as this claimant's own HOME");
+        }
+        helper.succeed();
+    }
+
+    /** Places a genuinely valid, correctly-paired (HEAD+FOOT) bed at the given ABSOLUTE head
+     *  position and immediately registers + fully reserves its POI record, standing in for a
+     *  fixture some OTHER, unrelated villager already holds. Deliberately places BOTH halves - a
+     *  single bare bed half (e.g. just {@code Blocks.RED_BED.defaultBlockState()}) is an invalid
+     *  configuration vanilla's own bed validity check pops back to air (taking its freshly-added POI
+     *  record with it) the moment anything triggers a neighbour update there. */
+    private static void placeStandaloneBedFixture(GameTestHelper helper, BlockPos absoluteHeadPos) {
+        net.minecraft.world.level.block.state.BlockState head = Blocks.RED_BED.defaultBlockState()
+                .setValue(BedBlock.FACING, net.minecraft.core.Direction.SOUTH)
+                .setValue(BedBlock.PART, BedPart.HEAD);
+        net.minecraft.world.level.block.state.BlockState foot = Blocks.RED_BED.defaultBlockState()
+                .setValue(BedBlock.FACING, net.minecraft.core.Direction.SOUTH)
+                .setValue(BedBlock.PART, BedPart.FOOT);
+        helper.getLevel().setBlock(absoluteHeadPos, head, net.minecraft.world.level.block.Block.UPDATE_ALL);
+        helper.getLevel().setBlock(absoluteHeadPos.north(), foot, net.minecraft.world.level.block.Block.UPDATE_ALL);
+        registerAndTakeTicket(helper, absoluteHeadPos);
+    }
+
+    /** Steals the ticket for a fixture {@code TownConstructionService} has ALREADY correctly placed
+     *  at {@code absolutePos}, standing in for some OTHER, unrelated villager that got there first -
+     *  WITHOUT touching the live block at all (re-writing it, even to the exact same block, risks
+     *  retriggering vanilla's own neighbour-update/validity side effects - e.g. a bed - for no
+     *  reason; the real block is already exactly right, this only needs the ABSTRACT POI ticket
+     *  layer to reflect contention). */
+    private static void stealExistingFixtureTicket(GameTestHelper helper, BlockPos absolutePos) {
+        registerAndTakeTicket(helper, absolutePos);
+    }
+
+    private static void registerAndTakeTicket(GameTestHelper helper, BlockPos absolutePos) {
+        net.minecraft.world.entity.ai.village.poi.PoiTypes.forState(helper.getLevel().getBlockState(absolutePos))
+                .ifPresent(type -> {
+                    helper.getLevel().getPoiManager().add(absolutePos, type);
+                    helper.getLevel().getPoiManager().take(t -> true, (t, p) -> p.equals(absolutePos), absolutePos, 1);
+                });
     }
 
     /** Review round 2, finding #4: a road cell whose headroom (the two cells above the surface) is

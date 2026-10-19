@@ -56,7 +56,16 @@ public record VehicleSpec(
          * plumbing only (no LSD/vectoring/camber/toe behaviour yet). See {@link VehicleTuning} for why these
          * five fields are grouped into their own small type rather than folded into {@link TireTuning} or
          * left as bare fields on this record. */
-        VehicleTuning vehicleTuning) {
+        VehicleTuning vehicleTuning,
+        /** This vehicle's Diffuser KIT tuning (MINECRAFT-447/395 R02, R16-R19): roll self-righting, pitch
+         * landing help, heading alignment and trajectory alignment &mdash; four distinct arcade assists,
+         * deliberately separate from real aerodynamic downforce/drag ({@link #downforceGripPerSpeed},
+         * MINECRAFT-446). {@link DiffuserTuning#IDENTITY} (every assist disabled) for every vehicle that
+         * has not opted in &mdash; today that is every vehicle on the roster: this ticket delivers the
+         * assist math and its per-car knob, not a tuned stock rollout for any existing car. See
+         * {@link DiffuserTuning} and {@link DiffuserAssistMath} for the bounded, time-scaled math each
+         * assist uses once a car's spec turns it on. */
+        DiffuserTuning diffuserTuning) {
 
     /** As the full (canonical) constructor above, minus the trailing {@link #vehicleTuning} (MINECRAFT-227/245):
      * exactly the field list every vehicle spec used before this ticket. {@code CAR}, {@code TRUCK},
@@ -75,7 +84,7 @@ public record VehicleSpec(
         this(halfX, halfY, halfZ, mounts, wheelRadius, wheelWidth, rideHeight, restLength,
                 massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
                 forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
-                downforceGripPerSpeed, antiRollScale, seats, VehicleTuning.IDENTITY);
+                downforceGripPerSpeed, antiRollScale, seats, VehicleTuning.IDENTITY, DiffuserTuning.IDENTITY);
     }
 
     /**
@@ -153,7 +162,8 @@ public record VehicleSpec(
         this(halfX, halfY, halfZ, mounts, wheelRadius, wheelWidth, rideHeight, restLength,
                 massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
                 forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
-                downforceGripPerSpeed, antiRollScale, List.of(new Seat(0.0, seatY, seatZ)), vehicleTuning);
+                downforceGripPerSpeed, antiRollScale, List.of(new Seat(0.0, seatY, seatZ)), vehicleTuning,
+                DiffuserTuning.IDENTITY);
     }
 
     /**
@@ -244,6 +254,75 @@ public record VehicleSpec(
         public static final VehicleTuning IDENTITY = new VehicleTuning(0.0, 0.5, 0.0, 0.0, 0.0);
 
         /** Whether this tuning is exactly {@link #IDENTITY}. */
+        public boolean isIdentity() {
+            return this.equals(IDENTITY);
+        }
+    }
+
+    /**
+     * Per-vehicle Diffuser KIT tuning (MINECRAFT-447, recovering MINECRAFT-395's R02/R16-R19 from the
+     * original "Minecraft physics update implementation plan"): four distinct, explicitly artificial
+     * (arcade) orientation assists, each independently enabled and independently bounded. {@link #IDENTITY}
+     * disables all four, which {@link DiffuserAssistMath} guarantees returns zero torque for every assist
+     * regardless of the car's orientation, velocity or inputs &mdash; the gate {@link SableCarBody#tick}
+     * uses to skip the diffuser math entirely for every vehicle that has not opted in, the same
+     * isIdentity()-gated pattern {@link TireTuning} and {@link VehicleTuning} already use.
+     *
+     * <p>Every {@code MaxTorque} field is a body-space torque magnitude, N*m, clamping that assist's
+     * output on BOTH sides (so it can correct equally either direction) &mdash; 0 disables that assist
+     * even if its own enabled flag is left true, matching {@code TireTuning}/{@code VehicleTuning}'s own
+     * "the identity value disables the mechanism outright" convention. Every {@code Gain} is the
+     * proportional term's own units-bearing constant (N*m per radian of error) and every {@code Damping}
+     * the derivative term's (N*m per rad/s of rate) &mdash; see {@link DiffuserAssistMath} for the exact
+     * formula each feeds.
+     *
+     * @param rollSelfRightingEnabled whether R16 is active at all for this vehicle
+     * @param rollSelfRightingMaxTorque bound on the roll-righting torque, N*m; 0 = no effect (identity)
+     * @param rollSelfRightingGain proportional gain pushing roll angle back toward upright, N*m/rad
+     * @param rollSelfRightingDamping derivative gain resisting roll rate, N*m/(rad/s)
+     * @param pitchLandingEnabled whether R17 is active at all for this vehicle
+     * @param pitchLandingMaxTorque bound on the pitch-landing torque, N*m; 0 = no effect (identity)
+     * @param pitchLandingHorizonSeconds predicted time-to-touchdown, seconds, at and beyond which this
+     *        assist has zero authority; authority ramps linearly to full as the predicted touchdown
+     *        approaches (see {@link DiffuserAssistMath#pitchLandingTorque}) &mdash; 0 = never activates
+     *        (identity)
+     * @param pitchLandingGain proportional gain leveling pitch angle, N*m/rad
+     * @param pitchLandingDamping derivative gain resisting pitch rate, N*m/(rad/s)
+     * @param headingAlignmentEnabled whether R18 is active at all for this vehicle
+     * @param headingAlignmentMaxTorque bound on the heading-alignment torque, N*m; 0 = no effect (identity)
+     * @param headingAlignmentGain proportional gain pulling heading toward its target, N*m/rad
+     * @param headingAlignmentDamping derivative gain resisting yaw rate, N*m/(rad/s)
+     * @param headingAlignmentSteerSuppression fraction of authority given up per unit of player steering
+     *        input (0..1 steer magnitude), 0..1; 1 = full player override at full steer, 0 = steering
+     *        never reduces this assist's authority &mdash; see {@link DiffuserAssistMath#headingAlignmentTorque}
+     * @param trajectoryAlignmentEnabled whether R19 is active at all for this vehicle; kept entirely
+     *        separate from {@code headingAlignment*} per MINECRAFT-395's explicit instruction not to
+     *        collapse the two into one unnamed behaviour
+     * @param trajectoryAlignmentMaxTorque bound on the trajectory-alignment torque, N*m; 0 = no effect
+     *        (identity)
+     * @param trajectoryAlignmentGain proportional gain pulling the nose toward the velocity vector, N*m/rad
+     * @param trajectoryAlignmentDamping derivative gain resisting yaw rate, N*m/(rad/s)
+     * @param trajectoryAlignmentMinSpeed horizontal speed, m/s, below which the velocity direction is too
+     *        noisy to trust as a target and this assist goes silent &mdash; see
+     *        {@link DiffuserAssistMath#trajectoryAlignmentTorque}'s own near-zero-speed handling
+     */
+    public record DiffuserTuning(
+            boolean rollSelfRightingEnabled, double rollSelfRightingMaxTorque,
+            double rollSelfRightingGain, double rollSelfRightingDamping,
+            boolean pitchLandingEnabled, double pitchLandingMaxTorque, double pitchLandingHorizonSeconds,
+            double pitchLandingGain, double pitchLandingDamping,
+            boolean headingAlignmentEnabled, double headingAlignmentMaxTorque,
+            double headingAlignmentGain, double headingAlignmentDamping, double headingAlignmentSteerSuppression,
+            boolean trajectoryAlignmentEnabled, double trajectoryAlignmentMaxTorque,
+            double trajectoryAlignmentGain, double trajectoryAlignmentDamping, double trajectoryAlignmentMinSpeed) {
+
+        /** All four assists disabled and every bound/gain zero: {@link DiffuserAssistMath} returns exactly
+         * zero torque for every assist, every tick, regardless of state. */
+        public static final DiffuserTuning IDENTITY =
+                new DiffuserTuning(false, 0.0, 0.0, 0.0, false, 0.0, 0.0, 0.0, 0.0,
+                        false, 0.0, 0.0, 0.0, 0.0, false, 0.0, 0.0, 0.0, 0.0);
+
+        /** Whether this tuning is exactly {@link #IDENTITY} &mdash; the gate {@code SableCarBody.tick} uses to skip {@link DiffuserAssistMath} entirely. */
         public boolean isIdentity() {
             return this.equals(IDENTITY);
         }

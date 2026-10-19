@@ -93,6 +93,10 @@ final class SableCompat {
         return ((SableCarBody) body).wheelForces();
     }
 
+    static double[] wheelReactionForces(Object body) {
+        return ((SableCarBody) body).wheelReactionForces();
+    }
+
     static void remove(Object body) {
         ((SableCarBody) body).remove();
     }

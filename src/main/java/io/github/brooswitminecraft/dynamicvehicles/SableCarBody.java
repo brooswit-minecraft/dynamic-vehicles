@@ -83,6 +83,14 @@ final class SableCarBody {
     private final double[] wheelContactSpeed;
     private final double[] wheelSlip;
     private final double[] wheelForce;
+    // Review, round 8: isolates JUST the recovery reaction's own contribution to wheelForce (0 whenever
+    // this sub-step did not recover, i.e. excessForce != 0), so a test can check the reaction's own
+    // momentum/Newton's-third-law identity directly against this tick's actual production application,
+    // not against a reproduction of the formula that computed it - a unit test reproducing the formula
+    // cannot catch a bug where the formula is right but applying it (or applying it twice, or with the
+    // wrong sign) at the call site is wrong, since the reproduction and the call site would then disagree
+    // with the real world identically. Same "last sub-step wins" snapshot convention as wheelForce itself.
+    private final double[] wheelReactionForce;
     // Per-wheel values published to clients for rendering (MINECRAFT-122). Airborne/zero-load/raycast-miss
     // behaviour differs per value, each deliberate:
     //  - suspensionTravel is replaced wholesale every tick from pass 1's own compressions[] (the single
@@ -114,6 +122,7 @@ final class SableCarBody {
         this.wheelContactSpeed = new double[spec.mounts().length];
         this.wheelSlip = new double[spec.mounts().length];
         this.wheelForce = new double[spec.mounts().length];
+        this.wheelReactionForce = new double[spec.mounts().length];
         this.suspensionTravel = new double[spec.mounts().length];
         this.steerAngle = new double[spec.mounts().length];
         this.lastContactBlockPos = new BlockPos[spec.mounts().length];
@@ -576,6 +585,7 @@ final class SableCarBody {
                 // chassis this sub-step, not just tire.longitudinal() -- the recovery reaction above (0 when
                 // not recovering) is real, applied force that was previously missing from this telemetry.
                 wheelForce[wheel] = tire.longitudinal() + reactionImpulse / subDt;
+                wheelReactionForce[wheel] = reactionImpulse / subDt;
                 // SlipReporter must fire at most once per wheel per tick (not once per sub-step), so we only
                 // track the worst wearSlip seen across this tick's sub-steps here, paired with the force at
                 // the sub-step that produced it (so the reported load matches the reported slip), and report
@@ -799,6 +809,13 @@ final class SableCarBody {
 
     double[] wheelForces() {
         return wheelForce.clone();
+    }
+
+    /** Review, round 8: JUST the recovery reaction's own contribution to {@link #wheelForces()} (0 when
+     * not recovering) -- see {@link #wheelReactionForce}'s own comment for why this is tracked
+     * separately. */
+    double[] wheelReactionForces() {
+        return wheelReactionForce.clone();
     }
 
     /** Engine RPM implied by the drivetrain this tick (MINECRAFT-401): idle in NEUTRAL scaled by throttle,

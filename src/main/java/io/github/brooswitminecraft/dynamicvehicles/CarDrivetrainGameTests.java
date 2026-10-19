@@ -655,4 +655,167 @@ public final class CarDrivetrainGameTests {
             throw e;
         }
     }
+
+    /**
+     * Review, round 8: a unit test reproducing {@code DrivetrainMath.boundedSpinTowardSnap} + the
+     * reaction-impulse formula (as {@code DrivetrainMathTest.recoveryReactionImpulseIntegratesTheSame
+     * TotalRegardlessOfSubStepCount} above does) cannot catch a bug where the formula itself is right
+     * but APPLYING it at the real call site is wrong - missing entirely, applied twice, or with a flipped
+     * sign - since the reproduction and the call site would then simply agree with each other and
+     * disagree with the physical world identically. This checks the real production application instead,
+     * reading {@code debugWheelReactionForces()}/{@code debugWheelSpins()} straight from {@code
+     * SableCarBody}, against two invariants that must hold EVERY tick regardless of which point in a
+     * pinned-wall wheelspin/recovery cycle that tick happens to land on (unlike matching a long chaotic
+     * end-state trajectory between two separate runs, which the previous GameTest attempt at this found
+     * does NOT hold tick-for-tick and was removed for it):
+     * <ol>
+     * <li>Momentum identity, checked ONLY at {@code wheelSubSteps = 1}: whenever a wheel actually
+     * recovered this tick ({@code debugWheelReactionForces()} nonzero), that exact reaction force must
+     * equal {@code -(thisTick'sSpin - lastTick'sSpin) * WheelMath.WHEEL_INERTIA / wheelRadius} - the same
+     * torque-impulse relation {@code spinRate}/{@code boundedSpinTowardSnap} themselves are built on,
+     * applied here as the oracle for what REALLY happened, not a parallel computation of it. This
+     * identity is exact only at one sub-step per tick, where "the last sub-step's own snapshot" and "the
+     * whole tick's own change" are the same thing - see {@code wheelReactionForce}'s own "last sub-step
+     * wins" comment for why that stops being true at {@code wheelSubSteps > 1}.
+     * <li>Friction-circle invariant, checked at EVERY sub-step count: the TOTAL delivered force
+     * ({@code debugWheelForces()}, which already includes the reaction) must never exceed what this
+     * vehicle's own friction circle could legitimately produce even under the worst-case normal force
+     * {@code antiRollTransfer} itself documents as possible (up to {@code 2 * WheelMath.MAX_FORCE}) - a
+     * duplicated or unbounded reaction would blow through this; a correct one, by construction, cannot.
+     * </ol>
+     * Mirrored coverage ({@link #wheelSpinRecoveryReactionInvariantsHoldInReverse}) reuses this exact
+     * mechanism with the gear and wall direction both flipped for the opposite-sign recovery case.
+     */
+    @GameTest(template = "settlement_test", timeoutTicks = 160, batch = "carDrivetrainRecoverySubStepD1Isolated")
+    public static void wheelSpinRecoveryReactionInvariantsHold(GameTestHelper helper) {
+        runRecoveryInvarianceLegs(helper, CarPhysics.Gear.D1, 1);
+    }
+
+    @GameTest(template = "settlement_test", timeoutTicks = 160, batch = "carDrivetrainRecoverySubStepReverseIsolated")
+    public static void wheelSpinRecoveryReactionInvariantsHoldInReverse(GameTestHelper helper) {
+        runRecoveryInvarianceLegs(helper, CarPhysics.Gear.REVERSE, -1);
+    }
+
+    /** {@code mu(1.1, this vehicle's own looseGrip/downforce multipliers are 1.0 for the plain CAR) *
+     * 2 * WheelMath.MAX_FORCE} - the worst-case normal force {@code WheelMath.antiRollTransfer}'s own
+     * javadoc documents as reachable (a receiver's load plus an uncapped transfer, bounded at twice
+     * {@code maxForce}), so the true friction circle can never legitimately exceed this even under
+     * transient weight transfer. A reaction that duplicated or mis-signed itself into the delivered force
+     * would have no such ceiling. */
+    private static final double RECOVERY_FRICTION_CIRCLE_CEILING = WheelMath.BASE_FRICTION * 2.0 * WheelMath.MAX_FORCE;
+
+    /** One spawn point with a floor, and a 3x4 stone wall {@code direction * 2} blocks further along z --
+     * {@code direction = 1} puts the wall ahead of a D1 car, {@code direction = -1} behind a REVERSE one
+     * (both cars spawn facing the same way; only the gear's own drive direction differs). */
+    private static void buildRecoveryWallAt(GameTestHelper helper, int spawnDz, int direction) {
+        helper.setBlock(new BlockPos(5, 2, spawnDz), Blocks.STONE);
+        helper.setBlock(new BlockPos(5, 3, spawnDz), Blocks.AIR);
+        int wallDz = spawnDz + direction * 2;
+        for (int dx = 4; dx <= 6; dx++) {
+            for (int dy = 2; dy <= 5; dy++) {
+                helper.setBlock(new BlockPos(dx, dy, wallDz), Blocks.STONE);
+            }
+        }
+    }
+
+    private static void runRecoveryInvarianceLegs(GameTestHelper helper, CarPhysics.Gear gear, int direction) {
+        int originalSubSteps = CarConfig.WHEEL_SUB_STEPS.get();
+        buildRecoveryWallAt(helper, 5, direction);
+        buildRecoveryWallAt(helper, 15, direction);
+        try {
+            CarConfig.WHEEL_SUB_STEPS.set(1);
+            CarEntity carOneStep = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
+            carOneStep.setYRot(0.0f);
+            carOneStep.selectGear(gear);
+            Player riderOneStep = helper.makeMockPlayer(GameType.CREATIVE);
+            helper.assertTrue(riderOneStep.startRiding(carOneStep), "mock player failed to board the 1-substep car");
+            riderOneStep.zza = 1.0f;
+            boolean[] everRecovered = {false};
+            // Sized directly to the car's own known wheel count (4), not syncedWheelCount() - that reads
+            // the client-sync publish, which has not necessarily run yet on this very first tick, where
+            // debugWheelSpins() (a direct SableCarBody read) already has.
+            double[] previousSpin = new double[4];
+            boolean[] havePrevious = {false};
+            for (long tick = 1; tick <= 50; tick++) {
+                long thisTick = tick;
+                helper.runAfterDelay(thisTick, () -> {
+                    double[] spins = carOneStep.debugWheelSpins();
+                    double[] reactions = carOneStep.debugWheelReactionForces();
+                    double[] forces = carOneStep.debugWheelForces();
+                    for (int wheel = 0; wheel < spins.length; wheel++) {
+                        try {
+                            helper.assertTrue(Math.abs(forces[wheel]) <= RECOVERY_FRICTION_CIRCLE_CEILING,
+                                    "wheel " + wheel + " delivered force exceeded the friction circle's own worst-case ceiling (1 substep): "
+                                            + forces[wheel] + " N > " + RECOVERY_FRICTION_CIRCLE_CEILING + " N");
+                            if (havePrevious[0] && reactions[wheel] != 0.0) {
+                                everRecovered[0] = true;
+                                double deltaSpin = spins[wheel] - previousSpin[wheel];
+                                // -(Δspin) * inertia / radius is the IMPULSE (N*s, see SableCarBody's own
+                                // reactionImpulse); wheelReactionForce (and debugWheelReactionForces())
+                                // is that divided by subDt to read as a FORCE (N) - at wheelSubSteps=1,
+                                // subDt == this tick's own dt (1/20 s, CarEntity.DT), so this test must
+                                // divide by that same dt to compare force-to-force, not impulse-to-force.
+                                double expectedReaction = -deltaSpin * WheelMath.WHEEL_INERTIA / (CarGeometry.WHEEL_RADIUS * (1.0 / 20.0));
+                                helper.assertTrue(Math.abs(reactions[wheel] - expectedReaction) < 1.0,
+                                        "wheel " + wheel + " at tick " + thisTick
+                                                + ": the real reaction force did not match the momentum/Newton's-third-law identity for this tick's own actual spin change -- missing, duplicated or mis-signed application: reaction="
+                                                + reactions[wheel] + " N, expected=" + expectedReaction + " N (deltaSpin=" + deltaSpin + " rad/s)");
+                            }
+                        } catch (RuntimeException e) {
+                            CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
+                            throw e;
+                        }
+                    }
+                    System.arraycopy(spins, 0, previousSpin, 0, Math.min(spins.length, previousSpin.length));
+                    havePrevious[0] = true;
+                });
+            }
+            helper.runAfterDelay(55L, () -> runRecoveryFrictionCircleOnlyLegAndRestore(helper, originalSubSteps, everRecovered, gear));
+        } catch (RuntimeException e) {
+            CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
+            throw e;
+        }
+    }
+
+    private static void runRecoveryFrictionCircleOnlyLegAndRestore(GameTestHelper helper, int originalSubSteps,
+            boolean[] everRecoveredAtOneStep, CarPhysics.Gear gear) {
+        try {
+            helper.assertTrue(everRecoveredAtOneStep[0],
+                    "test setup invalid at wheelSubSteps=1 -- the car never actually recovered from a wheelspin while pinned, so the momentum identity above was never exercised");
+            CarConfig.WHEEL_SUB_STEPS.set(4);
+            CarEntity carFourStep = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 15));
+            carFourStep.setYRot(0.0f);
+            carFourStep.selectGear(gear);
+            Player riderFourStep = helper.makeMockPlayer(GameType.CREATIVE);
+            helper.assertTrue(riderFourStep.startRiding(carFourStep), "mock player failed to board the 4-substep car");
+            riderFourStep.zza = 1.0f;
+            // At wheelSubSteps=4, wheelForce()'s "last sub-step wins" snapshot no longer lines up 1:1 with
+            // a single tick's own spin delta (see this test class's own javadoc above for why the exact
+            // momentum identity is restricted to wheelSubSteps=1) -- the friction-circle ceiling, which
+            // depends on neither sub-step count nor tick-to-tick spin bookkeeping, still applies every
+            // sub-step regardless, so it is still checked here every tick.
+            for (long tick = 1; tick <= 50; tick++) {
+                helper.runAfterDelay(tick, () -> {
+                    double[] forces = carFourStep.debugWheelForces();
+                    for (int wheel = 0; wheel < forces.length; wheel++) {
+                        try {
+                            helper.assertTrue(Math.abs(forces[wheel]) <= RECOVERY_FRICTION_CIRCLE_CEILING,
+                                    "wheel " + wheel + " delivered force exceeded the friction circle's own worst-case ceiling (4 substeps): "
+                                            + forces[wheel] + " N > " + RECOVERY_FRICTION_CIRCLE_CEILING + " N");
+                        } catch (RuntimeException e) {
+                            CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
+                            throw e;
+                        }
+                    }
+                });
+            }
+            helper.runAfterDelay(55L, () -> {
+                CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
+                helper.succeed();
+            });
+        } catch (RuntimeException e) {
+            CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
+            throw e;
+        }
+    }
 }

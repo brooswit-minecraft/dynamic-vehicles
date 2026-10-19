@@ -361,6 +361,14 @@ public class CarEntity extends Entity {
         return sableBody == null ? new double[0] : SableCompat.wheelForces(sableBody);
     }
 
+    /** Review, round 8: JUST the recovery reaction's own contribution to {@link #debugWheelForces()} (0
+     * when a wheel is not recovering this sub-step) - lets a test check the reaction's own
+     * momentum/Newton's-third-law identity against the real production application directly, not a
+     * reproduction of the formula that computed it. */
+    double[] debugWheelReactionForces() {
+        return sableBody == null ? new double[0] : SableCompat.wheelReactionForces(sableBody);
+    }
+
     io.github.brooswitminecraft.dynamicterrain.Erosion.Result debugLastErosionResult() {
         return sableBody == null ? io.github.brooswitminecraft.dynamicterrain.Erosion.Result.SKIPPED : SableCompat.lastErosionResult(sableBody);
     }

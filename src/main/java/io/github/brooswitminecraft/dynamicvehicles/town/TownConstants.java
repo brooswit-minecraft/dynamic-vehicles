@@ -9,6 +9,11 @@ package io.github.brooswitminecraft.dynamicvehicles.town;
 public final class TownConstants {
     private TownConstants() {}
 
+    /** Zoning parcel size: one zoning decision per 16x16 column block, aligned to chunk size so a
+     *  parcel never straddles a chunk boundary. Declared early since other constants below
+     *  (the minor branch spacing) are defined in terms of it. */
+    public static final int PARCEL_SIZE_BLOCKS = 16;
+
     /**
      * {@code delivery.RegionCoord} (the type MINECRAFT-388 says to reuse) has NO fixed block
      * size of its own: its granularity is the live vanilla village {@code RandomSpreadStructurePlacement}'s
@@ -109,8 +114,4 @@ public final class TownConstants {
     public static final int CONSTRUCTION_COST_PER_BLOCK = 1;
     public static final int CONSTRUCTION_BLOCKS_PER_TICK = 4;
     public static final long CONSTRUCTION_TICK_INTERVAL_TICKS = 20L; // one second
-
-    /** Zoning parcel size: one zoning decision per 16x16 column block, aligned to chunk size so a
-     *  parcel never straddles a chunk boundary. */
-    public static final int PARCEL_SIZE_BLOCKS = 16;
 }

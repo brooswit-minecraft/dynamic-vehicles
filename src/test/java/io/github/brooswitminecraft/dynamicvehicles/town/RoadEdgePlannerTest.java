@@ -59,6 +59,18 @@ class RoadEdgePlannerTest {
     }
 
     @Test
+    void neighborsAgreeOnTheRoadHeightAtTheSharedEdgeToo() {
+        RegionCoord a = new RegionCoord(4, 9);
+        RegionCoord b = new RegionCoord(5, 9); // a's east neighbor
+
+        RoadEdgePlanner.EdgeConnection fromA = RoadEdgePlanner.computeEdgeConnection(a, TownEdge.EAST, SEED);
+        RoadEdgePlanner.EdgeConnection fromB = RoadEdgePlanner.computeEdgeConnection(b, TownEdge.WEST, SEED);
+
+        assertEquals(fromA.heightOffset(), fromB.heightOffset(),
+                "both sides of a shared edge must agree on the road's elevation there, not just its (x, z)");
+    }
+
+    @Test
     void connectionOffsetIsAlwaysWithinTheRegionSpan() {
         RoadEdgePlanner.EdgeConnection connection =
                 RoadEdgePlanner.computeEdgeConnection(new RegionCoord(0, 0), TownEdge.NORTH, SEED);
@@ -68,8 +80,8 @@ class RoadEdgePlannerTest {
 
     @Test
     void rejectsAnOutOfRangeOffset() {
-        assertThrows(IllegalArgumentException.class, () -> new RoadEdgePlanner.EdgeConnection(-1));
+        assertThrows(IllegalArgumentException.class, () -> new RoadEdgePlanner.EdgeConnection(-1, 0));
         assertThrows(IllegalArgumentException.class,
-                () -> new RoadEdgePlanner.EdgeConnection(TownConstants.REGION_SIZE_BLOCKS));
+                () -> new RoadEdgePlanner.EdgeConnection(TownConstants.REGION_SIZE_BLOCKS, 0));
     }
 }

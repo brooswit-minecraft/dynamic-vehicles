@@ -1,10 +1,15 @@
 package io.github.brooswitminecraft.dynamicvehicles.delivery;
 
+import io.github.brooswitminecraft.dynamicvehicles.town.TownCampfireClaims;
+import io.github.brooswitminecraft.dynamicvehicles.town.TownConstructionService;
+import io.github.brooswitminecraft.dynamicvehicles.town.TownStorage;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.core.GlobalPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.ai.memory.MemoryModuleType;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.npc.VillagerProfession;
 import net.minecraft.world.item.ItemStack;
@@ -277,6 +282,85 @@ public final class BuilderSettlementGameTests {
         helper.assertTrue(helper.getBlockState(campfireAnchor).is(Blocks.CAMPFIRE), "entity-blocked exits still consumed the originating campfire");
         helper.assertTrue(villager.getVillagerData().getProfession() == BuilderProfession.BUILDER.get(), "entity-blocked exits still retired the Builder");
         for (var blocker : blockers) helper.assertTrue(blocker.isAlive(), "a blocking entity was harmed");
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-388 review finding #2: once a campfire is claimed as a Dynamic Towns construction
+     * site (the same vanilla JOB_SITE memory {@code town.TownCampfireClaims} and
+     * {@code town.TownConstructionService} key off of), this narrower legacy mechanic must defer
+     * rather than race it - even on a guaranteed settlement roll.
+     */
+    @GameTest(template = "settlement_test")
+    public static void guaranteedRollDefersWhenTheCampfireIsAlreadyClaimedAsATownConstructionSite(GameTestHelper helper) {
+        prepareFixture(helper);
+        BlockPos center = expectedHouseCenter(helper);
+        BlockPos campfireAnchor = center.offset(-3, 0, -3);
+        Villager villager = builderAt(helper, campfireAnchor);
+        BlockPos absoluteCampfire = helper.absolutePos(campfireAnchor);
+        villager.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteCampfire));
+        helper.assertTrue(TownCampfireClaims.isClaimed(helper.getLevel(), absoluteCampfire),
+                "test setup sanity check: the campfire should read as town-claimed before the roll");
+
+        BuilderSettlementService.attemptDonationSettlement(villager, 5);
+
+        helper.assertTrue(helper.getBlockState(campfireAnchor).is(Blocks.CAMPFIRE),
+                "a town-claimed campfire must never be replaced by the legacy single-house mechanic");
+        helper.assertTrue(villager.getVillagerData().getProfession() == BuilderProfession.BUILDER.get(),
+                "a deferred settlement must not retire the Builder");
+        helper.succeed();
+    }
+
+    /** The narrower legacy mechanic must keep working normally for a campfire the town system has
+     *  never claimed - the companion case to the deferral above, so the fix cannot be read as
+     *  having simply disabled this mechanic outright. */
+    @GameTest(template = "settlement_test")
+    public static void guaranteedRollStillSettlesAnUnclaimedCampfire(GameTestHelper helper) {
+        prepareFixture(helper);
+        BlockPos center = expectedHouseCenter(helper);
+        BlockPos campfireAnchor = center.offset(-3, 0, -3);
+        Villager villager = builderAt(helper, campfireAnchor);
+        BlockPos absoluteCampfire = helper.absolutePos(campfireAnchor);
+        helper.assertTrue(!TownCampfireClaims.isClaimed(helper.getLevel(), absoluteCampfire),
+                "test setup sanity check: this campfire must NOT read as town-claimed");
+
+        BuilderSettlementService.attemptDonationSettlement(villager, 5);
+
+        helper.assertTrue(!helper.getBlockState(campfireAnchor).is(Blocks.CAMPFIRE),
+                "an unclaimed campfire's settlement must still proceed normally");
+        helper.assertTrue(villager.getVillagerData().getProfession() == VillagerProfession.NONE,
+                "the Builder should still retire on an unclaimed campfire's successful settlement");
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-388 review finding #2 (exercising both registered listeners together, as asked):
+     * an unclaimed campfire with a completely empty town resource store must produce no TOWN
+     * building, even when the legacy Builder chance roll succeeds and settles its own narrower
+     * single house - the two mechanics act on the same campfire without racing or double-removing
+     * it.
+     */
+    @GameTest(template = "settlement_test")
+    public static void unclaimedCampfireAndEmptyTownResourcesProduceNoTownBuildingEvenWhenTheLegacyChanceSucceeds(GameTestHelper helper) {
+        prepareFixture(helper);
+        BlockPos center = expectedHouseCenter(helper);
+        BlockPos campfireAnchor = center.offset(-3, 0, -3);
+        Villager villager = builderAt(helper, campfireAnchor);
+        BlockPos absoluteCampfire = helper.absolutePos(campfireAnchor);
+        helper.assertTrue(!TownCampfireClaims.isClaimed(helper.getLevel(), absoluteCampfire),
+                "test setup sanity check: this campfire must start unclaimed");
+
+        TownStorage storage = new TownStorage(); // zero resources in every category by construction
+        TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
+        helper.assertTrue(helper.getBlockState(campfireAnchor).is(Blocks.CAMPFIRE),
+                "an unclaimed campfire with no resources must never trigger town construction");
+
+        BuilderSettlementService.attemptDonationSettlement(villager, 5); // guaranteed chance
+
+        helper.assertTrue(!helper.getBlockState(campfireAnchor).is(Blocks.CAMPFIRE),
+                "the legacy mechanic must still settle its own unclaimed campfire normally, unaffected by the town system");
+        helper.assertTrue(villager.getVillagerData().getProfession() == VillagerProfession.NONE,
+                "the Builder should retire via its own legacy mechanic, which this scenario never blocks");
         helper.succeed();
     }
 }

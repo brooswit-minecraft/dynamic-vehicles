@@ -31,6 +31,24 @@ public final class TownConstants {
     public static final int MINOR_ROAD_WIDTH = 3;
     /** Maximum rise per block a road may interpolate before the plan calls for a retaining step. */
     public static final int MAX_ROAD_GRADE_PERCENT = 20;
+    /** At 20%, a one-block rise needs at least this many blocks of horizontal travel (100 / 20 = 5)
+     *  to stay within grade; {@link TownRoadPlanner} clamps consecutive interpolated road cells to
+     *  this step. */
+    public static final int ROAD_GRADE_RUN_PER_RISE_BLOCK = 100 / MAX_ROAD_GRADE_PERCENT;
+    /** Bound on the agreed per-edge road height offset (blocks) two neighbouring regions commit to
+     *  at their shared boundary, independent of either region's own town-centre height. */
+    public static final int ROAD_EDGE_HEIGHT_OFFSET_RANGE = 6;
+    /** A fixed, seed-independent base (vanilla overworld sea level) the edge height offset above
+     *  is added to. Deliberately NOT derived from either neighbouring region's own (possibly very
+     *  different) town-centre reference height: two regions must agree on where their shared
+     *  boundary's road sits regardless of how their own local terrain happens to differ, and only
+     *  an absolute, call-independent base guarantees that. */
+    public static final int ROAD_EDGE_BASE_HEIGHT = 64;
+    /** Road construction pacing, mirroring {@link #CONSTRUCTION_COST_PER_BLOCK}/
+     *  {@link #CONSTRUCTION_BLOCKS_PER_TICK}: one road-surface cell costs this many STONE credits,
+     *  and at most this many road cells are placed per site per construction tick. */
+    public static final int ROAD_COST_PER_BLOCK = 1;
+    public static final int ROAD_BLOCKS_PER_TICK = 4;
 
     /** Residential : commercial : industrial footprint ratio, residential-heavy since every
      *  villager needs housing but only some need a workplace. */

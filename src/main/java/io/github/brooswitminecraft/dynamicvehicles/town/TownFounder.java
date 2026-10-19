@@ -67,7 +67,12 @@ public final class TownFounder {
             return;
         }
 
-        boolean existingVillage = level.structureManager().getStructureWithPieceAt(target, StructureTags.VILLAGE).isValid();
+        // The existing-village piece-containment check is a 3-D test, so it must be evaluated at
+        // the actual ground level of this column, never at whatever Y the triggering player
+        // happens to occupy (flying far above a real village, or mining far below it, must not make
+        // it read as absent). target's own Y is deliberately ignored here.
+        BlockPos groundCheckPos = groundLevelPosition(level, target);
+        boolean existingVillage = level.structureManager().getStructureWithPieceAt(groundCheckPos, StructureTags.VILLAGE).isValid();
         TownFoundationPlan.Decision decision = TownFoundationPlan.decide(existingVillage, storage.hasFoundedTown(key));
         if (decision != TownFoundationPlan.Decision.FOUND) {
             if (decision == TownFoundationPlan.Decision.EXISTING_VILLAGE) {
@@ -97,6 +102,20 @@ public final class TownFounder {
                     level.random.nextFloat() * 360.0F, 0.0F);
             level.addFreshEntity(villager);
         }
+    }
+
+    /**
+     * The column's real ground-level position (per the same tree-ignoring
+     * {@code MOTION_BLOCKING_NO_LEAVES} heightmap {@link #findSurfacePoint} already uses),
+     * discarding whatever Y the input {@code column} carries entirely. This is the single seam
+     * that used to leak the observing player's altitude into the existing-village structure-piece
+     * check: a {@link BlockPos} built from a player's own Y could sit well above or below a real
+     * village's piece bounding boxes, making a 3-D containment test report "absent" even directly
+     * over/under one. Exposed {@code public} so it is directly testable without a real village.
+     */
+    public static BlockPos groundLevelPosition(ServerLevel level, BlockPos column) {
+        int y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, column.getX(), column.getZ());
+        return new BlockPos(column.getX(), y, column.getZ());
     }
 
     /**

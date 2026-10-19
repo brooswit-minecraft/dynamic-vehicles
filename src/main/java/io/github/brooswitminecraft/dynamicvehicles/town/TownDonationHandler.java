@@ -37,10 +37,19 @@ public final class TownDonationHandler {
             return;
         }
 
+        // TownConstants documents these rates as credit PER SINGLE donated item; getCostA() (as
+        // opposed to getBaseCostA()) returns the stack actually consumed by this completed trade,
+        // including any demand/price-multiplier adjustment, so a 16-cobblestone offer must credit
+        // 16x the per-item rate, not a flat per-trade amount.
+        int consumedCount = offer.getCostA().getCount();
+        if (consumedCount <= 0) {
+            return;
+        }
+
         RegionCoord region = TownRegion.fromBlockCoords(villager.blockPosition().getX(), villager.blockPosition().getZ());
         TownStorage storage = TownStorage.of(level.getServer());
         TownResourceStore store = storage.storeFor(TownKeys.keyFor(level.dimension(), region));
-        store.credit(credit.category(), credit.amount());
+        store.credit(credit.category(), credit.amount() * consumedCount);
         storage.setDirty();
     }
 

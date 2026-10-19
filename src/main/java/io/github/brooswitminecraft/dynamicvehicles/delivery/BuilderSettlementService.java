@@ -1,5 +1,6 @@
 package io.github.brooswitminecraft.dynamicvehicles.delivery;
 
+import io.github.brooswitminecraft.dynamicvehicles.town.TownCampfireClaims;
 import net.minecraft.Util;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -82,6 +83,14 @@ public final class BuilderSettlementService {
         if (villager.getVillagerData().getProfession() != BuilderProfession.BUILDER.get()) return;
         BlockPos campfire = findCampfireAnchor(level, villager);
         if (campfire == null) return;
+        // MINECRAFT-388: this narrower, legacy single-house mechanic must defer to Dynamic Towns'
+        // resource-funded construction once this exact campfire is claimed (vanilla's own JOB_SITE
+        // memory - the same signal io.github.brooswitminecraft.dynamicvehicles.town.TownCampfireClaims
+        // and TownConstructionService key off of). Without this check, this path could replace a
+        // campfire that is mid-build as a town construction site, racing or double-removing the
+        // same anchor; a campfire nobody has claimed yet is untouched by the town system, so the
+        // legacy chance mechanic keeps working exactly as before for it.
+        if (TownCampfireClaims.isClaimed(level, campfire)) return;
         if (level.random.nextDouble() >= settlementChance) return;
 
         VillageBuilding buildingVariant = VillageBuilding.from(

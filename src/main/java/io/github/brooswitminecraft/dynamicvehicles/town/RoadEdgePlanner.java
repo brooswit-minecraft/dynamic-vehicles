@@ -12,8 +12,15 @@ import io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord;
 public final class RoadEdgePlanner {
     private RoadEdgePlanner() {}
 
-    /** The connection point's offset along its edge, measured from that edge's own minimum corner. */
-    public record EdgeConnection(int offsetAlongEdge) {
+    /**
+     * The connection point's offset along its edge, measured from that edge's own minimum corner,
+     * plus the agreed road HEIGHT at that point relative to each region's own town-centre
+     * reference height ({@code heightOffset}). Both coordinates are canonicalized on the same
+     * unordered region pair, so a region's edge and its neighbour's opposite edge agree on both -
+     * a road built out from either side reaches the border at the exact same elevation, never just
+     * the same (x, z).
+     */
+    public record EdgeConnection(int offsetAlongEdge, int heightOffset) {
         public EdgeConnection {
             if (offsetAlongEdge < 0 || offsetAlongEdge >= TownConstants.REGION_SIZE_BLOCKS) {
                 throw new IllegalArgumentException("offsetAlongEdge out of range: " + offsetAlongEdge);
@@ -26,7 +33,9 @@ public final class RoadEdgePlanner {
         RegionCoord first = canonicalFirst(region, neighbor);
         RegionCoord second = first == region ? neighbor : region;
         long hash = TownSeedMath.mix(worldSeed, first.x(), first.z(), second.x(), second.z(), axisSalt(edge));
-        return new EdgeConnection(TownSeedMath.bounded(hash, TownConstants.REGION_SIZE_BLOCKS));
+        long heightHash = TownSeedMath.mix(worldSeed, first.x(), first.z(), second.x(), second.z(), axisSalt(edge), 0x4EADL);
+        int heightOffset = TownSeedMath.boundedOffset(heightHash, TownConstants.ROAD_EDGE_HEIGHT_OFFSET_RANGE);
+        return new EdgeConnection(TownSeedMath.bounded(hash, TownConstants.REGION_SIZE_BLOCKS), heightOffset);
     }
 
     /**

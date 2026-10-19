@@ -9,17 +9,24 @@ import net.minecraft.world.entity.ai.memory.MemoryModuleType;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.npc.VillagerProfession;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.neoforge.event.tick.LevelTickEvent;
 
+import java.util.EnumMap;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Ties the planning layer ({@link TownPlan}/{@link TownPlanner}), the resource layer
- * ({@link TownResourceStore}), the claim layer ({@link TownCampfireClaims}), and the construction
- * ordering layer ({@link ConstructionSitePlan}) together into an incremental, per-tick build.
+ * ({@link TownResourceStore}), the claim layer ({@link TownCampfireClaims}), the construction
+ * ordering layer ({@link ConstructionSitePlan}), and the safety layer ({@link TownSitePreflight})
+ * together into an incremental, per-tick build. Also drives {@link TownRoadConstructionService}
+ * for every region that currently has at least one claimed site, since road construction has no
+ * single-campfire anchor of its own to iterate from.
  *
  * <p>Per MINECRAFT-388, construction can happen at ANY qualifying claimed campfire anywhere in the
  * planned town, not only outward from the town centre: this walks every currently claimed campfire
@@ -43,14 +50,23 @@ public final class TownConstructionService {
         }
 
         TownStorage storage = TownStorage.of(level.getServer());
+        Set<RegionCoord> regionsWithActivity = new HashSet<>();
         for (Map.Entry<BlockPos, Villager> entry : claimedCampfires.entrySet()) {
             BlockPos campfire = entry.getKey();
+            regionsWithActivity.add(TownRegion.fromBlockCoords(campfire.getX(), campfire.getZ()));
             if (!level.getBlockState(campfire).is(Blocks.CAMPFIRE)) {
                 // Already fully built - the campfire cell itself was already replaced by its final
                 // planned block, so there is nothing left to do at this site.
                 continue;
             }
             buildAt(level, campfire, storage);
+        }
+
+        for (RegionCoord region : regionsWithActivity) {
+            TownResourceStore store = storage.storeFor(TownKeys.keyFor(level.dimension(), region));
+            if (TownRoadConstructionService.buildRoadsForRegion(level, region, store)) {
+                storage.setDirty();
+            }
         }
     }
 
@@ -68,7 +84,9 @@ public final class TownConstructionService {
         return sites;
     }
 
-    private static void buildAt(ServerLevel level, BlockPos campfire, TownStorage storage) {
+    /** Exposed {@code public} (mirroring {@code TownFounder#tryFoundAt}'s convention) so a GameTest
+     *  can drive a single site deterministically without constructing a real {@link LevelTickEvent.Post}. */
+    public static void buildAt(ServerLevel level, BlockPos campfire, TownStorage storage) {
         // nextBlockToPlace's gate is re-checked against the live claim below, not assumed from the
         // campfire having shown up in the job-site scan above: a villager can lose its job between
         // the scan and this call (e.g. it died this same tick from an earlier site's work).
@@ -86,17 +104,44 @@ public final class TownConstructionService {
 
         List<TownBuildingTemplates.Placement> template = TownBuildingTemplates.generate(
                 kind, campfire.getX(), campfire.getY(), campfire.getZ(), plan.storehouseVariant());
+        int radius = footprintRadius(kind);
 
         Map<String, TownBuildingTemplates.Placement> byPosition = new HashMap<>();
         for (TownBuildingTemplates.Placement placement : template) {
             byPosition.put(key(placement.x(), placement.y(), placement.z()), placement);
         }
 
+        // [Review finding #1] Preflight the WHOLE site before mutating anything: a protected,
+        // player-built, or otherwise-occupied block anywhere in the footprint (including another
+        // live claimed campfire) aborts this site for this tick, with no partial mutation and no
+        // resource charge at all - never just skip-and-continue over an unsafe cell. A cell that
+        // already holds exactly what THIS site's own template planned there (a previous tick's
+        // progress) is explicitly allowed, so an in-progress site does not fail its own preflight
+        // forever once its walls start going up.
+        if (!TownSitePreflight.isSiteSafe(level, campfire, radius, campfire.getY(),
+                pos -> {
+                    TownBuildingTemplates.Placement planned = byPosition.get(key(pos.getX(), pos.getY(), pos.getZ()));
+                    return planned != null && level.getBlockState(pos).is(planned.block());
+                })) {
+            return;
+        }
+
+        TownResourceStore store = storage.storeFor(TownKeys.keyFor(level.dimension(), region));
+
+        // [Review finding #4] Terrain preparation: estimate real ground (excluding trees) across
+        // the footprint and clear/level it to the floor's Y, crediting salvage exactly once (the
+        // removal itself makes the same material unavailable to credit again on a later tick,
+        // reload, or retry). The campfire's own cell is left untouched here - it keeps its current
+        // block (the campfire) until the bottom-up build reaches it last. Already-placed template
+        // blocks (non-natural) are left alone, not re-cleared, so this cannot undo earlier progress.
+        if (prepareTerrain(level, campfire, radius, store)) {
+            storage.setDirty();
+        }
+
         List<ConstructionSitePlan.PlannedBlock> ordered = ConstructionSitePlan.bottomUpOrder(
                 template.stream().map(TownBuildingTemplates.Placement::toPlan).toList(),
                 campfire.getX(), campfire.getY(), campfire.getZ());
 
-        TownResourceStore store = storage.storeFor(TownKeys.keyFor(level.dimension(), region));
         int placedThisTick = 0;
         for (ConstructionSitePlan.PlannedBlock block : ordered) {
             if (placedThisTick >= TownConstants.CONSTRUCTION_BLOCKS_PER_TICK) {
@@ -112,6 +157,17 @@ public final class TownConstructionService {
                 // The claim can be lost mid-site (the villager wandered off or died); stop rather
                 // than keep building for an unclaimed campfire.
                 break;
+            }
+            // Revalidate this exact cell immediately before mutating it: the preflight above ran
+            // once for the whole site, but the world (and any entity standing in this one cell)
+            // can change between then and this specific placement.
+            if (!TownSitePreflight.isSafeToOverwrite(level, pos, campfire)) {
+                break;
+            }
+            if (TownSitePreflight.isEntityBlocking(level, pos, campfire)) {
+                // Something (other than this site's own claimant) is standing exactly here right
+                // now; skip just this cell rather than enclose it, and try again next tick.
+                continue;
             }
             if (pos.equals(campfire) && hasUnplacedBlocksBefore(ordered, block, byPosition, level)) {
                 // The campfire's own cell is deferred until literally everything else at the site
@@ -131,6 +187,80 @@ public final class TownConstructionService {
         if (placedThisTick > 0) {
             storage.setDirty();
         }
+    }
+
+    private static int footprintRadius(TownBuildingTemplates.Kind kind) {
+        int width = kind == TownBuildingTemplates.Kind.STOREHOUSE ? TownConstants.STOREHOUSE_FOOTPRINT_WIDTH : 5;
+        return (width - 1) / 2;
+    }
+
+    /**
+     * Clears any tree/natural-terrain material strictly above the floor's Y (per column, bounded
+     * by that column's own tree-excluded ground estimate) and fills any gap strictly below it with
+     * plain dirt, so the template's walls always have solid support regardless of the terrain's
+     * original shape. Every block actually removed this way is tallied by
+     * {@link TownTerrain#classify} and credited via {@link TownClearingYields} exactly once, since
+     * removing the block is what makes it unavailable to tally again.
+     *
+     * @return {@code true} if anything was mutated (so the caller knows whether to persist storage).
+     */
+    private static boolean prepareTerrain(ServerLevel level, BlockPos campfire, int radius, TownResourceStore store) {
+        int baseY = campfire.getY();
+        Map<TownClearingYields.ClearedMaterial, Integer> tally = new EnumMap<>(TownClearingYields.ClearedMaterial.class);
+        boolean mutated = false;
+        for (int x = -radius; x <= radius; x++) {
+            for (int z = -radius; z <= radius; z++) {
+                int columnX = campfire.getX() + x;
+                int columnZ = campfire.getZ() + z;
+                boolean isCampfireColumn = columnX == campfire.getX() && columnZ == campfire.getZ();
+                // The raw canopy top (trunks AND leaves), not the tree-excluded ground estimate:
+                // this bound must actually include the tree material being cleared below.
+                int top = TownTerrain.rawCanopyTop(level, columnX, columnZ);
+                for (int y = baseY; y < top; y++) {
+                    if (isCampfireColumn && y == baseY) {
+                        continue; // never touch the campfire's own cell here
+                    }
+                    BlockPos pos = new BlockPos(columnX, y, columnZ);
+                    BlockState state = level.getBlockState(pos);
+                    if (state.isAir()) {
+                        continue;
+                    }
+                    if (!TownTerrain.isNaturalTerrain(state)) {
+                        // Not natural terrain (and not air): either this site's own already-placed
+                        // template block from an earlier tick, or something the preflight above
+                        // already would have aborted the whole site over. Either way, never clear
+                        // it here - this pass salvages NATURAL terrain only.
+                        continue;
+                    }
+                    TownClearingYields.ClearedMaterial material = TownTerrain.classify(state);
+                    if (material != null) {
+                        tally.merge(material, 1, Integer::sum);
+                    }
+                    level.removeBlock(pos, false);
+                    mutated = true;
+                }
+                // Fill a gap below the floor (the terrain dips lower than this site's fixed floor
+                // height) with plain dirt - a leveling fill, not salvage, so it earns no credit.
+                for (int y = top; y < baseY; y++) {
+                    if (isCampfireColumn && y == baseY - 1) {
+                        continue;
+                    }
+                    BlockPos pos = new BlockPos(columnX, y, columnZ);
+                    if (level.getBlockState(pos).isAir()) {
+                        level.setBlock(pos, Blocks.DIRT.defaultBlockState(), net.minecraft.world.level.block.Block.UPDATE_ALL);
+                        mutated = true;
+                    }
+                }
+            }
+        }
+        for (Map.Entry<TownClearingYields.ClearedMaterial, Integer> entry : tally.entrySet()) {
+            TownClearingYields.Yield yield = TownClearingYields.yieldFor(entry.getKey());
+            int credit = TownClearingYields.creditsFor(entry.getKey(), entry.getValue());
+            if (credit > 0) {
+                store.credit(yield.category(), credit);
+            }
+        }
+        return mutated;
     }
 
     private static boolean hasUnplacedBlocksBefore(List<ConstructionSitePlan.PlannedBlock> ordered,

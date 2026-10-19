@@ -61,9 +61,36 @@ Every field is optional; an absent field keeps that car's stock value.
 
 Ranges live in code as `VehicleSpecLimits` (the first five) and the pre-existing
 `VehicleTuningLimits` (the last five, shared with the in-game per-entity tuning
-command). Example, retuning just the rock crawler's ride height and LSD lock,
-leaving every other field (including its own stock `antiRollScale` of 2.0) as
-is:
+command).
+
+### Every existing car's stock default, for every field above
+
+Pinned against `VehicleSpec` by `PerCarConfigDocsDefaultsTest`, which fails
+(naming the exact stale cell) if a future ticket changes one of these values
+here without updating this table.
+
+| id | rideHeight | dampingRate | antiRollScale | rollingScale | handbrakeScale | lsdLockPercent | frontTorqueSplit | vectoringGain | camberDeg | toeDeg |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `car` | 0.9 | 3400.0 | 1.0 | 1.0 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 |
+| `truck` | 1.3 | 5390.0 | 1.0 | 1.0 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 |
+| `trophy_truck` | 1.6 | 2570.0 | 1.5 | 0.6 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 |
+| `drift_car` | 0.75 | 3117.0 | 1.0 | 1.0 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 |
+| `muscle_car` | 0.95 | 4816.67 | 1.0 | 1.0 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 |
+| `rock_crawler` | 1.9 | 5383.33 | 2.0 | 0.5 | 1.0 | 0.65 | 0.5 | 0.0 | 0.0 | 0.0 |
+| `monster_truck` | 2.3 | 4500.0 | 1.0 | 0.55 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 |
+| `indy_car` | 0.5 | 1841.67 | 1.0 | 1.0 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 |
+| `bus` | 1.0 | 11900.0 | 1.0 | 0.8 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 |
+| `cargo_truck` | 1.1 | 13600.0 | 1.0 | 0.7 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 |
+
+`rock_crawler` is the only car with a non-identity `lsdLockPercent` (0.65,
+MINECRAFT-296's limited-slip tuning); every other field at its identity value
+(1.0 for the four scale multipliers, 0.5 for `frontTorqueSplit`, 0.0 for
+everything else) means no existing car has opted into vectoring, camber, toe,
+or a non-default handbrake/anti-roll/rolling scale besides `trophy_truck`'s
+and `rock_crawler`'s own already-documented anti-roll/rolling tuning above.
+
+Example, retuning just the rock crawler's ride height and LSD lock, leaving
+every other field (including its own stock `antiRollScale` of 2.0) as is:
 
 ```json
 {

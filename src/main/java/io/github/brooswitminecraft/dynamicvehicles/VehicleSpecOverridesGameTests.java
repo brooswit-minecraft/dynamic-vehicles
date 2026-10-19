@@ -102,6 +102,68 @@ public final class VehicleSpecOverridesGameTests {
         });
     }
 
+    /**
+     * MINECRAFT-443 review fix (comment 48853): proves the actual production lifecycle wiring, not just
+     * the loader function in isolation. Every other test in this class calls {@link
+     * VehicleSpecOverrides#load} directly, which the review correctly pointed out cannot catch a
+     * misregistered listener, the wrong event, or the wrong config path -- those bugs would leave every
+     * other test here green. This test instead:
+     * <ol>
+     * <li>writes a fixture file into the REAL {@code FMLPaths.CONFIGDIR} (not a temp directory);</li>
+     * <li>posts a real {@code ServerAboutToStartEvent} to the real {@code NeoForge.EVENT_BUS} --
+     * {@code DynamicVehiclesMod}'s constructor already subscribed its production listener to exactly this
+     * event type, on this exact bus, when the mod loaded; posting here invokes that same listener, not a
+     * copy of it;</li>
+     * <li>spawns a brand-new {@link CarEntity} and confirms it reflects the fixture.</li>
+     * </ol>
+     * A saved car's {@link VehicleSpec} is resolved through this exact same constructor path (a car is
+     * always {@code new CarEntity(type, level)} first, whether freshly placed or deserialized from a
+     * save; {@code readAdditionalSaveData} only restores position/health/tuning-tag state afterward, never
+     * re-derives {@code spec}) -- so this also covers "before saved-car construction": there is no
+     * separate code path for saved construction that this could miss.
+     *
+     * <p>What this does NOT prove: that {@code ServerAboutToStartEvent} fires before level loading in a
+     * REAL server boot sequence -- that ordering is NeoForge/vanilla's own, verified by reading {@code
+     * ServerAboutToStartEvent}'s own javadoc ("Called before the server begins loading anything") rather
+     * than re-testable from this mod's code. What was testable and worth testing is that THIS mod's
+     * listener is actually registered to THAT event, actually reads the real config path, and actually
+     * reaches new {@code CarEntity} construction -- which a removed/misregistered/wrong-path listener
+     * would now fail.
+     */
+    @GameTest(template = "settlement_test")
+    public static void theRealRegisteredStartupListenerLoadsFromTheRealConfigDirBeforeNewCarConstruction(
+            GameTestHelper helper) {
+        java.nio.file.Path realConfigDir = net.neoforged.fml.loading.FMLPaths.CONFIGDIR.get();
+        java.nio.file.Path realCarsDir = realConfigDir.resolve("dynamicvehicles").resolve("cars");
+        java.nio.file.Path fixtureFile = realCarsDir.resolve(VehicleIds.BUS + ".json");
+        // A value nothing else in this suite uses for the bus, so a stale table from an earlier test
+        // (which only ever touches truck/rock_crawler ids) cannot be mistaken for this fixture working.
+        double fixtureRollingScale = 0.42;
+        try {
+            Files.createDirectories(realCarsDir);
+            Files.writeString(fixtureFile, "{\"rollingScale\": " + fixtureRollingScale + "}");
+
+            net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(
+                    new net.neoforged.neoforge.event.server.ServerAboutToStartEvent(helper.getLevel().getServer()));
+
+            CarEntity bus = helper.spawn(DynamicVehiclesMod.BUS.get(), new BlockPos(5, 3, 5));
+            helper.assertTrue(Math.abs(bus.spec().rollingScale() - fixtureRollingScale) < 1e-9,
+                    "posting the real ServerAboutToStartEvent through the real registered listener did not "
+                            + "load the fixture from the real config dir before this new CarEntity was constructed: "
+                            + "expected rollingScale " + fixtureRollingScale + " got " + bus.spec().rollingScale());
+            helper.succeed();
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        } finally {
+            try {
+                Files.deleteIfExists(fixtureFile);
+            } catch (IOException ignored) {
+                // Best-effort cleanup of a file under the run's own disposable config dir.
+            }
+            VehicleSpecOverrides.load(Path.of(System.getProperty("java.io.tmpdir"), "dynamicvehicles-no-such-config-dir"));
+        }
+    }
+
     /** Writes {@code <tmp>/dynamicvehicles/cars/<id>.json}, calls the real {@link VehicleSpecOverrides#load}
      * against that directory (the same method the production {@code ServerAboutToStartEvent} listener
      * calls), runs {@code body}, then always resets the override table back to empty so this test's

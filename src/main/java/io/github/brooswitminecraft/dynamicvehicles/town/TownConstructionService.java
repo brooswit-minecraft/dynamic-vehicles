@@ -108,7 +108,10 @@ public final class TownConstructionService {
 
         // [Review round 2, finding #2] The floor is the tree-excluded ESTIMATED ground height, not
         // the campfire's own (possibly arbitrary - a trunk, a ledge, a tall column) current Y.
-        int floorY = TownTerrain.estimateGroundHeight(level, campfire.getX(), campfire.getZ());
+        // estimateGroundHeightBelow (not the plain heightmap-driven estimateGroundHeight) is used
+        // deliberately: the campfire block ITSELF already registers as motion-blocking once
+        // placed, which would otherwise skew a heightmap query taken at its own column.
+        int floorY = TownTerrain.estimateGroundHeightBelow(level, campfire);
         if (floorY <= level.getMinBuildHeight() || floorY >= level.getMaxBuildHeight()) {
             // A bounded, validated floor: refuse to plan a site whose estimated ground falls
             // outside the dimension entirely, rather than silently building garbage there.

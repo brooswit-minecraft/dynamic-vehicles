@@ -38,6 +38,25 @@ public final class TownTerrain {
 
     public static int estimateGroundHeight(ServerLevel level, int blockX, int blockZ) {
         int y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, blockX, blockZ);
+        return walkDownThroughTreeMaterial(level, blockX, blockZ, y);
+    }
+
+    /**
+     * Like {@link #estimateGroundHeight}, but starts the tree-exclusion walk from a KNOWN anchor Y
+     * (a campfire's own current position) instead of re-deriving a starting point from the
+     * heightmap. Needed because the campfire block ITSELF registers as motion-blocking for
+     * {@code Heightmap.Types.MOTION_BLOCKING_NO_LEAVES} once placed (its collision shape is short,
+     * but still non-empty), which would otherwise skew a heightmap-based query taken at the
+     * campfire's own column one block too high - exactly backwards from "find the real ground
+     * this campfire is standing on". Since the caller already knows the campfire's exact position,
+     * there is no need to rediscover a starting point via the heightmap at all.
+     */
+    public static int estimateGroundHeightBelow(ServerLevel level, BlockPos campfire) {
+        return walkDownThroughTreeMaterial(level, campfire.getX(), campfire.getZ(), campfire.getY());
+    }
+
+    private static int walkDownThroughTreeMaterial(ServerLevel level, int blockX, int blockZ, int startY) {
+        int y = startY;
         int minY = level.getMinBuildHeight();
         int scanned = 0;
         while (y > minY && scanned < MAX_TREE_SCAN_BLOCKS) {

@@ -84,6 +84,16 @@ final class SableCarBody {
     // "no target yet" -- applyDiffuserAssists reads that as "heading alignment not yet active" rather than
     // aligning to a bogus 0 degrees for a car that has never touched down (e.g. spawned mid-air).
     private double lastGroundedYawDeg = Double.NaN;
+    // MINECRAFT-447: each assist's own last-applied torque (N*m, 0 for every stock car since none carries a
+    // non-identity DiffuserTuning), kept only for describe()'s own telemetry line below -- deliberately
+    // separate fields from any MINECRAFT-446 wing/downforce quantity (which is a grip multiplier, not a
+    // torque, and lives entirely in WheelMath/CamberToeGripModel, never read or written here) so a reader of
+    // that debug line can always tell "arcade diffuser correction" apart from "real aerodynamic force"
+    // rather than see one combined, unattributed number.
+    private double lastDiffuserRollTorque;
+    private double lastDiffuserPitchTorque;
+    private double lastDiffuserHeadingTorque;
+    private double lastDiffuserTrajectoryTorque;
 
     private SableCarBody(VehicleSpec spec, ServerLevel level, BoxPhysicsObject box, RigidBodyHandle body) {
         this.spec = spec;
@@ -621,6 +631,11 @@ final class SableCarBody {
                 .fma(pitchTorque, right)
                 .fma(headingTorque + trajectoryTorque, new Vector3d(0, 1, 0));
         applyWorldTorqueAsCouple(totalTorque, inverse, dt);
+
+        lastDiffuserRollTorque = rollTorque;
+        lastDiffuserPitchTorque = pitchTorque;
+        lastDiffuserHeadingTorque = headingTorque;
+        lastDiffuserTrajectoryTorque = trajectoryTorque;
     }
 
     /** Realises a world-space torque vector as an equal-and-opposite force couple at body-local points
@@ -749,7 +764,12 @@ final class SableCarBody {
         return new org.joml.Quaternionf((float) q.x(), (float) q.y(), (float) q.z(), (float) q.w());
     }
 
-    /** Debug summary: height of the body centre above the ground below it, pitch and roll in degrees. */
+    /** Debug summary: height of the body centre above the ground below it, pitch and roll in degrees, and
+     * (MINECRAFT-447) each Diffuser KIT assist's own last-applied torque, N*m -- {@code diffuserRoll} (R16),
+     * {@code diffuserPitch} (R17), {@code diffuserHeading} (R18), {@code diffuserTrajectory} (R19), always
+     * 0.00 for every stock car today (none carries a non-identity {@code DiffuserTuning}) and never the
+     * same quantity as any MINECRAFT-446 wing/downforce number, which is a grip multiplier applied inside
+     * {@code WheelMath}/{@code CamberToeGripModel}, not a torque, and is not read or reported here. */
     String describe() {
         box.updatePose();
         Pose3d pose = new Pose3d(box.getPose());
@@ -759,7 +779,10 @@ final class SableCarBody {
         double pitch = Math.toDegrees(Math.asin(Math.max(-1, Math.min(1, fwd.y))));
         double roll = Math.toDegrees(Math.atan2(q.transform(new Vector3d(1, 0, 0)).y, up.y));
         Vector3d v = body.getLinearVelocity(new Vector3d());
-        return String.format("body y=%.3f pitch=%.2f roll=%.2f speed=%.2f spinSlip=%.2f",
-                pose.position().y, pitch, roll, v.length(), lastSpinSlip);
+        return String.format(
+                "body y=%.3f pitch=%.2f roll=%.2f speed=%.2f spinSlip=%.2f "
+                        + "diffuserRoll=%.1f diffuserPitch=%.1f diffuserHeading=%.1f diffuserTrajectory=%.1f",
+                pose.position().y, pitch, roll, v.length(), lastSpinSlip,
+                lastDiffuserRollTorque, lastDiffuserPitchTorque, lastDiffuserHeadingTorque, lastDiffuserTrajectoryTorque);
     }
 }

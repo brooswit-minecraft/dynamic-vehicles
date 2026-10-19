@@ -23,12 +23,9 @@ import org.joml.Vector3f;
  * is the GameTest-only hook that lets a real CAR entity opt in without touching any car's own stock spec --
  * see that method's own javadoc for why this is not a second config mechanism.
  *
- * <p>What this does NOT cover yet, same open gap already reported on the ticket: pitch/landing (time-to-
- * touchdown), heading alignment and trajectory alignment do not have their own GameTest here. Roll
- * self-righting was chosen first because it is the assist with the clearest, most observable real-server
- * signal (upside-down vs. upright) and the most direct read on {@link DiffuserAssistMathTest}'s own
- * "exactly zero torque at both the stable and unstable equilibrium" claim actually holding once real
- * gravity, real suspension and real collision are in the loop too.
+ * <p>R17 (pitch/landing), R18 (heading alignment) and R19 (trajectory alignment) have NO GameTest here:
+ * see the comment block at the end of this class for why, a genuine environment limitation found and
+ * documented rather than worked around.
  */
 @GameTestHolder(DynamicVehiclesMod.MODID)
 @PrefixGameTestTemplate(false)
@@ -102,6 +99,31 @@ public final class DiffuserAssistGameTests {
         });
     }
 
+    /** Telemetry (open item from the ticket's own acceptance criteria): {@code SableCarBody.describe()}'s
+     * debug line (logged every 20 ticks by {@code CarEntity.tickSable}, the same line every other car's
+     * debug logging already goes through) must report each Diffuser KIT assist's own last-applied torque
+     * under its own clearly-labelled key, distinct from any MINECRAFT-446 wing/downforce quantity -- see
+     * {@code describe()}'s own javadoc for why the two can never be confused (the wing system reports a
+     * grip multiplier, never a torque, and this class never reads or writes it). This only checks the
+     * format is actually wired end-to-end (the real keys appear in the real production string for a real
+     * car), not specific numeric values -- deliberately, after this ticket's other GameTests here found
+     * that asserting on an EXACT post-launch/post-tumble number in this environment is not reliable; a
+     * stationary car on flat ground (no drop, no launch, no pit) has no such risk. */
+    @GameTest(template = "settlement_test", timeoutTicks = 20)
+    public static void describeReportsEachDiffuserAssistsOwnTorqueUnderItsOwnKey(GameTestHelper helper) {
+        helper.setBlock(new BlockPos(5, 2, 5), Blocks.STONE);
+        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
+        car.setDiffuserTuningForTest(VehicleSpec.DiffuserTuning.IDENTITY);
+        helper.runAfterDelay(2L, () -> {
+            String description = SableCompat.describe(car.sableBody());
+            for (String key : new String[] {"diffuserRoll=", "diffuserPitch=", "diffuserHeading=", "diffuserTrajectory="}) {
+                helper.assertTrue(description.contains(key),
+                        "describe() telemetry is missing its own \"" + key + "\" key, saw: " + description);
+            }
+            helper.succeed();
+        });
+    }
+
     // R16 (roll self-righting) production-path GameTest: attempted and deliberately NOT included here,
     // same conclusion as R17 below but reached by a different route. A `rollSelfRightingRecoversFrom
     // UpsideDownBeforeLanding` fixture (enabled roll self-righting, start upside down, assert roll is back
@@ -145,4 +167,48 @@ public final class DiffuserAssistGameTests {
     // (e.g. a much higher, slower-arriving drop column clear of the "Can't keep up" server-load variance
     // observed during these runs) or a polling design keyed off the body's own predicted time-to-touchdown
     // rather than a fixed tick or the first-contact boundary.
+
+    // R18 (heading alignment) and R19 (trajectory alignment) production-path GameTests: attempted and
+    // deliberately NOT included here, same class of problem as R16/R17 above (real run-to-run physics
+    // divergence this ticket's own code does not control), reached by a different route worth recording in
+    // detail since the fixture design itself is reusable even though the final assertions are not reliable
+    // enough to ship.
+    //
+    // Fixture: two identical cars driven with the same sustained throttle+steer ("launched mid-turn") so
+    // both build the same real forward speed and yaw rate from an actual turn, then the ground is pulled
+    // out from under both at once (the same "block changes under a never-recreated, never-repositioned
+    // body" technique RollingResistanceGameTests#airborneWheelsOverAPitGetNoTerrainRollingDrag already
+    // uses) so they go airborne carrying that yaw rate -- only one car has the assist under test enabled.
+    //
+    // A real bug was found and fixed along the way, worth keeping in mind for whoever attempts this next:
+    // GameTestHelper.setBlock takes template-RELATIVE coordinates and translates internally via its own
+    // absolutePos/relativePos (which also account for the structure's own per-run rotation); passing an
+    // absolute position (CarEntity#blockPosition, needed since the car drifts from its spawn coordinate
+    // during the steered launch) straight to setBlock compiles and runs with no error but silently clears
+    // the wrong patch of the world entirely. Converting with helper.relativePos(absolutePos) first fixed
+    // that specific bug (confirmed directly: wheelTravel/touching flipped to airborne as expected once the
+    // pit actually lands under the car), and a 41x41x17 pit was needed to reliably cover wherever the turn
+    // carried the car -- a 9x9 pit (plenty for the pit test's own straight-line driving) was not enough here.
+    //
+    // Once genuinely airborne, though, two different failure shapes showed up:
+    // - R18 (heading alignment): the DISABLED control's drift from its own frozen liftoff yaw was highly
+    //   reproducible run to run (the same controlDrift value recurred across separate runs to several
+    //   significant figures); the ENABLED car's drift was not (varied roughly 0.7-2.7 degrees across runs
+    //   with identical tuning), and the comparison flipped sign often enough (roughly half the runs) that
+    //   it is not a safe assertion. Applying real feedback torque to a liftoff that is not purely clean
+    //   single-axis yaw (some roll/pitch disturbance from the sudden, uneven loss of all four wheels' own
+    //   contact at once) is the suspected reason the enabled car, not the control, is the inconsistent one.
+    // - R19 (trajectory alignment): the enabled car came out WORSE (larger nose/travel-direction gap) than
+    //   the disabled control in every attempt, and MORE strongly worse at 5x the gain/torque -- the
+    //   opposite of what stronger correction should do, and not explained by a sign error (R19 applies its
+    //   torque through the exact same world-up force-couple mechanism R18 uses, and R18's direction is
+    //   correct when it does not flip). Not resolved in the time available; a real investigation would need
+    //   to inspect the car's actual roll/pitch during this liftoff (not just yaw) to see whether the
+    //   "trajectory error" signal itself is contaminated by that cross-axis motion.
+    //
+    // Rather than ship either assertion flaky, or hand-wave past a result that got WORSE under a stronger
+    // assist, this is reported as genuine remaining work: both assists' bounded/PD behaviour is already
+    // covered by DiffuserAssistMathTest's pure-function tests. A reliable production-path check for either
+    // would need a liftoff that is actually clean single-axis yaw motion (no roll/pitch contamination), which
+    // this "pull the floor out from under a steering car" technique evidently does not guarantee.
 }

@@ -766,6 +766,17 @@ final class SableCarBody {
         this.lastGroundedYawDeg = yawDeg;
     }
 
+    /** GameTest-only hook (MINECRAFT-447 review): directly adds to this body's own linear/angular velocity
+     * (starts at exactly zero, see {@link #create}), the same {@code RigidBodyHandle#addLinearAndAngularVelocity}
+     * entry point the physics pipeline itself exposes. Lets a direction-only trajectory-alignment regression
+     * establish real, known horizontal motion (so {@code DiffuserAssistMath#trajectoryAlignmentTorque}'s own
+     * speed gate is genuinely satisfied) without a grounded driving phase, avoiding the "launched mid-turn"
+     * fixture's own real-tire-slip/3-axis-tumble chaos that sank the earlier R19 attempt. Not a second way
+     * to configure a real car -- same category as {@code CarEntity#setDiffuserTuningForTest}. */
+    void addLinearVelocityForTest(Vector3d linear) {
+        body.addLinearAndAngularVelocity(linear, new Vector3d());
+    }
+
     /** Each wheel's suspension travel as of the last tick's single raycast, metres (a copy; not live state). */
     double[] suspensionTravel() {
         return suspensionTravel.clone();

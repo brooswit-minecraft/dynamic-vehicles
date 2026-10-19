@@ -42,6 +42,10 @@ final class SableCompat {
         ((SableCarBody) body).setLastGroundedYawDegForTest(yawDeg);
     }
 
+    static void addLinearVelocityForTest(Object body, org.joml.Vector3d linear) {
+        ((SableCarBody) body).addLinearVelocityForTest(linear);
+    }
+
     static double speed(Object body) {
         return ((SableCarBody) body).speed();
     }

@@ -240,6 +240,15 @@ public class CarEntity extends Entity {
         SableCompat.setLastGroundedYawDegForTest(sableBody, yawDeg);
     }
 
+    /** GameTest-only hook (MINECRAFT-447 review): directly adds real horizontal (or any) velocity to this
+     * car's own Sable body (starts at zero), so a direction-only trajectory-alignment regression can
+     * satisfy {@code trajectoryAlignmentMinSpeed} without a grounded driving phase. Requires {@code
+     * sableBody} to already exist. See {@code SableCarBody#addLinearVelocityForTest}'s own javadoc for why
+     * this is not a second config mechanism. */
+    void addLinearVelocityForTest(double x, double y, double z) {
+        SableCompat.addLinearVelocityForTest(sableBody, new org.joml.Vector3d(x, y, z));
+    }
+
     /** GameTest-only accessor (MINECRAFT-447): this entity's current Sable body orientation (including
      * roll and pitch), or {@code null} before its physics body exists (before the first real tick).
      * {@link #renderOrientation} exposes the client-interpolated version of this same quantity; nothing

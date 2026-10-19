@@ -82,7 +82,9 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
         float r = (float) spec.wheelRadius();
         float w = (float) spec.wheelWidth();
         float cy = (float) spec.wheelCentreY();
-        if (car.vehicleId().equals(VehicleIds.CAR)) {
+        VehicleModel model = VehicleModel.forId(car.vehicleId());
+        switch (model) {
+        case CAR -> {
             // A proper sedan silhouette, still exactly filling the fixed CAR body box (1.9 x 1.0 x 3.0,
             // unchanged from CarGeometry/VehicleSpec): a lower chassis, a glazed cabin capped by a
             // body-colored roofline, a dark front grille between chrome bumpers, taillights at the rear
@@ -98,7 +100,8 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
             block(pose, buffers, light, CAR_TAILLIGHT, -hx + 0.1f, -hy + 0.15f, -hz, 0.2f, 0.2f, 0.04f);
             block(pose, buffers, light, CAR_FENDER, -hx - 0.03f, cy - r - 0.05f, -hz, 0.03f, 2 * r + 0.1f, 2 * hz);
             block(pose, buffers, light, CAR_FENDER, hx, cy - r - 0.05f, -hz, 0.03f, 2 * r + 0.1f, 2 * hz);
-        } else if (car.vehicleId().equals(VehicleIds.TROPHY_TRUCK)) {
+        }
+        case TROPHY -> {
             // A low, wide offroad racer: a full-width floor pan with flared fenders over each wheel
             // arch, a livery stripe and hood scoop, a canopy wide enough to clear both seats, a roof
             // light bar, and a strutted rear wing - all within the untouched hitbox/seat geometry.
@@ -114,7 +117,8 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
             block(pose, buffers, light, TROPHY_STRUT, -hx + 0.32f, hy - 0.35f, -hz + 0.15f, 0.12f, 0.3f, 0.12f);
             block(pose, buffers, light, TROPHY_STRUT, hx - 0.44f, hy - 0.35f, -hz + 0.15f, 0.12f, 0.3f, 0.12f);
             block(pose, buffers, light, BED, -hx, hy - 0.05f, -hz, 2 * hx, 0.05f, 0.45f);
-        } else if (car.vehicleId().equals(VehicleIds.DRIFT_CAR)) {
+        }
+        case DRIFT -> {
             // MINECRAFT-188: richer silhouette than a single slab -- a lower, stepped nose ahead of the
             // main tub, side skirts hinting at the wheel arches, a roof cap over the glass cabin, and a
             // wide rear wing lifted on visible stands. Textured (custom livery) instead of flat concrete;
@@ -131,38 +135,43 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
             texturedBox(pose, buffers, light, DRIFT_TRIM_TEXTURE, -hx + 0.1f, tubTop, -1.35f, 0.08f, 0.38f, 0.15f);
             texturedBox(pose, buffers, light, DRIFT_TRIM_TEXTURE, hx - 0.18f, tubTop, -1.35f, 0.08f, 0.38f, 0.15f);
             texturedBox(pose, buffers, light, DRIFT_TRIM_TEXTURE, -0.85f, tubTop + 0.38f, -hz + 0.1f, 1.7f, 0.08f, 0.25f);
-        } else if (car.vehicleId().equals(VehicleIds.MUSCLE_CAR)) {
+        }
+        case MUSCLE -> {
             // A long-hooded, short-wheelbase muscle body with a racing stripe down the hood and a low cabin set well back.
             block(pose, buffers, light, MUSCLE_BODY, -hx, -hy, -hz, 2 * hx, 0.55f, 2 * hz);
             block(pose, buffers, light, MUSCLE_STRIPE, -0.15f, -hy + 0.55f, 0.1f, 0.3f, 0.02f, hz - 0.1f);
             block(pose, buffers, light, CABIN, -0.7f, -hy + 0.55f, -0.5f, 1.4f, 2 * hy - 0.55f, 1.3f);
-        } else if (car.vehicleId().equals(VehicleIds.ROCK_CRAWLER)) {
+        }
+        case ROCK_CRAWLER -> {
             // A short, boxy body riding high above its wheels, with an open roll cage instead of a closed cabin.
             block(pose, buffers, light, CRAWLER_BODY, -hx, -hy, -hz, 2 * hx, 0.6f, 2 * hz);
             block(pose, buffers, light, CRAWLER_ROLL_CAGE, -hx + 0.1f, -hy + 0.6f, -0.5f, 2 * hx - 0.2f, 2 * hy - 0.6f, 1.0f);
-        } else if (car.vehicleId().equals(VehicleIds.MONSTER_TRUCK)) {
+        }
+        case MONSTER_TRUCK -> {
             // A compact cab riding high above its huge wheels, with an open roll cage instead of a closed cabin.
             block(pose, buffers, light, MONSTER_BODY, -hx, -hy, -hz, 2 * hx, 0.65f, 2 * hz);
             block(pose, buffers, light, MONSTER_ROLL_CAGE, -hx + 0.15f, -hy + 0.65f, -0.6f, 2 * hx - 0.3f, 2 * hy - 0.65f, 1.2f);
-        } else if (car.vehicleId().equals(VehicleIds.INDY_CAR)) {
+        }
+        case INDY -> {
             // Open-wheel look: a slim, low single-seater body that stays well inside halfX (its wheel
             // mounts sit OUTSIDE halfX, see VehicleSpec.INDY's javadoc) so the wheels are never covered by
             // the body, plus a narrow nose cone ahead of the cockpit.
             block(pose, buffers, light, INDY_BODY, -hx * 0.6f, -hy, -hz, hx * 1.2f, 0.3f, 2 * hz);
             block(pose, buffers, light, INDY_NOSE, -hx * 0.35f, -hy + 0.05f, hz - 0.5f, hx * 0.7f, 0.2f, 0.5f);
-        } else if (car.vehicleId().equals(VehicleIds.BUS)) {
+        }
+        case BUS -> {
             // A long, boxy body filling the physics box, with a window band running most of its length.
             block(pose, buffers, light, BUS_BODY, -hx, -hy, -hz, 2 * hx, 2 * hy, 2 * hz);
             block(pose, buffers, light, BUS_WINDOWS, -hx + 0.05f, 0.0f, -hz + 0.3f, 2 * hx - 0.1f, hy - 0.1f, 2 * hz - 0.6f);
-        } else if (car.vehicleId().equals(VehicleIds.CARGO_TRUCK)) {
-            renderCargoTruck(pose, buffers, light, hx, hy, hz);
-        } else if (car.vehicleId().equals(VehicleIds.TRUCK)) {
-            renderTruck(pose, buffers, light, hx, hy, hz, spec.mounts());
-        } else {
+        }
+        case CARGO_TRUCK -> renderCargoTruck(pose, buffers, light, hx, hy, hz);
+        case TRUCK -> renderTruck(pose, buffers, light, hx, hy, hz, spec.mounts());
+        case FALLBACK -> {
             // Fallback for any future spec not yet given its own look above: chassis and cabin
             // together fill the physics box exactly, matching the old placeholder car look.
             block(pose, buffers, light, BODY, -hx, -hy, -hz, 2 * hx, 0.55f, 2 * hz);
             block(pose, buffers, light, CABIN, -0.75f, -hy + 0.55f, -0.6f, 1.5f, 2 * hy - 0.55f, 1.5f);
+        }
         }
         for (double[] mount : spec.mounts()) {
             block(pose, buffers, light, WHEEL, (float) mount[0] - w / 2, cy - r, (float) mount[2] - r, w, 2 * r, 2 * r);

@@ -125,6 +125,25 @@ final class VehicleSpecOverrides {
         return OVERRIDES.getOrDefault(id, stockDefault);
     }
 
+    /**
+     * MINECRAFT-443 review fix (comment 48829, "client/lifecycle"): the side-aware decision {@code
+     * CarEntity}'s constructor actually makes, extracted here (a plain {@code boolean} plus two immutable
+     * values, no {@code Level}) rather than as a method on {@code CarEntity} itself, specifically so it is
+     * directly, headlessly unit-testable -- a test referencing {@code CarEntity} at all requires its
+     * {@code net.minecraft.world.entity.Entity} superclass to be on the classpath, which this plain
+     * {@code test} task's classpath deliberately does not have (see this class's own top javadoc for why
+     * every other Minecraft-adjacent dependency here is kept off that classpath too).
+     *
+     * <p>A logical client ({@code clientSide = true}, including a singleplayer world's own client side)
+     * always receives {@code stock}, ignoring whatever {@link #load} populated {@link #OVERRIDES} with; a
+     * logical server (including that same singleplayer world's integrated server) consults {@link
+     * #resolve}. See this class's own top javadoc for why that isolation matters beyond "physics are
+     * server-decided anyway".
+     */
+    static VehicleSpec resolveForSide(boolean clientSide, String id, VehicleSpec stock) {
+        return clientSide ? stock : resolve(id, stock);
+    }
+
     /** Builds the effective spec: every field from {@code stock} except the ones {@code file} actually
      * set, which are clamped into {@link VehicleSpecLimits}'/{@link VehicleTuningLimits}' safe range
      * (falling back to {@code stock}'s own value for that one field if the supplied number is non-finite). */

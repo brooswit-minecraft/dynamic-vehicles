@@ -139,15 +139,10 @@ public class CarEntity extends Entity {
     public CarEntity(EntityType<? extends CarEntity> type, Level level) {
         super(type, level);
         this.vehicleId = vehicleIdFor(type);
-        VehicleSpec stock = stockSpecFor(this.vehicleId);
-        // MINECRAFT-443: the server (including a singleplayer world's own integrated server) resolves
-        // through any per-car config file override loaded for this car id; a logical client never does,
-        // even in that same singleplayer process -- VehicleSpecOverrides' table is a single process-global
-        // map, so a client that previously hosted/played a singleplayer world with overrides loaded and
-        // then joins a remote server in the same session must not keep reading that now-stale table. The
-        // client's spec is cosmetic only (rendering/hitbox dimensions); real physics are server-decided
-        // and reach the client through ordinary entity-state sync either way.
-        this.spec = level.isClientSide() ? stock : VehicleSpecOverrides.resolve(this.vehicleId, stock);
+        // MINECRAFT-443: the side-aware decision itself lives in VehicleSpecOverrides.resolveForSide
+        // (a pure function, not here), specifically so it is unit-testable without this class's own
+        // net.minecraft.world.entity.Entity superclass needing to load -- see that method's own javadoc.
+        this.spec = VehicleSpecOverrides.resolveForSide(level.isClientSide(), this.vehicleId, stockSpecFor(this.vehicleId));
         this.vehicleTuning = spec.vehicleTuning();
         this.seats = new SeatAssignment<>(spec.seatCount());
     }
@@ -477,7 +472,7 @@ public class CarEntity extends Entity {
             boolean dirtOrSand = state.is(BlockTags.DIRT) || state.is(BlockTags.SAND);
             boolean glass = state.getBlock() instanceof TransparentBlock || state.getBlock() instanceof StainedGlassPaneBlock;
             ImpactRules.BlockImpactRoute route = ImpactRules.blockImpactRoute(
-                    VehicleIds.TRUCK.equals(vehicleId), dirtOrSand, bamboo, breakable);
+                    VehicleModel.forId(vehicleId) == VehicleModel.TRUCK, dirtOrSand, bamboo, breakable);
 
             // Dynamic Terrain is the sole authority for loose terrain; it decides resistance and whether
             // material shifts downhill or degrades. This is selected before the truck-only return below,
@@ -489,7 +484,7 @@ public class CarEntity extends Entity {
 
             // The truck has a deliberately narrow vegetation interaction. It never gains the generic
             // block-breaking privilege merely by being heavier than a car.
-            if (VehicleIds.TRUCK.equals(vehicleId)) {
+            if (VehicleModel.forId(vehicleId) == VehicleModel.TRUCK) {
                 if (route == ImpactRules.BlockImpactRoute.TRUCK_BAMBOO) {
                     serverLevel.destroyBlock(pos, true, this);
                 }

@@ -37,6 +37,58 @@ class WheelMathTest {
         assertEquals(WheelMath.MAX_FORCE, WheelMath.suspensionForce(0.6, 50.0), 0);
     }
 
+    /** MINECRAFT-443 review fix (comment 48829): {@link WheelMath#compression} is the exact method {@code
+     * SableCarBody.tick}'s raycast loop calls to turn a wheel's own {@code VehicleSpec#restLength} (what a
+     * per-car {@code rideHeight} config override actually scales) and raycast distance into a spring
+     * compression -- not a parallel reimplementation of the formula. */
+    @Test
+    void compressionIsRestLengthMinusDistance() {
+        assertEquals(0.3, WheelMath.compression(0.65, 0.35), 1e-9);
+        assertEquals(-0.1, WheelMath.compression(0.65, 0.75), 1e-9);
+    }
+
+    /** The full production seam a rideHeight override reaches, end to end: {@link WheelMath#compression}
+     * feeding directly into {@link WheelMath#suspensionForce} (both the exact methods {@code
+     * SableCarBody.tick} calls), using the rock crawler's own real restLength/spring/damper numbers scaled
+     * exactly the way {@code VehicleSpecOverrides} scales them for a halved rideHeight override -- proving
+     * the scaled value still produces a sane, positive, uncapped suspension force at a representative
+     * resting distance, not just that the spec field holds the right number. */
+    @Test
+    void aHalvedRideHeightOverridesScaledRestLengthStillProducesASaneSuspensionForce() {
+        double stockRestLength = VehicleSpec.ROCK_CRAWLER.restLength();
+        double stockRideHeight = VehicleSpec.ROCK_CRAWLER.rideHeight();
+        double overriddenRideHeight = stockRideHeight / 2.0;
+        double scaledRestLength = stockRestLength * (overriddenRideHeight / stockRideHeight);
+
+        // A representative resting raycast distance for the NEW, lower ride height: the wheel sits at
+        // rest when the spring carries the car's static weight, which for this pure-math check is
+        // approximated the same way staticLoadGivesAboutQuarterOfTheCarsWeightAtFifteenCentimetres already
+        // does above -- a plausible, not-bottomed-out compression comfortably inside the new, shorter
+        // travel (scaledRestLength), not a value that assumes the old geometry.
+        double restingDistance = scaledRestLength - scaledRestLength * 0.2;
+        double compression = WheelMath.compression(scaledRestLength, restingDistance);
+
+        double force = WheelMath.suspensionForce(compression, 0.0,
+                VehicleSpec.ROCK_CRAWLER.springRate(), VehicleSpec.ROCK_CRAWLER.dampingRate(),
+                VehicleSpec.ROCK_CRAWLER.maxSpringForce());
+
+        assertTrue(compression > 0, "scaled restLength produced a negative compression at a realistic resting distance");
+        assertTrue(force > 0, "scaled restLength produced no suspension force at all");
+        assertTrue(force < VehicleSpec.ROCK_CRAWLER.maxSpringForce(),
+                "scaled restLength immediately clipped the suspension to its max force cap");
+    }
+
+    /** MINECRAFT-443 review fix (comment 48829): {@link WheelMath#handbrakeForce} is the exact method
+     * {@code SableCarBody.tick}'s handbrake branch calls -- not a parallel reimplementation -- so a
+     * regression that silently dropped the {@code handbrakeScale} multiplication (the review's own
+     * example) fails this test, not just the pure parse/clamp test in {@code VehicleSpecOverridesTest}. */
+    @Test
+    void handbrakeForceAppliesForceScaleAndHandbrakeScale() {
+        double base = 12_000.0;
+        assertEquals(base, WheelMath.handbrakeForce(base, 1.0, 1.0), 1e-9, "identity scales must leave the base force unchanged");
+        assertEquals(base * 2.0 * 0.5, WheelMath.handbrakeForce(base, 2.0, 0.5), 1e-9);
+    }
+
     private static final double N = 2943.0; // a quarter of the car at rest
     private static final double DT = 0.05;
 

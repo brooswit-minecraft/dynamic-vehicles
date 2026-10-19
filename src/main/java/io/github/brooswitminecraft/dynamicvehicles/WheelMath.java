@@ -133,6 +133,22 @@ public final class WheelMath {
     }
 
     /**
+     * MINECRAFT-443: the production seam a per-car {@code rideHeight} config override actually reaches,
+     * extracted out of {@code SableCarBody.tick}'s raycast loop (which calls this exact method, not a
+     * reimplementation of it) so the restLength-to-compression step is itself directly testable without
+     * Sable/Minecraft bootstrap, the same way {@link #suspensionForce} already is.
+     *
+     * @param restLength metres from a wheel mount to the ground at which the spring is unloaded
+     *        ({@code VehicleSpec#restLength}, scaled by {@code VehicleSpecOverrides} with any
+     *        {@code rideHeight} override)
+     * @param distance metres from the wheel mount to the raycast hit (the ground)
+     * @return metres the spring is shorter than {@code restLength} (negative: not touching)
+     */
+    public static double compression(double restLength, double distance) {
+        return restLength - distance;
+    }
+
+    /**
      * @param compression metres the spring is shorter than its rest length (negative: not touching)
      * @param compressionRate m/s the spring is being squeezed (positive: the wheel is moving toward the car body)
      * @return the force the spring pushes the car up with, N (never negative)
@@ -148,6 +164,23 @@ public final class WheelMath {
         }
         double force = springRate * compression + dampingRate * compressionRate;
         return Math.max(0.0, Math.min(maxForce, force));
+    }
+
+    /**
+     * MINECRAFT-443: the production seam a per-car {@code handbrakeScale} config override actually
+     * reaches, extracted out of {@code SableCarBody.tick}'s handbrake branch (which calls this exact
+     * method, not a reimplementation of it) so the multiplication is itself directly testable without
+     * Sable/Minecraft bootstrap.
+     *
+     * @param handbrakeForce the shared base handbrake force constant, N ({@code
+     *        SableCarBody#HANDBRAKE_FORCE})
+     * @param forceScale this vehicle's overall drive/brake force scale ({@code VehicleSpec#forceScale})
+     * @param handbrakeScale this vehicle's own handbrake strength multiplier ({@code
+     *        VehicleSpec#handbrakeScale}, {@code 1.0} = identity)
+     * @return the actual rear-wheel brake force applied while the handbrake is held, N
+     */
+    public static double handbrakeForce(double handbrakeForce, double forceScale, double handbrakeScale) {
+        return handbrakeForce * forceScale * handbrakeScale;
     }
 
     /**

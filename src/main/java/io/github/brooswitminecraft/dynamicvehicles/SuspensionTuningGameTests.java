@@ -116,7 +116,9 @@ public final class SuspensionTuningGameTests {
     public static void aConfiguredBumpStopMakesTheCarRestHigherThanTheStockControl(GameTestHelper helper) {
         pad(helper, 5);
         pad(helper, 15);
-        CarEntity stock = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
+        // Spawned BEFORE any override is loaded, so this is a genuine stock control -- and driven through
+        // the same zero-input settle window as the configured car, so the two differ only in their tireKit.
+        CarEntity stock = settling(helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5)));
         CarEntity configured = spawnWithOverride(helper, LOAD_BEARING_BUMP_STOP, new BlockPos(5, 3, 15));
 
         helper.runAfterDelay(SETTLE_TICKS, () -> {
@@ -290,16 +292,14 @@ public final class SuspensionTuningGameTests {
         return total / travel.length;
     }
 
-    /** A flat stone pad under a spawn point, wide enough for the car's own footprint, with the space above
-     * it cleared -- so every test here measures a settled car on level ground rather than whatever the
-     * shared template happens to have at that spot. */
+    /** A flat stone pad under a spawn point, wide enough for the car's own footprint -- the same 5x5 floor
+     * at y = 2 under a spawn at y = 3 that {@code RollingResistanceGameTests#fillFloor} uses for the cars
+     * it successfully asserts {@code suspensionTravel > 0} on. Deliberately does NOT clear the blocks above
+     * the floor: an earlier version of this helper did, and no working test in this suite does. */
     private static void pad(GameTestHelper helper, int z) {
         for (int dx = -2; dx <= 2; dx++) {
             for (int dz = -2; dz <= 2; dz++) {
                 helper.setBlock(new BlockPos(5 + dx, 2, z + dz), Blocks.STONE);
-                for (int y = 3; y <= 5; y++) {
-                    helper.setBlock(new BlockPos(5 + dx, y, z + dz), Blocks.AIR);
-                }
             }
         }
     }
@@ -314,12 +314,28 @@ public final class SuspensionTuningGameTests {
             Files.createDirectories(carsDir);
             Files.writeString(carsDir.resolve(VehicleIds.CAR + ".json"), json);
             VehicleSpecOverrides.load(configDir);
-            return helper.spawn(DynamicVehiclesMod.CAR.get(), pos);
+            return settling(helper.spawn(DynamicVehiclesMod.CAR.get(), pos));
         } catch (IOException e) {
             throw new RuntimeException(e);
         } finally {
             VehicleSpecOverrides.load(Path.of(System.getProperty("java.io.tmpdir"),
                     "dynamicvehicles-no-such-config-dir"));
         }
+    }
+
+    /**
+     * Drives a freshly spawned car with ZERO throttle and steering for the whole settle window.
+     *
+     * <p>Not a no-op, and not cosmetic: the first version of these tests simply spawned cars and waited,
+     * and every wheel reported exactly {@code 0.0} travel -- the ungrounded sentinel -- on CI and locally
+     * alike. Every car test in this suite that successfully asserts real per-wheel contact ({@code
+     * RollingResistanceGameTests}, {@code CarDrivetrainGameTests}) either boards a mock player or calls
+     * {@code forceDrive}; none of them just spawns and waits. Zero inputs keep this a pure
+     * settle-under-gravity measurement while still putting the car on the same driven path those working
+     * tests use.
+     */
+    private static CarEntity settling(CarEntity car) {
+        car.forceDrive(0.0, 0.0, (int) SETTLE_TICKS);
+        return car;
     }
 }

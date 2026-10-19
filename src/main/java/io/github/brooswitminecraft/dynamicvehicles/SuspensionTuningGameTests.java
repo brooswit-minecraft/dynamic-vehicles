@@ -3,6 +3,8 @@ package io.github.brooswitminecraft.dynamicvehicles;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.Blocks;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
@@ -118,7 +120,7 @@ public final class SuspensionTuningGameTests {
         pad(helper, 15);
         // Spawned BEFORE any override is loaded, so this is a genuine stock control -- and driven through
         // the same zero-input settle window as the configured car, so the two differ only in their tireKit.
-        CarEntity stock = settling(helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5)));
+        CarEntity stock = settling(helper, helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5)));
         CarEntity configured = spawnWithOverride(helper, LOAD_BEARING_BUMP_STOP, new BlockPos(5, 3, 15));
 
         helper.runAfterDelay(SETTLE_TICKS, () -> {
@@ -328,7 +330,7 @@ public final class SuspensionTuningGameTests {
             Files.createDirectories(carsDir);
             Files.writeString(carsDir.resolve(VehicleIds.CAR + ".json"), json);
             VehicleSpecOverrides.load(configDir);
-            return settling(helper.spawn(DynamicVehiclesMod.CAR.get(), pos));
+            return settling(helper, helper.spawn(DynamicVehiclesMod.CAR.get(), pos));
         } catch (IOException e) {
             throw new RuntimeException(e);
         } finally {
@@ -338,28 +340,28 @@ public final class SuspensionTuningGameTests {
     }
 
     /**
-     * Puts a freshly spawned car onto the same driven, planted path the tests in this suite that
-     * successfully assert real per-wheel contact use, then lets it coast to rest.
+     * Boards a freshly spawned car with a mock rider holding NO inputs, which is the arrangement every car
+     * test in this suite that reliably ends up with a grounded, settled car uses.
      *
-     * <p>Two findings are baked in here, both from CI rather than reasoning. First, a car that is merely
-     * spawned and waited on reports exactly {@code 0.0} travel on every wheel -- the ungrounded sentinel --
-     * because nothing drives its tick; every working car test either boards a mock player or calls {@code
-     * forceDrive}. Second, {@code forceDrive} with zero throttle was still not enough: travel came back at
-     * {@code -0.178}, a real raycast value but with the car resting well above the pad. {@code
-     * RollingResistanceGameTests}' own pit test -- the one test in this suite that does assert {@code
-     * suspensionTravel > 0} and passes in CI -- plants its cars with a nonzero throttle first, so this does
-     * the same: a brief throttle to plant the car on its springs, then zero input for the rest of the
-     * settle window so the measurement itself is still a car at rest. Both the configured car and its stock
-     * control get the identical treatment, so the comparison stays matched either way.
+     * <p>Three CI rounds of evidence went into this one line, and the first two attempts were wrong:
+     * <ul>
+     * <li>Spawn and wait: every wheel read exactly {@code 0.0} travel -- the ungrounded sentinel -- because
+     * nothing was driving the car's tick.
+     * <li>{@code forceDrive} at zero throttle: travel became {@code -0.178}, a real raycast value, so the
+     * tick was running, but the car sat well above its pad.
+     * <li>{@code forceDrive} at full throttle to "plant" it: the diagnostics showed exactly what that
+     * really does -- {@code speed=8.7} with {@code blockBelow=air}. The car simply drove off the pad into
+     * the void, which is a self-inflicted failure, not a suspension one.
+     * </ul>
+     * {@code CarDrivetrainGameTests} boards a mock player and then asserts its cars have settled below
+     * 1.5 m/s before doing anything else, so a boarded car with {@code zza}/{@code xxa} left at zero is the
+     * suite's own proven recipe for "grounded and at rest" -- no throttle to drive it anywhere, but a real
+     * controlling passenger so the car is on the ordinary ridden tick path. Both the configured car and its
+     * stock control get the identical treatment, so the comparison stays matched.
      */
-    private static CarEntity settling(CarEntity car) {
-        car.forceDrive(PLANTING_THROTTLE, 0.0, PLANT_TICKS);
+    private static CarEntity settling(GameTestHelper helper, CarEntity car) {
+        Player rider = helper.makeMockPlayer(GameType.CREATIVE);
+        helper.assertTrue(rider.startRiding(car), "mock rider failed to board a car under test");
         return car;
     }
-
-    /** Throttle used only to plant a freshly spawned car onto its springs, before it coasts to rest. */
-    private static final double PLANTING_THROTTLE = 1.0;
-    /** Ticks of {@link #PLANTING_THROTTLE}; the rest of {@link #SETTLE_TICKS} is spent coasting to rest,
-     * so every measurement here is still taken on a car that has stopped. */
-    private static final int PLANT_TICKS = 40;
 }

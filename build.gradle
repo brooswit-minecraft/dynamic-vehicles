@@ -183,6 +183,15 @@ dependencies {
     testImplementation platform("org.junit:junit-bom:5.11.4")
     testImplementation "org.junit.jupiter:junit-jupiter"
     testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+    // MINECRAFT-443: VehicleSpecOverrides uses Gson, already on the real runtime classpath bundled inside
+    // Minecraft/NeoForge itself (compileOnly there, like every other Mojang/NeoForge class these pure-
+    // function tests avoid depending on at runtime) -- the plain `test` task's classpath deliberately
+    // excludes that bundle, so the version actually shipped by minecraft_version above is pinned here too,
+    // test-only, purely so these tests can exercise the real parsing without an NeoForge bootstrap.
+    testImplementation "com.google.code.gson:gson:2.10.1"
+    // Same reasoning as gson above: slf4j-api is already on the real runtime classpath bundled inside
+    // Minecraft/NeoForge; pinned test-only so VehicleSpecOverrides' own logger call class-loads here too.
+    testImplementation "org.slf4j:slf4j-api:2.0.9"
 }
 
 test {

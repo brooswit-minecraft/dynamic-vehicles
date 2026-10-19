@@ -72,12 +72,43 @@ public record VehicleSpec(
          * plumbing only (no LSD/vectoring/camber/toe behaviour yet). See {@link VehicleTuning} for why these
          * five fields are grouped into their own small type rather than folded into {@link TireTuning} or
          * left as bare fields on this record. */
-        VehicleTuning vehicleTuning) {
+        VehicleTuning vehicleTuning,
+        /** Per-vehicle handbrake strength multiplier (MINECRAFT-443): {@link SableCarBody#tick} computes
+         * {@code brake = HANDBRAKE_FORCE * forceScale() * handbrakeScale()} for a rear wheel while the
+         * handbrake is held, so a vehicle can get a stronger or weaker handbrake without touching the one
+         * shared {@code HANDBRAKE_FORCE} constant every vehicle used before this field existed. {@code 1.0}
+         * (identity, no extra scale) for every vehicle that has not opted in &mdash; today, every vehicle on
+         * the roster, so {@code SableCarBody.tick}'s handbrake branch is byte-for-byte unchanged for all of
+         * them. Distinct from (and does not touch) the separate, drift-only, already-live {@code
+         * TireTuning#handbrakeRearGripCut}, which scales the handbrake's lateral-grip cut, not its brake
+         * force, and is owned by {@code CarConfig}, not this per-vehicle field. */
+        double handbrakeScale) {
 
-    /** As the full (canonical) constructor above, minus the trailing {@link #vehicleTuning} (MINECRAFT-227/245):
-     * exactly the field list every vehicle spec used before this ticket. {@code CAR}, {@code TRUCK},
-     * {@code TROPHY}, {@code DRIFT}, {@code BUS} and {@code CARGO_TRUCK} all still call this constructor
-     * unedited, with {@link #vehicleTuning} defaulted to {@link VehicleTuning#IDENTITY}. */
+    /** As the full (canonical) constructor above, minus the trailing {@link #handbrakeScale} (MINECRAFT-443):
+     * exactly the field list every vehicle spec used before this ticket. Every existing vehicle still calls
+     * this constructor (directly or through a shorter overload below it), with {@link #handbrakeScale}
+     * defaulted to {@code 1.0} (identity). */
+    public VehicleSpec(double halfX, double halfY, double halfZ,
+            double[][] mounts, double wheelRadius, double wheelWidth,
+            double rideHeight, double restLength,
+            double massKg, double springRate, double dampingRate, double maxSpringForce,
+            double wheelbase, double maxSpeed,
+            double forceScale, double enginePitch,
+            double seatY, double seatZ,
+            double looseGrip, double rollingScale,
+            TireTuning tireTuning, double downforceGripPerSpeed, double antiRollScale,
+            List<Seat> seats, VehicleTuning vehicleTuning) {
+        this(halfX, halfY, halfZ, mounts, wheelRadius, wheelWidth, rideHeight, restLength,
+                massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
+                forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
+                downforceGripPerSpeed, antiRollScale, seats, vehicleTuning, 1.0);
+    }
+
+    /** As the full (canonical) constructor above, minus the trailing {@link #vehicleTuning} and
+     * {@link #handbrakeScale} (MINECRAFT-227/245): exactly the field list every vehicle spec used before
+     * that ticket. {@code CAR}, {@code TRUCK}, {@code TROPHY}, {@code DRIFT}, {@code BUS} and {@code
+     * CARGO_TRUCK} all still call this constructor unedited, with {@link #vehicleTuning} defaulted to
+     * {@link VehicleTuning#IDENTITY} and {@link #handbrakeScale} to {@code 1.0}. */
     public VehicleSpec(double halfX, double halfY, double halfZ,
             double[][] mounts, double wheelRadius, double wheelWidth,
             double rideHeight, double restLength,

@@ -70,6 +70,17 @@ public class CarEntity extends Entity {
     /** Per-wheel suspension travel, steer angle and spin rate (MINECRAFT-122), packed by {@link WheelSync}. */
     private static final net.minecraft.network.syncher.EntityDataAccessor<CompoundTag> DATA_WHEELS =
             net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.COMPOUND_TAG);
+    /** MINECRAFT-443 review fix (comment 48876): this car's AUTHORITATIVE (server-resolved, override-
+     * aware) ride height, synced so {@link CarRenderer} draws wheels/body at the height the server's
+     * physics actually used -- never the client's own {@link #spec}, which {@link
+     * VehicleSpecOverrides#resolveForSide} always keeps at the plain stock value (a logical client never
+     * reads the per-car config override table at all, by design: see that method's own javadoc for why).
+     * Without this, a rideHeight override made a car's wheels visually float or sink by exactly the
+     * override's delta, since the renderer would draw the stock wheel offset under a body the server
+     * actually suspended at a different height. Static for this car's whole lifetime (set once, here,
+     * never updated per-tick), unlike every other {@code DATA_*} field in this class. */
+    private static final net.minecraft.network.syncher.EntityDataAccessor<Float> DATA_RIDE_HEIGHT =
+            net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
     // Client side: the last two received per-wheel frames, for renderOrientation-style interpolation.
     // Zero-length default (no wheels known yet) rather than a guessed wheel count, so an empty tag
     // decodes to a frame the renderer can tell apart from "not synced yet" if it ever needs to.
@@ -112,6 +123,15 @@ public class CarEntity extends Entity {
     private int forcedDriveTicks;
 
     private final VehicleSpec spec;
+    /** MINECRAFT-443: this car's registry id (see {@link VehicleIds}), kept alongside {@link #spec}
+     * precisely because {@code spec} is no longer always {@code ==} one of {@link VehicleSpec}'s stock
+     * constants once a per-car config override exists for it. {@link CarRenderer} and this class's own
+     * model/collision-privilege branches ({@code hitBlockAhead}) must key off this id, never off spec
+     * identity &mdash; keying off identity meant an override file for the truck (even an empty one) made
+     * {@code spec == VehicleSpec.TRUCK} silently false, which both picked the generic renderer fallback
+     * model and (more seriously) granted the truck's deliberately-narrow vegetation-only collision
+     * privilege to every other block type instead. */
+    private final String vehicleId;
     /** Per-entity tuning, initialized from the immutable vehicle type then retained in this entity's NBT. */
     private VehicleSpec.VehicleTuning vehicleTuning;
     /** Which seat each current passenger sits in (MINECRAFT-172); seat 0 is always the driver. */
@@ -129,17 +149,54 @@ public class CarEntity extends Entity {
 
     public CarEntity(EntityType<? extends CarEntity> type, Level level) {
         super(type, level);
-        this.spec = DynamicVehiclesMod.TRUCK.isBound() && type == DynamicVehiclesMod.TRUCK.get() ? VehicleSpec.TRUCK
-                : DynamicVehiclesMod.TROPHY.isBound() && type == DynamicVehiclesMod.TROPHY.get() ? VehicleSpec.TROPHY
-                : DynamicVehiclesMod.DRIFT.isBound() && type == DynamicVehiclesMod.DRIFT.get() ? VehicleSpec.DRIFT
-                : DynamicVehiclesMod.MUSCLE.isBound() && type == DynamicVehiclesMod.MUSCLE.get() ? VehicleSpec.MUSCLE
-                : DynamicVehiclesMod.ROCK_CRAWLER.isBound() && type == DynamicVehiclesMod.ROCK_CRAWLER.get() ? VehicleSpec.ROCK_CRAWLER
-                : DynamicVehiclesMod.MONSTER_TRUCK.isBound() && type == DynamicVehiclesMod.MONSTER_TRUCK.get() ? VehicleSpec.MONSTER_TRUCK
-                : DynamicVehiclesMod.INDY.isBound() && type == DynamicVehiclesMod.INDY.get() ? VehicleSpec.INDY
-                : DynamicVehiclesMod.BUS.isBound() && type == DynamicVehiclesMod.BUS.get() ? VehicleSpec.BUS
-                : DynamicVehiclesMod.CARGO_TRUCK.isBound() && type == DynamicVehiclesMod.CARGO_TRUCK.get() ? VehicleSpec.CARGO_TRUCK : VehicleSpec.CAR;
+        this.vehicleId = vehicleIdFor(type);
+        // MINECRAFT-443: the side-aware decision itself lives in VehicleSpecOverrides.resolveForSide
+        // (a pure function, not here), specifically so it is unit-testable without this class's own
+        // net.minecraft.world.entity.Entity superclass needing to load -- see that method's own javadoc.
+        this.spec = VehicleSpecOverrides.resolveForSide(level.isClientSide(), this.vehicleId, stockSpecFor(this.vehicleId));
         this.vehicleTuning = spec.vehicleTuning();
         this.seats = new SeatAssignment<>(spec.seatCount());
+        // MINECRAFT-443: each side's own local best guess at construction time (the server's is
+        // authoritative; a logical client's is only its own stock spec, same as #spec always is) -- the
+        // server's own value then overwrites the client's guess via the ordinary entity-data sync that
+        // follows, which is what CarRenderer actually ends up drawing from (see DATA_RIDE_HEIGHT's own
+        // javadoc for why #spec itself is never safe for a client to draw suspension height from).
+        entityData.set(DATA_RIDE_HEIGHT, (float) spec.rideHeight());
+    }
+
+    private static String vehicleIdFor(EntityType<? extends CarEntity> type) {
+        return DynamicVehiclesMod.TRUCK.isBound() && type == DynamicVehiclesMod.TRUCK.get() ? VehicleIds.TRUCK
+                : DynamicVehiclesMod.TROPHY.isBound() && type == DynamicVehiclesMod.TROPHY.get() ? VehicleIds.TROPHY_TRUCK
+                : DynamicVehiclesMod.DRIFT.isBound() && type == DynamicVehiclesMod.DRIFT.get() ? VehicleIds.DRIFT_CAR
+                : DynamicVehiclesMod.MUSCLE.isBound() && type == DynamicVehiclesMod.MUSCLE.get() ? VehicleIds.MUSCLE_CAR
+                : DynamicVehiclesMod.ROCK_CRAWLER.isBound() && type == DynamicVehiclesMod.ROCK_CRAWLER.get() ? VehicleIds.ROCK_CRAWLER
+                : DynamicVehiclesMod.MONSTER_TRUCK.isBound() && type == DynamicVehiclesMod.MONSTER_TRUCK.get() ? VehicleIds.MONSTER_TRUCK
+                : DynamicVehiclesMod.INDY.isBound() && type == DynamicVehiclesMod.INDY.get() ? VehicleIds.INDY_CAR
+                : DynamicVehiclesMod.BUS.isBound() && type == DynamicVehiclesMod.BUS.get() ? VehicleIds.BUS
+                : DynamicVehiclesMod.CARGO_TRUCK.isBound() && type == DynamicVehiclesMod.CARGO_TRUCK.get() ? VehicleIds.CARGO_TRUCK
+                : VehicleIds.CAR;
+    }
+
+    private static VehicleSpec stockSpecFor(String vehicleId) {
+        return switch (vehicleId) {
+            case VehicleIds.TRUCK -> VehicleSpec.TRUCK;
+            case VehicleIds.TROPHY_TRUCK -> VehicleSpec.TROPHY;
+            case VehicleIds.DRIFT_CAR -> VehicleSpec.DRIFT;
+            case VehicleIds.MUSCLE_CAR -> VehicleSpec.MUSCLE;
+            case VehicleIds.ROCK_CRAWLER -> VehicleSpec.ROCK_CRAWLER;
+            case VehicleIds.MONSTER_TRUCK -> VehicleSpec.MONSTER_TRUCK;
+            case VehicleIds.INDY_CAR -> VehicleSpec.INDY;
+            case VehicleIds.BUS -> VehicleSpec.BUS;
+            case VehicleIds.CARGO_TRUCK -> VehicleSpec.CARGO_TRUCK;
+            default -> VehicleSpec.CAR;
+        };
+    }
+
+    /** This car's registry id (see {@link VehicleIds}) -- the stable key {@link CarRenderer} and this
+     * class's own model/collision branches must dispatch on instead of {@link #spec}'s identity, which a
+     * per-car config override can legitimately change without changing which car this is. */
+    String vehicleId() {
+        return vehicleId;
     }
 
     /** This vehicle's shape and drivetrain: the car's or the truck's. */
@@ -199,6 +256,7 @@ public class CarEntity extends Entity {
         builder.define(DATA_RADIO_URL, "");
         builder.define(DATA_SLIP, 0.0f);
         builder.define(DATA_WHEELS, new CompoundTag());
+        builder.define(DATA_RIDE_HEIGHT, 0.0f);
     }
 
     @Override
@@ -331,6 +389,15 @@ public class CarEntity extends Entity {
         return WheelSync.wheelCount(currentWheels);
     }
 
+    /** MINECRAFT-443: this car's AUTHORITATIVE ride height -- what {@link CarRenderer} must draw the body
+     * and wheels at, never {@link #spec}'s own {@code rideHeight()} (see {@link #DATA_RIDE_HEIGHT}'s own
+     * javadoc for why). On the server this is already {@code spec.rideHeight()}; on a client it starts at
+     * its own local stock guess and is corrected by the ordinary entity-data sync within a tick or two of
+     * tracking the entity. */
+    public float authoritativeRideHeight() {
+        return entityData.get(DATA_RIDE_HEIGHT);
+    }
+
     private float wheelField(int wheel, float partialTick, int field) {
         if (wheel >= syncedWheelCount()) {
             return 0.0f;
@@ -443,7 +510,7 @@ public class CarEntity extends Entity {
             boolean dirtOrSand = state.is(BlockTags.DIRT) || state.is(BlockTags.SAND);
             boolean glass = state.getBlock() instanceof TransparentBlock || state.getBlock() instanceof StainedGlassPaneBlock;
             ImpactRules.BlockImpactRoute route = ImpactRules.blockImpactRoute(
-                    spec == VehicleSpec.TRUCK, dirtOrSand, bamboo, breakable);
+                    VehicleModel.forId(vehicleId) == VehicleModel.TRUCK, dirtOrSand, bamboo, breakable);
 
             // Dynamic Terrain is the sole authority for loose terrain; it decides resistance and whether
             // material shifts downhill or degrades. This is selected before the truck-only return below,
@@ -455,7 +522,7 @@ public class CarEntity extends Entity {
 
             // The truck has a deliberately narrow vegetation interaction. It never gains the generic
             // block-breaking privilege merely by being heavier than a car.
-            if (spec == VehicleSpec.TRUCK) {
+            if (VehicleModel.forId(vehicleId) == VehicleModel.TRUCK) {
                 if (route == ImpactRules.BlockImpactRoute.TRUCK_BAMBOO) {
                     serverLevel.destroyBlock(pos, true, this);
                 }

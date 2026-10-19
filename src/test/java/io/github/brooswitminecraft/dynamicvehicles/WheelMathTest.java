@@ -37,6 +37,97 @@ class WheelMathTest {
         assertEquals(WheelMath.MAX_FORCE, WheelMath.suspensionForce(0.6, 50.0), 0);
     }
 
+    /** MINECRAFT-443 review fix (comment 48829): {@link WheelMath#compression} is the exact method {@code
+     * SableCarBody.tick}'s raycast loop calls to turn a wheel's own {@code VehicleSpec#restLength} (what a
+     * per-car {@code rideHeight} config override actually scales) and raycast distance into a spring
+     * compression -- not a parallel reimplementation of the formula. */
+    @Test
+    void compressionIsRestLengthMinusDistance() {
+        assertEquals(0.3, WheelMath.compression(0.65, 0.35), 1e-9);
+        assertEquals(-0.1, WheelMath.compression(0.65, 0.75), 1e-9);
+    }
+
+    /** The full production seam a rideHeight override reaches, end to end: {@link WheelMath#compression}
+     * feeding directly into {@link WheelMath#suspensionForce} (both the exact methods {@code
+     * SableCarBody.tick} calls), using the rock crawler's own real restLength/spring/damper numbers scaled
+     * exactly the way {@code VehicleSpecOverrides} scales them for a halved rideHeight override -- proving
+     * the scaled value still produces a sane, positive, uncapped suspension force at a representative
+     * resting distance, not just that the spec field holds the right number. */
+    @Test
+    void aRideHeightOverridesDerivedRestLengthMakesTheActualRestingHeightMatchIt() {
+        VehicleSpec stock = VehicleSpec.ROCK_CRAWLER;
+        double mountY = stock.mounts()[0][1];
+        double overriddenRideHeight = stock.rideHeight() / 2.0;
+        double derivedRestLength = WheelMath.restLengthForRideHeight(overriddenRideHeight, mountY,
+                stock.massKg(), stock.springRate(), stock.mounts().length);
+
+        // The exact raycast distance at the REQUESTED resting height (not an approximation): a wheel
+        // mounted mountY below the body centre, with the body centre sitting at overriddenRideHeight.
+        double distanceAtRequestedRideHeight = overriddenRideHeight + mountY;
+        double compression = WheelMath.compression(derivedRestLength, distanceAtRequestedRideHeight);
+        double force = WheelMath.suspensionForce(compression, 0.0, stock.springRate(), stock.dampingRate(),
+                stock.maxSpringForce());
+
+        // Review fix 48903's whole point: this must be the car's own exact per-wheel static load, not
+        // merely "some positive, uncapped force" -- proving the actual resting height really is the
+        // requested one, not merely close to it or still bottomed/floating relative to it.
+        double expectedStaticLoadPerWheel = stock.massKg() * WheelMath.GRAVITY / stock.mounts().length;
+        assertEquals(expectedStaticLoadPerWheel, force, expectedStaticLoadPerWheel * 1e-6);
+    }
+
+    /** MINECRAFT-443 review fix (comment 48829): {@link WheelMath#handbrakeForce} is the exact method
+     * {@code SableCarBody.tick}'s handbrake branch calls -- not a parallel reimplementation -- so a
+     * regression that silently dropped the {@code handbrakeScale} multiplication (the review's own
+     * example) fails this test, not just the pure parse/clamp test in {@code VehicleSpecOverridesTest}. */
+    @Test
+    void handbrakeForceAppliesForceScaleAndHandbrakeScale() {
+        double base = 12_000.0;
+        assertEquals(base, WheelMath.handbrakeForce(base, 1.0, 1.0), 1e-9, "identity scales must leave the base force unchanged");
+        assertEquals(base * 2.0 * 0.5, WheelMath.handbrakeForce(base, 2.0, 0.5), 1e-9);
+    }
+
+    /** MINECRAFT-443 review fix (comment 48913): {@link VehicleSpecLimits}' car-agnostic 0.1 m floor is
+     * not usable for every car -- it must be rejected per car by {@link WheelMath#isUsableRideHeight},
+     * using CAR's own real geometry (halfY 0.5, mount depth 0.4) as a concrete example. */
+    @Test
+    void lowRideHeightsThatIntersectTheChassisOrSinkTheMountAreNotUsable() {
+        double halfY = VehicleSpec.CAR.halfY();
+        double mountY = VehicleSpec.CAR.mounts()[0][1];
+        assertTrue(!WheelMath.isUsableRideHeight(0.1, halfY, mountY),
+                "0.1 m is below CAR's own halfY (0.5) and mount depth (0.4) -- must not be usable");
+        assertTrue(!WheelMath.isUsableRideHeight(halfY, halfY, mountY),
+                "exactly halfY leaves the chassis bottom AT the ground, not clear of it");
+        assertTrue(WheelMath.isUsableRideHeight(0.9, halfY, mountY), "CAR's own stock rideHeight must be usable");
+    }
+
+    /** Every existing car's own per-car rideHeight floor (`max(halfY, |mountY|)`), pinned so
+     * docs/per-car-config.md's documented per-car floor table cannot silently drift from the real
+     * geometry it is computed from. */
+    @Test
+    void everyExistingCarsRideHeightFloorMatchesItsDocumentedValue() {
+        assertRideHeightFloor("car", VehicleSpec.CAR, 0.5);
+        assertRideHeightFloor("truck", VehicleSpec.TRUCK, 0.65);
+        assertRideHeightFloor("trophy_truck", VehicleSpec.TROPHY, 0.5);
+        assertRideHeightFloor("drift_car", VehicleSpec.DRIFT, 0.42);
+        assertRideHeightFloor("muscle_car", VehicleSpec.MUSCLE, 0.5);
+        assertRideHeightFloor("rock_crawler", VehicleSpec.ROCK_CRAWLER, 0.6);
+        assertRideHeightFloor("monster_truck", VehicleSpec.MONSTER_TRUCK, 0.75);
+        assertRideHeightFloor("indy_car", VehicleSpec.INDY, 0.35);
+        assertRideHeightFloor("bus", VehicleSpec.BUS, 0.9);
+        assertRideHeightFloor("cargo_truck", VehicleSpec.CARGO_TRUCK, 0.75);
+    }
+
+    private static void assertRideHeightFloor(String id, VehicleSpec spec, double documentedFloor) {
+        double floor = Math.max(spec.halfY(), -spec.mounts()[0][1]);
+        assertEquals(documentedFloor, floor, 1e-9, id + "'s rideHeight floor (docs/per-car-config.md)");
+        assertTrue(!WheelMath.isUsableRideHeight(floor, spec.halfY(), spec.mounts()[0][1]),
+                id + ": exactly at the floor must not be usable (strictly greater is required)");
+        assertTrue(WheelMath.isUsableRideHeight(floor + 0.01, spec.halfY(), spec.mounts()[0][1]),
+                id + ": just above the floor must be usable");
+        assertTrue(WheelMath.isUsableRideHeight(spec.rideHeight(), spec.halfY(), spec.mounts()[0][1]),
+                id + ": its own stock rideHeight must always be usable");
+    }
+
     private static final double N = 2943.0; // a quarter of the car at rest
     private static final double DT = 0.05;
 

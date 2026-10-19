@@ -29,6 +29,9 @@ public final class WheelMath {
     /** Rotational inertia of one wheel+tire about its axle, kg*m^2: a plain number for a ~0.35 m wheel, shared by every vehicle (not a per-spec tuning knob; MINECRAFT-75 owns tuning). */
     public static final double WHEEL_INERTIA = 1.2;
 
+    /** m/s^2, matching {@code SableCarBody}'s own private constant of the same value. */
+    public static final double GRAVITY = 9.81;
+
     private WheelMath() {}
 
     /**
@@ -139,13 +142,42 @@ public final class WheelMath {
      * Sable/Minecraft bootstrap, the same way {@link #suspensionForce} already is.
      *
      * @param restLength metres from a wheel mount to the ground at which the spring is unloaded
-     *        ({@code VehicleSpec#restLength}, scaled by {@code VehicleSpecOverrides} with any
-     *        {@code rideHeight} override)
+     *        ({@code VehicleSpec#restLength}, derived by {@code VehicleSpecOverrides} from any
+     *        {@code rideHeight} override via {@link #restLengthForRideHeight})
      * @param distance metres from the wheel mount to the raycast hit (the ground)
      * @return metres the spring is shorter than {@code restLength} (negative: not touching)
      */
     public static double compression(double restLength, double distance) {
         return restLength - distance;
+    }
+
+    /**
+     * MINECRAFT-443 review fix (comment 48903): the {@code restLength} a {@code rideHeight} config
+     * override must produce so the car's ACTUAL static resting height (where spring force balances its
+     * own static per-wheel load, {@link #suspensionForce}'s {@code compression * springRate} at zero
+     * compression rate) equals the REQUESTED {@code rideHeight} -- not a value merely proportional to the
+     * stock {@code restLength}, which {@link #compression}'s own geometry (restLength, mount height and
+     * static sag are not related by a common ratio) does not preserve. Validated against every existing
+     * car's own stock {@code rideHeight}/{@code restLength}/{@code massKg}/{@code springRate}/mount-height
+     * numbers landing on that car's own stock {@code restLength} exactly (see {@code WheelMathTest}).
+     *
+     * <p>Derivation: at rest, {@code distance = rideHeight + mountY} (mountY is negative: the mount sits
+     * below the body centre {@code VehicleSpec#mounts()} describes), and {@code compression = restLength
+     * - distance} must equal the static compression that makes {@code springRate * compression} carry
+     * this wheel's even share of the car's weight: {@code massKg * GRAVITY / wheelCount / springRate}.
+     * Solving for {@code restLength} gives this method's return value.
+     *
+     * @param rideHeight the REQUESTED resting height, metres (the config override's own value)
+     * @param mountY this car's wheel mount height in the body frame, metres (negative; {@code
+     *        VehicleSpec#mounts()[wheel][1]}, uniform across every existing car's own four wheels)
+     * @param massKg {@code VehicleSpec#massKg} (not file-overridable, so always the stock value)
+     * @param springRate {@code VehicleSpec#springRate} (likewise always stock)
+     * @param wheelCount {@code VehicleSpec#mounts().length}
+     */
+    public static double restLengthForRideHeight(double rideHeight, double mountY, double massKg,
+            double springRate, int wheelCount) {
+        double staticCompression = massKg * GRAVITY / wheelCount / springRate;
+        return rideHeight + mountY + staticCompression;
     }
 
     /**

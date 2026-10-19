@@ -48,7 +48,7 @@ Every field is optional; an absent field keeps that car's stock value.
 
 | Key | Unit | Range | Notes |
 |---|---|---|---|
-| `rideHeight` | metres | 0.1 – 5.0 | Body-centre height above the ground at rest. Also scales `restLength` by the same ratio, so the suspension's rest geometry moves with it instead of leaving the car floating at its old height or a spring that cannot reach the new one. |
+| `rideHeight` | metres | 0.1 – 5.0 | Body-centre height above the ground at rest. Also derives a new `restLength` from the car's own spring-equilibrium physics (not a simple ratio scale), so the car's ACTUAL resting height ends up equal to this requested value rather than floating or sinking relative to it. |
 | `dampingRate` | N·s/m | 0.0 – 40,000.0 | Suspension damper rate. |
 | `antiRollScale` | multiplier | 0.0 – 5.0 | Identity 1.0; see `VehicleSpec#antiRollScale`. |
 | `rollingScale` | multiplier | 0.0 – 5.0 | Identity 1.0; soft-ground rolling resistance scale. |

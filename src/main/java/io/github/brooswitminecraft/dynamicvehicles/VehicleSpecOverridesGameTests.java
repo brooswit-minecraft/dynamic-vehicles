@@ -45,21 +45,24 @@ public final class VehicleSpecOverridesGameTests {
         });
     }
 
-    /** A real {@code rideHeight} override must move {@code restLength} with it by the same ratio (the
-     * reviewed "rideHeight left disconnected from suspension geometry" fix), observed through a real
-     * {@link CarEntity}'s own resolved {@link VehicleSpec} -- not by calling {@code resolve} directly -- so
-     * this exercises the exact constructor path {@code CarEntity} uses in production. */
+    /** A real {@code rideHeight} override must derive a {@code restLength} that makes the car's actual
+     * spring-equilibrium resting height equal the requested value (review fix 48903; a naive ratio-scaled
+     * restLength does not), observed through a real {@link CarEntity}'s own resolved {@link VehicleSpec}
+     * -- not by calling {@code resolve} directly -- so this exercises the exact constructor path
+     * {@code CarEntity} uses in production. */
     @GameTest(template = "settlement_test")
-    public static void aRideHeightOverrideScalesRestLengthByTheSameRatio(GameTestHelper helper) {
+    public static void aRideHeightOverrideDerivesARestLengthForThatActualRestingHeight(GameTestHelper helper) {
         double requestedRideHeight = VehicleSpec.ROCK_CRAWLER.rideHeight() / 2.0;
         withLoadedOverride(VehicleIds.ROCK_CRAWLER, "{\"rideHeight\": " + requestedRideHeight + "}", () -> {
             CarEntity crawler = helper.spawn(DynamicVehiclesMod.ROCK_CRAWLER.get(), new BlockPos(5, 3, 5));
-            double expectedRestLength = VehicleSpec.ROCK_CRAWLER.restLength() * 0.5;
+            double expectedRestLength = WheelMath.restLengthForRideHeight(requestedRideHeight,
+                    VehicleSpec.ROCK_CRAWLER.mounts()[0][1], VehicleSpec.ROCK_CRAWLER.massKg(),
+                    VehicleSpec.ROCK_CRAWLER.springRate(), VehicleSpec.ROCK_CRAWLER.mounts().length);
             helper.assertTrue(Math.abs(crawler.spec().rideHeight() - requestedRideHeight) < 1e-9,
                     "spawned rock crawler did not receive the overridden rideHeight");
             helper.assertTrue(Math.abs(crawler.spec().restLength() - expectedRestLength) < 1e-9,
-                    "restLength did not scale with the rideHeight override: expected " + expectedRestLength
-                            + " got " + crawler.spec().restLength());
+                    "restLength was not derived from the actual spring-equilibrium physics: expected "
+                            + expectedRestLength + " got " + crawler.spec().restLength());
             // MINECRAFT-443 review fix (comment 48876): CarRenderer must never draw from spec.rideHeight()
             // (always stock on a logical client) -- authoritativeRideHeight() is the synced value it
             // actually uses, and on this same logical server it must already equal the override.

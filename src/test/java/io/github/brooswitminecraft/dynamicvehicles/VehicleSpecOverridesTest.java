@@ -67,10 +67,12 @@ class VehicleSpecOverridesTest {
         VehicleSpec resolved = VehicleSpecOverrides.resolve("rock_crawler", VehicleSpec.ROCK_CRAWLER);
 
         assertEquals(1.2, resolved.rideHeight());
-        // restLength must move with rideHeight by the same ratio (review fix): the rock crawler's stock
-        // restLength (2.0) scaled by the same 1.2/1.9 the ride height itself just moved by.
-        assertEquals(VehicleSpec.ROCK_CRAWLER.restLength() * (1.2 / VehicleSpec.ROCK_CRAWLER.rideHeight()),
-                resolved.restLength(), 1e-9);
+        // restLength must be re-derived from the actual spring-equilibrium physics (review fix 48903), not
+        // scaled by the old restLength's own ratio to the old rideHeight -- see WheelMath.restLengthForRideHeight.
+        double expectedRestLength = WheelMath.restLengthForRideHeight(1.2, VehicleSpec.ROCK_CRAWLER.mounts()[0][1],
+                VehicleSpec.ROCK_CRAWLER.massKg(), VehicleSpec.ROCK_CRAWLER.springRate(),
+                VehicleSpec.ROCK_CRAWLER.mounts().length);
+        assertEquals(expectedRestLength, resolved.restLength(), 1e-9);
         // 999.0 is out of VehicleSpecLimits' range -- clamped, not rejected outright.
         assertEquals(VehicleSpecLimits.MAX_ANTI_ROLL_SCALE, resolved.antiRollScale());
         assertEquals(0.9, resolved.vehicleTuning().lsdLockPercent());

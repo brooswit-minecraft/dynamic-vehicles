@@ -54,28 +54,25 @@ class WheelMathTest {
      * the scaled value still produces a sane, positive, uncapped suspension force at a representative
      * resting distance, not just that the spec field holds the right number. */
     @Test
-    void aHalvedRideHeightOverridesScaledRestLengthStillProducesASaneSuspensionForce() {
-        double stockRestLength = VehicleSpec.ROCK_CRAWLER.restLength();
-        double stockRideHeight = VehicleSpec.ROCK_CRAWLER.rideHeight();
-        double overriddenRideHeight = stockRideHeight / 2.0;
-        double scaledRestLength = stockRestLength * (overriddenRideHeight / stockRideHeight);
+    void aRideHeightOverridesDerivedRestLengthMakesTheActualRestingHeightMatchIt() {
+        VehicleSpec stock = VehicleSpec.ROCK_CRAWLER;
+        double mountY = stock.mounts()[0][1];
+        double overriddenRideHeight = stock.rideHeight() / 2.0;
+        double derivedRestLength = WheelMath.restLengthForRideHeight(overriddenRideHeight, mountY,
+                stock.massKg(), stock.springRate(), stock.mounts().length);
 
-        // A representative resting raycast distance for the NEW, lower ride height: the wheel sits at
-        // rest when the spring carries the car's static weight, which for this pure-math check is
-        // approximated the same way staticLoadGivesAboutQuarterOfTheCarsWeightAtFifteenCentimetres already
-        // does above -- a plausible, not-bottomed-out compression comfortably inside the new, shorter
-        // travel (scaledRestLength), not a value that assumes the old geometry.
-        double restingDistance = scaledRestLength - scaledRestLength * 0.2;
-        double compression = WheelMath.compression(scaledRestLength, restingDistance);
+        // The exact raycast distance at the REQUESTED resting height (not an approximation): a wheel
+        // mounted mountY below the body centre, with the body centre sitting at overriddenRideHeight.
+        double distanceAtRequestedRideHeight = overriddenRideHeight + mountY;
+        double compression = WheelMath.compression(derivedRestLength, distanceAtRequestedRideHeight);
+        double force = WheelMath.suspensionForce(compression, 0.0, stock.springRate(), stock.dampingRate(),
+                stock.maxSpringForce());
 
-        double force = WheelMath.suspensionForce(compression, 0.0,
-                VehicleSpec.ROCK_CRAWLER.springRate(), VehicleSpec.ROCK_CRAWLER.dampingRate(),
-                VehicleSpec.ROCK_CRAWLER.maxSpringForce());
-
-        assertTrue(compression > 0, "scaled restLength produced a negative compression at a realistic resting distance");
-        assertTrue(force > 0, "scaled restLength produced no suspension force at all");
-        assertTrue(force < VehicleSpec.ROCK_CRAWLER.maxSpringForce(),
-                "scaled restLength immediately clipped the suspension to its max force cap");
+        // Review fix 48903's whole point: this must be the car's own exact per-wheel static load, not
+        // merely "some positive, uncapped force" -- proving the actual resting height really is the
+        // requested one, not merely close to it or still bottomed/floating relative to it.
+        double expectedStaticLoadPerWheel = stock.massKg() * WheelMath.GRAVITY / stock.mounts().length;
+        assertEquals(expectedStaticLoadPerWheel, force, expectedStaticLoadPerWheel * 1e-6);
     }
 
     /** MINECRAFT-443 review fix (comment 48829): {@link WheelMath#handbrakeForce} is the exact method

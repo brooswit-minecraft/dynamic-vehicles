@@ -49,9 +49,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * single process-global map that must never leak a previous singleplayer session's overrides into a
  * later remote-server connection made from the same client process.
  *
- * <p>Overriding {@code rideHeight} also scales {@code restLength} by the same ratio, so the suspension's
- * own rest geometry moves with it instead of leaving the car floating at its old height or a spring that
- * cannot reach the new one.
+ * <p>Overriding {@code rideHeight} also derives a new {@code restLength} ({@link
+ * WheelMath#restLengthForRideHeight}, from the car's own spring-equilibrium physics, not a simple ratio
+ * scale of the stock value), so the car's ACTUAL static resting height ends up equal to the requested
+ * {@code rideHeight} -- not merely some other height, floating or sunk relative to what {@link CarRenderer}
+ * draws from {@link CarEntity#authoritativeRideHeight()}.
  *
  * <p>Missing file, a missing field within a file, or a file that fails to parse at all each fall back to
  * the car's stock default: missing/absent fields keep that field's stock value; a file that throws any
@@ -151,14 +153,15 @@ final class VehicleSpecOverrides {
         double rideHeight = file.rideHeight == null ? stock.rideHeight()
                 : VehicleSpecLimits.clamp(file.rideHeight, VehicleSpecLimits.MIN_RIDE_HEIGHT,
                         VehicleSpecLimits.MAX_RIDE_HEIGHT, stock.rideHeight());
-        // A rideHeight override must move the suspension's own rest geometry with it, or the car either
-        // floats at its old visual height (wheelCentreY only subtracts rideHeight, restLength is untouched)
-        // or the spring runs out of travel before reaching the new ride height. Scale restLength by the
-        // same ratio rideHeight itself just moved by, which keeps every car's existing ride-height/travel
-        // relationship (e.g. the rock crawler's restLength deliberately exceeding its rideHeight) intact
-        // under a uniform suspension lift/drop instead of reinventing a per-car travel curve.
+        // MINECRAFT-443 review fix (comment 48903): a naive ratio-scaled restLength does NOT make the car
+        // actually rest at the requested rideHeight -- restLength, mount height and static sag are not
+        // related by a common ratio across this roster (confirmed: proportional scaling put a requested
+        // 1.8 m CAR override's real resting height at 1.55 m, a 0.25 m sink under the renderer's drawn
+        // wheels). WheelMath.restLengthForRideHeight derives restLength from the actual spring-equilibrium
+        // physics instead, so the real resting height equals the requested one by construction.
         double restLength = rideHeight == stock.rideHeight() ? stock.restLength()
-                : stock.restLength() * (rideHeight / stock.rideHeight());
+                : WheelMath.restLengthForRideHeight(rideHeight, stock.mounts()[0][1], stock.massKg(),
+                        stock.springRate(), stock.mounts().length);
         double dampingRate = file.dampingRate == null ? stock.dampingRate()
                 : VehicleSpecLimits.clamp(file.dampingRate, VehicleSpecLimits.MIN_DAMPING_RATE,
                         VehicleSpecLimits.MAX_DAMPING_RATE, stock.dampingRate());

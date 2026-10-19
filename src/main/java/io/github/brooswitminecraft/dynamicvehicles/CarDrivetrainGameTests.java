@@ -234,6 +234,7 @@ public final class CarDrivetrainGameTests {
         double[] worstWheelSpinDeltaContactSpeed = {0.0};
         double[] worstWheelSpinDeltaForce = {0.0};
         double[] worstRpmConsistencyGap = {0.0};
+        double[] previousEngineRpm = {Double.NaN};
         for (long tick = 1; tick <= 50; tick++) {
             helper.runAfterDelay(tick, () -> {
                 // Review, round 5 (second pass): clientEngineRpmFraction() reads DATA_RPM, which
@@ -271,16 +272,28 @@ public final class CarDrivetrainGameTests {
                 // range "inconsistency" that had nothing to do with the drivetrain itself.
                 double[] wheelSpins = car.debugWheelSpins();
                 int wheelCount = Math.min(wheelSpins.length, previousWheelSpin.length);
+                // MINECRAFT-444: debugEngineRpm() is no longer a pure, instantaneous function of the prior
+                // wheel spin and gear ratio -- the engine now carries its OWN rotational inertia
+                // (DrivetrainMath.engineAngularVelocity), coupled to the wheel side only through a
+                // torque-limited clutch (DrivetrainMath.clutchTorque), exactly the genuine gap this ticket
+                // closes. Re-deriving "expectedRpm" from wheel spin alone (the old assertion here) would
+                // now be WRONG on a pinned, wheelspinning wall-launch like this one on purpose: the clutch
+                // can legitimately be slipping, so engine RPM and wheel-implied RPM are expected to diverge,
+                // not stay identical. What must still hold -- the same "faithful, internally consistent,
+                // not an independent value that could snap/reset out of step with the model" property the
+                // original round-5 review asked for -- is that debugEngineRpm() itself can only change as
+                // fast as the engine's own finite inertia and the engine/clutch torque bounds allow in one
+                // tick, the same kind of physically-bounded-rate check the wheelSpin delta below already
+                // makes, now applied to the engine side's own now-finite state instead of to an
+                // instantaneous snap that no longer exists to compare against.
                 if (haveWheelPrevious[0]) {
-                    double priorWheelSpinAvg = 0.0;
-                    for (int wheel = 0; wheel < wheelCount; wheel++) {
-                        priorWheelSpinAvg += Math.abs(previousWheelSpin[wheel]);
-                    }
-                    priorWheelSpinAvg /= Math.max(1, wheelCount);
-                    double expectedRpm = DrivetrainMath.clampRpm(DrivetrainMath.rawRpm(priorWheelSpinAvg, car.debugGearRatio()));
-                    double gap = Math.abs(car.debugEngineRpm() - expectedRpm);
+                    double worstCaseOmegaDeltaPerTick = (DrivetrainMath.ENGINE_PEAK_TORQUE + DrivetrainMath.CLUTCH_TORQUE_CAPACITY)
+                            / DrivetrainMath.ENGINE_INERTIA * (1.0 / 20.0);
+                    double maxRpmDeltaPerTick = DrivetrainMath.omegaToRpm(worstCaseOmegaDeltaPerTick);
+                    double gap = Math.abs(car.debugEngineRpm() - previousEngineRpm[0]) - maxRpmDeltaPerTick;
                     worstRpmConsistencyGap[0] = Math.max(worstRpmConsistencyGap[0], gap);
                 }
+                previousEngineRpm[0] = car.debugEngineRpm();
                 // Review, round 5: the actual WHEEL's own spin (not only the engine-side proxy) must also
                 // recover gradually -- DrivetrainMath.boundedSpinTowardSnap's own fix, observed here
                 // directly rather than through the client-sync accessor other tests use for rendering.
@@ -303,7 +316,7 @@ public final class CarDrivetrainGameTests {
         }
         helper.runAfterDelay(55L, () -> {
             helper.assertTrue(worstRpmConsistencyGap[0] < 1e-6,
-                    "debugEngineRpm() diverged from what DrivetrainMath itself computes from this tick's own wheel spin and gear ratio -- not internally consistent: worst gap="
+                    "debugEngineRpm() changed, in a single tick, by more than the engine's own finite inertia/torque/clutch-capacity bound allows -- not internally consistent: worst excess over the bound="
                             + worstRpmConsistencyGap[0] + " RPM");
             // Review, round 6 corrected what this bound was derived FROM, twice over:
             // 1) Round 5's own comment multiplied a single full-tick-dt estimate by up to 4

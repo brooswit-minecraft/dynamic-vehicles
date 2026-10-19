@@ -194,4 +194,143 @@ public final class DrivetrainMath {
         }
         return priorSpin + Math.copySign(maxChange, delta);
     }
+
+    // --- Clutch, engine inertia and engine-axis reaction torque (MINECRAFT-444) ---------------------
+    //
+    // Everything above this point treats the engine as having no state of its own: engineRpm/rawRpm are a
+    // pure, instantaneous function of the driven wheels' own spin, as if engine and wheels were welded
+    // together through the gear ratio with zero rotating mass on the engine's side of that joint. That is
+    // the genuine gap this ticket closes: the engine now carries its OWN angular speed
+    // ({@link #engineAngularVelocity}), driven by its own torque balance (throttle demand, engine braking,
+    // and whatever the clutch actually transmits -- {@link #clutchTorque}), and SableCarBody reads RPM
+    // from that integrated state instead of snapping it from wheel speed every tick. The clutch is the
+    // joint between the two: a torque-limited coupling, not a rigid one, so it can model engaged (locked,
+    // negligible relative speed), partial (saturated, slipping under more torque than it can hold) and
+    // disengaged (NEUTRAL, see SableCarBody's own NEUTRAL branch: no wheel-side speed to couple to at all)
+    // the way the acceptance criteria name them explicitly, rather than approximating all three with one
+    // softened snap.
+
+    /** Engine crankshaft rotational inertia about its own spin axis, kg*m^2 -- plain shared like
+     * {@link WheelMath#WHEEL_INERTIA}, not a per-car tuning knob: no vehicle here has a different engine. */
+    public static final double ENGINE_INERTIA = 0.18;
+
+    /** Peak torque the engine itself can produce at full throttle, before the clutch, N*m. */
+    public static final double ENGINE_PEAK_TORQUE = 420.0;
+
+    /** Torque a running engine applies against its OWN rotation once the throttle stops demanding more --
+     * compression/friction drag, not a brake on the wheels (that is {@code BRAKE_FORCE}, unrelated). Only
+     * opposes rotation that is actually happening; see {@link #engineAngularVelocity}'s own guard. */
+    public static final double ENGINE_BRAKING_TORQUE = 55.0;
+
+    /** Torque the clutch can transmit before it slips, N*m -- see {@link #clutchTorque}. */
+    public static final double CLUTCH_TORQUE_CAPACITY = 380.0;
+
+    /** rad/s -> RPM. */
+    public static double omegaToRpm(double omega) {
+        return omega * 60.0 / (2.0 * Math.PI);
+    }
+
+    /** RPM -> rad/s. */
+    public static double rpmToOmega(double rpm) {
+        return rpm * 2.0 * Math.PI / 60.0;
+    }
+
+    /**
+     * The drivetrain's own speed as seen AT THE ENGINE side of the clutch, rad/s: the driven wheel's
+     * angular speed multiplied up through {@code ratio} and {@link #FINAL_DRIVE}, the same scaling
+     * {@link #rawRpm} already applies on its way to RPM -- the quantity the clutch compares its own
+     * {@code engineOmega} against. Sign-independent (abs), for the same reason {@link #rawRpm} is: a fixed
+     * ratio spins the engine the same way regardless of which direction the wheel is actually turning.
+     */
+    public static double wheelSideOmega(double wheelAngularSpeed, double ratio) {
+        return Math.abs(wheelAngularSpeed) * ratio * FINAL_DRIVE;
+    }
+
+    /**
+     * Torque the engine itself tries to produce this tick, N*m, before the clutch: throttle-proportional,
+     * and already cut by {@link #limiterTorqueFactor} against the engine's OWN raw RPM -- a rev limiter
+     * cuts torque at the crank, not just at the wheel, so an engine spinning free (clutch slipping, or
+     * disengaged in NEUTRAL) still cannot rev itself past {@link #LIMITER_RPM} any more than one driving
+     * the wheels directly could. {@code throttle} is the car's signed accelerator-minus-brake value, like
+     * {@link #freeRevRpm}'s own argument -- the brake must read as zero demand here, not negative torque.
+     */
+    public static double engineDriveTorque(double throttle, double engineRawRpm) {
+        double accelerator = Math.max(0.0, Math.min(1.0, throttle));
+        return accelerator * ENGINE_PEAK_TORQUE * limiterTorqueFactor(engineRawRpm);
+    }
+
+    /**
+     * The clutch's own transmitted torque this (sub-)step, N*m, positive meaning FROM the engine TO the
+     * drivetrain (i.e. slowing the engine down, speeding the wheel side up).
+     *
+     * <p>Same technique {@link #boundedSpinTowardSnap} already uses at the wheel/ground contact, applied
+     * here to the engine/drivetrain joint instead: compute the torque that would land {@code engineOmega}
+     * EXACTLY on {@code wheelSideOmega} after this one (sub-)step (accounting for {@code engineTorque} and
+     * engine braking's own contribution to that same step), then clamp it to
+     * {@link #CLUTCH_TORQUE_CAPACITY}. Within capacity, that IS "engaged": the two sides land on a common
+     * speed this step, same as a real locked clutch plate turning as one with the flywheel. Clamped, the
+     * clutch instead transmits exactly its own maximum and the two sides are left with a genuine,
+     * continuing speed difference -- "partial coupling"/slip, the explicit state the acceptance criteria
+     * ask for, not an implicit side effect of some other bound.
+     *
+     * <p>A straightforward proportional ("stiff spring") controller toward zero relative speed was tried
+     * first and rejected: with {@link #ENGINE_INERTIA} this small and a tick's {@code dt} this large
+     * (1/20s in production), any gain stiff enough to lock within a couple of ticks overshoots on EVERY
+     * step under plain explicit-Euler integration (the relative-speed error's own per-step multiplier,
+     * {@code 1 - gain*dt/ENGINE_INERTIA}, falls below -1), so the "locked" case oscillates and grows
+     * instead of converging -- unconditionally unstable for any gain large enough to feel locked, not a
+     * tuning problem. Solving for the exact required torque (this method) has no such gain to overshoot:
+     * it is only ever bounded by the SAME capacity the slipping case already needs.
+     *
+     * @param engineOmega the engine's own angular speed this (sub-)step, rad/s
+     * @param wheelSideOmega {@link #wheelSideOmega}'s own result for the currently engaged ratio
+     * @param engineTorque this step's own {@link #engineDriveTorque}, N*m -- the clutch's own target
+     *        accounts for it landing exactly on wheelSideOmega together with everything else moving
+     *        engineOmega this step, not for the clutch alone against a frozen engine
+     * @param dt this (sub-)step's own duration, seconds
+     */
+    public static double clutchTorque(double engineOmega, double wheelSideOmega, double engineTorque, double dt) {
+        double braking = engineOmega > 0.0 ? ENGINE_BRAKING_TORQUE : 0.0;
+        double netTorqueBeforeClutch = engineTorque - braking;
+        double requiredTorque = netTorqueBeforeClutch - (wheelSideOmega - engineOmega) * ENGINE_INERTIA / dt;
+        return Math.max(-CLUTCH_TORQUE_CAPACITY, Math.min(CLUTCH_TORQUE_CAPACITY, requiredTorque));
+    }
+
+    /**
+     * Advances the engine's own angular speed one (sub-)step, rad/s: net torque -- {@code engineTorque}
+     * (the engine's own throttle demand) minus engine braking (only while the engine is actually turning;
+     * nothing to brake against a stalled one) minus whatever {@code clutchTorque} the clutch is drawing
+     * off toward the drivetrain -- divided by {@link #ENGINE_INERTIA}, integrated over {@code dt}. This IS
+     * the engine's rotational-inertia state (MINECRAFT-444): it no longer snaps to whatever the wheels
+     * imply, it accelerates/decelerates at a rate its own stored angular momentum bounds, exactly like
+     * {@link WheelMath#WHEEL_INERTIA} already bounds a wheel's own spin. Floored at 0: this model has no
+     * reverse-spinning engine -- a stalled engine sits at 0, it does not run backwards.
+     */
+    public static double engineAngularVelocity(double priorOmega, double engineTorque, double clutchTorque,
+            double dt) {
+        double braking = priorOmega > 0.0 ? ENGINE_BRAKING_TORQUE : 0.0;
+        double netTorque = engineTorque - braking - clutchTorque;
+        return Math.max(0.0, priorOmega + netTorque / ENGINE_INERTIA * dt);
+    }
+
+    /**
+     * Engine-axis reaction torque this (sub-)step, N*m -- Newton's third law for the engine's own spinning
+     * mass: whatever net torque actually changed {@code engineOmega} this step ({@code engineTorque} minus
+     * braking minus {@code clutchTorque}, the identical quantity {@link #engineAngularVelocity} integrates)
+     * pushes back on whatever the engine is bolted to with the OPPOSITE sign, about the engine's own spin
+     * axis. Unlike the ground-sourced wheel recovery reaction ({@link #boundedSpinTowardSnap}'s own
+     * caller-applied reaction, which needs a wheel in contact with the ground to exist at all), this is
+     * independent of gear, wheel contact or ground: a dyno'd engine with its wheels in the air still
+     * torques its own mounts exactly this hard. Deliberately NOT a function of which gear is selected --
+     * REVERSE changes which way torque leaves the clutch toward the final drive, it does not reverse which
+     * way the crankshaft itself spins, so a caller must pass the same {@code engineTorque}/
+     * {@code clutchTorque} sign convention regardless of gear and let this reaction track the engine's own
+     * net torque alone (MINECRAFT-444 acceptance: "selecting reverse must not flip the engine torque
+     * axis").
+     */
+    public static double engineReactionTorque(double priorOmega, double engineTorque, double clutchTorque) {
+        double braking = priorOmega > 0.0 ? ENGINE_BRAKING_TORQUE : 0.0;
+        double netTorque = engineTorque - braking - clutchTorque;
+        return -netTorque;
+    }
 }

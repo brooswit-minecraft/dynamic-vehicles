@@ -98,6 +98,21 @@ class VehicleSpecOverridesTest {
         assertEquals(VehicleSpec.TRUCK.rideHeight(), resolved.rideHeight());
     }
 
+    /** MINECRAFT-443 review fix (comment 48913): VehicleSpecLimits' global 0.1 m floor is inside its own
+     * documented 0.1-5.0 m range but not usable for CAR's own geometry (halfY 0.5, mount depth 0.4) --
+     * must fall back to CAR's exact stock rideHeight/restLength pair entirely, not clamp to 0.1 and feed
+     * it to restLengthForRideHeight anyway (which would return a negative, degenerate restLength). */
+    @Test
+    void aRideHeightBelowThisCarsOwnGeometryFloorFallsBackToStockEntirely(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", "{\"rideHeight\": 0.1}");
+
+        VehicleSpecOverrides.load(configDir);
+        VehicleSpec resolved = VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR);
+
+        assertEquals(VehicleSpec.CAR.rideHeight(), resolved.rideHeight());
+        assertEquals(VehicleSpec.CAR.restLength(), resolved.restLength());
+    }
+
     @Test
     void restLengthStaysStockWhenRideHeightIsNotOverridden(@TempDir Path configDir) throws IOException {
         writeCarsFile(configDir, "rock_crawler", "{\"antiRollScale\": 1.0}");

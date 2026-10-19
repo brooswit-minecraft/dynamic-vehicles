@@ -48,7 +48,7 @@ Every field is optional; an absent field keeps that car's stock value.
 
 | Key | Unit | Range | Notes |
 |---|---|---|---|
-| `rideHeight` | metres | 0.1 – 5.0 | Body-centre height above the ground at rest. Also derives a new `restLength` from the car's own spring-equilibrium physics (not a simple ratio scale), so the car's ACTUAL resting height ends up equal to this requested value rather than floating or sinking relative to it. |
+| `rideHeight` | metres | 0.1 – 5.0, AND per-car geometry (see below) | Body-centre height above the ground at rest. Also derives a new `restLength` from the car's own spring-equilibrium physics (not a simple ratio scale), so the car's ACTUAL resting height ends up equal to this requested value rather than floating or sinking relative to it. |
 | `dampingRate` | N·s/m | 0.0 – 40,000.0 | Suspension damper rate. |
 | `antiRollScale` | multiplier | 0.0 – 5.0 | Identity 1.0; see `VehicleSpec#antiRollScale`. |
 | `rollingScale` | multiplier | 0.0 – 5.0 | Identity 1.0; soft-ground rolling resistance scale. |
@@ -62,6 +62,21 @@ Every field is optional; an absent field keeps that car's stock value.
 Ranges live in code as `VehicleSpecLimits` (the first five) and the pre-existing
 `VehicleTuningLimits` (the last five, shared with the in-game per-entity tuning
 command).
+
+**`rideHeight`'s actual accepted range is narrower than 0.1 – 5.0 for every
+car**, and differs per car: `VehicleSpecLimits`' 0.1 – 5.0 is a car-agnostic
+outer bound, but a value inside it can still be physically unusable for a
+specific car's own geometry — too low for its own wheel-mount depth or body
+half-height (`WheelMath#isUsableRideHeight`: the requested value must exceed
+both `halfY` and the mount's own depth below the body centre). A request that
+fails this check falls back to that car's stock `rideHeight`/`restLength`
+pair entirely (logged), the same as any other invalid field in this schema —
+it is not silently clamped to the nearest usable value. Concretely, as of
+this writing the per-car floor is: `car` 0.5, `truck` 0.65, `trophy_truck`
+0.5, `drift_car` 0.42, `muscle_car` 0.5, `rock_crawler` 0.6, `monster_truck`
+0.75, `indy_car` 0.35, `bus` 0.9, `cargo_truck` 0.75 (each is `max(halfY,
+|mountY|)` for that car, both internal geometry constants, never
+file-overridable).
 
 ### Every existing car's stock default, for every field above
 

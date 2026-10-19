@@ -157,9 +157,17 @@ public final class WheelMath {
      * own static per-wheel load, {@link #suspensionForce}'s {@code compression * springRate} at zero
      * compression rate) equals the REQUESTED {@code rideHeight} -- not a value merely proportional to the
      * stock {@code restLength}, which {@link #compression}'s own geometry (restLength, mount height and
-     * static sag are not related by a common ratio) does not preserve. Validated against every existing
-     * car's own stock {@code rideHeight}/{@code restLength}/{@code massKg}/{@code springRate}/mount-height
-     * numbers landing on that car's own stock {@code restLength} exactly (see {@code WheelMathTest}).
+     * static sag are not related by a common ratio) does not preserve.
+     *
+     * <p>This is NOT claimed to reproduce every existing car's own stock {@code restLength} when called
+     * with that car's own stock {@code rideHeight} (review fix 48913's correction of an earlier, wrong
+     * claim here): only CAR, TRUCK, TROPHY and MUSCLE's stock numbers happen to already satisfy this
+     * equilibrium exactly (see {@code WheelMathTest}); DRIFT, ROCK_CRAWLER, MONSTER_TRUCK, INDY, BUS and
+     * CARGO_TRUCK's stock pairings do not (hand-tuned/rounded, not derived). That is expected and fine --
+     * this method is only ever called with a NEWLY REQUESTED {@code rideHeight} from an actual override,
+     * never with a car's own unmodified stock value (see the {@code rideHeight == stock.rideHeight()}
+     * guard in {@code VehicleSpecOverrides#applyOverride}), so no existing car's stock pairing needs to
+     * satisfy this formula for the override case to be correct.
      *
      * <p>Derivation: at rest, {@code distance = rideHeight + mountY} (mountY is negative: the mount sits
      * below the body centre {@code VehicleSpec#mounts()} describes), and {@code compression = restLength
@@ -178,6 +186,31 @@ public final class WheelMath {
             double springRate, int wheelCount) {
         double staticCompression = massKg * GRAVITY / wheelCount / springRate;
         return rideHeight + mountY + staticCompression;
+    }
+
+    /**
+     * MINECRAFT-443 review fix (comment 48913): {@link VehicleSpecLimits}' own {@code rideHeight} range
+     * (0.1 - 5.0 m) is car-agnostic, but a {@code rideHeight} this low is not usable for every car: {@link
+     * #restLengthForRideHeight} can return a negative or near-zero {@code restLength} once {@code
+     * rideHeight} is smaller than this car's own mount depth, and {@code SableCarBody.tick}'s raycast
+     * (length {@code restLength + 0.25}) can even reverse direction once that goes negative enough. A
+     * {@code rideHeight} at or below this car's own {@code halfY} also sinks the chassis itself into the
+     * ground, independent of suspension entirely.
+     *
+     * <p>The exact, sufficient condition for a physically sane result: the wheel mount must end up above
+     * ground at rest ({@code rideHeight + mountY > 0}, i.e. {@code rideHeight > -mountY}), which alone
+     * guarantees {@code restLengthForRideHeight} returns a value strictly greater than the (always
+     * positive) static compression; and the chassis bottom must clear the ground ({@code rideHeight >
+     * halfY}). Both are per-car geometry constants (never file-overridable), so this check is itself
+     * independent of anything a config file could possibly request.
+     *
+     * @param rideHeight the REQUESTED resting height, metres
+     * @param halfY {@code VehicleSpec#halfY} -- half the body's own height
+     * @param mountY {@code VehicleSpec#mounts()[wheel][1]} (negative)
+     * @return whether {@code rideHeight} is usable for a car with this geometry
+     */
+    public static boolean isUsableRideHeight(double rideHeight, double halfY, double mountY) {
+        return rideHeight > halfY && rideHeight > -mountY;
     }
 
     /**

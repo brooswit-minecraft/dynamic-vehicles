@@ -109,7 +109,7 @@ final class VehicleSpecOverrides {
                 String json = Files.readString(file);
                 VehicleCarConfigFile parsed = GSON.fromJson(json, VehicleCarConfigFile.class);
                 if (parsed != null) {
-                    resolved.put(id, applyOverride(stock, parsed));
+                    resolved.put(id, applyOverride(id, stock, parsed));
                     LOGGER.info("dynamicvehicles: loaded per-car config override for '{}'", id);
                 }
             } catch (IOException | JsonSyntaxException e) {
@@ -149,16 +149,31 @@ final class VehicleSpecOverrides {
     /** Builds the effective spec: every field from {@code stock} except the ones {@code file} actually
      * set, which are clamped into {@link VehicleSpecLimits}'/{@link VehicleTuningLimits}' safe range
      * (falling back to {@code stock}'s own value for that one field if the supplied number is non-finite). */
-    private static VehicleSpec applyOverride(VehicleSpec stock, VehicleCarConfigFile file) {
-        double rideHeight = file.rideHeight == null ? stock.rideHeight()
+    private static VehicleSpec applyOverride(String id, VehicleSpec stock, VehicleCarConfigFile file) {
+        double requestedRideHeight = file.rideHeight == null ? stock.rideHeight()
                 : VehicleSpecLimits.clamp(file.rideHeight, VehicleSpecLimits.MIN_RIDE_HEIGHT,
                         VehicleSpecLimits.MAX_RIDE_HEIGHT, stock.rideHeight());
+        // MINECRAFT-443 review fix (comment 48913): VehicleSpecLimits' rideHeight range is car-agnostic,
+        // but a value inside that range can still be unusable for THIS car's own geometry -- too low for
+        // its own mount depth or body half-height, which WheelMath.restLengthForRideHeight (see its own
+        // javadoc) turns into a negative/degenerate restLength rather than a merely-extreme one. Falling
+        // back the WHOLE rideHeight/restLength pair to stock (not just clamping harder) for a car whose
+        // geometry cannot support the requested value keeps this failure mode identical to every other
+        // "reject the whole file" fallback in this loader.
+        boolean usable = WheelMath.isUsableRideHeight(requestedRideHeight, stock.halfY(), stock.mounts()[0][1]);
+        if (!usable && file.rideHeight != null) {
+            LOGGER.warn("dynamicvehicles: '{}' rideHeight {} is not usable for this car's own geometry "
+                    + "(halfY {}, mount height {}); keeping its stock rideHeight/restLength",
+                    id, requestedRideHeight, stock.halfY(), stock.mounts()[0][1]);
+        }
+        double rideHeight = usable ? requestedRideHeight : stock.rideHeight();
         // MINECRAFT-443 review fix (comment 48903): a naive ratio-scaled restLength does NOT make the car
         // actually rest at the requested rideHeight -- restLength, mount height and static sag are not
         // related by a common ratio across this roster (confirmed: proportional scaling put a requested
         // 1.8 m CAR override's real resting height at 1.55 m, a 0.25 m sink under the renderer's drawn
         // wheels). WheelMath.restLengthForRideHeight derives restLength from the actual spring-equilibrium
-        // physics instead, so the real resting height equals the requested one by construction.
+        // physics instead, so the real resting height equals the requested one by construction -- only
+        // ever reached once isUsableRideHeight above has already ruled out a negative/degenerate result.
         double restLength = rideHeight == stock.rideHeight() ? stock.restLength()
                 : WheelMath.restLengthForRideHeight(rideHeight, stock.mounts()[0][1], stock.massKg(),
                         stock.springRate(), stock.mounts().length);

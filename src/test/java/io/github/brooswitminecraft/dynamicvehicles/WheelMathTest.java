@@ -86,6 +86,48 @@ class WheelMathTest {
         assertEquals(base * 2.0 * 0.5, WheelMath.handbrakeForce(base, 2.0, 0.5), 1e-9);
     }
 
+    /** MINECRAFT-443 review fix (comment 48913): {@link VehicleSpecLimits}' car-agnostic 0.1 m floor is
+     * not usable for every car -- it must be rejected per car by {@link WheelMath#isUsableRideHeight},
+     * using CAR's own real geometry (halfY 0.5, mount depth 0.4) as a concrete example. */
+    @Test
+    void lowRideHeightsThatIntersectTheChassisOrSinkTheMountAreNotUsable() {
+        double halfY = VehicleSpec.CAR.halfY();
+        double mountY = VehicleSpec.CAR.mounts()[0][1];
+        assertTrue(!WheelMath.isUsableRideHeight(0.1, halfY, mountY),
+                "0.1 m is below CAR's own halfY (0.5) and mount depth (0.4) -- must not be usable");
+        assertTrue(!WheelMath.isUsableRideHeight(halfY, halfY, mountY),
+                "exactly halfY leaves the chassis bottom AT the ground, not clear of it");
+        assertTrue(WheelMath.isUsableRideHeight(0.9, halfY, mountY), "CAR's own stock rideHeight must be usable");
+    }
+
+    /** Every existing car's own per-car rideHeight floor (`max(halfY, |mountY|)`), pinned so
+     * docs/per-car-config.md's documented per-car floor table cannot silently drift from the real
+     * geometry it is computed from. */
+    @Test
+    void everyExistingCarsRideHeightFloorMatchesItsDocumentedValue() {
+        assertRideHeightFloor("car", VehicleSpec.CAR, 0.5);
+        assertRideHeightFloor("truck", VehicleSpec.TRUCK, 0.65);
+        assertRideHeightFloor("trophy_truck", VehicleSpec.TROPHY, 0.5);
+        assertRideHeightFloor("drift_car", VehicleSpec.DRIFT, 0.42);
+        assertRideHeightFloor("muscle_car", VehicleSpec.MUSCLE, 0.5);
+        assertRideHeightFloor("rock_crawler", VehicleSpec.ROCK_CRAWLER, 0.6);
+        assertRideHeightFloor("monster_truck", VehicleSpec.MONSTER_TRUCK, 0.75);
+        assertRideHeightFloor("indy_car", VehicleSpec.INDY, 0.35);
+        assertRideHeightFloor("bus", VehicleSpec.BUS, 0.9);
+        assertRideHeightFloor("cargo_truck", VehicleSpec.CARGO_TRUCK, 0.75);
+    }
+
+    private static void assertRideHeightFloor(String id, VehicleSpec spec, double documentedFloor) {
+        double floor = Math.max(spec.halfY(), -spec.mounts()[0][1]);
+        assertEquals(documentedFloor, floor, 1e-9, id + "'s rideHeight floor (docs/per-car-config.md)");
+        assertTrue(!WheelMath.isUsableRideHeight(floor, spec.halfY(), spec.mounts()[0][1]),
+                id + ": exactly at the floor must not be usable (strictly greater is required)");
+        assertTrue(WheelMath.isUsableRideHeight(floor + 0.01, spec.halfY(), spec.mounts()[0][1]),
+                id + ": just above the floor must be usable");
+        assertTrue(WheelMath.isUsableRideHeight(spec.rideHeight(), spec.halfY(), spec.mounts()[0][1]),
+                id + ": its own stock rideHeight must always be usable");
+    }
+
     private static final double N = 2943.0; // a quarter of the car at rest
     private static final double DT = 0.05;
 

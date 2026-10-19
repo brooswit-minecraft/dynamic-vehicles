@@ -365,6 +365,25 @@ public final class TownConstructionService {
                     continue;
                 }
             }
+            // [Review round 14, finding #1] "Handle the actual Builder-to-final-site transition" -
+            // but BEFORE the campfire (the site's own sole discoverable anchor; see
+            // findClaimedCampfireSites) is ever allowed to close. Reaching this point for pos ==
+            // campfire means literally every OTHER planned cell already matches (bottomUpOrder /
+            // hasUnplacedBlocksBefore above), i.e. this closing placement is the LAST thing the site
+            // needs - exactly the moment reservation must succeed BEFORE the anchor disappears.
+            // Closing first and reserving after (the round-12/13 shape) could leave a contested
+            // fixture in a terminal, un-retryable state: once the campfire is gone, no later
+            // production tick ever calls buildAt for this site again, regardless of what the handoff
+            // itself then decided to do. A contested destination here simply skips this one cell for
+            // this tick - the campfire (and the claim) stay fully intact - so the very next tick
+            // naturally retries, with no separate pending-handoff bookkeeping needed at all.
+            Optional<ReservedHandoff> reservedHandoff = Optional.empty();
+            if (pos.equals(campfire)) {
+                reservedHandoff = tryReserveHandoffDestinations(level, campfire, floorY, kind, finalProfession);
+                if (reservedHandoff.isEmpty()) {
+                    continue;
+                }
+            }
             // [Review round 2, finding #3] Debit only AFTER a confirmed placement: first check
             // affordability (a non-mutating peek, never itself a charge), attempt the mutation, and
             // re-read the block to confirm it actually landed before the store is ever touched. A
@@ -380,7 +399,13 @@ public final class TownConstructionService {
             boolean mutated = level.setBlock(pos, placement.state(), net.minecraft.world.level.block.Block.UPDATE_ALL);
             if (!mutated || !level.getBlockState(pos).is(placement.block())) {
                 // The mutation was rejected (or silently failed) - nothing was placed, so nothing
-                // is charged; try again next tick rather than aborting the whole site.
+                // is charged; try again next tick rather than aborting the whole site. Any
+                // reservation already secured above is simply held for the next attempt - the next
+                // placement attempt will either close the campfire with this SAME reservation once
+                // it finally lands, or this loop runs again from scratch next tick.
+                if (reservedHandoff.isPresent()) {
+                    releaseReservedHandoff(level, reservedHandoff.get());
+                }
                 continue;
             }
             if (!alreadyPlaced) {
@@ -388,67 +413,44 @@ public final class TownConstructionService {
             }
             storage.markCellPlaced(level.dimension(), pos, siteOwner, signature);
             placedThisTick++;
+            if (reservedHandoff.isPresent()) {
+                // The campfire closure just landed with every destination already secured - the
+                // site is now genuinely, completely finished.
+                commitClaimantLifecycle(level, claimant, finalProfession, reservedHandoff.get());
+                // The persisted floor commitment has served its purpose once the site is actually done.
+                storage.clearFloor(siteOwner);
+            }
         }
         if (placedThisTick > 0) {
             storage.setDirty();
         }
-
-        // [Review round 3, finding #5 / round 4, finding #8] "Handle the actual Builder-to-final-
-        // site transition": once every planned cell (the former campfire cell included) actually
-        // matches the finished build, this claimant's temporary Builder job here is done. A
-        // commercial/industrial site hands the claimant off to the zone's own real final profession
-        // (job-site memory pointed at the real vanilla workstation this same template just built,
-        // per {@link TownBuildingTemplates#workstationPosition}) rather than releasing it to NONE
-        // with nothing real to do there; a residential/storehouse site (no workplace to hand off
-        // to) still releases the claimant to NONE so vanilla can let it pick up a fresh job site
-        // elsewhere.
-        if (claimant.isAlive() && isSiteFullyBuilt(level, template)) {
-            finishClaimantLifecycle(level, claimant, campfire, floorY, kind, finalProfession);
-            // The persisted floor commitment has served its purpose once the site is actually done.
-            storage.clearFloor(siteOwner);
-        }
     }
 
+    /** The destinations a claimant's handoff needs, once every one of them has actually been
+     *  reserved (a real POI ticket held) - see {@link #tryReserveHandoffDestinations}. Either field
+     *  may be {@code null} when this kind/profession combination does not need it. */
+    private record ReservedHandoff(BlockPos workstationPos, BlockPos bedPos) {}
+
     /**
-     * MINECRAFT-388 review round 12/13/14, finding #1: the Builder-to-final-site handoff must go
-     * through the SAME real POI reservation machinery vanilla itself uses, not a raw memory/
-     * profession overwrite alone - and must actually honour that machinery's own result:
-     * <ul>
-     *   <li>[Round 13] A fixture already reserved by someone else (contention) must never be
-     *       double-assigned - {@code JOB_SITE}/{@code HOME} are only written once the ticket is
-     *       actually acquired, never unconditionally.</li>
-     *   <li>[Round 14] Reservation is now ALL-OR-NOTHING: every required fixture (workstation when
-     *       there is a final profession, bed when this kind has one) is reserved FIRST, before
-     *       anything else is committed. If any required reservation fails, every ticket already
-     *       taken this attempt is rolled back and NOTHING is committed at all - profession, JOB_SITE,
-     *       HOME, XP and level are all left exactly as they were. The claimant stays Builder, still
-     *       claiming this exact campfire, so the next tick's {@link #buildAt} call simply retries
-     *       the whole handoff again once the contested fixture frees up - never a terminal, claimless,
-     *       half-handed-off state with no way back.</li>
-     *   <li>[Round 13] {@code HOME} is never blindly erased: a kind with no bed of its own
-     *       (storehouse) leaves the claimant's existing home (if any) completely untouched, and a
-     *       kind that DOES get a new bed only releases the old home's ticket once the new one is
-     *       actually secured.</li>
-     *   <li>[Round 14] That old-home release now resolves the OLD {@code GlobalPos} against its OWN
-     *       actual {@link ServerLevel} (via {@link net.minecraft.server.MinecraftServer#getLevel}),
-     *       not just this level - a same-position release call made against the WRONG level's
-     *       {@code PoiManager} would silently do nothing, permanently leaking a cross-dimension
-     *       reservation with no memory left to ever release it from.</li>
-     *   <li>[Round 13] Stale Builder trade state (offers/XP/level) is reset on EVERY path the
-     *       claimant leaves Builder through, not only the hand-off-to-a-real-job branch.</li>
-     * </ul>
+     * MINECRAFT-388 review round 14, finding #1: every destination a claimant's handoff needs must
+     * be reserved BEFORE the campfire - the site's own sole discoverable anchor
+     * ({@link #findClaimedCampfireSites} requires a real, physically-present {@code CAMPFIRE} block
+     * at the claimant's exact {@code JOB_SITE}) - is ever allowed to close. Closing the campfire
+     * first and only THEN attempting reservation (the round-12/13 shape) could leave a contested
+     * fixture in a terminal, un-retryable state: once the campfire is gone, no later production tick
+     * ever calls {@link #buildAt} for this site again, regardless of what the handoff itself then
+     * decided to do.
      *
-     * <p>The former campfire cell's own POI record needs no explicit release here: every template
-     * this method hands off from always overwrites that exact cell as part of finishing the SAME
-     * build (the floor itself, or - when the campfire sat elevated above the floor - the dedicated
-     * "clear the old campfire cell" placement), so vanilla's own block-change hook has already
-     * queued that record's removal before this runs.
+     * <p>Reservation itself is ALL-OR-NOTHING: a claimant that needs both a workstation AND a bed
+     * must end up with BOTH or NEITHER - every ticket already taken this attempt is rolled back the
+     * moment any required one fails, rather than leaving the other reserved for a handoff that never
+     * actually commits.
      *
-     * <p>Bounded to this one known claimant per site, exactly as the round-3/4 precedent this
-     * extends already was: town-wide allocation of beds/workplaces across OTHER residents (not the
-     * site's own claimant) remains a separate, larger, explicitly out-of-scope item.
+     * @return the reserved destinations once every one of them is secured, or empty if any required
+     *         one is contested - in which case nothing was committed, nothing stays reserved, and
+     *         the caller must leave the campfire itself unclosed so a later tick naturally retries.
      */
-    private static void finishClaimantLifecycle(ServerLevel level, Villager claimant, BlockPos campfire, int floorY,
+    private static Optional<ReservedHandoff> tryReserveHandoffDestinations(ServerLevel level, BlockPos campfire, int floorY,
             TownBuildingTemplates.Kind kind, Optional<VillagerProfession> finalProfession) {
         boolean needsWorkstation = finalProfession.isPresent();
         boolean needsBed = kind == TownBuildingTemplates.Kind.RESIDENTIAL || kind == TownBuildingTemplates.Kind.COMMERCIAL
@@ -457,9 +459,6 @@ public final class TownConstructionService {
                 ? TownBuildingTemplates.workstationPosition(campfire.getX(), floorY, campfire.getZ()) : null;
         BlockPos bedPos = needsBed ? TownBuildingTemplates.bedPosition(campfire.getX(), floorY, campfire.getZ()) : null;
 
-        // [Round 14] Reserve EVERY required fixture before committing anything. A claimant that
-        // needs both a workstation AND a bed must end up with BOTH or NEITHER - never a half-handed
-        // state where one was reserved out from under its real future owner for nothing.
         boolean workstationReserved = !needsWorkstation || acquirePoiTicket(level, workstationPos);
         boolean bedReserved = !needsBed || acquirePoiTicket(level, bedPos);
         if (!workstationReserved || !bedReserved) {
@@ -469,12 +468,34 @@ public final class TownConstructionService {
             if (bedReserved && needsBed) {
                 releasePoiTicket(level, bedPos);
             }
-            // Nothing committed this attempt: claimant stays Builder, still claiming this exact
-            // campfire, so the next tick's buildAt call simply retries once the contested fixture
-            // frees up - never a terminal, claimless, half-handed-off state with no way back.
-            return;
+            return Optional.empty();
         }
+        return Optional.of(new ReservedHandoff(workstationPos, bedPos));
+    }
 
+    /**
+     * Commits the Builder-to-final-site transition, given a {@link ReservedHandoff} whose
+     * destinations are ALREADY secured by {@link #tryReserveHandoffDestinations} - called only once
+     * the campfire's own closing placement has itself already succeeded, so this always runs for a
+     * site that is now genuinely, completely finished.
+     * <ul>
+     *   <li>[Round 13] {@code HOME} is never blindly erased: a kind with no bed of its own
+     *       (storehouse) leaves the claimant's existing home (if any) completely untouched.</li>
+     *   <li>[Round 14] The old home's release resolves its {@code GlobalPos} against its OWN actual
+     *       {@link ServerLevel} (via {@link net.minecraft.server.MinecraftServer#getLevel}), not just
+     *       this level - a same-position release call made against the WRONG level's
+     *       {@code PoiManager} would silently do nothing, permanently leaking a cross-dimension
+     *       reservation with no memory left to ever release it from.</li>
+     *   <li>[Round 13] Stale Builder trade state (offers/XP/level) is reset on EVERY path the
+     *       claimant leaves Builder through, not only the hand-off-to-a-real-job branch.</li>
+     * </ul>
+     *
+     * <p>Bounded to this one known claimant per site, exactly as the round-3/4 precedent this
+     * extends already was: town-wide allocation of beds/workplaces across OTHER residents (not the
+     * site's own claimant) remains a separate, larger, explicitly out-of-scope item.
+     */
+    private static void commitClaimantLifecycle(ServerLevel level, Villager claimant,
+            Optional<VillagerProfession> finalProfession, ReservedHandoff reserved) {
         claimant.getBrain().eraseMemory(MemoryModuleType.JOB_SITE);
         // Reset XP/level on EVERY path, not only a real handoff - stale Builder XP/level must never
         // carry over into a new profession's own trade tier. Offers themselves need no explicit
@@ -486,14 +507,14 @@ public final class TownConstructionService {
         claimant.setVillagerXp(0);
         claimant.setVillagerData(claimant.getVillagerData().setLevel(1));
 
-        if (needsWorkstation) {
+        if (finalProfession.isPresent()) {
             claimant.setVillagerData(claimant.getVillagerData().setProfession(finalProfession.get()));
-            claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), workstationPos));
+            claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), reserved.workstationPos()));
         } else {
             claimant.setVillagerData(claimant.getVillagerData().setProfession(VillagerProfession.NONE));
         }
 
-        if (needsBed) {
+        if (reserved.bedPos() != null) {
             // The new home is already secured (reserved above) - release whatever old one the
             // claimant had, resolved against ITS OWN actual level, never assumed to be this one.
             claimant.getBrain().getMemory(MemoryModuleType.HOME).ifPresent(old -> {
@@ -505,7 +526,7 @@ public final class TownConstructionService {
                 // oldLevel == null: that dimension no longer exists/isn't loaded - there is no
                 // PoiManager left to release anything from; nothing further can be done safely.
             });
-            claimant.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), bedPos));
+            claimant.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), reserved.bedPos()));
         }
         // A kind with no bed of its own (storehouse) touches HOME at all: the claimant keeps
         // whatever home (if any) it already had.
@@ -625,16 +646,16 @@ public final class TownConstructionService {
                 || !state.getFluidState().isEmpty() && state.getFluidState().is(net.minecraft.tags.FluidTags.LAVA);
     }
 
-    /** {@code true} once every planned cell in {@code template} already holds exactly its planned
-     *  block - i.e. this site has nothing left to build. */
-    private static boolean isSiteFullyBuilt(ServerLevel level, List<TownBuildingTemplates.Placement> template) {
-        for (TownBuildingTemplates.Placement placement : template) {
-            BlockPos pos = new BlockPos(placement.x(), placement.y(), placement.z());
-            if (!level.getBlockState(pos).is(placement.block())) {
-                return false;
-            }
+    /** Releases every ticket a {@link ReservedHandoff} is actually holding - used when a reservation
+     *  succeeded but the campfire's own closing placement then failed to land this same tick, so
+     *  nothing stays speculatively reserved against a handoff that never actually committed. */
+    private static void releaseReservedHandoff(ServerLevel level, ReservedHandoff reserved) {
+        if (reserved.workstationPos() != null) {
+            releasePoiTicket(level, reserved.workstationPos());
         }
-        return true;
+        if (reserved.bedPos() != null) {
+            releasePoiTicket(level, reserved.bedPos());
+        }
     }
 
     /** {@code true} when {@code pos} lies strictly within the dimension's own build-height bounds. */

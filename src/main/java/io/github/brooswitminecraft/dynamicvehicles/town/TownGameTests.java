@@ -893,6 +893,14 @@ public final class TownGameTests {
         helper.assertTrue(claimant.getBrain().getMemory(MemoryModuleType.JOB_SITE)
                         .map(gp -> gp.pos().equals(absoluteCampfire)).orElse(false),
                 "a contested fixture must leave JOB_SITE still pointed at this exact campfire, never erased with nothing left to retry from");
+        // [Review round 14, finding #1] The claim surviving in memory is not enough on its own:
+        // findClaimedCampfireSites (the SOLE way production ever discovers a site to call buildAt
+        // on at all) requires the position to be a REAL, physically-present CAMPFIRE block. A
+        // contested fixture must never let the campfire's own closing placement land anyway - that
+        // would make this exact scenario permanently undiscoverable in real play, no matter what
+        // the claimant's own memory still said.
+        helper.assertTrue(helper.getBlockState(campfireCell).is(Blocks.CAMPFIRE),
+                "a contested fixture must leave the campfire itself physically intact - production's only way to ever rediscover this site again");
         if (bedApplies && workstationPos != null) {
             // The bed was contested but the workstation was not - it must still be ROLLED BACK,
             // never left reserved for a handoff that never actually committed.

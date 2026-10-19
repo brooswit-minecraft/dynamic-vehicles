@@ -108,7 +108,7 @@ public final class TownFounder {
             villagerSpawned = level.addFreshEntity(villager);
         }
 
-        PlacementOutcome outcome = evaluatePlacement(campfirePlaced, villagerSpawned);
+        TownBootstrapOutcome.PlacementOutcome outcome = TownBootstrapOutcome.evaluatePlacement(campfirePlaced, villagerSpawned);
         if (outcome.cleanupCampfire()) {
             // The campfire landed but its companion villager did not: never leave an orphan
             // campfire with nothing to claim it and no way to retry - remove it so the next pass
@@ -121,23 +121,6 @@ public final class TownFounder {
             storage.markTownFounded(key);
             storage.setDirty();
         }
-    }
-
-    /** Pure success/cleanup decision for the campfire+villager pair, factored out so it is
-     *  directly unit-testable without a real level: {@code markFounded} is {@code true} only when
-     *  BOTH placements are confirmed, and {@code cleanupCampfire} is {@code true} exactly in the
-     *  one partial-failure case where the campfire landed but its villager did not - the one
-     *  shape that would otherwise strand an unclaimed, un-retryable orphan campfire. */
-    public record PlacementOutcome(boolean markFounded, boolean cleanupCampfire) {}
-
-    public static PlacementOutcome evaluatePlacement(boolean campfirePlaced, boolean villagerSpawned) {
-        if (!campfirePlaced) {
-            return new PlacementOutcome(false, false);
-        }
-        if (!villagerSpawned) {
-            return new PlacementOutcome(false, true);
-        }
-        return new PlacementOutcome(true, false);
     }
 
     /**

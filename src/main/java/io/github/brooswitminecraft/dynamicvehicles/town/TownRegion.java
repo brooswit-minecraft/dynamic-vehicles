@@ -34,16 +34,18 @@ public final class TownRegion {
     }
 
     /**
-     * [Review round 5, finding #6] The region a currently-employed villager is ACTIVELY
-     * claimed/working in right now, shared by every handler that credits a town off a villager's
-     * job site ({@link TownDonationHandler}, {@link TownPassiveProductionHandler}) so the same
-     * validation can never drift between them. Empty for an unemployed villager, one with no
-     * JOB_SITE memory at all, or - critically - one whose JOB_SITE memory's own dimension does not
-     * match {@code level}: a villager cannot be actively working a job site in a dimension it is
-     * not currently in, so such a memory is stale/foreign and must never credit a region merely
-     * because its coordinates happen to overlap.
+     * [Review round 5, finding #6 / round 6, finding #5] The region a currently-employed villager is
+     * ACTIVELY claimed/working in right now, shared by every handler that credits a town off a
+     * villager's job site ({@link TownDonationHandler}, {@link TownPassiveProductionHandler}) so the
+     * same validation can never drift between them. Empty for an unemployed villager, one with no
+     * JOB_SITE memory at all, one whose JOB_SITE memory's own dimension does not match {@code level}
+     * (a villager cannot be actively working a job site in a dimension it is not currently in, so
+     * such a memory is stale/foreign), one whose remembered position no longer holds ANY physical
+     * block at all (destroyed since the memory was recorded - nothing left to actively be working),
+     * or one whose region was never actually founded in {@code storage} (a memory predating, or
+     * surviving past, this town's own existence is not live activity to credit).
      */
-    public static Optional<RegionCoord> liveClaimedRegion(ServerLevel level, Villager villager) {
+    public static Optional<RegionCoord> liveClaimedRegion(ServerLevel level, Villager villager, TownStorage storage) {
         if (villager.getVillagerData().getProfession() == VillagerProfession.NONE) {
             return Optional.empty();
         }
@@ -51,7 +53,20 @@ public final class TownRegion {
         if (jobSite.isEmpty() || !jobSite.get().dimension().equals(level.dimension())) {
             return Optional.empty();
         }
-        return Optional.of(fromBlockCoords(jobSite.get().pos().getX(), jobSite.get().pos().getZ()));
+        net.minecraft.core.BlockPos pos = jobSite.get().pos();
+        // hasChunkAt (not isLoaded - GameTest structure chunks do not reliably report as "loaded"
+        // via that check even though their blocks are genuinely placed and readable) tells whether
+        // this position is somewhere we can actually trust an air reading from at all.
+        if (level.hasChunkAt(pos) && level.getBlockState(pos).isAir()) {
+            // The remembered job site has since been destroyed/removed entirely - nothing physical
+            // is actually there to be working right now, regardless of what the stale memory says.
+            return Optional.empty();
+        }
+        RegionCoord region = fromBlockCoords(pos.getX(), pos.getZ());
+        if (!storage.hasFoundedTown(TownKeys.keyFor(level.dimension(), region))) {
+            return Optional.empty();
+        }
+        return Optional.of(region);
     }
 
     /** The region immediately adjacent to {@code region} in {@code edge}'s direction. */

@@ -204,20 +204,16 @@ public final class TownConstructionService {
             // it must eventually be replaced, so an explicit placement for its own exact position
             // is appended - bottomUpOrder (by x/y/z match) defers it to the very last block, same
             // as when it coincided with the floor plane.
-            // [Review round 5, finding #3] The real final target here is whatever this exact
-            // column/Y would ACTUALLY be inside the template's own planned volume - not an invented
-            // wall block regardless of position. A campfire sitting ABOVE the planned roof (e.g. in
-            // a tree, or on a ledge well above the tree-excluded floor) is outside the building
-            // entirely once finished; its real final state is AIR (removed), never a floating solid
-            // interior block. Only a campfire whose Y actually falls within the planned footprint's
-            // own vertical span gets the template's own wall material.
-            int plannedTopYForExtra = floorY + TownBuildingTemplates.heightFor(kind, plan.storehouseVariant());
-            boolean campfireWithinFootprintVolume = campfire.getY() >= floorY && campfire.getY() <= plannedTopYForExtra;
-            TownBuildingTemplates.Placement extra = campfireWithinFootprintVolume
-                    ? new TownBuildingTemplates.Placement(campfire.getX(), campfire.getY(), campfire.getZ(),
-                            TownBuildingTemplates.wallBlockFor(kind), TownBuildingTemplates.costFor(kind))
-                    : new TownBuildingTemplates.Placement(campfire.getX(), campfire.getY(), campfire.getZ(),
-                            Blocks.AIR, TownBuildingTemplates.costFor(kind));
+            // [Review round 5, finding #3 / round 6, finding #2] The campfire's (x, z) is always
+            // the template's own CENTER column - generate() only ever plans a FLOOR cell there (at
+            // baseY) and a ROOF cell there (at baseY+height); walls are perimeter-only and never
+            // placed at the center. Reaching this branch at all means byPosition does NOT already
+            // contain the center's floor or roof cell for this exact Y, so the real template voxel
+            // here is unconditionally AIR - never an invented wall block, regardless of whether this
+            // Y happens to fall between the floor and roof (a genuinely unplanned interior cell) or
+            // outside that span entirely (e.g. a campfire well above the planned roof).
+            TownBuildingTemplates.Placement extra = new TownBuildingTemplates.Placement(
+                    campfire.getX(), campfire.getY(), campfire.getZ(), Blocks.AIR, TownBuildingTemplates.costFor(kind));
             template.add(extra);
             byPosition.put(key(extra.x(), extra.y(), extra.z()), extra);
         }
@@ -254,7 +250,7 @@ public final class TownConstructionService {
         // because that foreign block was never recorded as this mod's own paid-for progress.
         int plannedTopY = floorY + TownBuildingTemplates.heightFor(kind, plan.storehouseVariant());
         if (!TownSitePreflight.isSiteSafe(level, campfire, radius, floorY, plannedTopY,
-                pos -> storage.isCellPlaced(level.dimension(), pos, siteOwner))) {
+                pos -> storage.isCellPlaced(level.dimension(), pos, siteOwner), claimant.getUUID())) {
             return;
         }
 
@@ -304,9 +300,10 @@ public final class TownConstructionService {
             if (!TownSitePreflight.isSafeToOverwrite(level, pos, campfire)) {
                 break;
             }
-            if (TownSitePreflight.isEntityBlocking(level, pos, campfire)) {
-                // Something (other than this site's own claimant) is standing exactly here right
-                // now; skip just this cell rather than enclose it, and try again next tick.
+            if (TownSitePreflight.isEntityBlocking(level, pos, campfire, claimant.getUUID())) {
+                // Something (other than this site's own EXACT claimant, by identity) is standing
+                // exactly here right now; skip just this cell rather than enclose it, and try again
+                // next tick.
                 continue;
             }
             if (!withinBuildHeight(level, pos)) {
@@ -329,11 +326,19 @@ public final class TownConstructionService {
             // safe, reachable exit just outside the footprint before a solid closing block lands;
             // an AIR target (the elevated-campfire case) never needs this - removing a block cannot
             // place anything through anyone's body.
-            if (pos.equals(campfire) && !placement.block().defaultBlockState().isAir()
-                    && !relocateClaimantAwayFromCampfireIfStandingThere(level, claimant, campfire, radius)) {
-                // No safe exit found this tick - skip this cell rather than risk placing a solid
-                // block through the claimant's body; retry next tick.
-                continue;
+            if (pos.equals(campfire) && !placement.block().defaultBlockState().isAir()) {
+                if (!relocateClaimantAwayFromCampfireIfStandingThere(level, claimant, campfire, radius)) {
+                    // No safe exit found this tick - skip this cell rather than risk placing a
+                    // solid block through the claimant's body; retry next tick.
+                    continue;
+                }
+                // [Review round 6, finding #1] Re-check this exact cell's AABB immediately before
+                // closure, with NO exemption at all (not even the claimant) - relocation just
+                // happened, but something else (another entity, or the claimant itself failing to
+                // actually move for some reason) could still occupy this cell right now.
+                if (!level.getEntities((net.minecraft.world.entity.Entity) null, new net.minecraft.world.phys.AABB(pos)).isEmpty()) {
+                    continue;
+                }
             }
             // [Review round 2, finding #3] Debit only AFTER a confirmed placement: first check
             // affordability (a non-mutating peek, never itself a charge), attempt the mutation, and
@@ -428,8 +433,15 @@ public final class TownConstructionService {
         return null;
     }
 
-    /** {@code true} when a villager could actually stand at {@code pos} right now: solid ground
-     *  below, non-colliding space at feet and head height, and no other entity already there. */
+    /** {@code true} when a villager could actually stand at {@code pos} right now SAFELY: solid,
+     *  non-hazardous ground below, non-colliding non-hazardous space at feet and head height, and
+     *  no other entity already there.
+     *
+     * <p>[Review round 6, finding #1] Sturdy support is not the same as SAFE support - a magma
+     * block is a perfectly sturdy, full-faced floor that still burns anything standing on it; fire
+     * has no collision shape at all (so the feet/head emptiness checks alone never catch it) but is
+     * just as damaging. {@link #isHazardous} rejects every such block explicitly, at every one of
+     * the three checked cells, rather than relying on "solid"/"empty" alone to imply "safe". */
     private static boolean isSafeStandingSpot(ServerLevel level, BlockPos pos) {
         if (!level.hasChunkAt(pos) || !level.getWorldBorder().isWithinBounds(pos)
                 || !withinBuildHeight(level, pos)) {
@@ -439,9 +451,20 @@ public final class TownConstructionService {
         BlockState feet = level.getBlockState(pos);
         BlockState head = level.getBlockState(pos.above());
         return below.isFaceSturdy(level, pos.below(), net.minecraft.core.Direction.UP)
+                && !isHazardous(below) && !isHazardous(feet) && !isHazardous(head)
                 && feet.getCollisionShape(level, pos).isEmpty()
                 && head.getCollisionShape(level, pos.above()).isEmpty()
                 && level.getEntities((net.minecraft.world.entity.Entity) null, new net.minecraft.world.phys.AABB(pos)).isEmpty();
+    }
+
+    /** {@code true} for any block that damages a villager merely standing on/in it, regardless of
+     *  whether it is otherwise sturdy (a magma block) or has no collision shape at all (fire) - see
+     *  {@link #isSafeStandingSpot}. */
+    private static boolean isHazardous(BlockState state) {
+        return state.is(Blocks.MAGMA_BLOCK) || state.is(Blocks.FIRE) || state.is(Blocks.SOUL_FIRE)
+                || state.is(Blocks.LAVA) || state.is(Blocks.CACTUS) || state.is(Blocks.SWEET_BERRY_BUSH)
+                || state.is(Blocks.WITHER_ROSE) || state.is(Blocks.CAMPFIRE) || state.is(Blocks.SOUL_CAMPFIRE)
+                || !state.getFluidState().isEmpty() && state.getFluidState().is(net.minecraft.tags.FluidTags.LAVA);
     }
 
     /** {@code true} once every planned cell in {@code template} already holds exactly its planned

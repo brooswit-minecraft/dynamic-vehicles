@@ -48,20 +48,21 @@ public final class TownDonationHandler {
             return;
         }
 
-        // [Review round 4, finding #7 / round 5, finding #6] Credit the town the villager is
-        // actually, LIVE-ly claimed/working for - its own JOB_SITE memory's position, but only when
-        // that memory's dimension matches the dimension the villager is actually trading in right
-        // now. A villager that has wandered across a region boundary (384 blocks) since taking its
-        // job must still credit its own real town, not whichever region its current position
-        // happens to fall in - but a stale or cross-dimension memory (it cannot be actively working
-        // a job site in a dimension it is not currently in) must never credit a region merely
-        // because the coordinates happen to overlap. Shared with TownPassiveProductionHandler via
-        // TownRegion#liveClaimedRegion so this validation can never drift between the two.
-        Optional<RegionCoord> region = TownRegion.liveClaimedRegion(level, villager);
-        if (region.isEmpty()) {
-            return; // not actively, live-ly working an identifiable job site in this dimension
-        }
+        // [Review round 4, finding #7 / round 5, finding #6 / round 6, finding #5] Credit the town
+        // the villager is actually, LIVE-ly claimed/working for - its own JOB_SITE memory's
+        // position, but only when that memory's dimension matches the dimension the villager is
+        // actually trading in right now, its remembered position still holds a real block (not
+        // destroyed since recorded), and its region was actually founded. A villager that has
+        // wandered across a region boundary (384 blocks) since taking its job must still credit its
+        // own real town, not whichever region its current position happens to fall in - but a stale,
+        // cross-dimension, destroyed, or unfounded memory must never credit anything. Shared with
+        // TownPassiveProductionHandler via TownRegion#liveClaimedRegion so this validation can never
+        // drift between the two.
         TownStorage storage = TownStorage.of(level.getServer());
+        Optional<RegionCoord> region = TownRegion.liveClaimedRegion(level, villager, storage);
+        if (region.isEmpty()) {
+            return; // not actively, live-ly working an identifiable, live, founded job site here
+        }
         TownResourceStore store = storage.storeFor(TownKeys.keyFor(level.dimension(), region.get()));
         store.credit(credit.category(), credit.amount() * consumedCount);
         storage.setDirty();

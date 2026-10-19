@@ -58,6 +58,15 @@ public final class TownDonationHandlerGameTests {
         return villager;
     }
 
+    /** [Review round 6, finding #5] A live job site must actually hold a real block, and its
+     *  region must actually be founded - marks both so these tests exercise genuinely live
+     *  activity, not merely a bare coordinate in open air. */
+    private static void markLiveAndFounded(GameTestHelper helper, BlockPos relativeJobSiteBlock, BlockPos absoluteJobSite) {
+        helper.setBlock(relativeJobSiteBlock, Blocks.SMOKER);
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteJobSite.getX(), absoluteJobSite.getZ());
+        TownStorage.of(helper.getLevel().getServer()).markTownFounded(TownKeys.keyFor(helper.getLevel().dimension(), region));
+    }
+
     /**
      * Mirrors {@code BuilderTradeHandler}'s own registered 16-cobblestone offer: the documented
      * rate (2 stone per single item) must be multiplied by the 16 actually consumed, crediting 32,
@@ -67,6 +76,7 @@ public final class TownDonationHandlerGameTests {
     public static void creditScalesWithTheActualQuantityConsumedByTheTrade(GameTestHelper helper) {
         prepareFlatGround(helper);
         BlockPos absoluteAnchor = helper.absolutePos(ANCHOR);
+        markLiveAndFounded(helper, ANCHOR, absoluteAnchor);
         Villager villager = employedVillagerAt(helper, absoluteAnchor);
         ServerPlayer player = GameTestMockPlayers.create(helper);
 
@@ -95,6 +105,7 @@ public final class TownDonationHandlerGameTests {
     public static void creditScalesDifferentlyForADifferentConsumedQuantity(GameTestHelper helper) {
         prepareFlatGround(helper);
         BlockPos absoluteAnchor = helper.absolutePos(ANCHOR);
+        markLiveAndFounded(helper, ANCHOR, absoluteAnchor);
         Villager villager = employedVillagerAt(helper, absoluteAnchor);
         ServerPlayer player = GameTestMockPlayers.create(helper);
 
@@ -141,6 +152,7 @@ public final class TownDonationHandlerGameTests {
         TownStorage storage = TownStorage.of(helper.getLevel().getServer());
         String currentKey = TownKeys.keyFor(helper.getLevel().dimension(), currentRegion);
         String claimedKey = TownKeys.keyFor(helper.getLevel().dimension(), claimedRegion);
+        storage.markTownFounded(claimedKey);
         int currentBefore = storage.storeFor(currentKey).balance(TownResourceCategory.STONE);
         int claimedBefore = storage.storeFor(claimedKey).balance(TownResourceCategory.STONE);
 
@@ -188,6 +200,65 @@ public final class TownDonationHandlerGameTests {
                 "this trade's own dimension must not be credited when the claim points at a different one");
         helper.assertTrue(storage.storeFor(otherDimensionKey).balance(TownResourceCategory.STONE) == otherBefore,
                 "a stale claim in a dimension the villager is not currently in must never be credited either");
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-388 review round 6, finding #5: a same-dimension, live (real block present) JOB_SITE
+     * in a region that was never actually founded must not be credited.
+     */
+    @GameTest(template = "settlement_test")
+    public static void donationInAnUnfoundedRegionCreditsNothing(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos absoluteAnchor = helper.absolutePos(ANCHOR);
+        Villager villager = EntityType.VILLAGER.create(helper.getLevel(), null, absoluteAnchor, MobSpawnType.EVENT, false, false);
+        helper.getLevel().addFreshEntity(villager);
+        villager.setVillagerData(villager.getVillagerData().setProfession(VillagerProfession.FARMER));
+        // A deliberately far-flung, test-unique job site (well outside any chunk this or any other
+        // concurrently-running GameTest ever touches) so its region can never have been marked
+        // founded by an unrelated test sharing TownStorage.of's real, server-wide storage.
+        BlockPos farJobSite = absoluteAnchor.offset(123_456_789, 0, 0);
+        villager.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), farJobSite));
+        ServerPlayer player = GameTestMockPlayers.create(helper);
+
+        RegionCoord region = TownRegion.fromBlockCoords(farJobSite.getX(), farJobSite.getZ());
+        String key = TownKeys.keyFor(helper.getLevel().dimension(), region);
+        TownStorage storage = TownStorage.of(helper.getLevel().getServer());
+        int before = storage.storeFor(key).balance(TownResourceCategory.STONE);
+
+        MerchantOffer offer = new MerchantOffer(new ItemCost(Items.COBBLESTONE, 16), new ItemStack(Items.STICK), 6, 5, 0.05F);
+        TownDonationHandler.onTrade(new TradeWithVillagerEvent(player, offer, villager));
+
+        helper.assertTrue(storage.storeFor(key).balance(TownResourceCategory.STONE) == before,
+                "a job site in a region that was never founded must never be credited");
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-388 review round 6, finding #5: a JOB_SITE whose remembered position no longer
+     * holds any physical block at all (destroyed since the memory was recorded) must not be
+     * credited, even in a founded region with a matching dimension.
+     */
+    @GameTest(template = "settlement_test")
+    public static void donationWithADestroyedJobSiteBlockCreditsNothing(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos absoluteAnchor = helper.absolutePos(ANCHOR);
+        // ANCHOR is left as AIR by prepareFlatGround - the memory points at a position that holds
+        // no physical block at all.
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteAnchor.getX(), absoluteAnchor.getZ());
+        String key = TownKeys.keyFor(helper.getLevel().dimension(), region);
+        TownStorage.of(helper.getLevel().getServer()).markTownFounded(key);
+        Villager villager = employedVillagerAt(helper, absoluteAnchor);
+        ServerPlayer player = GameTestMockPlayers.create(helper);
+
+        TownStorage storage = TownStorage.of(helper.getLevel().getServer());
+        int before = storage.storeFor(key).balance(TownResourceCategory.STONE);
+
+        MerchantOffer offer = new MerchantOffer(new ItemCost(Items.COBBLESTONE, 16), new ItemStack(Items.STICK), 6, 5, 0.05F);
+        TownDonationHandler.onTrade(new TradeWithVillagerEvent(player, offer, villager));
+
+        helper.assertTrue(storage.storeFor(key).balance(TownResourceCategory.STONE) == before,
+                "a job site whose remembered position no longer holds any physical block must never be credited");
         helper.succeed();
     }
 }

@@ -112,14 +112,18 @@ public final class TownFounder {
             }
         }
 
-        // [Review round 2, finding #6] The one-way "founded" claim must NOT be persisted before
-        // the placements it claims to represent are actually confirmed in the world: a rejected
-        // block placement or spawn failure must leave the region retryable, never permanently
-        // "founded" with nothing (or only half of something) actually there. A pending retry's
-        // campfire is already there (its own prior attempt placed it) - re-placing the identical
-        // block at the identical position is a harmless no-op, never a second placement.
-        boolean campfirePlaced = level.setBlock(campfirePos, Blocks.CAMPFIRE.defaultBlockState(), 3)
-                && level.getBlockState(campfirePos).is(Blocks.CAMPFIRE);
+        // [Review round 2, finding #6 / round 6, finding #8] The one-way "founded" claim must NOT
+        // be persisted before the placements it claims to represent are actually confirmed in the
+        // world: a rejected block placement or spawn failure must leave the region retryable, never
+        // permanently "founded" with nothing (or only half of something) actually there. A pending
+        // retry's campfire is already there (its own prior attempt placed it) - checked FIRST,
+        // explicitly, rather than relying on Level#setBlock's return value: setting a block to the
+        // SAME state it already holds is a genuine no-op that Level#setBlock can legitimately report
+        // as "nothing changed" (returns false), which would otherwise make this read as a placement
+        // FAILURE on every pending retry and return before ever attempting the villager spawn again.
+        boolean campfirePlaced = level.getBlockState(campfirePos).is(Blocks.CAMPFIRE)
+                || (level.setBlock(campfirePos, Blocks.CAMPFIRE.defaultBlockState(), 3)
+                        && level.getBlockState(campfirePos).is(Blocks.CAMPFIRE));
         if (!campfirePlaced) {
             return; // retryable next EVALUATE_INTERVAL_TICKS pass - nothing was committed
         }

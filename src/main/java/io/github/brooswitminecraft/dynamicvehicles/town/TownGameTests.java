@@ -91,6 +91,37 @@ public final class TownGameTests {
     }
 
     /**
+     * MINECRAFT-388 review round 6, finding #8: a PENDING retry's campfire is already there from a
+     * prior attempt - re-placing the identical block via {@code Level#setBlock} can legitimately
+     * return {@code false} ("nothing changed"), which must never be read as a placement FAILURE and
+     * abort the retry before it ever attempts the villager spawn again.
+     */
+    @GameTest(template = "settlement_test")
+    public static void pendingOrphanCampfireRetryStillSpawnsAVillagerDespiteTheNoOpSetBlockReturn(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos absoluteAnchor = helper.absolutePos(ANCHOR);
+        RegionCoord region = new RegionCoord(0, 0);
+        TownStorage storage = new TownStorage();
+        String key = TownKeys.keyFor(helper.getLevel().dimension(), region);
+
+        // Simulate the exact state a prior failed attempt persists: the campfire is already
+        // standing there, but its companion villager (or the orphan's own cleanup) never confirmed.
+        helper.setBlock(ANCHOR, Blocks.CAMPFIRE);
+        storage.setPendingCampfire(key, absoluteAnchor);
+
+        TownFounder.tryFoundAt(helper.getLevel(), region, absoluteAnchor, storage);
+
+        AABB footprint = AABB.encapsulatingFullBlocks(
+                helper.absolutePos(new BlockPos(0, 0, 0)), helper.absolutePos(new BlockPos(9, 12, 9)));
+        List<Villager> villagers = helper.getLevel().getEntitiesOfClass(Villager.class, footprint);
+        helper.assertTrue(villagers.size() == 1,
+                "a pending retry whose campfire already exists must still proceed to spawn its companion villager, found " + villagers.size());
+        helper.assertTrue(storage.hasFoundedTown(key), "a successful pending retry must mark the region founded");
+        helper.assertTrue(storage.pendingCampfireFor(key).isEmpty(), "the pending marker must be cleared once founding succeeds");
+        helper.succeed();
+    }
+
+    /**
      * {@link TownCampfireClaims} reuses vanilla's own job-site memory as the sole claim signal: an
      * employed villager whose JOB_SITE memory is NOT this exact campfire must not count, and a
      * villager with no profession at all (e.g. the bootstrap villager itself) must not count either
@@ -1143,6 +1174,43 @@ public final class TownGameTests {
     }
 
     /**
+     * MINECRAFT-388 review round 6, finding #2: a campfire strictly BETWEEN the planned floor and
+     * roof at the template's own CENTER column (never a wall - walls are perimeter-only) is a
+     * genuinely unplanned interior cell. Its real final state is AIR, the same as the above-roof
+     * case {@code elevatedCampfireAboveThePlannedRoofEndsAsAirNotAFloatingWallBlock} already covers
+     * - this proves the WITHIN-volume case is not mistakenly given wall material instead.
+     */
+    @GameTest(template = "settlement_test")
+    public static void interiorCentreCampfireBetweenFloorAndRoofEndsAsAirNotAWallBlock(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos campfireCell = ANCHOR;
+        // A short 2-tall trunk: the campfire sits two cells above the real (tree-excluded) floor,
+        // comfortably below any kind's planned roof (height 4-7, per heightFor) - interior, not
+        // above the roof.
+        helper.setBlock(campfireCell, Blocks.OAK_LOG);
+        helper.setBlock(campfireCell.above(), Blocks.OAK_LOG);
+        BlockPos interiorCampfireCell = campfireCell.above(2);
+        helper.setBlock(interiorCampfireCell, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(interiorCampfireCell);
+        Villager claimant = EntityType.VILLAGER.create(helper.getLevel(), null, absoluteCampfire, MobSpawnType.EVENT, false, false);
+        helper.getLevel().addFreshEntity(claimant);
+        claimant.setVillagerData(claimant.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
+        claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteCampfire));
+
+        TownStorage storage = new TownStorage();
+        fundStore(helper, storage, absoluteCampfire, 100000);
+
+        for (int i = 0; i < 500 && helper.getBlockState(interiorCampfireCell).is(Blocks.CAMPFIRE); i++) {
+            TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
+        }
+
+        helper.assertTrue(helper.getBlockState(interiorCampfireCell).isAir(),
+                "an interior centre-column campfire between the floor and roof must end as AIR, found "
+                        + helper.getBlockState(interiorCampfireCell));
+        helper.succeed();
+    }
+
+    /**
      * MINECRAFT-388 review round 5, finding #1: the claimant parks AT the campfire while working,
      * which is fine for every other placement, but the FINAL closing placement there can be a solid
      * block landing exactly where its own body still is. It must be relocated to a validated, safe,
@@ -1180,10 +1248,40 @@ public final class TownGameTests {
     }
 
     /**
-     * MINECRAFT-388 review round 5, finding #1: a villager whose JOB_SITE memory points at this
-     * exact campfire position but in a DIFFERENT dimension is a stale/foreign bystander, never this
-     * site's own claimant - it cannot be actively working a job site in a dimension it is not
-     * currently in, so the campfire-column exemption must never apply to it.
+     * MINECRAFT-388 review round 6, finding #1: the campfire-column exemption is identity-specific
+     * - matched by the EXACT claimant UUID {@link TownConstructionService} selected, never merely
+     * "any villager whose JOB_SITE memory happens to match". A second (duplicate/stale-memory)
+     * villager also standing in the column, even with an identical JOB_SITE memory, is NOT the
+     * selected claimant and must still read as blocking.
+     */
+    @GameTest(template = "settlement_test")
+    public static void isEntityBlockingOnlyExemptsTheExactClaimantByIdentityNotJustByJobSiteMatch(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos campfireCell = ANCHOR;
+        BlockPos absoluteCampfire = helper.absolutePos(campfireCell);
+
+        Villager realClaimant = spawnClaimedVillager(helper, absoluteCampfire);
+        helper.assertTrue(
+                !TownSitePreflight.isEntityBlocking(helper.getLevel(), absoluteCampfire, absoluteCampfire, realClaimant.getUUID()),
+                "the exact selected claimant must be exempt when it is the only entity present");
+
+        // A second villager with the SAME (erroneous/duplicate) JOB_SITE memory, standing in the
+        // same column - not the entity TownConstructionService actually selected as the claimant.
+        Villager duplicate = spawnClaimedVillager(helper, absoluteCampfire);
+
+        helper.assertTrue(
+                TownSitePreflight.isEntityBlocking(helper.getLevel(), absoluteCampfire, absoluteCampfire, realClaimant.getUUID()),
+                "a second villager with a matching JOB_SITE memory, but a DIFFERENT identity than the exact selected claimant, must still block");
+        helper.assertTrue(duplicate.isAlive(), "sanity: the duplicate villager is actually present");
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-388 review round 5, finding #1 / round 6, finding #1: a villager whose JOB_SITE
+     * memory points at this exact campfire position but in a DIFFERENT dimension is a stale/foreign
+     * bystander, never this site's own claimant - exercised here against a real claimant's own
+     * identity, so the fix is proven to be the identity check, not an incidental side effect of a
+     * now-removed dimension check.
      */
     @GameTest(template = "settlement_test")
     public static void isEntityBlockingNeverExemptsAJobSiteMemoryFromADifferentDimension(GameTestHelper helper) {
@@ -1195,9 +1293,10 @@ public final class TownGameTests {
         bystander.setVillagerData(bystander.getVillagerData().setProfession(VillagerProfession.FARMER));
         ResourceKey<Level> otherDimension = helper.getLevel().dimension().equals(Level.NETHER) ? Level.END : Level.NETHER;
         bystander.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(otherDimension, absoluteCampfire));
+        Villager realClaimant = spawnClaimedVillager(helper, absoluteCampfire);
 
-        helper.assertTrue(TownSitePreflight.isEntityBlocking(helper.getLevel(), absoluteCampfire, absoluteCampfire),
-                "a villager whose JOB_SITE memory points here but in a DIFFERENT dimension must never be exempted as this site's own claimant");
+        helper.assertTrue(TownSitePreflight.isEntityBlocking(helper.getLevel(), absoluteCampfire, absoluteCampfire, realClaimant.getUUID()),
+                "a villager whose JOB_SITE memory points here but in a DIFFERENT dimension (and whose identity is not the real claimant) must block");
         helper.succeed();
     }
 }

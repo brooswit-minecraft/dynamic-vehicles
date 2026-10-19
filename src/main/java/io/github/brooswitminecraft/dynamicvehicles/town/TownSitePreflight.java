@@ -29,7 +29,7 @@ public final class TownSitePreflight {
      * anything - the caller must then abort the entire site for this tick.
      */
     public static boolean isSiteSafe(ServerLevel level, BlockPos campfire, int radius, int baseY) {
-        return isSiteSafe(level, campfire, radius, baseY, baseY, pos -> false);
+        return isSiteSafe(level, campfire, radius, baseY, baseY, pos -> false, null);
     }
 
     /**
@@ -46,10 +46,12 @@ public final class TownSitePreflight {
      * otherwise pass preflight and only be discovered mid-build, after earlier floor/wall cells
      * are already placed and charged. Callers pass {@code plannedTopY} (the site's own planned
      * roof Y) so this scans the UNION of the real terrain top and the whole planned footprint
-     * volume, never just one or the other.
+     * volume, never just one or the other. {@code claimantId} (nullable) is the UUID of the SPECIFIC
+     * villager {@link TownConstructionService} selected as this site's own claimant - see
+     * {@link #isEntityBlocking(ServerLevel, BlockPos, BlockPos, java.util.UUID)}.
      */
     public static boolean isSiteSafe(ServerLevel level, BlockPos campfire, int radius, int baseY, int plannedTopY,
-            java.util.function.Predicate<BlockPos> matchesPlannedBlock) {
+            java.util.function.Predicate<BlockPos> matchesPlannedBlock, java.util.UUID claimantId) {
         for (int x = -radius; x <= radius; x++) {
             for (int z = -radius; z <= radius; z++) {
                 int columnX = campfire.getX() + x;
@@ -70,7 +72,7 @@ public final class TownSitePreflight {
                     // footprint, not merely scan blocks: a player, mob, or other villager anywhere
                     // in the planned volume means this tick is not safe to start mutating, the same
                     // way protected block content already aborts the whole site.
-                    if (isEntityBlocking(level, pos, campfire)) {
+                    if (isEntityBlocking(level, pos, campfire, claimantId)) {
                         return false;
                     }
                 }
@@ -87,33 +89,27 @@ public final class TownSitePreflight {
      * entire site). {@code true} when something occupies {@code pos} right now that this site is
      * not allowed to place over.
      *
-     * <p>[Review round 4, finding #6] The claiming villager's own exemption applies only while it is
-     * actually parked in the campfire's own COLUMN ({@code campfire}'s x/z, any y) - never the whole
-     * footprint, so a claimant standing in some other planned wall/floor cell still blocks exactly
-     * like any other occupant. This is deliberately a column match, not {@code pos.equals(campfire)}:
-     * a villager's hitbox is taller than one block (~1.95), so a claimant parked at the campfire's
-     * own cell also physically overlaps the cell directly above it (same x/z, y+1) - e.g. the roof
-     * cell straight above a single-cell-footprint site, or simply the empty air above the campfire
-     * at a wider one. Exempting only the single literal {@code campfire} BlockPos left that cell
-     * reading as "occupied by an entity" on every tick, failing the WHOLE site's own preflight at a
-     * cell the claimant's own reserved parking spot legitimately overlaps - a site's own claimant
-     * must never be the reason its own site can never build.
+     * <p>[Review round 4, finding #6 / round 6, finding #1] The claiming villager's own exemption
+     * applies only to the SPECIFIC villager {@code claimantId} identifies (never {@code null}, which
+     * exempts nothing) - matched by UUID identity, never merely "any villager whose JOB_SITE memory
+     * happens to match". Two villagers can end up with the same (erroneous/duplicate/stale) JOB_SITE
+     * memory; {@link TownConstructionService} picks exactly ONE of them as this site's real claimant
+     * and relocates only that one before a solid closing block lands, so only that exact entity may
+     * ever be exempt here - any OTHER villager standing in the column (even one whose memory also
+     * points here) still blocks exactly like any other occupant. The exemption is further narrowed
+     * to the campfire's own COLUMN ({@code campfire}'s x/z, any y) - never the whole footprint - a
+     * villager's hitbox is taller than one block (~1.95), so the claimant parked at the campfire's
+     * own cell also physically overlaps the cell directly above it (same x/z, y+1); exempting only
+     * the single literal {@code campfire} BlockPos would leave that cell reading as "occupied" on
+     * every tick, failing the WHOLE site's own preflight at a cell its own claimant legitimately
+     * overlaps.
      */
-    public static boolean isEntityBlocking(ServerLevel level, BlockPos pos, BlockPos campfire) {
+    public static boolean isEntityBlocking(ServerLevel level, BlockPos pos, BlockPos campfire, java.util.UUID claimantId) {
         AABB cell = new AABB(pos);
         boolean inCampfireColumn = pos.getX() == campfire.getX() && pos.getZ() == campfire.getZ();
         for (Entity entity : level.getEntities((Entity) null, cell)) {
-            if (inCampfireColumn
-                    && entity instanceof net.minecraft.world.entity.npc.Villager villager
-                    && villager.getBrain().getMemory(net.minecraft.world.entity.ai.memory.MemoryModuleType.JOB_SITE)
-                            // [Review round 5, finding #1] The JOB_SITE memory's own dimension must
-                            // also match - a villager actively working a job site in a DIFFERENT
-                            // dimension that merely happens to share this exact coordinate is a
-                            // stale/foreign bystander here, never this site's own claimant.
-                            .map(gp -> gp.dimension().equals(level.dimension()) && gp.pos().equals(campfire)).orElse(false)
-                    && villager.blockPosition().getX() == campfire.getX()
-                    && villager.blockPosition().getZ() == campfire.getZ()) {
-                continue; // the claiming villager parking at its own reserved campfire column
+            if (inCampfireColumn && claimantId != null && entity.getUUID().equals(claimantId)) {
+                continue; // the EXACT claiming villager parking at its own reserved campfire column
             }
             return true;
         }

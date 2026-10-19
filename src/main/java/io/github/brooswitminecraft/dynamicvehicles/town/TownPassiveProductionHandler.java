@@ -42,17 +42,20 @@ public final class TownPassiveProductionHandler {
             return;
         }
 
+        TownStorage storage = TownStorage.of(level.getServer());
         Map<RegionCoord, Integer> workersByRegion = new HashMap<>();
         for (Entity entity : level.getEntities().getAll()) {
             if (!(entity instanceof Villager villager)) {
                 continue;
             }
-            // [Review round 4, finding #7 / round 5, finding #6] A JOB_SITE memory's own DIMENSION
-            // must actually match this tick's level before its position is trusted - a stale or
-            // cross-dimension memory must never credit a region in the wrong dimension just because
-            // the coordinates happen to overlap. Shared with TownDonationHandler via
-            // TownRegion#liveClaimedRegion so this validation can never drift between the two.
-            Optional<RegionCoord> region = TownRegion.liveClaimedRegion(level, villager);
+            // [Review round 4, finding #7 / round 5, finding #6 / round 6, finding #5] A JOB_SITE
+            // memory's own DIMENSION must actually match this tick's level before its position is
+            // trusted, its remembered position must still hold a real block, and its region must
+            // actually be founded - a stale, destroyed, or unfounded memory must never credit
+            // anything just because the coordinates happen to overlap. Shared with
+            // TownDonationHandler via TownRegion#liveClaimedRegion so this validation can never
+            // drift between the two.
+            Optional<RegionCoord> region = TownRegion.liveClaimedRegion(level, villager, storage);
             if (region.isEmpty()) {
                 continue;
             }
@@ -62,7 +65,6 @@ public final class TownPassiveProductionHandler {
             return;
         }
 
-        TownStorage storage = TownStorage.of(level.getServer());
         for (Map.Entry<RegionCoord, Integer> entry : workersByRegion.entrySet()) {
             int workers = Math.min(entry.getValue(), TownConstants.PASSIVE_PRODUCTION_WORKER_CAP);
             int credit = workers * TownConstants.PASSIVE_PRODUCTION_PER_WORKER;

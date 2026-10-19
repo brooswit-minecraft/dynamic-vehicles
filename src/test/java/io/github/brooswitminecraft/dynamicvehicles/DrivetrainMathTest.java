@@ -177,4 +177,77 @@ class DrivetrainMathTest {
         double b = DrivetrainMath.boundedSpinTowardSnap(50.0, 2.0, -3000.0, 0.35, 1.2, 0.05);
         assertEquals(a, b, 1e-9);
     }
+
+    /** {@code SableCarBody}'s own reaction-impulse formula for the recovery branch, reproduced here (not
+     * imported - it is inline at the call site, not a named method) so this test exercises the exact same
+     * arithmetic rather than a paraphrase of it. */
+    private static double reactionImpulse(double priorSpin, double recoveredSpin, double wheelRadius, double wheelInertia) {
+        return -(recoveredSpin - priorSpin) * wheelInertia / wheelRadius;
+    }
+
+    /**
+     * Review, round 7: the empirical per-tick GameTest bound does not by itself prove the recovery
+     * reaction's own angular-impulse/chassis-reaction accounting is integrated correctly across
+     * sub-steps - this does, the same way {@code WheelMathTest}'s own
+     * {@code repeatedSubStepsAtTheSameTotalDtIntegrateToTheSameSpinRegardlessOfSubStepCount} already
+     * proves it for {@link WheelMath#spinRate}'s excessForce branch: for a CONSTANT friction headroom and
+     * ground-speed target (an idealization that test makes too - a live tick's own force/headroom vary
+     * sub-step to sub-step, which is exactly why the GameTest bound above is empirical rather than
+     * derived), splitting the SAME total dt into N sub-steps and summing each one's own
+     * {@link DrivetrainMath#boundedSpinTowardSnap} + reaction-impulse pair must total the SAME net spin
+     * change and reaction impulse as one sub-step at the full dt - never N times either, and never zero.
+     */
+    @Test
+    void recoveryReactionImpulseIntegratesTheSameTotalRegardlessOfSubStepCount() {
+        double frictionHeadroom = 2000.0;
+        double wheelRadius = 0.35;
+        double wheelInertia = 1.2;
+        double groundSpin = 5.0;
+        double dt = 0.05;
+        double priorSpin = 60.0;
+
+        double snappedOneStep = WheelMath.spinRate(priorSpin, wheelRadius, groundSpin * wheelRadius, 0.0, wheelInertia, dt);
+        double recoveredOneStep = DrivetrainMath.boundedSpinTowardSnap(priorSpin, snappedOneStep, frictionHeadroom,
+                wheelRadius, wheelInertia, dt);
+        double oneStepImpulse = reactionImpulse(priorSpin, recoveredOneStep, wheelRadius, wheelInertia);
+        assertTrue(recoveredOneStep < priorSpin, "test setup invalid -- the single step must actually recover some spin");
+
+        for (int n = 2; n <= 4; n++) {
+            double subDt = dt / n;
+            double spin = priorSpin;
+            double totalImpulse = 0.0;
+            for (int sub = 0; sub < n; sub++) {
+                double snapped = WheelMath.spinRate(spin, wheelRadius, groundSpin * wheelRadius, 0.0, wheelInertia, subDt);
+                double recovered = DrivetrainMath.boundedSpinTowardSnap(spin, snapped, frictionHeadroom, wheelRadius, wheelInertia, subDt);
+                totalImpulse += reactionImpulse(spin, recovered, wheelRadius, wheelInertia);
+                spin = recovered;
+            }
+            assertEquals(recoveredOneStep, spin, 1e-9, "N=" + n + " must recover to the same spin as N=1 over the same total dt");
+            assertEquals(oneStepImpulse, totalImpulse, 1e-9, "N=" + n + "'s summed reaction impulse must match N=1's, not N times it or a fraction of it");
+        }
+    }
+
+    /** As above, but the gap is small enough to close within a single N=1 step -- every sub-step count
+     * must still converge to EXACTLY the ground-speed target (not overshoot it, and not stop early), the
+     * same "reaches the target exactly once close enough" property {@code boundedSpinTowardSnap} already
+     * guarantees for a single call. */
+    @Test
+    void recoveryReactionConvergesExactlyToGroundSpeedRegardlessOfSubStepCountWhenTheGapIsSmall() {
+        double frictionHeadroom = 50_000.0; // deliberately generous: this step closes the gap in one go
+        double wheelRadius = 0.35;
+        double wheelInertia = 1.2;
+        double groundSpin = 5.0;
+        double dt = 0.05;
+        double priorSpin = 5.5;
+
+        for (int n = 1; n <= 4; n++) {
+            double subDt = dt / n;
+            double spin = priorSpin;
+            for (int sub = 0; sub < n; sub++) {
+                double snapped = WheelMath.spinRate(spin, wheelRadius, groundSpin * wheelRadius, 0.0, wheelInertia, subDt);
+                spin = DrivetrainMath.boundedSpinTowardSnap(spin, snapped, frictionHeadroom, wheelRadius, wheelInertia, subDt);
+            }
+            assertEquals(groundSpin, spin, 1e-9, "N=" + n + " must reach ground speed exactly, not approach it asymptotically");
+        }
+    }
 }

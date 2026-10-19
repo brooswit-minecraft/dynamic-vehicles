@@ -337,6 +337,19 @@ final class SableCarBody {
         Vector3d subAngular = new Vector3d(angular);
         double[] wearSlipMax = new double[wheelCount];
         double[] wearSlipForce = new double[wheelCount];
+        // Review, round 7: the wheel-spin-recovery reaction (below) is a real contact-patch sliding event
+        // (the wheel surface differs from ground speed while it's being despun/respun), so it belongs in
+        // the SAME slip/erosion accounting every other sliding event already feeds, not a parallel one.
+        // Accumulated as an IMPULSE (summed across sub-steps, exactly like the chassis's own delivered
+        // impulse) rather than read per-sub-step, for the same substep-count-invariance reason
+        // WheelSubStepper.subStepSlipSpeed evaluates reportedSlip at the tick's own dt: a sum of impulses
+        // is exact regardless of how many sub-steps it was split across, where a per-sub-step force/spin
+        // read is not. Converted to an equivalent slip SPEED (impulse / effectiveMass, m/s - the same unit
+        // tire().slipSpeed()/reportedSlip already use) once, after the sub-step loop, and folded into the
+        // existing wearSlipMax/wearSlipForce bookkeeping below - the existing ">0.3"/once-per-tick/
+        // SlipReporter guards apply to it exactly as they already do to reportedSlip, unmodified.
+        double[] recoveryImpulseAccum = new double[wheelCount];
+        double[] recoveryLoadForce = new double[wheelCount];
 
         for (int sub = 0; sub < subSteps; sub++) {
             double forwardSpeed = subLinear.dot(carForward);
@@ -522,6 +535,7 @@ final class SableCarBody {
                 // never paid that reaction, conjuring momentum. Second, that friction is drawn from the SAME
                 // circle this step's longitudinal/lateral tire forces already spent part of, not a second,
                 // independent mu*normalForce budget - bound by the circle's remaining headroom instead.
+                double reactionImpulse = 0.0;
                 if (excessForce == 0.0) {
                     double frictionHeadroom = Math.max(0.0,
                             tire.frictionLimit() - Math.hypot(tire.longitudinal(), tire.lateral()));
@@ -536,9 +550,11 @@ final class SableCarBody {
                     // bleeding off) pays out as a FORWARD impulse, spin increasing (a locked wheel catching
                     // back up) as a backward one, matching the two cases driving/braking already use the
                     // opposite sign for.
-                    double reactionImpulse = -(recoveredSpin - priorSpin) * WheelMath.WHEEL_INERTIA / spec.wheelRadius();
+                    reactionImpulse = -(recoveredSpin - priorSpin) * WheelMath.WHEEL_INERTIA / spec.wheelRadius();
                     impulseWorld.fma(reactionImpulse, forward);
                     wheelSpin[wheel] = recoveredSpin;
+                    recoveryImpulseAccum[wheel] += Math.abs(reactionImpulse);
+                    recoveryLoadForce[wheel] = force;
                 } else {
                     wheelSpin[wheel] = snappedSpin;
                 }
@@ -556,7 +572,10 @@ final class SableCarBody {
                 // force<=0 guard -- these are a snapshot for /dtcar debug, not integrated state.
                 wheelContactSpeed[wheel] = vLong;
                 wheelSlip[wheel] = reportedSlip;
-                wheelForce[wheel] = tire.longitudinal();
+                // Review, round 7: this must report the TOTAL longitudinal force actually delivered to the
+                // chassis this sub-step, not just tire.longitudinal() -- the recovery reaction above (0 when
+                // not recovering) is real, applied force that was previously missing from this telemetry.
+                wheelForce[wheel] = tire.longitudinal() + reactionImpulse / subDt;
                 // SlipReporter must fire at most once per wheel per tick (not once per sub-step), so we only
                 // track the worst wearSlip seen across this tick's sub-steps here, paired with the force at
                 // the sub-step that produced it (so the reported load matches the reported slip), and report
@@ -585,7 +604,29 @@ final class SableCarBody {
             subLinear = body.getLinearVelocity(new Vector3d());
             subAngular = body.getAngularVelocity(new Vector3d());
         }
+        double recoveryEffectiveMass = spec.massKg() / 4.0;
+        // forwardSpeed itself is sub-step-loop-local; this re-derives it the same way (subLinear.dot
+        // (carForward)) from the loop's own final velocity, consistent with every other "last sub-step
+        // wins" value already read after that loop ends.
+        double finalForwardSpeed = subLinear.dot(carForward);
         for (int wheel = 0; wheel < wheelCount; wheel++) {
+            // Review, round 7: fold the recovery reaction's own equivalent slip speed (this tick's total
+            // accumulated reaction impulse / effectiveMass - see the accumulator's own comment above) into
+            // the EXISTING wearSlipMax/wearSlipForce bookkeeping once, exactly like any other slip source
+            // already competing for that same "worst this tick" slot - no separate threshold, no separate
+            // SlipReporter call.
+            if (recoveryImpulseAccum[wheel] > 0.0) {
+                double recoverySlipSpeed = recoveryImpulseAccum[wheel] / recoveryEffectiveMass;
+                double recoveryWear = CarConfig.WEAR_ENABLED.get()
+                        ? CarEffectsMath.wearSlip(throttle, finalForwardSpeed, recoverySlipSpeed, CarConfig.WEAR_STRENGTH.get())
+                        : recoverySlipSpeed;
+                if (recoveryWear > wearSlipMax[wheel]) {
+                    wearSlipMax[wheel] = recoveryWear;
+                    wearSlipForce[wheel] = recoveryLoadForce[wheel];
+                }
+                slipThisTick = Math.max(slipThisTick, recoverySlipSpeed);
+                wheelSlip[wheel] = Math.max(wheelSlip[wheel], recoverySlipSpeed);
+            }
             if (wearSlipMax[wheel] > 0.3) {
                 double loadKg = wearSlipForce[wheel] / GRAVITY;
                 Erosion.Result result = SlipReporter.report(level, wheelHits[wheel].getBlockPos(), wearSlipMax[wheel], loadKg);

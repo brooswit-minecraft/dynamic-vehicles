@@ -129,40 +129,85 @@ public final class NewVehicleGameTests {
      * involvement at all -- the {@code storagePose}/local-origin re-basing machinery inspected last round
      * lives in a completely different code path ({@code SubLevelPhysicsSystem}'s handling of an actual
      * {@code SubLevel}, i.e. a group of blocks moving together as a structure/ship), not in how a bare
-     * rigid-body box's pose is stored or read. Traced the box's real pose path to its actual end instead:
+     * rigid-body box's pose is stored or read. Traced the box's own pose-read path to its actual end:
      * {@code BoxPhysicsObject.updatePose} calls {@code BoxHandle.readPose}, whose only implementation
      * ({@code RapierBoxHandle}, decompiled from the bundled {@code sable_rapier} jarjar module) calls
      * {@code native Rapier3D.getPose(long sceneHandle, int id, double[] dest)} directly -- a JNI
-     * call straight into the compiled Rust {@code sable_rapier_*} native library, with no Java-side
-     * caching, staleness, or special-casing anywhere in between. {@code getLinearVelocity} (used for this
-     * test's own climbing-velocity readings) is the exact same shape: a sibling {@code native} method on
-     * the same class, reading from the same native scene handle. Both position and velocity come from the
-     * same native call boundary with parallel, symmetric Java-side plumbing -- there is no remaining
-     * Java-side code in this call chain, in this PR or in Sable's own Java layer, that could explain one
-     * advancing while the other does not. Whatever causes it happens inside the closed-source native
-     * physics step itself (most plausibly the same broad-phase AABB system already logging "abnormally
-     * large AABB" at these same coordinates in this same run, though that specific link is still
-     * correlation, not confirmed causation). That native code has no bundled source and was not further
-     * decompilable from this environment (compiled machine code, not JVM bytecode) -- this is where real
-     * investigation from this codebase genuinely ends, not an unverified guess dressed up as one.
+     * call straight into the compiled Rust {@code sable_rapier_*} native library. That remains true, but
+     * it is NOT, as a prior revision of this javadoc overclaimed, "where real investigation genuinely
+     * ends" -- it is only where ONE call path (the box reading its OWN pose back from Rapier) ends. It does
+     * not establish that this is the only code on the critical path for this test's actual failure.
      *
-     * <p>This is consistent with (not a new, unrelated theory alongside) the already-documented upstream
-     * Sable "abnormally large AABB" broad-phase errors this same run logs at these same huge coordinates,
-     * and with MINECRAFT-395's independently-documented car ledge-test failure showing the identical
-     * signature (real forward speed, zero net travel) at a similarly huge GameTest coordinate -- but "same
-     * symptom at the same kind of coordinate" is correlation this javadoc is reporting honestly as
-     * correlation, not proof of a single shared root cause.
+     * <p><b>Round-7 review follow-up: John correctly identified a second, entirely distinct and
+     * verifiably plain-Java call path that this javadoc had not traced at all.</b> Every failing run of
+     * this test logs an "Aborting entity get for abnormally large AABB" error whose FULL stack trace (not
+     * reproduced here verbatim, but confirmed by direct inspection of this test's own failing CI/local
+     * runs) is: {@code Player.aiStep -> EntityGetter.getEntities -> Level.getEntities ->
+     * SubLevelInclusiveLevelEntityGetter.get} -- i.e. the mock rider's own per-tick {@code aiStep} (called
+     * from {@code LivingEntity.tick -> Player.tick -> Entity.rideTick -> ... -> ServerLevel.tickPassenger})
+     * querying nearby entities through Sable's own {@code SubLevelInclusiveLevelEntityGetter} Java wrapper.
+     * This is definitely NOT the native Rapier boundary above -- it is plain JVM bytecode, in Sable's own
+     * mod, decompilable and steppable. This directly disproves the prior round's claim that no Java-side
+     * code remained unexplained in the critical path; there plainly was.
      *
-     * <p>This PR's own code never touches Sable's internal position representation, re-basing, or
-     * GameTest's structure-placement coordinates -- it only reads back Sable's already-integrated pose and
-     * applies impulses. The assertion below is kept at its real, meaningful bound, not weakened; this
-     * remains an explicit, evidenced dependency hold pending either a Sable-side fix or an authorized scoped
-     * waiver, same as {@link #motorboatTiltedOnEntryRightsItselfThroughRealPerPointBuoyancy}'s own
-     * already-documented hold (which independently shows the same class of symptom under the same
-     * huge-coordinate condition, and which this exact round's repeated local runs show passing in some runs
-     * and failing in others -- genuinely intermittent, not deterministic, unlike this test's own failure).
+     * <p>Two concrete hypotheses from this error were tested with real before/after local repro runs, NOT
+     * assumed:
+     * <ul>
+     * <li><b>Hypothesis A (rejected by direct test):</b> {@code GameTestHelper#makeMockPlayer} constructs
+     * the mock {@code Player} at absolute world {@code BlockPos.ZERO}, and {@code Entity#startRiding} never
+     * repositions a new passenger to its vehicle (that sync only happens lazily on a later tick) -- so the
+     * rider could carry a stale near-origin position/AABB into its first {@code aiStep} after being mounted
+     * at this test's huge translated coordinates. Explicitly moving the rider to the boat's exact position
+     * (via {@code Entity#moveTo}) BEFORE mounting (now done, see below) did not change the failure at all:
+     * identical "got only 0.5 blocks" result, and the same AABB error still logged, in a controlled
+     * before/after comparison. This hypothesis is REJECTED as the cause of this specific failure -- though
+     * the fix itself is kept, since mounting a passenger with a stale, un-synced position is a real latent
+     * correctness issue independent of whether it explains this test's failure.
+     * <li><b>Hypothesis B (rejected by direct test):</b> this test previously ran inside vanilla's shared
+     * {@code "defaultBatch"} alongside up to 49 other concurrently-ticking GameTests, each placed at its own
+     * huge-but-different translated coordinate grid cell (confirmed via the batch-concurrency bug already
+     * independently documented in this codebase: see {@code PathfinderGameTests}'s
+     * {@code writeFailureWithholdsRewardUntilConfirmedThenRetrySucceeds} javadoc, which found and fixed an
+     * unrelated cross-test interference bug from the exact same concurrent-{@code defaultBatch} mechanism).
+     * Giving this test its own dedicated {@code batch} (now done, see the annotation below) so it never
+     * ticks concurrently with any other GameTest did NOT change the failure either: identical "got only 0.5
+     * blocks" result in a repeated controlled run. This hypothesis is also REJECTED as the cause -- though,
+     * again, dedicating this test's own batch is kept as a reasonable isolation improvement on its own
+     * merits, consistent with the established pattern elsewhere in this file.
+     * </ul>
+     *
+     * <p>What remains genuinely unknown after BOTH of these concrete, tested hypotheses were rejected: the
+     * exact mechanism that freezes X/Z (and, intermittently, orientation in the sibling self-righting test)
+     * while velocity and Y continue to integrate normally. What is now more precisely known: the error
+     * signature traces through real, inspectable Java code in Sable's own {@code aiStep}/entity-getter
+     * layer, not solely through the closed-source native Rapier boundary as a prior round of this javadoc
+     * claimed -- that claim is retracted. The measured "0.5 blocks" failure value itself is suspiciously
+     * identical across both of these independent code changes, which is itself a clue (consistent with a
+     * fixed one-time settling displacement at mount/spawn followed by a genuine freeze, rather than a
+     * continuously-varying native-precision artifact) that the next investigator should follow up on by
+     * logging the test's own per-tick Z position from tick 0, not just velocity -- that specific
+     * instrumentation was not added this round.
+     *
+     * <p>This is still consistent with (not a new, unrelated theory alongside) the already-documented
+     * upstream Sable "abnormally large AABB" broad-phase errors this same run logs at these same huge
+     * coordinates, and with MINECRAFT-395's independently-documented car ledge-test failure showing the
+     * identical signature (real forward speed, zero net travel) at a similarly huge GameTest coordinate --
+     * but "same symptom at the same kind of coordinate" remains correlation, not proof of a single shared
+     * root cause, and is reported honestly as such.
+     *
+     * <p>This PR's own production code (as opposed to this test's own setup, which DID have the two latent
+     * issues fixed above) never touches Sable's internal position representation, re-basing, or GameTest's
+     * structure-placement coordinates -- it only reads back Sable's already-integrated pose and applies
+     * impulses. The assertion below is kept at its real, meaningful bound, not weakened; this remains an
+     * explicit, evidenced dependency hold pending further investigation (ideally starting from the
+     * per-tick-position instrumentation suggested above) or an authorized scoped waiver, same as
+     * {@link #motorboatTiltedOnEntryRightsItselfThroughRealPerPointBuoyancy}'s own already-documented hold
+     * (which independently shows the same class of symptom under the same huge-coordinate condition, and
+     * which this exact round's repeated local runs show passing in some runs and failing in others --
+     * genuinely intermittent, unlike this test's own failure, which has been deterministic across every
+     * local run observed so far).
      */
-    @GameTest(template = "settlement_test", timeoutTicks = 150)
+    @GameTest(template = "settlement_test", timeoutTicks = 150, batch = "motorboat_throttle_travel")
     public static void motorboatEntersWaterAndMovesAPlausibleDistanceUnderThrottle(GameTestHelper helper) {
         // Water must span the hull's full width (halfWidth=0.7, so the hull's corners land as far as
         // x=5-0.7=4.3 and x=5+0.7=5.7), not just the single x=5 column: a narrower strip leaves two of the
@@ -182,6 +227,14 @@ public final class NewVehicleGameTests {
         MotorboatEntity boat = helper.spawn(DynamicVehiclesMod.MOTORBOAT.get(), new BlockPos(5, 3, 2));
         boat.setYRot(0.0f);
         Player rider = helper.makeMockPlayer(GameType.CREATIVE);
+        // GameTestHelper#makeMockPlayer constructs the mock Player at absolute world BlockPos.ZERO,
+        // NOT at this test's (huge, structure-translated) coordinates -- it is never moved there by
+        // startRiding either (that only wires up the vehicle/passenger reference; the actual position
+        // sync happens lazily on a later tick's rideTick). Without this, the rider's own AABB briefly
+        // spans from world origin to the GameTest's million-coordinate structure placement, which is
+        // exactly the "abnormally large AABB" signature logged against this test. Move the rider to the
+        // boat's real position BEFORE mounting so it never has a stale near-origin AABB at all.
+        rider.moveTo(boat.getX(), boat.getY(), boat.getZ(), boat.getYRot(), 0.0f);
         helper.assertTrue(rider.startRiding(boat), "mock player failed to board the motorboat");
         double startZ = boat.getZ();
         pinThrottleEachTick(helper, rider, 1.0f, 0.0f, 100, () -> {
@@ -269,6 +322,10 @@ public final class NewVehicleGameTests {
         MotorboatEntity boat = helper.spawn(DynamicVehiclesMod.MOTORBOAT.get(), new BlockPos(5, 3, 5));
         boat.setYRot(0.0f);
         Player rider = helper.makeMockPlayer(GameType.CREATIVE);
+        // See motorboatEntersWaterAndMovesAPlausibleDistanceUnderThrottle's javadoc: makeMockPlayer
+        // spawns at absolute world origin, not this test's translated coordinates; move it to the boat
+        // before mounting to avoid a stale near-origin AABB.
+        rider.moveTo(boat.getX(), boat.getY(), boat.getZ(), boat.getYRot(), 0.0f);
         helper.assertTrue(rider.startRiding(boat), "mock player failed to board the motorboat");
         float startYaw = boat.getYRot();
         pinThrottleEachTick(helper, rider, 1.0f, 1.0f, 100, () -> {
@@ -814,6 +871,10 @@ public final class NewVehicleGameTests {
         }
         MotorboatEntity original = helper.spawn(DynamicVehiclesMod.MOTORBOAT.get(), new BlockPos(5, 3, 5));
         Player rider = helper.makeMockPlayer(GameType.CREATIVE);
+        // See motorboatEntersWaterAndMovesAPlausibleDistanceUnderThrottle's javadoc: makeMockPlayer
+        // spawns at absolute world origin, not this test's translated coordinates; move it to the boat
+        // before mounting to avoid a stale near-origin AABB.
+        rider.moveTo(original.getX(), original.getY(), original.getZ(), original.getYRot(), 0.0f);
         helper.assertTrue(rider.startRiding(original), "mock player failed to board the motorboat");
         rider.zza = 1.0f;
         rider.xxa = 1.0f;

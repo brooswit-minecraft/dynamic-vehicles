@@ -16,7 +16,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * of a stock {@link VehicleSpec}'s already-implemented tuning fields &mdash; ride height, damping rate,
  * anti-roll scale, rolling-resistance scale, handbrake-strength scale, and the five
  * {@link VehicleSpec.VehicleTuning} dials (LSD lock, front/rear torque split, torque-vectoring gain,
- * camber, toe). Everything else about a car (geometry, mass, seats, drive force, top speed, tire/downforce
+ * camber, toe), plus the four {@link VehicleSpec.DrivetrainCoupling} engine/clutch coupling dials
+ * (MINECRAFT-444: engine inertia, peak torque, engine braking torque, clutch torque capacity). Everything else about a car (geometry, mass, seats, drive force, top speed, tire/downforce
  * tuning) is not file-configurable by this ticket; see {@code docs/per-car-config.md} for the full
  * rationale and schema.
  *
@@ -199,6 +200,23 @@ final class VehicleSpecOverrides {
                 file.toeDeg == null ? stockTuning.toeDeg() : file.toeDeg);
         VehicleSpec.VehicleTuning vehicleTuning = VehicleTuningLimits.clamp(requestedTuning, stockTuning);
 
+        // Engine/clutch coupling (MINECRAFT-444): same per-field contract as every field above -- absent
+        // keeps this car's stock value, non-finite falls back to it, finite-but-extreme is clamped.
+        VehicleSpec.DrivetrainCoupling stockCoupling = stock.drivetrainCoupling();
+        VehicleSpec.DrivetrainCoupling drivetrainCoupling = new VehicleSpec.DrivetrainCoupling(
+                file.engineInertia == null ? stockCoupling.engineInertia()
+                        : VehicleSpecLimits.clamp(file.engineInertia, VehicleSpecLimits.MIN_ENGINE_INERTIA,
+                                VehicleSpecLimits.MAX_ENGINE_INERTIA, stockCoupling.engineInertia()),
+                file.enginePeakTorque == null ? stockCoupling.enginePeakTorque()
+                        : VehicleSpecLimits.clamp(file.enginePeakTorque, VehicleSpecLimits.MIN_ENGINE_PEAK_TORQUE,
+                                VehicleSpecLimits.MAX_ENGINE_PEAK_TORQUE, stockCoupling.enginePeakTorque()),
+                file.engineBrakingTorque == null ? stockCoupling.engineBrakingTorque()
+                        : VehicleSpecLimits.clamp(file.engineBrakingTorque, VehicleSpecLimits.MIN_ENGINE_BRAKING_TORQUE,
+                                VehicleSpecLimits.MAX_ENGINE_BRAKING_TORQUE, stockCoupling.engineBrakingTorque()),
+                file.clutchTorqueCapacity == null ? stockCoupling.clutchTorqueCapacity()
+                        : VehicleSpecLimits.clamp(file.clutchTorqueCapacity, VehicleSpecLimits.MIN_CLUTCH_TORQUE_CAPACITY,
+                                VehicleSpecLimits.MAX_CLUTCH_TORQUE_CAPACITY, stockCoupling.clutchTorqueCapacity()));
+
         return new VehicleSpec(stock.halfX(), stock.halfY(), stock.halfZ(),
                 stock.mounts(), stock.wheelRadius(), stock.wheelWidth(),
                 rideHeight, restLength,
@@ -208,6 +226,6 @@ final class VehicleSpecOverrides {
                 stock.seatY(), stock.seatZ(),
                 stock.looseGrip(), rollingScale,
                 stock.tireTuning(), stock.downforceGripPerSpeed(), antiRollScale,
-                stock.seats(), vehicleTuning, handbrakeScale);
+                stock.seats(), vehicleTuning, handbrakeScale, drivetrainCoupling);
     }
 }

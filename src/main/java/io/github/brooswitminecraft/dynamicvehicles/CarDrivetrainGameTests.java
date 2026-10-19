@@ -30,6 +30,20 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 @GameTestHolder(DynamicVehiclesMod.MODID)
 @PrefixGameTestTemplate(false)
 public final class CarDrivetrainGameTests {
+    /** One server tick, seconds -- the same dt {@code CarEntity} hands {@code SableCarBody.tick} (its own
+     * private {@code DT}), named here so these tests' torque/inertia bounds read as "per tick" rather than
+     * repeating the literal. */
+    private static final double TICK_DT = 1.0 / 20.0;
+    /** How close to {@link DrivetrainMath#CLUTCH_TORQUE_CAPACITY} counts as saturated, and how far past it
+     * counts as a violation, N*m -- a floating-point slack, not a behavioural allowance. */
+    private static final double CLUTCH_SATURATION_TOLERANCE = 1e-6;
+    /** Slack on the reaction-impulse identity, N*m -- same role: this identity is exact arithmetic. */
+    private static final double REACTION_IDENTITY_TOLERANCE = 1e-6;
+    /** Slack on "no wheel receives more than the clutch transmitted", N -- the per-wheel force and the
+     * transmitted bound are both read from the same tick's own production state, so this is floating-point
+     * slack only. */
+    private static final double WHEEL_FORCE_BOUND_TOLERANCE = 1e-6;
+
     private CarDrivetrainGameTests() {}
 
     /** Review P1/core ticket ask: D1's own extra torque multiplier must show up as a real, measurably
@@ -288,7 +302,7 @@ public final class CarDrivetrainGameTests {
                 // instantaneous snap that no longer exists to compare against.
                 if (haveWheelPrevious[0]) {
                     double worstCaseOmegaDeltaPerTick = (DrivetrainMath.ENGINE_PEAK_TORQUE + DrivetrainMath.CLUTCH_TORQUE_CAPACITY)
-                            / DrivetrainMath.ENGINE_INERTIA * (1.0 / 20.0);
+                            / DrivetrainMath.ENGINE_INERTIA * TICK_DT;
                     double maxRpmDeltaPerTick = DrivetrainMath.omegaToRpm(worstCaseOmegaDeltaPerTick);
                     double gap = Math.abs(car.debugEngineRpm() - previousEngineRpm[0]) - maxRpmDeltaPerTick;
                     worstRpmConsistencyGap[0] = Math.max(worstRpmConsistencyGap[0], gap);
@@ -978,7 +992,7 @@ public final class CarDrivetrainGameTests {
                                 // is that divided by subDt to read as a FORCE (N) - at wheelSubSteps=1,
                                 // subDt == this tick's own dt (1/20 s, CarEntity.DT), so this test must
                                 // divide by that same dt to compare force-to-force, not impulse-to-force.
-                                double expectedReaction = -deltaSpin * WheelMath.WHEEL_INERTIA / (CarGeometry.WHEEL_RADIUS * (1.0 / 20.0));
+                                double expectedReaction = -deltaSpin * WheelMath.WHEEL_INERTIA / (CarGeometry.WHEEL_RADIUS * TICK_DT);
                                 helper.assertTrue(Math.abs(reactions[wheel] - expectedReaction) < 1.0,
                                         "wheel " + wheel + " at tick " + thisTick
                                                 + ": the real reaction force did not match the momentum/Newton's-third-law identity for this tick's own actual spin change -- missing, duplicated or mis-signed application: reaction="
@@ -1051,6 +1065,292 @@ public final class CarDrivetrainGameTests {
                 CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
                 helper.assertTrue(everRecoveredAtFourStep[0],
                         "test setup invalid at wheelSubSteps=4 -- the car never actually recovered from a wheelspin while pinned, so the friction-circle invariant above was never exercised during a real recovery event");
+                helper.succeed();
+            });
+        } catch (RuntimeException e) {
+            CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
+            throw e;
+        }
+    }
+
+    /**
+     * MINECRAFT-444 review round 1, finding 1 (engine braking must actually propagate through the
+     * drivetrain): two identical cars are accelerated in D1 side by side, then the throttle is released on
+     * both and ONE is put in NEUTRAL. The geared car's clutch is still connected, so the wheels turn the
+     * engine against its own drag and the drivetrain retards the car; the neutral car is declutched and can
+     * only lose speed to rolling resistance and air drag. The geared car must therefore decelerate
+     * measurably harder -- the production evidence that the clutch reaches the WHEELS, not merely the
+     * engine's own RPM. Also asserts the real production clutch values' own signs while coasting, read
+     * from the single call site: negative clutch torque (drivetrain -&gt; engine) and a retarding (negative,
+     * i.e. rearward in a forward gear) per-wheel force for the geared car, exactly zero for the neutral one.
+     *
+     * <p>Both measurements are taken while both cars are still above the parked-hold speed
+     * ({@code SableCarBody}'s own {@code throttle == 0 && |forwardSpeed| < 1.5} branch applies the service
+     * brake), so what is compared is drivetrain drag, never that hold.
+     */
+    @GameTest(template = "settlement_test", timeoutTicks = 200)
+    public static void engineBrakingInGearDeceleratesACoastingCarHarderThanNeutralDoes(GameTestHelper helper) {
+        CarEntity geared = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(3, 3, 2));
+        geared.setYRot(0.0f);
+        geared.selectGear(CarPhysics.Gear.D1);
+        CarEntity neutral = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(7, 3, 2));
+        neutral.setYRot(0.0f);
+        neutral.selectGear(CarPhysics.Gear.D1);
+        Player gearedRider = helper.makeMockPlayer(GameType.CREATIVE);
+        helper.assertTrue(gearedRider.startRiding(geared), "mock player failed to board the geared car");
+        Player neutralRider = helper.makeMockPlayer(GameType.CREATIVE);
+        helper.assertTrue(neutralRider.startRiding(neutral), "mock player failed to board the neutral car");
+        double[] speedAtRelease = {0.0, 0.0};
+        double[] worstGearedClutchTorqueWhileCoasting = {0.0};
+        double[] worstGearedClutchForceWhileCoasting = {0.0};
+        double[] worstNeutralClutchForceWhileCoasting = {0.0};
+        helper.runAfterDelay(30L, () -> {
+            gearedRider.zza = 1.0f;
+            neutralRider.zza = 1.0f;
+            helper.runAfterDelay(90L, () -> {
+                // Both cars have been driven identically up to here; now cut throttle and declutch one.
+                gearedRider.zza = 0.0f;
+                neutralRider.zza = 0.0f;
+                neutral.selectGear(CarPhysics.Gear.NEUTRAL);
+                speedAtRelease[0] = geared.debugSpeed();
+                speedAtRelease[1] = neutral.debugSpeed();
+                helper.assertTrue(speedAtRelease[0] > 4.0 && speedAtRelease[1] > 4.0,
+                        "test setup invalid -- a car never reached a coast-down speed well above the parked-hold threshold: geared="
+                                + speedAtRelease[0] + " neutral=" + speedAtRelease[1]);
+                helper.assertTrue(Math.abs(speedAtRelease[0] - speedAtRelease[1]) < speedAtRelease[0] * 0.25,
+                        "test setup invalid -- the two cars did not start coasting from comparable speeds: geared="
+                                + speedAtRelease[0] + " neutral=" + speedAtRelease[1]);
+                for (long tick = 1; tick <= 20; tick++) {
+                    helper.runAfterDelay(tick, () -> {
+                        worstGearedClutchTorqueWhileCoasting[0] =
+                                Math.min(worstGearedClutchTorqueWhileCoasting[0], geared.debugClutchTorque());
+                        worstGearedClutchForceWhileCoasting[0] =
+                                Math.min(worstGearedClutchForceWhileCoasting[0], geared.debugClutchWheelForce());
+                        worstNeutralClutchForceWhileCoasting[0] = Math.max(worstNeutralClutchForceWhileCoasting[0],
+                                Math.abs(neutral.debugClutchWheelForce()));
+                    });
+                }
+                helper.runAfterDelay(21L, () -> {
+                    double gearedLost = speedAtRelease[0] - geared.debugSpeed();
+                    double neutralLost = speedAtRelease[1] - neutral.debugSpeed();
+                    helper.assertTrue(geared.debugSpeed() > 1.5,
+                            "test setup invalid -- the geared car dropped into the parked-hold branch during the measured window, so this compares the service brake, not engine braking: speed="
+                                    + geared.debugSpeed());
+                    helper.assertTrue(worstGearedClutchTorqueWhileCoasting[0] < 0.0,
+                            "coasting in gear never produced a negative (drivetrain -> engine) clutch torque on the production path: worst="
+                                    + worstGearedClutchTorqueWhileCoasting[0] + " N*m");
+                    helper.assertTrue(worstGearedClutchForceWhileCoasting[0] < 0.0,
+                            "the coasting clutch torque never reached the wheels as a retarding force: worst per-wheel force="
+                                    + worstGearedClutchForceWhileCoasting[0] + " N");
+                    helper.assertTrue(worstNeutralClutchForceWhileCoasting[0] == 0.0,
+                            "NEUTRAL is disengaged and must transmit no wheel force in either direction, but the production path applied up to "
+                                    + worstNeutralClutchForceWhileCoasting[0] + " N");
+                    helper.assertTrue(gearedLost > neutralLost * 1.15,
+                            "coasting in gear did not decelerate the car measurably harder than coasting declutched -- engine braking is not propagating through the drivetrain: geared lost "
+                                    + gearedLost + " m/s, neutral lost " + neutralLost + " m/s");
+                    helper.succeed();
+                });
+            });
+        });
+    }
+
+    /**
+     * MINECRAFT-444 review round 1, finding 1 (a slipping clutch must bound transmitted wheel torque):
+     * pinned against a wall in D1 at full throttle, the wheels spin far slower than the engine wants, so
+     * the torque needed to lock the clutch is far more than it can hold and it genuinely slips. Asserts on
+     * the REAL production values every tick: the transmitted clutch torque never exceeds
+     * {@link DrivetrainMath#CLUTCH_TORQUE_CAPACITY}, the capacity is actually reached (so the bound is
+     * exercised rather than vacuous), and no wheel's own delivered longitudinal force ever exceeds the
+     * per-wheel force that capacity amounts to -- i.e. the clutch, not the throttle, is what limits the
+     * wheels while it is slipping.
+     */
+    @GameTest(template = "settlement_test", timeoutTicks = 80)
+    public static void aSlippingClutchBoundsTheWheelForceItTransmitsOnTheProductionPath(GameTestHelper helper) {
+        helper.setBlock(new BlockPos(5, 2, 5), Blocks.STONE);
+        helper.setBlock(new BlockPos(5, 3, 5), Blocks.AIR);
+        for (int dx = 4; dx <= 6; dx++) {
+            for (int dy = 2; dy <= 5; dy++) {
+                helper.setBlock(new BlockPos(dx, dy, 7), Blocks.STONE);
+            }
+        }
+        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
+        car.setYRot(0.0f);
+        car.selectGear(CarPhysics.Gear.D1);
+        Player rider = helper.makeMockPlayer(GameType.CREATIVE);
+        helper.assertTrue(rider.startRiding(car), "mock player failed to board the car");
+        rider.zza = 1.0f;
+        double[] worstClutchTorque = {0.0};
+        boolean[] everSaturated = {false};
+        double[] worstForceOverBound = {0.0};
+        for (long tick = 1; tick <= 50; tick++) {
+            helper.runAfterDelay(tick, () -> {
+                // Both quantities are bounded by the same capacity, and both must be: the engine's own
+                // internal sync torque (debugClutchTorque) is what makes it slip rather than lock, and the
+                // transmitted torque (debugTransmittedClutchTorque) is what the wheels may receive.
+                double syncTorque = Math.abs(car.debugClutchTorque());
+                double transmitted = Math.abs(car.debugTransmittedClutchTorque());
+                worstClutchTorque[0] = Math.max(worstClutchTorque[0], Math.max(syncTorque, transmitted));
+                if (syncTorque >= DrivetrainMath.CLUTCH_TORQUE_CAPACITY - CLUTCH_SATURATION_TOLERANCE) {
+                    everSaturated[0] = true;
+                }
+                // The drivetrain's own COMMAND, not the delivered tire force: the latter also carries brake
+                // force, rolling resistance and the wheel-recovery reaction, none of which the clutch
+                // transmits or bounds. Stock CAR has no LSD lock and no torque split/vectoring
+                // (VehicleTuning.IDENTITY), so no redistribution can move the command between wheels here.
+                double transmittedBound = Math.abs(car.debugClutchWheelForce());
+                for (double command : car.debugWheelDriveCommands()) {
+                    worstForceOverBound[0] = Math.max(worstForceOverBound[0], Math.abs(command) - transmittedBound);
+                }
+            });
+        }
+        helper.runAfterDelay(55L, () -> {
+            helper.assertTrue(worstClutchTorque[0] <= DrivetrainMath.CLUTCH_TORQUE_CAPACITY + CLUTCH_SATURATION_TOLERANCE,
+                    "the production clutch transmitted more torque than its own capacity: " + worstClutchTorque[0]
+                            + " N*m > " + DrivetrainMath.CLUTCH_TORQUE_CAPACITY + " N*m");
+            helper.assertTrue(everSaturated[0],
+                    "test setup invalid -- the clutch's own sync torque never saturated while pinned at full throttle, so the capacity bound above was never exercised: peak="
+                            + worstClutchTorque[0] + " N*m");
+            helper.assertTrue(worstForceOverBound[0] <= WHEEL_FORCE_BOUND_TOLERANCE,
+                    "a wheel was commanded more drivetrain force than the slipping clutch could transmit, by "
+                            + worstForceOverBound[0] + " N -- the throttle, not the clutch, is still setting the wheel command");
+        helper.succeed();
+        });
+    }
+
+    /**
+     * MINECRAFT-444 review round 1, finding 2 (the chassis reaction must match the engine's own realized
+     * momentum change, including across the zero floor) plus the acceptance criterion that selecting
+     * reverse must not flip the engine torque axis. Observes the REAL per-tick reaction torque the
+     * production tick handed the body against the engine's own realized angular-speed change -- the
+     * reaction's defining identity, checked against the applied value rather than a reproduction of the
+     * formula -- and compares the reaction's sign between a car accelerating in D1 and one accelerating in
+     * REVERSE: the crankshaft spins the same way in both, so the reaction must too.
+     */
+    @GameTest(template = "settlement_test", timeoutTicks = 120)
+    public static void engineAxisReactionMatchesRealizedEngineMomentumAndDoesNotFlipInReverse(GameTestHelper helper) {
+        CarEntity forward = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(3, 3, 5));
+        forward.setYRot(0.0f);
+        forward.selectGear(CarPhysics.Gear.D1);
+        CarEntity reverse = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(7, 3, 5));
+        reverse.setYRot(0.0f);
+        reverse.selectGear(CarPhysics.Gear.REVERSE);
+        Player forwardRider = helper.makeMockPlayer(GameType.CREATIVE);
+        helper.assertTrue(forwardRider.startRiding(forward), "mock player failed to board the forward car");
+        Player reverseRider = helper.makeMockPlayer(GameType.CREATIVE);
+        helper.assertTrue(reverseRider.startRiding(reverse), "mock player failed to board the reverse car");
+        double[] worstIdentityGap = {0.0, 0.0};
+        boolean[] everAccelerated = {false, false};
+        boolean[] everReactedWrongWayWhileAccelerating = {false, false};
+        helper.runAfterDelay(30L, () -> {
+            forwardRider.zza = 1.0f;
+            reverseRider.zza = 1.0f;
+            for (long tick = 1; tick <= 50; tick++) {
+                helper.runAfterDelay(tick, () -> {
+                    // Each car is checked against ITSELF, tick by tick: the reaction must equal that car's
+                    // own realized engine momentum change, and must be negative on exactly the ticks where
+                    // that car's own engine sped up. Comparing the two cars' reactions to each other at the
+                    // same tick would prove nothing -- their engines are in different states at any given
+                    // moment, so a difference there is ordinary, not an axis flip. The gear-independence
+                    // claim is that BOTH cars obey the same sign rule about their own rotation, which is
+                    // what these two parallel checks establish.
+                    CarEntity[] cars = {forward, reverse};
+                    for (int index = 0; index < cars.length; index++) {
+                        CarEntity car = cars[index];
+                        double omega = car.debugEngineOmega();
+                        double priorOmega = car.debugPriorEngineOmega();
+                        double reaction = car.debugEngineReactionTorque();
+                        double expectedReaction = -(omega - priorOmega) * DrivetrainMath.ENGINE_INERTIA / TICK_DT;
+                        worstIdentityGap[index] = Math.max(worstIdentityGap[index],
+                                Math.abs(reaction - expectedReaction));
+                        if (omega > priorOmega) {
+                            everAccelerated[index] = true;
+                            if (reaction > 0.0) {
+                                everReactedWrongWayWhileAccelerating[index] = true;
+                            }
+                        }
+                    }
+                });
+            }
+            helper.runAfterDelay(55L, () -> {
+                String[] names = {"forward (D1)", "reverse (REVERSE)"};
+                for (int index = 0; index < names.length; index++) {
+                    helper.assertTrue(worstIdentityGap[index] < REACTION_IDENTITY_TOLERANCE,
+                            "the " + names[index] + " car's applied engine-axis reaction diverged from its own realized angular-momentum change by "
+                                    + worstIdentityGap[index] + " N*m -- an unmatched chassis impulse");
+                    helper.assertTrue(everAccelerated[index],
+                            "test setup invalid -- the " + names[index] + " car's engine never actually sped up, so the sign rule below was never exercised");
+                    helper.assertTrue(!everReactedWrongWayWhileAccelerating[index],
+                            "the " + names[index]
+                                    + " car reacted POSITIVELY on a tick its own engine sped up -- the reaction must track the engine's own rotation in both gears alike, so selecting reverse cannot flip the engine torque axis");
+                }
+                helper.succeed();
+            });
+        });
+    }
+
+    /**
+     * MINECRAFT-444 review round 1 (tick/substep consistency of the new production path). The engine and
+     * clutch are integrated ONCE per tick at the tick's own dt, deliberately -- unlike the wheel loop, they
+     * are not re-integrated per sub-step (see {@code SableCarBody}'s own engine/clutch block), so changing
+     * {@code wheelSubSteps} must not change whether their invariants hold. Runs the same pinned
+     * full-throttle launch at {@code wheelSubSteps} 1 and 4 and asserts, at both, that the reaction impulse
+     * still exactly matches the engine's own realized momentum change and the clutch still never exceeds
+     * its own capacity -- the two properties a per-sub-step re-integration would have broken by applying
+     * either N times or at the wrong dt.
+     */
+    @GameTest(template = "settlement_test", timeoutTicks = 160)
+    public static void engineAndClutchInvariantsHoldAtEverySubStepCount(GameTestHelper helper) {
+        helper.setBlock(new BlockPos(5, 2, 5), Blocks.STONE);
+        helper.setBlock(new BlockPos(5, 3, 5), Blocks.AIR);
+        for (int dx = 4; dx <= 6; dx++) {
+            for (int dy = 2; dy <= 5; dy++) {
+                helper.setBlock(new BlockPos(dx, dy, 7), Blocks.STONE);
+            }
+        }
+        int originalSubSteps = CarConfig.WHEEL_SUB_STEPS.get();
+        try {
+            CarConfig.WHEEL_SUB_STEPS.set(1);
+            CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
+            car.setYRot(0.0f);
+            car.selectGear(CarPhysics.Gear.D1);
+            Player rider = helper.makeMockPlayer(GameType.CREATIVE);
+            helper.assertTrue(rider.startRiding(car), "mock player failed to board the car");
+            rider.zza = 1.0f;
+            double[] worstIdentityGap = {0.0, 0.0};
+            double[] worstClutchTorque = {0.0, 0.0};
+            for (long tick = 1; tick <= 100; tick++) {
+                long thisTick = tick;
+                helper.runAfterDelay(tick, () -> {
+                    try {
+                        if (thisTick == 50L) {
+                            CarConfig.WHEEL_SUB_STEPS.set(4);
+                            return;
+                        }
+                        int phase = thisTick < 50L ? 0 : 1;
+                        double expectedReaction = -(car.debugEngineOmega() - car.debugPriorEngineOmega())
+                                * DrivetrainMath.ENGINE_INERTIA / TICK_DT;
+                        worstIdentityGap[phase] = Math.max(worstIdentityGap[phase],
+                                Math.abs(car.debugEngineReactionTorque() - expectedReaction));
+                        worstClutchTorque[phase] = Math.max(worstClutchTorque[phase], Math.abs(car.debugClutchTorque()));
+                    } catch (RuntimeException e) {
+                        CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
+                        throw e;
+                    }
+                });
+            }
+            helper.runAfterDelay(105L, () -> {
+                CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
+                for (int phase = 0; phase < 2; phase++) {
+                    int subSteps = phase == 0 ? 1 : 4;
+                    helper.assertTrue(worstIdentityGap[phase] < REACTION_IDENTITY_TOLERANCE,
+                            "at wheelSubSteps=" + subSteps + " the applied engine-axis reaction diverged from the engine's own realized momentum change by "
+                                    + worstIdentityGap[phase] + " N*m");
+                    helper.assertTrue(worstClutchTorque[phase] <= DrivetrainMath.CLUTCH_TORQUE_CAPACITY + CLUTCH_SATURATION_TOLERANCE,
+                            "at wheelSubSteps=" + subSteps + " the clutch transmitted more than its own capacity: "
+                                    + worstClutchTorque[phase] + " N*m");
+                    helper.assertTrue(worstClutchTorque[phase] > 0.0,
+                            "test setup invalid at wheelSubSteps=" + subSteps + " -- the clutch never transmitted anything, so nothing above was exercised");
+                }
                 helper.succeed();
             });
         } catch (RuntimeException e) {

@@ -59,6 +59,35 @@ final class SableCompat {
         return ((SableCarBody) body).automaticGearIndex();
     }
 
+    /** MINECRAFT-444: this tick's own real clutch torque (N*m), the per-wheel force it transmitted (N)
+     * and the engine-axis reaction torque applied to the body (N*m). */
+    static double clutchTorque(Object body) {
+        return ((SableCarBody) body).clutchTorque();
+    }
+
+    /** The torque the clutch handed the drivetrain; see {@link SableCarBody#transmittedClutchTorque()}. */
+    static double transmittedClutchTorque(Object body) {
+        return ((SableCarBody) body).transmittedClutchTorque();
+    }
+
+    static double clutchWheelForce(Object body) {
+        return ((SableCarBody) body).clutchWheelForce();
+    }
+
+    static double engineReactionTorque(Object body) {
+        return ((SableCarBody) body).engineReactionTorque();
+    }
+
+    /** The engine's own unclamped angular speed, rad/s; see {@link SableCarBody#engineOmega()}. */
+    static double engineOmega(Object body) {
+        return ((SableCarBody) body).engineOmega();
+    }
+
+    /** The engine speed the last tick started from; see {@link SableCarBody#priorEngineOmega()}. */
+    static double priorEngineOmega(Object body) {
+        return ((SableCarBody) body).priorEngineOmega();
+    }
+
     /** The gear ratio actually engaged this tick; see {@link SableCarBody#gearRatio()}. */
     static double gearRatio(Object body) {
         return ((SableCarBody) body).gearRatio();
@@ -87,6 +116,11 @@ final class SableCompat {
 
     static double[] wheelContactSpeeds(Object body) {
         return ((SableCarBody) body).wheelContactSpeeds();
+    }
+
+    /** Each wheel's own drivetrain longitudinal command; see {@link SableCarBody#wheelDriveCommands()}. */
+    static double[] wheelDriveCommands(Object body) {
+        return ((SableCarBody) body).wheelDriveCommands();
     }
 
     static double[] wheelForces(Object body) {

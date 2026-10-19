@@ -93,4 +93,142 @@ class GearDriveTest {
         assertEquals(0.0, GearDrive.drive(0.0, 0.0, CarPhysics.Gear.D1, 1.0, DRIVE_FORCE, REVERSE_FORCE, 1.0, MAX_SPEED), 0.0);
         assertEquals(0.0, GearDrive.drive(-1.0, 0.0, CarPhysics.Gear.D1, 1.0, DRIVE_FORCE, REVERSE_FORCE, 1.0, MAX_SPEED), 0.0);
     }
+
+    // --- Clutch-transmitted wheel command (MINECRAFT-444) -------------------------------------------
+
+    private static final double WHEEL_RADIUS = CarGeometry.WHEEL_RADIUS;
+    /** All four wheels are driven -- see {@code SableCarBody.DRIVE_FORCE}'s own "all-wheel drive" note. */
+    private static final int DRIVEN_WHEELS = 4;
+
+    private static double clutchForce(double clutchTorque, double ratio, CarPhysics.Gear gear) {
+        return GearDrive.clutchWheelForce(clutchTorque, ratio, WHEEL_RADIUS, DRIVEN_WHEELS, gear, 1.0);
+    }
+
+    private static double driveThroughClutch(double throttle, double forwardSpeed, CarPhysics.Gear gear,
+            double forceMultiplier, double clutchWheelForce) {
+        return GearDrive.driveThroughClutch(throttle, forwardSpeed, gear, forceMultiplier, DRIVE_FORCE,
+                REVERSE_FORCE, 1.0, MAX_SPEED, clutchWheelForce);
+    }
+
+    @Test
+    void clutchWheelForceScalesTorqueUpThroughTheRatioAndFinalDriveAndDownByRadiusAndWheelCount() {
+        double torque = 100.0;
+        double ratio = DrivetrainMath.ratioFor(0);
+        double expected = torque * ratio * DrivetrainMath.FINAL_DRIVE / WHEEL_RADIUS / DRIVEN_WHEELS;
+        assertEquals(expected, clutchForce(torque, ratio, CarPhysics.Gear.D1), 1e-9);
+        assertTrue(clutchForce(torque, DrivetrainMath.ratioFor(0), CarPhysics.Gear.D1)
+                > clutchForce(torque, DrivetrainMath.ratioFor(4), CarPhysics.Gear.D5),
+                "the same engine torque must reach the wheel as more force in a lower (higher-ratio) gear");
+    }
+
+    @Test
+    void clutchWheelForcePointsBackwardInReverseAndForwardInAForwardGear() {
+        assertTrue(clutchForce(100.0, DrivetrainMath.ratioFor(0), CarPhysics.Gear.D1) > 0.0);
+        assertTrue(clutchForce(100.0, DrivetrainMath.REVERSE_RATIO, CarPhysics.Gear.REVERSE) < 0.0,
+                "driving torque in REVERSE must push the car backward");
+    }
+
+    @Test
+    void clutchWheelForceTransmitsNothingInNeutral() {
+        assertEquals(0.0, clutchForce(500.0, 0.0, CarPhysics.Gear.NEUTRAL), 0.0);
+        assertEquals(0.0, clutchForce(-500.0, DrivetrainMath.ratioFor(0), CarPhysics.Gear.NEUTRAL), 0.0,
+                "a disengaged clutch transmits no engine braking either");
+    }
+
+    @Test
+    void engineBrakingReachesTheTireAtZeroThrottleInAForwardGear() {
+        // Review (round 1)'s concrete case: coasting in gear, the clutch torque is negative (wheels turning
+        // the engine against its drag). GearDrive.drive alone returns exactly 0 here; the clutch path must
+        // return a real retarding force instead, or engine braking never propagates to the drivetrain.
+        double engineBrakingForce = clutchForce(-DrivetrainMath.ENGINE_BRAKING_TORQUE, DrivetrainMath.ratioFor(0), CarPhysics.Gear.D1);
+        assertEquals(0.0, GearDrive.drive(0.0, 10.0, CarPhysics.Gear.D1, 1.0, DRIVE_FORCE, REVERSE_FORCE, 1.0, MAX_SPEED), 0.0,
+                "test premise: the throttle-only path contributes nothing while coasting");
+        double command = driveThroughClutch(0.0, 10.0, CarPhysics.Gear.D1, 1.0, engineBrakingForce);
+        assertTrue(command < 0.0, "coasting in a forward gear must retard the car through the drivetrain");
+        assertEquals(engineBrakingForce, command, 1e-9, "the retarding force must be exactly what the clutch transmits");
+    }
+
+    @Test
+    void engineBrakingRetardsBackwardMotionInReverseToo() {
+        // In REVERSE the car moves backward, so engine braking must push FORWARD (positive) to retard it.
+        double engineBrakingForce = clutchForce(-DrivetrainMath.ENGINE_BRAKING_TORQUE, DrivetrainMath.REVERSE_RATIO, CarPhysics.Gear.REVERSE);
+        assertTrue(engineBrakingForce > 0.0);
+        assertEquals(engineBrakingForce, driveThroughClutch(0.0, -5.0, CarPhysics.Gear.REVERSE, 1.0, engineBrakingForce), 1e-9);
+    }
+
+    @Test
+    void aSlippingClutchBoundsTheWheelCommandBelowTheThrottlesOwnDemand() {
+        // A clutch transmitting only a little torque must cap what the wheels get, even at full throttle.
+        double weakClutchForce = 500.0;
+        double demand = GearDrive.drive(1.0, 0.0, CarPhysics.Gear.D1, 1.0, DRIVE_FORCE, REVERSE_FORCE, 1.0, MAX_SPEED);
+        assertTrue(demand > weakClutchForce, "test premise: the throttle alone would command more than the clutch can pass");
+        assertEquals(weakClutchForce, driveThroughClutch(1.0, 0.0, CarPhysics.Gear.D1, 1.0, weakClutchForce), 1e-9);
+    }
+
+    @Test
+    void anAmpleClutchNeverRaisesTheWheelCommandAboveTheThrottlesOwnGovernedDemand() {
+        // The clutch path must not become a second propulsion source: with plenty of clutch torque
+        // available, the existing governed/ratio-scaled demand is still the ceiling.
+        double hugeClutchForce = 1_000_000.0;
+        double demand = GearDrive.drive(1.0, 12.0, CarPhysics.Gear.D1, 4.0, DRIVE_FORCE, REVERSE_FORCE, 1.0, MAX_SPEED);
+        assertEquals(demand, driveThroughClutch(1.0, 12.0, CarPhysics.Gear.D1, 4.0, hugeClutchForce), 1e-9);
+    }
+
+    @Test
+    void aDrivingClutchCannotPropelTheCarWhileTheDriverHasLiftedOff() {
+        // Engine spun up above the wheel side with the throttle released: the clutch IS transmitting
+        // forward torque, but acceptance requires no unintended propulsion -- the demand is 0, so is this.
+        assertEquals(0.0, driveThroughClutch(0.0, 10.0, CarPhysics.Gear.D1, 1.0, 5_000.0), 0.0);
+        assertEquals(0.0, driveThroughClutch(-1.0, 10.0, CarPhysics.Gear.D1, 1.0, 5_000.0), 0.0,
+                "braking must not be turned into propulsion by a clutch that happens to be driving");
+    }
+
+    @Test
+    void neutralTransmitsNoCommandInEitherDirection() {
+        assertEquals(0.0, driveThroughClutch(1.0, 10.0, CarPhysics.Gear.NEUTRAL, 1.0, 5_000.0), 0.0);
+        assertEquals(0.0, driveThroughClutch(0.0, 10.0, CarPhysics.Gear.NEUTRAL, 1.0, -5_000.0), 0.0,
+                "neutral must not engine-brake either -- it is disengaged");
+    }
+
+    @Test
+    void theTransmittedTorqueIsTheEnginesOwnOutputNotItsInternalSyncTorque() {
+        // Regression for the two measured failures in transmittedClutchTorque's javadoc: whatever the
+        // engine's internal sync torque is doing (it flips sign with the wheel side's own acceleration and
+        // saturates at capacity), what reaches the wheels is the engine's output -- driving at throttle,
+        // exactly its drag while coasting.
+        VehicleSpec.DrivetrainCoupling stock = VehicleSpec.DrivetrainCoupling.STOCK;
+        double omega = DrivetrainMath.rpmToOmega(3000.0);
+        double fullThrottleTorque = DrivetrainMath.engineDriveTorque(1.0, 3000.0, stock.enginePeakTorque());
+        double driving = DrivetrainMath.transmittedClutchTorque(fullThrottleTorque, omega, stock);
+        assertEquals(stock.enginePeakTorque() - stock.engineBrakingTorque(), driving, 1e-9,
+                "full throttle must transmit the engine's own net output");
+        double coasting = DrivetrainMath.transmittedClutchTorque(0.0, omega, stock);
+        assertEquals(-stock.engineBrakingTorque(), coasting, 1e-9,
+                "a closed throttle in gear must transmit exactly the engine's own drag, not a sync term");
+    }
+
+    @Test
+    void aLowCapacityClutchBoundsTheTransmittedTorque() {
+        VehicleSpec.DrivetrainCoupling weakClutch = new VehicleSpec.DrivetrainCoupling(
+                VehicleSpec.DrivetrainCoupling.STOCK.engineInertia(),
+                VehicleSpec.DrivetrainCoupling.STOCK.enginePeakTorque(),
+                VehicleSpec.DrivetrainCoupling.STOCK.engineBrakingTorque(),
+                100.0);
+        double omega = DrivetrainMath.rpmToOmega(3000.0);
+        double fullThrottleTorque = DrivetrainMath.engineDriveTorque(1.0, 3000.0, weakClutch.enginePeakTorque());
+        assertEquals(100.0, DrivetrainMath.transmittedClutchTorque(fullThrottleTorque, omega, weakClutch), 1e-9,
+                "a clutch whose capacity is below the engine's output must bound what the drivetrain receives");
+    }
+
+    @Test
+    void stockFullThrottleClutchForceMatchesTheTunedDriveForceIdentityAtTopGear() {
+        // The calibration ENGINE_PEAK_TORQUE's own javadoc claims: at full throttle in top gear, the
+        // clutch-transmitted force must land on the pre-existing tuned DRIVE_FORCE (2300 N/wheel), so stock
+        // driving feel is preserved rather than silently re-tuned by this ticket.
+        double netTorque = DrivetrainMath.ENGINE_PEAK_TORQUE - DrivetrainMath.ENGINE_BRAKING_TORQUE;
+        double topRatio = DrivetrainMath.ratioFor(DrivetrainMath.GEAR_RATIOS.length - 1);
+        double force = clutchForce(netTorque, topRatio, CarPhysics.Gear.D5);
+        assertEquals(DRIVE_FORCE, force, DRIVE_FORCE * 0.02,
+                "stock full-throttle top-gear clutch force must stay within 2% of the tuned DRIVE_FORCE identity");
+    }
 }

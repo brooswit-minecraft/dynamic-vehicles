@@ -82,7 +82,34 @@ public record VehicleSpec(
          * them. Distinct from (and does not touch) the separate, drift-only, already-live {@code
          * TireTuning#handbrakeRearGripCut}, which scales the handbrake's lateral-grip cut, not its brake
          * force, and is owned by {@code CarConfig}, not this per-vehicle field. */
-        double handbrakeScale) {
+        double handbrakeScale,
+        /** This vehicle's engine/clutch coupling settings (MINECRAFT-444): engine rotational inertia, peak
+         * engine torque, closed-throttle engine braking torque and clutch torque capacity. {@link
+         * DrivetrainCoupling#STOCK} for every vehicle on the roster today -- the shared stock engine
+         * hardware -- so every vehicle's coupling behaviour is byte-for-byte what it was before this field
+         * existed. Grouped into their own small type for the same reason {@link VehicleTuning} is: four
+         * related dials that are set together or not at all. See {@link DrivetrainCoupling}. */
+        DrivetrainCoupling drivetrainCoupling) {
+
+    /** As the full (canonical) constructor above, minus the trailing {@link #drivetrainCoupling}
+     * (MINECRAFT-444): every vehicle spec and the per-car config loader build on this, with
+     * {@link DrivetrainCoupling#STOCK} supplied for them. */
+    public VehicleSpec(double halfX, double halfY, double halfZ,
+            double[][] mounts, double wheelRadius, double wheelWidth,
+            double rideHeight, double restLength,
+            double massKg, double springRate, double dampingRate, double maxSpringForce,
+            double wheelbase, double maxSpeed,
+            double forceScale, double enginePitch,
+            double seatY, double seatZ,
+            double looseGrip, double rollingScale,
+            TireTuning tireTuning, double downforceGripPerSpeed, double antiRollScale,
+            List<Seat> seats, VehicleTuning vehicleTuning, double handbrakeScale) {
+        this(halfX, halfY, halfZ, mounts, wheelRadius, wheelWidth, rideHeight, restLength,
+                massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
+                forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
+                downforceGripPerSpeed, antiRollScale, seats, vehicleTuning, handbrakeScale,
+                DrivetrainCoupling.STOCK);
+    }
 
     /** As the full (canonical) constructor above, minus the trailing {@link #handbrakeScale} (MINECRAFT-443):
      * exactly the field list every vehicle spec used before this ticket. Every existing vehicle still calls
@@ -293,6 +320,38 @@ public record VehicleSpec(
         /** Whether this tuning is exactly {@link #IDENTITY}. */
         public boolean isIdentity() {
             return this.equals(IDENTITY);
+        }
+    }
+
+    /**
+     * Engine/clutch coupling settings (MINECRAFT-444), the per-car face of the physical coupling this
+     * ticket implements: the engine's own rotational inertia, the peak torque it produces at full throttle,
+     * the drag it applies to itself at closed throttle (engine braking), and how much torque its clutch can
+     * transmit before it slips. {@link DrivetrainMath} and {@link GearDrive} take these as arguments rather
+     * than reading their own constants, so a per-car file can change them (see
+     * {@code docs/per-car-config.md}) without a second engine model existing anywhere.
+     *
+     * <p>Scope boundary: these four are MINECRAFT-444's own coupling parameters. The rev limiter's RPM
+     * thresholds, turbo/nitrous boost and ballast belong to MINECRAFT-449 and are deliberately NOT here --
+     * that task owns adding them through this same contract.
+     *
+     * @param engineInertia crankshaft rotational inertia about its own axis, kg*m^2
+     * @param enginePeakTorque torque at full throttle before the clutch, N*m
+     * @param engineBrakingTorque closed-throttle drag the engine applies against its own rotation, N*m
+     * @param clutchTorqueCapacity torque the clutch transmits before slipping, N*m
+     */
+    public record DrivetrainCoupling(double engineInertia, double enginePeakTorque,
+            double engineBrakingTorque, double clutchTorqueCapacity) {
+
+        /** The shared stock engine every vehicle on the roster runs: exactly {@link DrivetrainMath}'s own
+         * constants, so a vehicle carrying this is identical to how it behaved before the field existed. */
+        public static final DrivetrainCoupling STOCK = new DrivetrainCoupling(
+                DrivetrainMath.ENGINE_INERTIA, DrivetrainMath.ENGINE_PEAK_TORQUE,
+                DrivetrainMath.ENGINE_BRAKING_TORQUE, DrivetrainMath.CLUTCH_TORQUE_CAPACITY);
+
+        /** Whether this coupling is exactly the shared {@link #STOCK} engine. */
+        public boolean isStock() {
+            return this.equals(STOCK);
         }
     }
 

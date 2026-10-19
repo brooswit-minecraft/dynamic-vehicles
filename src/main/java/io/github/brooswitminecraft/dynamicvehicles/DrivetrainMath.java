@@ -4,8 +4,15 @@ package io.github.brooswitminecraft.dynamicvehicles;
  * Pure drivetrain arithmetic shared by every vehicle (MINECRAFT-401): manual gear ratios, the automatic
  * mode's own shift logic, and the engine RPM a driven wheel's angular speed implies through whichever
  * ratio is currently engaged. Free of Minecraft types so it can be unit tested. Like
- * {@link WheelMath#WHEEL_INERTIA}, these numbers are a plain shared drivetrain, not a per-vehicle tuning
- * knob -- no vehicle here has a different engine.
+ * {@link WheelMath#WHEEL_INERTIA}, the gear ratios, final drive and RPM thresholds here are a plain shared
+ * drivetrain, not a per-vehicle tuning knob.
+ *
+ * <p>MINECRAFT-444 is the one exception, and only for the engine/clutch COUPLING parameters it added
+ * (engine inertia, peak torque, engine braking torque, clutch capacity): the methods that use them take a
+ * {@link VehicleSpec.DrivetrainCoupling} argument, so a per-car config file can change them (see
+ * {@code docs/per-car-config.md}) while the constants below remain the shared stock engine every vehicle
+ * on the roster still runs. Everything else here stays shared, MINECRAFT-449's rev-limit/boost scope
+ * included.
  */
 public final class DrivetrainMath {
     /** Manual gear ratios for D1..D5, highest (most torque, lowest top speed) first. */
@@ -210,20 +217,46 @@ public final class DrivetrainMath {
     // the way the acceptance criteria name them explicitly, rather than approximating all three with one
     // softened snap.
 
-    /** Engine crankshaft rotational inertia about its own spin axis, kg*m^2 -- plain shared like
-     * {@link WheelMath#WHEEL_INERTIA}, not a per-car tuning knob: no vehicle here has a different engine. */
+    // The four constants below are the STOCK values of the engine/clutch coupling every vehicle on the
+    // roster runs -- they are what VehicleSpec.DrivetrainCoupling.STOCK is built from. Review (round 1)
+    // scope reconciliation: the methods in this class take a DrivetrainCoupling argument rather than
+    // reading these directly, so a per-car config file can change them (docs/per-car-config.md) while
+    // every car that sets nothing stays byte-for-byte identical. MINECRAFT-449 still owns the rev-limit
+    // thresholds (IDLE_RPM/LIMITER_RPM/UPSHIFT_RPM/...), turbo, nitrous and ballast -- not these.
+
+    /** Engine crankshaft rotational inertia about its own spin axis, kg*m^2 -- the shared stock engine's
+     * own value, and the identity default behind {@link VehicleSpec.DrivetrainCoupling#STOCK}. */
     public static final double ENGINE_INERTIA = 0.18;
 
-    /** Peak torque the engine itself can produce at full throttle, before the clutch, N*m. */
-    public static final double ENGINE_PEAK_TORQUE = 420.0;
+    /**
+     * Peak torque the engine itself can produce at full throttle, before the clutch, N*m.
+     *
+     * <p>Review (round 1) calibration, not a free number: now that the clutch's own transmitted torque IS
+     * the wheel command ({@link GearDrive#clutchWheelForce}), this value sets the car's actual stock drive
+     * force, which must stay identity-preserving against the pre-existing, already-tuned
+     * {@code SableCarBody.DRIVE_FORCE} (2300 N per wheel, tuned at top gear). Solving
+     * {@code DRIVE_FORCE = (peak - ENGINE_BRAKING_TORQUE) * topRatio * FINAL_DRIVE / wheelRadius /
+     * drivenWheels} for the 4-wheel, 0.35 m-wheel reference car at top gear's 0.9 ratio gives a net
+     * ~875 N*m, hence this value once idle drag is added back. Because both this chain and the old
+     * {@link #forceMultiplier} path scale linearly with the engaged ratio, every OTHER gear's force stays
+     * in exactly the same proportion it already had -- that identity is why this is 930 and not a
+     * plausible-sounding crankshaft figure.
+     */
+    public static final double ENGINE_PEAK_TORQUE = 930.0;
 
     /** Torque a running engine applies against its OWN rotation once the throttle stops demanding more --
      * compression/friction drag, not a brake on the wheels (that is {@code BRAKE_FORCE}, unrelated). Only
      * opposes rotation that is actually happening; see {@link #engineAngularVelocity}'s own guard. */
     public static final double ENGINE_BRAKING_TORQUE = 55.0;
 
-    /** Torque the clutch can transmit before it slips, N*m -- see {@link #clutchTorque}. */
-    public static final double CLUTCH_TORQUE_CAPACITY = 380.0;
+    /**
+     * Torque the clutch can transmit before it slips, N*m -- see {@link #clutchTorque}. Sized above
+     * {@link #ENGINE_PEAK_TORQUE}'s own net output (~1.3x) so an ENGAGED clutch at full throttle is never
+     * artificially capacity-limited (which would silently cut the stock drive force this ticket must
+     * preserve), while a genuine speed mismatch -- launching from rest with the engine already spun up, a
+     * shift, a wheel spinning far past the engine -- still demands more than this and so genuinely slips.
+     */
+    public static final double CLUTCH_TORQUE_CAPACITY = 1200.0;
 
     /** rad/s -> RPM. */
     public static double omegaToRpm(double omega) {
@@ -254,9 +287,9 @@ public final class DrivetrainMath {
      * the wheels directly could. {@code throttle} is the car's signed accelerator-minus-brake value, like
      * {@link #freeRevRpm}'s own argument -- the brake must read as zero demand here, not negative torque.
      */
-    public static double engineDriveTorque(double throttle, double engineRawRpm) {
+    public static double engineDriveTorque(double throttle, double engineRawRpm, double peakTorque) {
         double accelerator = Math.max(0.0, Math.min(1.0, throttle));
-        return accelerator * ENGINE_PEAK_TORQUE * limiterTorqueFactor(engineRawRpm);
+        return accelerator * peakTorque * limiterTorqueFactor(engineRawRpm);
     }
 
     /**
@@ -289,11 +322,48 @@ public final class DrivetrainMath {
      *        engineOmega this step, not for the clutch alone against a frozen engine
      * @param dt this (sub-)step's own duration, seconds
      */
-    public static double clutchTorque(double engineOmega, double wheelSideOmega, double engineTorque, double dt) {
-        double braking = engineOmega > 0.0 ? ENGINE_BRAKING_TORQUE : 0.0;
+    public static double clutchTorque(double engineOmega, double wheelSideOmega, double engineTorque, double dt,
+            VehicleSpec.DrivetrainCoupling coupling) {
+        double braking = engineOmega > 0.0 ? coupling.engineBrakingTorque() : 0.0;
         double netTorqueBeforeClutch = engineTorque - braking;
-        double requiredTorque = netTorqueBeforeClutch - (wheelSideOmega - engineOmega) * ENGINE_INERTIA / dt;
-        return Math.max(-CLUTCH_TORQUE_CAPACITY, Math.min(CLUTCH_TORQUE_CAPACITY, requiredTorque));
+        double requiredTorque = netTorqueBeforeClutch
+                - (wheelSideOmega - engineOmega) * coupling.engineInertia() / dt;
+        double capacity = coupling.clutchTorqueCapacity();
+        return Math.max(-capacity, Math.min(capacity, requiredTorque));
+    }
+
+    /**
+     * The torque the clutch actually hands the DRIVETRAIN this (sub-)step, N*m -- what
+     * {@link GearDrive#clutchWheelForce} turns into a wheel force. Positive is engine -&gt; drivetrain
+     * (driving); negative is the engine's own drag retarding the car (engine braking).
+     *
+     * <p>Deliberately NOT {@link #clutchTorque}, and the distinction is the whole design. That method
+     * solves for the torque needed to SYNC the engine to the wheel side within one step -- the right
+     * question for the engine's own speed (and the one that makes it lock when it can and slip when it
+     * cannot), but dominated by an inertial term whose sign flips with the wheel side's own tick-to-tick
+     * acceleration. Billing the wheels that term was measured to be badly wrong twice over: full-throttle
+     * launches spent most ticks in the "engine momentarily slower than the wheel side" case and so got NO
+     * drive force at all (D1 reached 0.39 m/s where D5 reached 1.03, inverting
+     * {@code d1ReachesAHigherSpeedThanD5OverTheSameShortWindow}), and when that term saturated the
+     * capacity it reached the contact patch as ~12.6 kN per wheel in D1, dragging a full-throttle car
+     * backwards to -10.7 m/s ({@code opposingDirectionThrottleDecelerateAndReverseInBothMirroredDirections}).
+     *
+     * <p>What the wheels get instead is the engine's own OUTPUT -- its throttle torque (already cut by the
+     * limiter, see {@link #engineDriveTorque}) less its own drag -- bounded by the clutch's friction
+     * capacity, which is what a slipping dry clutch physically transmits. That makes all four cases read
+     * directly off this one expression: full throttle delivers the calibrated stock drive force
+     * ({@link #ENGINE_PEAK_TORQUE}'s own javadoc), a closed throttle in gear delivers exactly the engine's
+     * drag (engine braking, propagating through the drivetrain), a capacity below peak torque bounds what
+     * the throttle can deliver (partial coupling), and the limiter cutting engine torque at redline leaves
+     * drag alone. The inertial sync term stays where it belongs: internal to the driveline, changing the
+     * engine's own speed, paid for on the engine axis by {@link #engineReactionTorque} -- the same split
+     * {@code SableCarBody}'s own {@code excessForce != 0} branch already makes for engine-sourced torque.
+     */
+    public static double transmittedClutchTorque(double engineTorque, double engineOmega,
+            VehicleSpec.DrivetrainCoupling coupling) {
+        double braking = engineOmega > 0.0 ? coupling.engineBrakingTorque() : 0.0;
+        double capacity = coupling.clutchTorqueCapacity();
+        return Math.max(-capacity, Math.min(capacity, engineTorque - braking));
     }
 
     /**
@@ -307,30 +377,42 @@ public final class DrivetrainMath {
      * reverse-spinning engine -- a stalled engine sits at 0, it does not run backwards.
      */
     public static double engineAngularVelocity(double priorOmega, double engineTorque, double clutchTorque,
-            double dt) {
-        double braking = priorOmega > 0.0 ? ENGINE_BRAKING_TORQUE : 0.0;
+            double dt, VehicleSpec.DrivetrainCoupling coupling) {
+        double braking = priorOmega > 0.0 ? coupling.engineBrakingTorque() : 0.0;
         double netTorque = engineTorque - braking - clutchTorque;
-        return Math.max(0.0, priorOmega + netTorque / ENGINE_INERTIA * dt);
+        return Math.max(0.0, priorOmega + netTorque / coupling.engineInertia() * dt);
     }
 
     /**
      * Engine-axis reaction torque this (sub-)step, N*m -- Newton's third law for the engine's own spinning
-     * mass: whatever net torque actually changed {@code engineOmega} this step ({@code engineTorque} minus
-     * braking minus {@code clutchTorque}, the identical quantity {@link #engineAngularVelocity} integrates)
-     * pushes back on whatever the engine is bolted to with the OPPOSITE sign, about the engine's own spin
-     * axis. Unlike the ground-sourced wheel recovery reaction ({@link #boundedSpinTowardSnap}'s own
-     * caller-applied reaction, which needs a wheel in contact with the ground to exist at all), this is
-     * independent of gear, wheel contact or ground: a dyno'd engine with its wheels in the air still
-     * torques its own mounts exactly this hard. Deliberately NOT a function of which gear is selected --
-     * REVERSE changes which way torque leaves the clutch toward the final drive, it does not reverse which
-     * way the crankshaft itself spins, so a caller must pass the same {@code engineTorque}/
-     * {@code clutchTorque} sign convention regardless of gear and let this reaction track the engine's own
-     * net torque alone (MINECRAFT-444 acceptance: "selecting reverse must not flip the engine torque
-     * axis").
+     * mass: the engine's ACTUAL angular-momentum change this step pushes back on whatever the engine is
+     * bolted to with the opposite sign, about the engine's own spin axis.
+     *
+     * <p>Review (round 1) fix: this used to return the UNCLIPPED net torque
+     * ({@code engineTorque - braking - clutchTorque}), which is not what actually moved the engine on any
+     * step where {@link #engineAngularVelocity}'s own floor-at-zero clamped the result -- an engine 0.01
+     * rad/s from a standstill sheds only {@code 0.0018 N*m*s} of angular momentum, while the unclipped
+     * braking torque would have billed the chassis {@code 55 * dt}, conjuring an impulse out of nothing
+     * exactly like the wheel-recovery reaction bug the round-6 review caught on the ground side. Taking
+     * the realized {@code nextOmega - priorOmega} instead makes the identity exact on every step,
+     * floor-crossing included, and at any dt -- the same way {@code SableCarBody}'s own recovery reaction
+     * is computed from the spin change {@link #boundedSpinTowardSnap} actually returned, never from the
+     * torque that was asked for.
+     *
+     * <p>Unlike that ground-sourced recovery reaction (which needs a wheel in contact to exist at all),
+     * this is independent of gear, wheel contact or ground: a dyno'd engine with its wheels in the air
+     * still torques its own mounts exactly this hard. Deliberately NOT a function of which gear is
+     * selected -- REVERSE changes which way torque leaves the clutch toward the final drive, it does not
+     * reverse which way the crankshaft itself spins, so this takes no gear argument at all and tracks only
+     * the engine's own realized rotation (MINECRAFT-444 acceptance: "selecting reverse must not flip the
+     * engine torque axis").
+     *
+     * @param priorOmega the engine's speed coming into this step, rad/s
+     * @param nextOmega {@link #engineAngularVelocity}'s own result for this same step -- the REALIZED
+     *        speed, after its floor, not a target
      */
-    public static double engineReactionTorque(double priorOmega, double engineTorque, double clutchTorque) {
-        double braking = priorOmega > 0.0 ? ENGINE_BRAKING_TORQUE : 0.0;
-        double netTorque = engineTorque - braking - clutchTorque;
-        return -netTorque;
+    public static double engineReactionTorque(double priorOmega, double nextOmega, double dt,
+            VehicleSpec.DrivetrainCoupling coupling) {
+        return -(nextOmega - priorOmega) * coupling.engineInertia() / dt;
     }
 }

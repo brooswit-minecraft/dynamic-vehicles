@@ -402,6 +402,45 @@ public class CarEntity extends Entity {
         return sableBody == null ? DrivetrainMath.IDLE_RPM : SableCompat.engineRpm(sableBody);
     }
 
+    /** Server test support only (MINECRAFT-444): the clutch torque this tick actually transmitted
+     * (N*m, positive engine -&gt; drivetrain, negative engine braking), the per-wheel contact force it
+     * amounted to (N, signed in the car's forward frame) and the engine-axis reaction torque this tick
+     * actually applied to the body (N*m) -- the real applied values from the single production call site,
+     * so an integrated test observes the production path rather than reproducing its arithmetic. */
+    double debugClutchTorque() {
+        return sableBody == null ? 0.0 : SableCompat.clutchTorque(sableBody);
+    }
+
+    /** Server test support only (MINECRAFT-444): the torque the clutch actually handed the drivetrain this
+     * tick (N*m) -- the engine's own output bounded by clutch capacity, as distinct from
+     * {@link #debugClutchTorque()}, which is the engine's internal one-step sync torque. */
+    double debugTransmittedClutchTorque() {
+        return sableBody == null ? 0.0 : SableCompat.transmittedClutchTorque(sableBody);
+    }
+
+    double debugClutchWheelForce() {
+        return sableBody == null ? 0.0 : SableCompat.clutchWheelForce(sableBody);
+    }
+
+    double debugEngineReactionTorque() {
+        return sableBody == null ? 0.0 : SableCompat.engineReactionTorque(sableBody);
+    }
+
+    /** Server test support only (MINECRAFT-444): the engine's own UNCLAMPED angular speed, rad/s --
+     * {@link #debugEngineRpm()} is clamped to the idle/limiter display band, so only this can be used to
+     * check the reaction impulse against the engine's own realized angular-momentum change. */
+    double debugEngineOmega() {
+        return sableBody == null ? DrivetrainMath.rpmToOmega(DrivetrainMath.IDLE_RPM) : SableCompat.engineOmega(sableBody);
+    }
+
+    /** Server test support only (MINECRAFT-444): the engine speed the last production tick STARTED from,
+     * rad/s. Paired with {@link #debugEngineOmega()} (where it ended) this lets a test check the applied
+     * engine-axis reaction against the realized change within ONE tick, instead of differencing two
+     * external samples -- which silently covers two ticks if the sampler ever misses one. */
+    double debugPriorEngineOmega() {
+        return sableBody == null ? DrivetrainMath.rpmToOmega(DrivetrainMath.IDLE_RPM) : SableCompat.priorEngineOmega(sableBody);
+    }
+
     /** Diagnostic only (MINECRAFT-401 review, round 5 ledge-test investigation): whether any wheel had
      * a positive suspension force as of the end of the last tick -- distinguishes "genuinely airborne"
      * from "still grounded" when a fall isn't showing up as expected in velocity. */
@@ -424,6 +463,14 @@ public class CarEntity extends Entity {
      * sync-buffered one. */
     double[] debugWheelSpins() {
         return sableBody == null ? new double[0] : SableCompat.wheelSpinRates(sableBody);
+    }
+
+    /** Server test support only (MINECRAFT-444): each wheel's own drivetrain longitudinal COMMAND this
+     * tick (N), as the production path actually computed it through the clutch -- distinct from
+     * {@link #debugWheelForces()}, which is what the tire finally delivered (brake force, rolling
+     * resistance and the recovery reaction included). */
+    double[] debugWheelDriveCommands() {
+        return sableBody == null ? new double[0] : SableCompat.wheelDriveCommands(sableBody);
     }
 
     double[] debugWheelForces() {

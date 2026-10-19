@@ -17,6 +17,14 @@ class PerCarConfigDocsDefaultsTest {
             double handbrakeScale, double lsdLockPercent, double frontTorqueSplit, double vectoringGain,
             double camberDeg, double toeDeg) {}
 
+    /** MINECRAFT-444's own four coupling columns. Every car on the roster ships the same shared stock
+     * engine, so these are one expected row rather than ten -- but they are still pinned against
+     * {@link VehicleSpec} per car, so a future per-car engine would fail here rather than drift. */
+    private static final double DOC_ENGINE_INERTIA = 0.18;
+    private static final double DOC_ENGINE_PEAK_TORQUE = 930.0;
+    private static final double DOC_ENGINE_BRAKING_TORQUE = 55.0;
+    private static final double DOC_CLUTCH_TORQUE_CAPACITY = 1200.0;
+
     @Test
     void everyDocumentedCarDefaultMatchesItsVehicleSpec() {
         assertRow("car", VehicleSpec.CAR, new Expected(0.9, 3400.0, 1.0, 1.0, 1.0, 0.0, 0.5, 0.0, 0.0, 0.0));
@@ -33,6 +41,11 @@ class PerCarConfigDocsDefaultsTest {
 
     private static void assertRow(String id, VehicleSpec spec, Expected expected) {
         VehicleSpec.VehicleTuning tuning = spec.vehicleTuning();
+        VehicleSpec.DrivetrainCoupling coupling = spec.drivetrainCoupling();
+        assertEquals(DOC_ENGINE_INERTIA, coupling.engineInertia(), 1e-9, id + ".engineInertia (docs/per-car-config.md)");
+        assertEquals(DOC_ENGINE_PEAK_TORQUE, coupling.enginePeakTorque(), 1e-9, id + ".enginePeakTorque (docs/per-car-config.md)");
+        assertEquals(DOC_ENGINE_BRAKING_TORQUE, coupling.engineBrakingTorque(), 1e-9, id + ".engineBrakingTorque (docs/per-car-config.md)");
+        assertEquals(DOC_CLUTCH_TORQUE_CAPACITY, coupling.clutchTorqueCapacity(), 1e-9, id + ".clutchTorqueCapacity (docs/per-car-config.md)");
         assertEquals(expected.rideHeight(), spec.rideHeight(), 1e-9, id + ".rideHeight (docs/per-car-config.md)");
         assertEquals(expected.dampingRate(), spec.dampingRate(), 1e-9, id + ".dampingRate (docs/per-car-config.md)");
         assertEquals(expected.antiRollScale(), spec.antiRollScale(), 1e-9, id + ".antiRollScale (docs/per-car-config.md)");

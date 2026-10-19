@@ -6,6 +6,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.Test;
 
 class DrivetrainMathTest {
+    /** One server tick, seconds -- what SableCarBody's engine/clutch block actually integrates at. */
+    private static final double TICK_DT = 1.0 / 20.0;
+    /** The shared stock engine/clutch settings every roster vehicle runs -- what these tests exercise
+     * unless they are specifically checking a per-car override. */
+    private static final VehicleSpec.DrivetrainCoupling STOCK = VehicleSpec.DrivetrainCoupling.STOCK;
+
     @Test
     void manualRatiosDecreaseFromD1ToD5() {
         for (int i = 1; i < DrivetrainMath.GEAR_RATIOS.length; i++) {
@@ -264,24 +270,24 @@ class DrivetrainMathTest {
         // Disengaged (no clutch torque): the engine must still accelerate itself, bounded by its own
         // inertia -- not snap to the limiter in a single step.
         double idleOmega = DrivetrainMath.rpmToOmega(DrivetrainMath.IDLE_RPM);
-        double torque = DrivetrainMath.engineDriveTorque(1.0, DrivetrainMath.IDLE_RPM);
-        double next = DrivetrainMath.engineAngularVelocity(idleOmega, torque, 0.0, 0.05);
+        double torque = DrivetrainMath.engineDriveTorque(1.0, DrivetrainMath.IDLE_RPM, STOCK.enginePeakTorque());
+        double next = DrivetrainMath.engineAngularVelocity(idleOmega, torque, 0.0, TICK_DT, STOCK);
         assertTrue(next > idleOmega, "full throttle with no clutch load must accelerate the engine");
         assertTrue(DrivetrainMath.omegaToRpm(next) < DrivetrainMath.LIMITER_RPM,
-                "one 0.05s step must not snap all the way to the limiter -- the engine has real inertia");
+                "one tick's step must not snap all the way to the limiter -- the engine has real inertia");
     }
 
     @Test
     void engineAngularVelocityFallsBackTowardIdleAtClosedThrottleFromEngineBrakingAlone() {
         double highOmega = DrivetrainMath.rpmToOmega(4000.0);
-        double next = DrivetrainMath.engineAngularVelocity(highOmega, 0.0, 0.0, 0.05);
+        double next = DrivetrainMath.engineAngularVelocity(highOmega, 0.0, 0.0, TICK_DT, STOCK);
         assertTrue(next < highOmega, "closed throttle with no clutch load must still decelerate the engine (engine braking)");
     }
 
     @Test
     void engineAngularVelocityNeverGoesNegative() {
         double lowOmega = 0.01;
-        double next = DrivetrainMath.engineAngularVelocity(lowOmega, 0.0, 1000.0, 1.0);
+        double next = DrivetrainMath.engineAngularVelocity(lowOmega, 0.0, 1000.0, 1.0, STOCK);
         assertEquals(0.0, next, 1e-9, "a stalled engine must floor at 0, not spin backwards");
     }
 
@@ -289,7 +295,7 @@ class DrivetrainMathTest {
     void engineAngularVelocityAppliesNoBrakingAgainstAnAlreadyStoppedEngine() {
         // priorOmega == 0 must not have engine braking subtract torque that would drive it negative before
         // the floor -- the braking term itself must already read as zero, not merely be clamped away.
-        double next = DrivetrainMath.engineAngularVelocity(0.0, 0.0, 0.0, 0.05);
+        double next = DrivetrainMath.engineAngularVelocity(0.0, 0.0, 0.0, TICK_DT, STOCK);
         assertEquals(0.0, next, 1e-9);
     }
 
@@ -297,16 +303,16 @@ class DrivetrainMathTest {
     void clutchTorqueIsZeroWhenAlreadyAtTheTargetSpeedWithNoOtherNetTorque() {
         // engineTorque == braking (net torque before the clutch is 0) and no speed gap: nothing for the
         // clutch to correct.
-        assertEquals(0.0, DrivetrainMath.clutchTorque(500.0, 500.0, DrivetrainMath.ENGINE_BRAKING_TORQUE, 0.05), 1e-9,
+        assertEquals(0.0, DrivetrainMath.clutchTorque(500.0, 500.0, DrivetrainMath.ENGINE_BRAKING_TORQUE, TICK_DT, STOCK), 1e-9,
                 "a perfectly matched (locked) clutch with no other net torque must transmit no corrective torque");
     }
 
     @Test
     void clutchTorquePullsTowardZeroRelativeSpeedInEitherDirection() {
         double engineTorque = DrivetrainMath.ENGINE_BRAKING_TORQUE; // net torque before the clutch is 0
-        assertTrue(DrivetrainMath.clutchTorque(600.0, 500.0, engineTorque, 0.05) > 0.0,
+        assertTrue(DrivetrainMath.clutchTorque(600.0, 500.0, engineTorque, TICK_DT, STOCK) > 0.0,
                 "engine faster than the wheel side must transmit torque FORWARD (engine -> drivetrain)");
-        assertTrue(DrivetrainMath.clutchTorque(400.0, 500.0, engineTorque, 0.05) < 0.0,
+        assertTrue(DrivetrainMath.clutchTorque(400.0, 500.0, engineTorque, TICK_DT, STOCK) < 0.0,
                 "engine slower than the wheel side must transmit torque the other way");
     }
 
@@ -314,14 +320,14 @@ class DrivetrainMathTest {
     void clutchTorqueSaturatesAtItsCapacityForALargeGapInsteadOfGrowingUnbounded() {
         // "Partial coupling"/slip: once the torque needed to land exactly on the wheel-side speed this
         // step is larger than the clutch's own capacity, the result must clamp there, not keep scaling up.
-        double dt = 0.05;
+        double dt = TICK_DT;
         double engineTorque = DrivetrainMath.ENGINE_BRAKING_TORQUE;
         double justUnderCapacityGap = DrivetrainMath.CLUTCH_TORQUE_CAPACITY / (DrivetrainMath.ENGINE_INERTIA / dt) - 1.0;
         double wellPastCapacityGap = justUnderCapacityGap + 10_000.0;
-        assertTrue(DrivetrainMath.clutchTorque(justUnderCapacityGap, 0.0, engineTorque, dt) < DrivetrainMath.CLUTCH_TORQUE_CAPACITY);
-        assertEquals(DrivetrainMath.CLUTCH_TORQUE_CAPACITY, DrivetrainMath.clutchTorque(wellPastCapacityGap, 0.0, engineTorque, dt), 1e-9,
+        assertTrue(DrivetrainMath.clutchTorque(justUnderCapacityGap, 0.0, engineTorque, dt, STOCK) < DrivetrainMath.CLUTCH_TORQUE_CAPACITY);
+        assertEquals(DrivetrainMath.CLUTCH_TORQUE_CAPACITY, DrivetrainMath.clutchTorque(wellPastCapacityGap, 0.0, engineTorque, dt, STOCK), 1e-9,
                 "a huge relative speed must saturate at the clutch's own capacity, not scale past it");
-        assertEquals(-DrivetrainMath.CLUTCH_TORQUE_CAPACITY, DrivetrainMath.clutchTorque(-wellPastCapacityGap, 0.0, engineTorque, dt), 1e-9,
+        assertEquals(-DrivetrainMath.CLUTCH_TORQUE_CAPACITY, DrivetrainMath.clutchTorque(-wellPastCapacityGap, 0.0, engineTorque, dt, STOCK), 1e-9,
                 "saturation must be symmetric in the other direction");
     }
 
@@ -342,10 +348,10 @@ class DrivetrainMathTest {
         // boundedSpinTowardSnap already guarantees at the wheel for a small-enough gap.
         double wheelSideOmega = DrivetrainMath.rpmToOmega(3000.0);
         double engineOmega = DrivetrainMath.rpmToOmega(3050.0);
-        double dt = 0.05;
+        double dt = TICK_DT;
         double engineTorque = DrivetrainMath.ENGINE_BRAKING_TORQUE; // net torque before the clutch is 0
-        double clutch = DrivetrainMath.clutchTorque(engineOmega, wheelSideOmega, engineTorque, dt);
-        double next = DrivetrainMath.engineAngularVelocity(engineOmega, engineTorque, clutch, dt);
+        double clutch = DrivetrainMath.clutchTorque(engineOmega, wheelSideOmega, engineTorque, dt, STOCK);
+        double next = DrivetrainMath.engineAngularVelocity(engineOmega, engineTorque, clutch, dt, STOCK);
         assertEquals(wheelSideOmega, next, 1e-6, "a gap within the clutch's own capacity must lock exactly, not merely approach, within this one step");
     }
 
@@ -356,11 +362,11 @@ class DrivetrainMathTest {
         // step must NOT reach the target -- that persisting gap IS slip.
         double wheelSideOmega = 0.0;
         double engineOmega = DrivetrainMath.rpmToOmega(6000.0);
-        double dt = 0.05;
+        double dt = TICK_DT;
         double engineTorque = DrivetrainMath.ENGINE_BRAKING_TORQUE;
-        double clutch = DrivetrainMath.clutchTorque(engineOmega, wheelSideOmega, engineTorque, dt);
+        double clutch = DrivetrainMath.clutchTorque(engineOmega, wheelSideOmega, engineTorque, dt, STOCK);
         assertEquals(DrivetrainMath.CLUTCH_TORQUE_CAPACITY, clutch, 1e-9, "test setup must actually exercise the saturated branch");
-        double next = DrivetrainMath.engineAngularVelocity(engineOmega, engineTorque, clutch, dt);
+        double next = DrivetrainMath.engineAngularVelocity(engineOmega, engineTorque, clutch, dt, STOCK);
         assertTrue(next < engineOmega, "a saturated clutch pulling the engine down must still reduce its speed somewhat");
         assertTrue(next > wheelSideOmega, "but a single step under a saturated (slipping) clutch must not reach the wheel-side target");
     }
@@ -372,46 +378,108 @@ class DrivetrainMathTest {
         // engine's own integration with a 0.0 clutch load is exactly the free-rev case, unaffected by any
         // wheel-side speed, however large the gap.
         double engineOmega = DrivetrainMath.rpmToOmega(DrivetrainMath.IDLE_RPM);
-        double withNoWheelCoupling = DrivetrainMath.engineAngularVelocity(engineOmega, 200.0, 0.0, 0.05);
+        double withNoWheelCoupling = DrivetrainMath.engineAngularVelocity(engineOmega, 200.0, 0.0, TICK_DT, STOCK);
         assertTrue(withNoWheelCoupling > engineOmega, "disengaged (0.0 clutch torque) must still let engine torque past braking accelerate the engine");
     }
 
     @Test
-    void engineReactionTorqueIsZeroWhenNetEngineTorqueIsZero() {
-        // Steady state: engine torque exactly balances braking plus clutch load -> no net angular
-        // acceleration -> no reaction.
-        double priorOmega = DrivetrainMath.rpmToOmega(3000.0);
-        double engineTorque = DrivetrainMath.ENGINE_BRAKING_TORQUE + 100.0;
-        double clutch = 100.0;
-        assertEquals(0.0, DrivetrainMath.engineReactionTorque(priorOmega, engineTorque, clutch), 1e-9);
+    void engineReactionTorqueIsZeroWhenTheEngineSpeedDidNotChange() {
+        double omega = DrivetrainMath.rpmToOmega(3000.0);
+        assertEquals(0.0, DrivetrainMath.engineReactionTorque(omega, omega, TICK_DT, STOCK), 1e-9,
+                "an engine whose speed did not change this step has no angular momentum to react with");
     }
 
     @Test
     void engineReactionTorqueOpposesAnAcceleratingEngine() {
         double priorOmega = DrivetrainMath.rpmToOmega(DrivetrainMath.IDLE_RPM);
-        double engineTorque = DrivetrainMath.ENGINE_PEAK_TORQUE;
-        double reaction = DrivetrainMath.engineReactionTorque(priorOmega, engineTorque, 0.0);
-        assertTrue(reaction < 0.0, "a positive net engine torque speeding the engine up must react with the OPPOSITE sign on the chassis");
+        double nextOmega = DrivetrainMath.engineAngularVelocity(priorOmega, DrivetrainMath.ENGINE_PEAK_TORQUE, 0.0, TICK_DT, STOCK);
+        assertTrue(nextOmega > priorOmega, "test setup invalid -- the engine must actually speed up here");
+        assertTrue(DrivetrainMath.engineReactionTorque(priorOmega, nextOmega, TICK_DT, STOCK) < 0.0,
+                "an engine speeding up must react with the OPPOSITE sign on the chassis");
+    }
+
+    /**
+     * Review (round 1): the floor-at-zero case. An engine 0.01 rad/s from a standstill with the throttle
+     * shut can only shed 0.01*ENGINE_INERTIA of angular momentum, however much braking torque was nominally
+     * available -- so the chassis may only ever be billed for that, not for ENGINE_BRAKING_TORQUE * dt.
+     * Checked at more than one dt, since the whole point is that the clamp binds at some dt and not others.
+     */
+    @Test
+    void engineReactionImpulseNeverExceedsTheEnginesOwnRealizedMomentumChangeAcrossTheZeroFloor() {
+        double priorOmega = 0.01;
+        for (double dt : new double[] {TICK_DT, 0.025, 1.0 / 60.0, 0.2}) {
+            double nextOmega = DrivetrainMath.engineAngularVelocity(priorOmega, 0.0, 0.0, dt, STOCK);
+            assertEquals(0.0, nextOmega, 1e-12, "dt=" + dt + ": closed-throttle braking must stop the engine at the floor");
+            double reactionImpulse = DrivetrainMath.engineReactionTorque(priorOmega, nextOmega, dt, STOCK) * dt;
+            double realizedMomentumChange = (nextOmega - priorOmega) * DrivetrainMath.ENGINE_INERTIA;
+            assertEquals(-realizedMomentumChange, reactionImpulse, 1e-12,
+                    "dt=" + dt + ": the chassis impulse must equal exactly the engine's own realized angular-momentum change");
+            double nominalImpulse = DrivetrainMath.ENGINE_BRAKING_TORQUE * dt;
+            assertTrue(Math.abs(reactionImpulse) < nominalImpulse,
+                    "dt=" + dt + ": the realized impulse must be strictly smaller than the unclipped braking impulse this step would have billed ("
+                            + reactionImpulse + " vs " + nominalImpulse + ")");
+        }
     }
 
     @Test
-    void engineReactionTorqueTracksOnlyNetEngineTorqueNeverGearOrWheelDirection() {
+    void engineReactionImpulseMatchesRealizedMomentumChangeWhenTheFloorDoesNotBind() {
+        double priorOmega = DrivetrainMath.rpmToOmega(3000.0);
+        double dt = TICK_DT;
+        double nextOmega = DrivetrainMath.engineAngularVelocity(priorOmega, 400.0, 120.0, dt, STOCK);
+        double reactionImpulse = DrivetrainMath.engineReactionTorque(priorOmega, nextOmega, dt, STOCK) * dt;
+        assertEquals(-(nextOmega - priorOmega) * DrivetrainMath.ENGINE_INERTIA, reactionImpulse, 1e-12);
+    }
+
+    /**
+     * The engine-side counterpart of
+     * {@link #recoveryReactionImpulseIntegratesTheSameTotalRegardlessOfSubStepCount}: splitting the same
+     * total dt into N steps must total the SAME reaction impulse as one step, never N times it. The
+     * production path integrates the engine once per tick at the tick's own dt, so this is what makes that
+     * choice safe to change later -- and what a per-sub-step re-integration would have to keep true.
+     */
+    @Test
+    void engineReactionImpulseIntegratesTheSameTotalRegardlessOfStepCount() {
+        double engineTorque = 400.0;
+        double clutch = 60.0;
+        double startOmega = DrivetrainMath.rpmToOmega(2500.0);
+
+        double oneStepOmega = DrivetrainMath.engineAngularVelocity(startOmega, engineTorque, clutch, TICK_DT, STOCK);
+        double oneStepImpulse = DrivetrainMath.engineReactionTorque(startOmega, oneStepOmega, TICK_DT, STOCK) * TICK_DT;
+
+        for (int n = 2; n <= 4; n++) {
+            double subDt = TICK_DT / n;
+            double omega = startOmega;
+            double totalImpulse = 0.0;
+            for (int step = 0; step < n; step++) {
+                double next = DrivetrainMath.engineAngularVelocity(omega, engineTorque, clutch, subDt, STOCK);
+                totalImpulse += DrivetrainMath.engineReactionTorque(omega, next, subDt, STOCK) * subDt;
+                omega = next;
+            }
+            assertEquals(oneStepOmega, omega, 1e-9, "N=" + n + " must reach the same engine speed over the same total dt");
+            assertEquals(oneStepImpulse, totalImpulse, 1e-9,
+                    "N=" + n + "'s summed reaction impulse must match N=1's, not N times it or a fraction of it");
+        }
+    }
+
+    @Test
+    void engineReactionTorqueTracksOnlyTheEnginesOwnRotationNeverGearOrWheelDirection() {
         // MINECRAFT-444 acceptance: selecting reverse must not flip the engine torque axis. The method
-        // itself takes no gear argument at all -- the invariant under test is that driving the SAME engine
-        // state (priorOmega, engineTorque) through whatever clutch torque a forward gear happens to produce
-        // vs. what REVERSE happens to produce (same wheel speed magnitude, different ratio, so a different
-        // clutch value) still yields a reaction whose SIGN is governed by engineTorque alone, not by which
-        // gear produced that clutch value.
+        // takes no gear argument at all -- so driving the SAME engine state through whatever clutch torque
+        // a forward gear produces vs. what REVERSE produces (same wheel-speed magnitude, different ratio)
+        // must still react with the same sign, governed by the engine's own realized rotation alone.
         double priorOmega = DrivetrainMath.rpmToOmega(2500.0);
-        double dt = 0.05;
+        double dt = TICK_DT;
         // Large enough to dominate ENGINE_BRAKING_TORQUE and even a fully-saturated CLUTCH_TORQUE_CAPACITY
-        // in both branches below, so net torque (and so the reaction) is unambiguously positive-engine-
-        // torque-wins in both gears, not an artifact of which clutch value happened to be larger.
+        // in both branches, so the engine is unambiguously accelerating in both gears.
         double engineTorque = DrivetrainMath.ENGINE_BRAKING_TORQUE + DrivetrainMath.CLUTCH_TORQUE_CAPACITY + 200.0;
-        double clutchForward = DrivetrainMath.clutchTorque(priorOmega, DrivetrainMath.wheelSideOmega(10.0, DrivetrainMath.ratioFor(0)), engineTorque, dt);
-        double clutchReverse = DrivetrainMath.clutchTorque(priorOmega, DrivetrainMath.wheelSideOmega(10.0, DrivetrainMath.REVERSE_RATIO), engineTorque, dt);
-        double reactionForward = DrivetrainMath.engineReactionTorque(priorOmega, engineTorque, clutchForward);
-        double reactionReverse = DrivetrainMath.engineReactionTorque(priorOmega, engineTorque, clutchReverse);
+        double clutchForward = DrivetrainMath.clutchTorque(priorOmega,
+                DrivetrainMath.wheelSideOmega(10.0, DrivetrainMath.ratioFor(0)), engineTorque, dt, STOCK);
+        double clutchReverse = DrivetrainMath.clutchTorque(priorOmega,
+                DrivetrainMath.wheelSideOmega(10.0, DrivetrainMath.REVERSE_RATIO), engineTorque, dt, STOCK);
+        double nextForward = DrivetrainMath.engineAngularVelocity(priorOmega, engineTorque, clutchForward, dt, STOCK);
+        double nextReverse = DrivetrainMath.engineAngularVelocity(priorOmega, engineTorque, clutchReverse, dt, STOCK);
+        double reactionForward = DrivetrainMath.engineReactionTorque(priorOmega, nextForward, dt, STOCK);
+        double reactionReverse = DrivetrainMath.engineReactionTorque(priorOmega, nextReverse, dt, STOCK);
         assertTrue(reactionForward < 0.0, "accelerating engine must react negatively in forward gear");
         assertTrue(reactionReverse < 0.0, "the SAME accelerating engine must react with the SAME (negative) sign in reverse -- selecting reverse must not flip the engine torque axis");
     }

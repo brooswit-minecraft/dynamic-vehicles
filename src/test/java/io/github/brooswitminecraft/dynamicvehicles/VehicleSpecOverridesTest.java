@@ -3,6 +3,7 @@ package io.github.brooswitminecraft.dynamicvehicles;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -96,6 +97,53 @@ class VehicleSpecOverridesTest {
         // -3.0 is out of VehicleSpecLimits' range -- clamped, not rejected outright.
         assertEquals(VehicleSpecLimits.MIN_HANDBRAKE_SCALE, resolved.handbrakeScale());
         assertEquals(VehicleSpec.TRUCK.rideHeight(), resolved.rideHeight());
+    }
+
+    /** MINECRAFT-444: the engine/clutch coupling fields follow the identical per-field contract as every
+     * other field in this schema -- a set field is applied (clamped if out of range), an absent one keeps
+     * the car's stock value, and a non-finite one falls back to stock rather than leaking NaN into the
+     * engine integration (where it would divide straight into engine speed). */
+    @Test
+    void engineAndClutchCouplingFieldsOverrideClampAndFallBackLikeEveryOtherField(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", "{\"engineInertia\": 0.4, \"enginePeakTorque\": 99999.0,"
+                + " \"clutchTorqueCapacity\": -5.0}");
+
+        VehicleSpecOverrides.load(configDir);
+        VehicleSpec resolved = VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR);
+        VehicleSpec.DrivetrainCoupling coupling = resolved.drivetrainCoupling();
+
+        assertEquals(0.4, coupling.engineInertia(), 1e-9, "an in-range engineInertia must be applied as given");
+        assertEquals(VehicleSpecLimits.MAX_ENGINE_PEAK_TORQUE, coupling.enginePeakTorque(), 1e-9,
+                "an out-of-range enginePeakTorque must be clamped, not rejected");
+        assertEquals(VehicleSpecLimits.MIN_CLUTCH_TORQUE_CAPACITY, coupling.clutchTorqueCapacity(), 1e-9,
+                "a negative clutchTorqueCapacity must clamp to the floor");
+        assertEquals(VehicleSpec.CAR.drivetrainCoupling().engineBrakingTorque(), coupling.engineBrakingTorque(), 1e-9,
+                "a field the file never mentioned must keep its stock value");
+        assertEquals(VehicleSpec.CAR.rideHeight(), resolved.rideHeight(), 1e-9,
+                "the coupling fields must not disturb any other field");
+    }
+
+    @Test
+    void aNonFiniteCouplingFieldFallsBackToStockRatherThanLeakingNaN(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", "{\"engineInertia\": NaN}");
+
+        VehicleSpecOverrides.load(configDir);
+        VehicleSpec.DrivetrainCoupling coupling =
+                VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR).drivetrainCoupling();
+
+        assertEquals(VehicleSpec.CAR.drivetrainCoupling().engineInertia(), coupling.engineInertia(), 1e-9);
+    }
+
+    @Test
+    void everyStockCarShipsTheSharedStockCoupling() {
+        // Shared stock engine hardware: this is what makes the whole feature identity-preserving for a
+        // server with no per-car files at all.
+        for (VehicleSpec spec : new VehicleSpec[] {VehicleSpec.CAR, VehicleSpec.TRUCK, VehicleSpec.TROPHY,
+                VehicleSpec.DRIFT, VehicleSpec.MUSCLE, VehicleSpec.ROCK_CRAWLER, VehicleSpec.MONSTER_TRUCK,
+                VehicleSpec.INDY, VehicleSpec.BUS, VehicleSpec.CARGO_TRUCK}) {
+            assertTrue(spec.drivetrainCoupling().isStock(),
+                    "every roster vehicle must ship the shared stock engine/clutch coupling");
+        }
     }
 
     /** MINECRAFT-443 review fix (comment 48913): VehicleSpecLimits' global 0.1 m floor is inside its own

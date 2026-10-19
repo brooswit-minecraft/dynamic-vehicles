@@ -87,31 +87,33 @@ public final class TownSitePreflight {
      * entire site). {@code true} when something occupies {@code pos} right now that this site is
      * not allowed to place over.
      *
-     * <p>[Review round 4, finding #6] The claiming villager's own exemption is narrowed to ONLY its
-     * reserved campfire cell - {@code pos.equals(campfire)} - never the whole footprint. Before this
-     * fix, the claimant read as "allowed to stand here" at EVERY planned cell merely because its
-     * JOB_SITE memory pointed at the campfire, which meant construction could place a floor/wall
-     * cell directly into the claimant's own body wherever it happened to be standing at the time.
-     * The claimant is only ever expected to occupy the campfire cell itself (where it parks while
-     * working its job site, and where {@link #isSafeToOverwrite} already treats the cell as safe
-     * regardless of entities so the final campfire-replacement can still land); anywhere else in
-     * the footprint, the claimant blocks exactly like any other occupant.
+     * <p>[Review round 4, finding #6] The claiming villager's own exemption applies only while it is
+     * actually parked in the campfire's own COLUMN ({@code campfire}'s x/z, any y) - never the whole
+     * footprint, so a claimant standing in some other planned wall/floor cell still blocks exactly
+     * like any other occupant. This is deliberately a column match, not {@code pos.equals(campfire)}:
+     * a villager's hitbox is taller than one block (~1.95), so a claimant parked at the campfire's
+     * own cell also physically overlaps the cell directly above it (same x/z, y+1) - e.g. the roof
+     * cell straight above a single-cell-footprint site, or simply the empty air above the campfire
+     * at a wider one. Exempting only the single literal {@code campfire} BlockPos left that cell
+     * reading as "occupied by an entity" on every tick, failing the WHOLE site's own preflight at a
+     * cell the claimant's own reserved parking spot legitimately overlaps - a site's own claimant
+     * must never be the reason its own site can never build.
      */
     public static boolean isEntityBlocking(ServerLevel level, BlockPos pos, BlockPos campfire) {
-        if (pos.equals(campfire)) {
-            AABB cell = new AABB(pos);
-            for (Entity entity : level.getEntities((Entity) null, cell)) {
-                if (entity instanceof net.minecraft.world.entity.npc.Villager villager
-                        && villager.getBrain().getMemory(net.minecraft.world.entity.ai.memory.MemoryModuleType.JOB_SITE)
-                                .map(gp -> gp.pos().equals(campfire)).orElse(false)) {
-                    continue; // the claiming villager parking at its own reserved campfire cell
-                }
-                return true;
-            }
-            return false;
-        }
         AABB cell = new AABB(pos);
-        return !level.getEntities((Entity) null, cell).isEmpty();
+        boolean inCampfireColumn = pos.getX() == campfire.getX() && pos.getZ() == campfire.getZ();
+        for (Entity entity : level.getEntities((Entity) null, cell)) {
+            if (inCampfireColumn
+                    && entity instanceof net.minecraft.world.entity.npc.Villager villager
+                    && villager.getBrain().getMemory(net.minecraft.world.entity.ai.memory.MemoryModuleType.JOB_SITE)
+                            .map(gp -> gp.pos().equals(campfire)).orElse(false)
+                    && villager.blockPosition().getX() == campfire.getX()
+                    && villager.blockPosition().getZ() == campfire.getZ()) {
+                continue; // the claiming villager parking at its own reserved campfire column
+            }
+            return true;
+        }
+        return false;
     }
 
     /**

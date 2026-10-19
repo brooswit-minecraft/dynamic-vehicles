@@ -60,7 +60,6 @@ final class SableMotorboatBody {
     private final double[] motorMount;
     private double lastSpeed;
     private double lastImmersionFraction;
-    private static int DBG = 0;
 
     private SableMotorboatBody(ServerLevel level, Vector3d halfExtents, BoxPhysicsObject box, RigidBodyHandle body,
             double[][] hullMounts, double[] motorMount) {
@@ -131,17 +130,6 @@ final class SableMotorboatBody {
         box.updatePose();
         Pose3d pose = new Pose3d(box.getPose());
         Vector3d position = pose.position();
-        if (DBG < 40) {
-            DBG++;
-            System.err.println("DBG tick=" + DBG + " pos=" + position + " linear=" + body.getLinearVelocity(new Vector3d())
-                    + " throttle=" + throttle);
-            for (double[] mount : hullMounts) {
-                Vector3d off = new Quaterniond(pose.orientation()).transform(new Vector3d(mount[0], mount[1], mount[2]));
-                Vector3d wp = new Vector3d(position).add(off);
-                Double sy = sampleSurface(wp.x, wp.y, wp.z);
-                System.err.println("DBG  mount=" + java.util.Arrays.toString(mount) + " world=" + wp + " surface=" + sy);
-            }
-        }
         Quaterniond orientation = new Quaterniond(pose.orientation());
         Quaterniond inverse = new Quaterniond(orientation).invert();
         Vector3d linear = body.getLinearVelocity(new Vector3d());

@@ -153,6 +153,17 @@ public class CarEntity extends Entity {
     }
 
     /**
+     * The Sable rigid body handle, as the opaque {@code Object} {@link SableCompat} already takes --
+     * package-private so a same-package production-path {@code @GameTest} (MINECRAFT-450, review on
+     * PR #181) can read real per-wheel telemetry (speed/slip/wheelSpinRates/wheelTravel) straight off the
+     * body {@code SableCarBody.tick} itself just wrote, without duplicating any of that composition. Null
+     * until the first server tick creates it (see {@code tickSable}).
+     */
+    Object sableBody() {
+        return sableBody;
+    }
+
+    /**
      * Applies one driver-configurable tuning dial to this particular entity. Values are always clamped before
      * they can reach physics, including values received through a command or loaded from old/corrupt save data.
      *

@@ -605,15 +605,34 @@ final class SableCarBody {
         double rollRateRadPerSec = angular.dot(carForward);
         double rollTorque = DiffuserAssistMath.rollSelfRightingTorque(rollAngleRad, rollRateRadPerSec, diffuser);
 
+        // MINECRAFT-447 review fix (PR #180 comment 6278664198): pitchAngleRad here is a MEASURED angle
+        // (asin(forward.y), positive = nose up), but the torque below is applied about the PHYSICAL
+        // +right axis the engine actually rotates around -- and, exactly like yawOf/orientationOf's own
+        // documented rotateY(-yaw) convention below, this engine's pitch rotation is the NEGATION of the
+        // measured angle (a measured +10 degree nose-up pose is physically rotateX(-10 degrees)). Feeding
+        // the measured angle straight into pitchLandingTorque's own internal "-gain*pitch" therefore pushed
+        // the PHYSICAL angle further from level, not toward it -- confirmed by direct derivation, not just
+        // asserted: negating the angle argument here (not the rate argument, which is already read as the
+        // physical angular.dot(right) and must stay dissipative, per the review) is the fix.
         double pitchAngleRad = Math.asin(Math.max(-1.0, Math.min(1.0, carForward.y)));
         double pitchRateRadPerSec = angular.dot(right);
         double timeToTouchdown = timeToTouchdownSeconds(car, position, linear.y);
-        double pitchTorque = DiffuserAssistMath.pitchLandingTorque(pitchAngleRad, pitchRateRadPerSec, timeToTouchdown, diffuser);
+        double pitchTorque = DiffuserAssistMath.pitchLandingTorque(-pitchAngleRad, pitchRateRadPerSec, timeToTouchdown, diffuser);
 
+        // MINECRAFT-447 review fix (PR #180 comment 6278664198): headingAlignmentTorque/trajectoryAlignmentTorque
+        // are applied about the PHYSICAL world +Y axis, but their own "error" argument was built entirely
+        // out of Minecraft yaw degrees (currentYawDeg == yawOf(orientation)) -- and yawOf/orientationOf's
+        // own doc already states the physical convention is rotateY(-yaw), i.e. physical rotation = -yaw.
+        // A target-minus-current yaw error fed straight into a "+gain*error" proportional term therefore
+        // produced physical torque with the opposite sign of what moves yaw toward that target (confirmed
+        // by direct derivation: dY/dt = -d(physical)/dt, so driving the error to zero in yaw-space requires
+        // NEGATIVE physical torque for positive yaw-space error, not positive). Swapping the wrapAngle
+        // operands (current-minus-target instead of target-minus-current) is the fix -- the rate argument
+        // (angular.y, already the physical rate the applied torque's own damping must oppose) is unchanged.
         double yawRateRadPerSec = angular.y;
         double headingTorque = Double.isNaN(lastGroundedYawDeg) ? 0.0
                 : DiffuserAssistMath.headingAlignmentTorque(
-                        DiffuserAssistMath.wrapAngle(Math.toRadians(lastGroundedYawDeg - currentYawDeg)),
+                        DiffuserAssistMath.wrapAngle(Math.toRadians(currentYawDeg - lastGroundedYawDeg)),
                         yawRateRadPerSec, steer, diffuser);
 
         double horizontalSpeed = Math.hypot(linear.x, linear.z);
@@ -623,8 +642,9 @@ final class SableCarBody {
         // reusing it here is an implementation choice, not a new input, and keeps this assist from ever
         // fighting a handbrake slide.
         boolean intentionalSlide = handbrake;
+        // Same review fix as headingTorque above, same reasoning: swapped operands, not a rate change.
         double trajectoryTorque = DiffuserAssistMath.trajectoryAlignmentTorque(
-                DiffuserAssistMath.wrapAngle(Math.toRadians(travelYawDeg - currentYawDeg)),
+                DiffuserAssistMath.wrapAngle(Math.toRadians(currentYawDeg - travelYawDeg)),
                 yawRateRadPerSec, horizontalSpeed, intentionalSlide, diffuser);
 
         Vector3d totalTorque = new Vector3d(carForward).mul(rollTorque)
@@ -735,6 +755,15 @@ final class SableCarBody {
      * own javadoc for why this exists instead of using vanilla's {@code onGround()}. */
     boolean touching() {
         return lastTouching;
+    }
+
+    /** GameTest-only hook (MINECRAFT-447 review): seeds {@link #lastGroundedYawDeg} directly, so a
+     * direction-only heading-alignment regression can exercise a clean single-axis case (spawned airborne,
+     * zero initial angular velocity, no tumble) without needing an actual prior grounded tick to establish
+     * the target the normal production path requires. Not a second way to configure a real car -- same
+     * category as {@code CarEntity#setDiffuserTuningForTest}. */
+    void setLastGroundedYawDegForTest(double yawDeg) {
+        this.lastGroundedYawDeg = yawDeg;
     }
 
     /** Each wheel's suspension travel as of the last tick's single raycast, metres (a copy; not live state). */

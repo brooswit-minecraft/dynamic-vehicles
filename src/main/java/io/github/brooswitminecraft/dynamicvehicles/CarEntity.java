@@ -231,6 +231,15 @@ public class CarEntity extends Entity {
         this.diffuserTuningOverride = tuning;
     }
 
+    /** GameTest-only hook (MINECRAFT-447 review): seeds heading alignment's own frozen target directly, so
+     * a direction-only regression can use a clean single-axis setup (spawned airborne, no prior grounded
+     * tick, no tumble) instead of needing to first land and then relaunch the car. Requires {@code
+     * sableBody} to already exist (call after the entity's first real tick). See {@code SableCarBody
+     * #setLastGroundedYawDegForTest}'s own javadoc for why this is not a second config mechanism. */
+    void setLastGroundedYawDegForTest(double yawDeg) {
+        SableCompat.setLastGroundedYawDegForTest(sableBody, yawDeg);
+    }
+
     /** GameTest-only accessor (MINECRAFT-447): this entity's current Sable body orientation (including
      * roll and pitch), or {@code null} before its physics body exists (before the first real tick).
      * {@link #renderOrientation} exposes the client-interpolated version of this same quantity; nothing

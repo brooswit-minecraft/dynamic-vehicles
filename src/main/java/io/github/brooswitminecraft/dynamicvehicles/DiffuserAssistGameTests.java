@@ -99,6 +99,58 @@ public final class DiffuserAssistGameTests {
         });
     }
 
+    /** Wraps a degree difference to {@code (-180, 180]}. */
+    private static double wrapDeg(double deg) {
+        double wrapped = deg % 360.0;
+        if (wrapped <= -180.0) {
+            wrapped += 360.0;
+        } else if (wrapped > 180.0) {
+            wrapped -= 360.0;
+        }
+        return wrapped;
+    }
+
+    /** Direction-only regression for PR #180 review comment 6278664198's heading/trajectory sign defect:
+     * {@code SableCarBody.applyDiffuserAssists} built its "error" entirely out of Minecraft yaw degrees but
+     * applied the resulting torque about the PHYSICAL world +Y axis -- and {@code yawOf}/{@code
+     * orientationOf}'s own documented convention (physical rotation = {@code -yaw}) means a naive
+     * target-minus-current error fed straight into a {@code +gain*error} term pushes the PHYSICAL angle,
+     * and so the actual Minecraft yaw, AWAY from the target, not toward it. This is exactly the review's own
+     * worked example: current yaw 0, target +10 degrees, zero angular velocity, zero steer.
+     *
+     * <p>Deliberately a CLEAN single-axis case, unlike the matched-pair "launched mid-turn" fixture this
+     * ticket's own R18/R19 GameTests attempted and had to defer (see the comment block at the end of this
+     * class): a car dropped from height with zero initial angular velocity and no ground contact for the
+     * whole test window has nothing ELSE perturbing its orientation, so there is no 3-axis-tumble chaos
+     * risk here -- only a direction check, not a magnitude or exact-tick assertion, so it does not need one
+     * either. {@link CarEntity#setLastGroundedYawDegForTest} seeds the target directly (this assist
+     * normally only acquires one from a prior grounded tick), avoiding the need to first land and relaunch
+     * the car just to set up the test. */
+    @GameTest(template = "settlement_test", timeoutTicks = 100)
+    public static void headingAlignmentTurnsTowardATargetAheadOfCurrentYawNotAwayFromIt(GameTestHelper helper) {
+        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 12, 5));
+        helper.runAfterDelay(1L, () -> {
+            helper.assertTrue(car.sableBody() != null, "car's Sable body was never created on its first real tick");
+            double startYaw = car.getYRot();
+            double targetYaw = startYaw + 10.0;
+            car.setDiffuserTuningForTest(headingOnly(8000.0, 6000.0, 1200.0));
+            car.setLastGroundedYawDegForTest(targetYaw);
+            double errorBefore = Math.abs(wrapDeg(targetYaw - startYaw));
+            helper.runAfterDelay(15L, () -> {
+                double errorAfter = Math.abs(wrapDeg(targetYaw - car.getYRot()));
+                helper.assertTrue(errorAfter < errorBefore - 0.5,
+                        "heading alignment should have turned the car toward its +10 degree target, not held "
+                                + "still or turned away from it: errorBefore=" + errorBefore + " errorAfter=" + errorAfter);
+                helper.succeed();
+            });
+        });
+    }
+
+    private static VehicleSpec.DiffuserTuning headingOnly(double maxTorque, double gain, double damping) {
+        return new VehicleSpec.DiffuserTuning(false, 0, 0, 0, false, 0, 0, 0, 0,
+                true, maxTorque, gain, damping, 1.0, false, 0, 0, 0, 0);
+    }
+
     /** Telemetry (open item from the ticket's own acceptance criteria): {@code SableCarBody.describe()}'s
      * debug line (logged every 20 ticks by {@code CarEntity.tickSable}, the same line every other car's
      * debug logging already goes through) must report each Diffuser KIT assist's own last-applied torque

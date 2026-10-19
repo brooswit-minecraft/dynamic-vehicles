@@ -38,6 +38,10 @@ final class SableCompat {
         return ((SableCarBody) body).touching();
     }
 
+    static void setLastGroundedYawDegForTest(Object body, double yawDeg) {
+        ((SableCarBody) body).setLastGroundedYawDegForTest(yawDeg);
+    }
+
     static double speed(Object body) {
         return ((SableCarBody) body).speed();
     }

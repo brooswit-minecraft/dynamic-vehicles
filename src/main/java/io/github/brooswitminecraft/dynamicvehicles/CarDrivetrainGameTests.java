@@ -677,11 +677,14 @@ public final class CarDrivetrainGameTests {
      * identity is exact only at one sub-step per tick, where "the last sub-step's own snapshot" and "the
      * whole tick's own change" are the same thing - see {@code wheelReactionForce}'s own "last sub-step
      * wins" comment for why that stops being true at {@code wheelSubSteps > 1}.
-     * <li>Friction-circle invariant, checked at EVERY sub-step count: the TOTAL delivered force
-     * ({@code debugWheelForces()}, which already includes the reaction) must never exceed what this
-     * vehicle's own friction circle could legitimately produce even under the worst-case normal force
-     * {@code antiRollTransfer} itself documents as possible (up to {@code 2 * WheelMath.MAX_FORCE}) - a
-     * duplicated or unbounded reaction would blow through this; a correct one, by construction, cannot.
+     * <li>Friction-circle invariant, checked at EVERY sub-step count: the TOTAL delivered force, combined
+     * longitudinal ({@code debugWheelForces()}, which already includes the reaction) and lateral
+     * ({@code debugWheelLateralForces()}) via {@code Math.hypot}, must never exceed THIS TICK's own real
+     * circle ({@code debugWheelFrictionLimits()}, the actual {@code Tire#frictionLimit()} - round 10:
+     * checked against the live per-tick value, not a fixed global worst-case ceiling, since a smaller
+     * overflow could hide under a generous enough global bound) - a duplicated, mis-signed or unbounded
+     * reaction would blow through this; a correct one, by construction (the recovery is bounded by the
+     * circle's own remaining headroom - see {@code SableCarBody}'s own call site comment), cannot.
      * </ol>
      * Mirrored coverage ({@link #wheelSpinRecoveryReactionInvariantsHoldInReverse}) reuses this exact
      * mechanism with the gear and wall direction both flipped for the opposite-sign recovery case.
@@ -696,13 +699,11 @@ public final class CarDrivetrainGameTests {
         runRecoveryInvarianceLegs(helper, CarPhysics.Gear.REVERSE, -1);
     }
 
-    /** {@code mu(1.1, this vehicle's own looseGrip/downforce multipliers are 1.0 for the plain CAR) *
-     * 2 * WheelMath.MAX_FORCE} - the worst-case normal force {@code WheelMath.antiRollTransfer}'s own
-     * javadoc documents as reachable (a receiver's load plus an uncapped transfer, bounded at twice
-     * {@code maxForce}), so the true friction circle can never legitimately exceed this even under
-     * transient weight transfer. A reaction that duplicated or mis-signed itself into the delivered force
-     * would have no such ceiling. */
-    private static final double RECOVERY_FRICTION_CIRCLE_CEILING = WheelMath.BASE_FRICTION * 2.0 * WheelMath.MAX_FORCE;
+    /** Review, round 10: floating-point slack only, not a real physical margin - the combined force is
+     * checked against THIS TICK's own real {@code debugWheelFrictionLimits()} (the actual
+     * {@code Tire#frictionLimit()}, 0 when not gripping at all), not a fixed global worst-case ceiling: a
+     * duplicated or mis-signed reaction has no slack this small to hide behind. */
+    private static final double FRICTION_CIRCLE_TOLERANCE = 1.0;
 
     /** One spawn point with a floor, and a 3x4 stone wall {@code direction * 2} blocks further along z --
      * {@code direction = 1} puts the wall ahead of a D1 car, {@code direction = -1} behind a REVERSE one
@@ -743,12 +744,24 @@ public final class CarDrivetrainGameTests {
                     double[] reactions = carOneStep.debugWheelReactionForces();
                     double[] forces = carOneStep.debugWheelForces();
                     double[] lateralForces = carOneStep.debugWheelLateralForces();
+                    double[] frictionLimits = carOneStep.debugWheelFrictionLimits();
                     for (int wheel = 0; wheel < spins.length; wheel++) {
                         try {
-                            double combinedForce = Math.hypot(forces[wheel], lateralForces[wheel]);
-                            helper.assertTrue(combinedForce <= RECOVERY_FRICTION_CIRCLE_CEILING,
-                                    "wheel " + wheel + " delivered combined (longitudinal+lateral) force exceeded the friction circle's own worst-case ceiling (1 substep): "
-                                            + combinedForce + " N > " + RECOVERY_FRICTION_CIRCLE_CEILING + " N");
+                            // frictionLimits[wheel] == 0.0 is ambiguous by itself: it is the correct FRESH
+                            // value for a genuinely zero-grip tick (where forces[wheel]/lateralForces[wheel]
+                            // are also freshly 0, so the check below would pass anyway), but it is ALSO what
+                            // the MISS/force<=0 skip paths explicitly CLEAR it to - while those same paths
+                            // deliberately FREEZE (never clear) forces[wheel]/lateralForces[wheel], matching
+                            // wheelSpin's own established "last sub-step wins" telemetry convention. Mixing
+                            // a cleared limit with a frozen force would spuriously fail this check on every
+                            // skipped tick; only compare when the limit itself is freshly meaningful.
+                            if (frictionLimits[wheel] > 0.0) {
+                                double combinedForce = Math.hypot(forces[wheel], lateralForces[wheel]);
+                                helper.assertTrue(combinedForce <= frictionLimits[wheel] + FRICTION_CIRCLE_TOLERANCE,
+                                        "wheel " + wheel + " at tick " + thisTick
+                                                + " delivered combined (longitudinal+lateral) force exceeded THIS TICK's own real friction circle (1 substep): "
+                                                + combinedForce + " N > " + frictionLimits[wheel] + " N");
+                            }
                             if (havePrevious[0] && reactions[wheel] != 0.0) {
                                 everRecovered[0] = true;
                                 double deltaSpin = spins[wheel] - previousSpin[wheel];
@@ -799,16 +812,23 @@ public final class CarDrivetrainGameTests {
             // still required at this sub-step count too, not just at 1.
             boolean[] everRecoveredAtFourStep = {false};
             for (long tick = 1; tick <= 50; tick++) {
-                helper.runAfterDelay(tick, () -> {
+                long thisTick = tick;
+                helper.runAfterDelay(thisTick, () -> {
                     double[] forces = carFourStep.debugWheelForces();
                     double[] lateralForces = carFourStep.debugWheelLateralForces();
                     double[] reactions = carFourStep.debugWheelReactionForces();
+                    double[] frictionLimits = carFourStep.debugWheelFrictionLimits();
                     for (int wheel = 0; wheel < forces.length; wheel++) {
                         try {
-                            double combinedForce = Math.hypot(forces[wheel], lateralForces[wheel]);
-                            helper.assertTrue(combinedForce <= RECOVERY_FRICTION_CIRCLE_CEILING,
-                                    "wheel " + wheel + " delivered combined (longitudinal+lateral) force exceeded the friction circle's own worst-case ceiling (4 substeps): "
-                                            + combinedForce + " N > " + RECOVERY_FRICTION_CIRCLE_CEILING + " N");
+                            // See the 1-substep leg's own comment above for why this only compares when
+                            // the limit itself is freshly meaningful (frictionLimits[wheel] > 0.0).
+                            if (frictionLimits[wheel] > 0.0) {
+                                double combinedForce = Math.hypot(forces[wheel], lateralForces[wheel]);
+                                helper.assertTrue(combinedForce <= frictionLimits[wheel] + FRICTION_CIRCLE_TOLERANCE,
+                                        "wheel " + wheel + " at tick " + thisTick
+                                                + " delivered combined (longitudinal+lateral) force exceeded THIS TICK's own real friction circle (4 substeps): "
+                                                + combinedForce + " N > " + frictionLimits[wheel] + " N");
+                            }
                             if (reactions[wheel] != 0.0) {
                                 everRecoveredAtFourStep[0] = true;
                             }

@@ -375,6 +375,12 @@ public class CarEntity extends Entity {
         return sableBody == null ? new double[0] : SableCompat.wheelLateralForces(sableBody);
     }
 
+    /** Review, round 10: each wheel's own actual mu*normalForce circle this tick, so a test can check the
+     * delivered force against the REAL per-tick budget instead of a fixed global worst-case ceiling. */
+    double[] debugWheelFrictionLimits() {
+        return sableBody == null ? new double[0] : SableCompat.wheelFrictionLimits(sableBody);
+    }
+
     io.github.brooswitminecraft.dynamicterrain.Erosion.Result debugLastErosionResult() {
         return sableBody == null ? io.github.brooswitminecraft.dynamicterrain.Erosion.Result.SKIPPED : SableCompat.lastErosionResult(sableBody);
     }

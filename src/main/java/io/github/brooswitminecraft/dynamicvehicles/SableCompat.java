@@ -101,6 +101,10 @@ final class SableCompat {
         return ((SableCarBody) body).wheelLateralForces();
     }
 
+    static double[] wheelFrictionLimits(Object body) {
+        return ((SableCarBody) body).wheelFrictionLimits();
+    }
+
     static void remove(Object body) {
         ((SableCarBody) body).remove();
     }

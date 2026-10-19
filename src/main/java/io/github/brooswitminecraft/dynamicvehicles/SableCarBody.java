@@ -95,6 +95,10 @@ final class SableCarBody {
     // alone - a test checking only wheelForce against the circle's own ceiling could pass while the
     // COMBINED force silently exceeds it, if cornering lateral force moved into the budget this tick.
     private final double[] wheelLateralForce;
+    // Review, round 10: this tick's own actual mu*normalForce circle (Tire#frictionLimit), so a test can
+    // check the delivered force against the REAL per-wheel-per-tick budget instead of a fixed global
+    // worst-case ceiling - tighter, and catches a smaller overflow the generous global bound would miss.
+    private final double[] wheelFrictionLimit;
     // Per-wheel values published to clients for rendering (MINECRAFT-122). Airborne/zero-load/raycast-miss
     // behaviour differs per value, each deliberate:
     //  - suspensionTravel is replaced wholesale every tick from pass 1's own compressions[] (the single
@@ -128,6 +132,7 @@ final class SableCarBody {
         this.wheelForce = new double[spec.mounts().length];
         this.wheelReactionForce = new double[spec.mounts().length];
         this.wheelLateralForce = new double[spec.mounts().length];
+        this.wheelFrictionLimit = new double[spec.mounts().length];
         this.suspensionTravel = new double[spec.mounts().length];
         this.steerAngle = new double[spec.mounts().length];
         this.lastContactBlockPos = new BlockPos[spec.mounts().length];
@@ -416,6 +421,7 @@ final class SableCarBody {
                     // persist past the sub-step that actually produced it.
                     wheelReactionForce[wheel] = 0.0;
                     wheelLateralForce[wheel] = 0.0;
+                    wheelFrictionLimit[wheel] = 0.0;
                     continue;
                 }
                 double force = forces[wheel];
@@ -442,6 +448,7 @@ final class SableCarBody {
                     // Same staleness fix as the MISS guard above, for the same reason.
                     wheelReactionForce[wheel] = 0.0;
                     wheelLateralForce[wheel] = 0.0;
+                    wheelFrictionLimit[wheel] = 0.0;
                     continue;
                 }
                 touching = true;
@@ -605,6 +612,7 @@ final class SableCarBody {
                 wheelForce[wheel] = tire.longitudinal() + reactionImpulse / subDt;
                 wheelReactionForce[wheel] = reactionImpulse / subDt;
                 wheelLateralForce[wheel] = tire.lateral();
+                wheelFrictionLimit[wheel] = tire.frictionLimit();
                 // SlipReporter must fire at most once per wheel per tick (not once per sub-step), so we only
                 // track the worst wearSlip seen across this tick's sub-steps here, paired with the force at
                 // the sub-step that produced it (so the reported load matches the reported slip), and report
@@ -842,6 +850,13 @@ final class SableCarBody {
      * {@link #wheelForces()} alone could miss a combined-force overflow a cornering tick introduces. */
     double[] wheelLateralForces() {
         return wheelLateralForce.clone();
+    }
+
+    /** Review, round 10: this tick's own actual {@code Tire#frictionLimit()} per wheel (0 when not
+     * gripping at all), so a test can check the delivered force against the REAL per-tick circle instead
+     * of a fixed global worst-case ceiling. */
+    double[] wheelFrictionLimits() {
+        return wheelFrictionLimit.clone();
     }
 
     /** Engine RPM implied by the drivetrain this tick (MINECRAFT-401): idle in NEUTRAL scaled by throttle,

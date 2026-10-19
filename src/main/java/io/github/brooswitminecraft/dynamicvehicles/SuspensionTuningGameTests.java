@@ -209,7 +209,8 @@ public final class SuspensionTuningGameTests {
                     "the configured car over the open pit was removed while falling with no ground under it");
             for (double travel : SableCompat.wheelTravel(grounded.sableBody())) {
                 helper.assertTrue(travel > 0.0, "the grounded control was not actually touching the ground, so "
-                        + "the airborne comparison would be vacuous: suspensionTravel=" + travel);
+                        + "the airborne comparison would be vacuous: suspensionTravel=" + travel
+                        + " " + where(grounded));
             }
             double[] airborneTravel = SableCompat.wheelTravel(airborne.sableBody());
             for (int wheel = 0; wheel < airborneTravel.length; wheel++) {
@@ -286,19 +287,32 @@ public final class SuspensionTuningGameTests {
         for (double wheel : travel) {
             helper.assertTrue(wheel > 0.0,
                     what + " had a wheel off the ground, so its resting compression is not measurable here: "
-                            + wheel);
+                            + wheel + " " + where(car));
             total += wheel;
         }
         return total / travel.length;
     }
 
-    /** A flat stone pad under a spawn point, wide enough for the car's own footprint -- the same 5x5 floor
-     * at y = 2 under a spawn at y = 3 that {@code RollingResistanceGameTests#fillFloor} uses for the cars
-     * it successfully asserts {@code suspensionTravel > 0} on. Deliberately does NOT clear the blocks above
-     * the floor: an earlier version of this helper did, and no working test in this suite does. */
+    /** Enough context in a failure message to tell a car that never settled from one that settled somewhere
+     * unexpected: where it actually ended up, how fast it is still moving, every wheel's own travel, and
+     * what is under it. Added because two CI rounds of "a wheel is off the ground" said nothing about WHY. */
+    private static String where(CarEntity car) {
+        BlockPos below = car.blockPosition().below();
+        return "[pos=" + car.position() + " speed=" + car.debugSpeed()
+                + " travel=" + java.util.Arrays.toString(SableCompat.wheelTravel(car.sableBody()))
+                + " restLength=" + car.spec().restLength()
+                + " blockBelow=" + below + " " + car.level().getBlockState(below) + "]";
+    }
+
+    /** A flat stone pad under a spawn point at y = 2, under a spawn at y = 3 -- the same arrangement
+     * {@code RollingResistanceGameTests#fillFloor} uses for the cars it successfully asserts {@code
+     * suspensionTravel > 0} on, widened from its 5x5 to 4 blocks in every direction so a car that shifts
+     * slightly while being planted cannot end up with a wheel over the pad's edge. Deliberately does NOT
+     * clear the blocks above the floor: an earlier version of this helper did, and no working test in this
+     * suite does. */
     private static void pad(GameTestHelper helper, int z) {
-        for (int dx = -2; dx <= 2; dx++) {
-            for (int dz = -2; dz <= 2; dz++) {
+        for (int dx = -4; dx <= 4; dx++) {
+            for (int dz = -4; dz <= 4; dz++) {
                 helper.setBlock(new BlockPos(5 + dx, 2, z + dz), Blocks.STONE);
             }
         }
@@ -324,18 +338,28 @@ public final class SuspensionTuningGameTests {
     }
 
     /**
-     * Drives a freshly spawned car with ZERO throttle and steering for the whole settle window.
+     * Puts a freshly spawned car onto the same driven, planted path the tests in this suite that
+     * successfully assert real per-wheel contact use, then lets it coast to rest.
      *
-     * <p>Not a no-op, and not cosmetic: the first version of these tests simply spawned cars and waited,
-     * and every wheel reported exactly {@code 0.0} travel -- the ungrounded sentinel -- on CI and locally
-     * alike. Every car test in this suite that successfully asserts real per-wheel contact ({@code
-     * RollingResistanceGameTests}, {@code CarDrivetrainGameTests}) either boards a mock player or calls
-     * {@code forceDrive}; none of them just spawns and waits. Zero inputs keep this a pure
-     * settle-under-gravity measurement while still putting the car on the same driven path those working
-     * tests use.
+     * <p>Two findings are baked in here, both from CI rather than reasoning. First, a car that is merely
+     * spawned and waited on reports exactly {@code 0.0} travel on every wheel -- the ungrounded sentinel --
+     * because nothing drives its tick; every working car test either boards a mock player or calls {@code
+     * forceDrive}. Second, {@code forceDrive} with zero throttle was still not enough: travel came back at
+     * {@code -0.178}, a real raycast value but with the car resting well above the pad. {@code
+     * RollingResistanceGameTests}' own pit test -- the one test in this suite that does assert {@code
+     * suspensionTravel > 0} and passes in CI -- plants its cars with a nonzero throttle first, so this does
+     * the same: a brief throttle to plant the car on its springs, then zero input for the rest of the
+     * settle window so the measurement itself is still a car at rest. Both the configured car and its stock
+     * control get the identical treatment, so the comparison stays matched either way.
      */
     private static CarEntity settling(CarEntity car) {
-        car.forceDrive(0.0, 0.0, (int) SETTLE_TICKS);
+        car.forceDrive(PLANTING_THROTTLE, 0.0, PLANT_TICKS);
         return car;
     }
+
+    /** Throttle used only to plant a freshly spawned car onto its springs, before it coasts to rest. */
+    private static final double PLANTING_THROTTLE = 1.0;
+    /** Ticks of {@link #PLANTING_THROTTLE}; the rest of {@link #SETTLE_TICKS} is spent coasting to rest,
+     * so every measurement here is still taken on a car that has stopped. */
+    private static final int PLANT_TICKS = 40;
 }

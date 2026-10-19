@@ -126,6 +126,18 @@ public final class TownPassiveProductionHandlerGameTests {
      * MINECRAFT-388 review round 6, finding #5: a JOB_SITE memory whose remembered position no
      * longer holds any physical block at all (destroyed since the memory was recorded) must not be
      * credited, even in a founded region with a matching dimension.
+     *
+     * <p>[Round 11 hardening] Asserts {@link TownRegion#liveClaimedRegion} directly - the exact
+     * unit of behaviour this finding is about - rather than observing it indirectly through a full
+     * {@link TownPassiveProductionHandler#runPassiveProductionTick} call. That tick scans EVERY
+     * villager in the entire shared GameTest level (not just this structure's own), and the real
+     * production tick-event hook keeps running automatically for the whole GameTestServer session
+     * regardless of any single test's own code; a before/after balance comparison on the real,
+     * server-wide {@link TownStorage#of} was observed to fail intermittently (including on CI, not
+     * just locally) from unrelated activity landing in the same region, even though
+     * {@code liveClaimedRegion} itself was independently confirmed (via temporary diagnostics) to
+     * reject this exact scenario correctly every single time. Testing the unit directly removes
+     * that entire shared-world surface from the equation.
      */
     @GameTest(template = "settlement_test")
     public static void aDestroyedJobSiteWithNoRemainingBlockIsNeverCredited(GameTestHelper helper) {
@@ -143,16 +155,12 @@ public final class TownPassiveProductionHandlerGameTests {
         villager.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteAnchor));
 
         RegionCoord region = TownRegion.fromBlockCoords(absoluteAnchor.getX(), absoluteAnchor.getZ());
-        TownStorage storage = TownStorage.of(helper.getLevel().getServer());
+        TownStorage storage = new TownStorage();
         String key = TownKeys.keyFor(helper.getLevel().dimension(), region);
         storage.markTownFounded(key);
-        TownResourceStore store = storage.storeFor(key);
-        int before = store.balance(TownResourceCategory.FOOD);
 
-        TownPassiveProductionHandler.runPassiveProductionTick(helper.getLevel());
-
-        helper.assertTrue(store.balance(TownResourceCategory.FOOD) == before,
-                "a JOB_SITE memory whose remembered position no longer holds any physical block must never be credited");
+        helper.assertTrue(TownRegion.liveClaimedRegion(helper.getLevel(), villager, storage).isEmpty(),
+                "a JOB_SITE memory whose remembered position no longer holds any physical block must never resolve to a live claimed region");
         helper.succeed();
     }
 }

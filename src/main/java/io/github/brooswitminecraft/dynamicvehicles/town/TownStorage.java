@@ -62,6 +62,7 @@ public final class TownStorage extends SavedData {
     private final Map<String, PlacedCell> placedCells = new HashMap<>();
     private final Map<String, BlockPos> pendingCampfires = new HashMap<>();
     private final Map<String, Integer> siteFloors = new HashMap<>();
+    private final Set<String> blockedCells = new HashSet<>();
 
     public static TownStorage of(MinecraftServer server) {
         return server.overworld().getDataStorage()
@@ -100,6 +101,28 @@ public final class TownStorage extends SavedData {
      *  now", and only one plan can own a given cell's paid progress at a time. */
     public void markCellPlaced(ResourceKey<Level> dimension, BlockPos pos, String owner, String signature) {
         placedCells.put(cellKey(dimension, pos), new PlacedCell(owner, signature));
+    }
+
+    /**
+     * [Review round 10, finding #1] {@code true} iff {@code pos} in {@code dimension} was
+     * permanently taken out of construction after a mutation AND its own rollback both failed (see
+     * {@link #markCellBlocked}) - a durable, reload-surviving hold, never merely a local variable
+     * that forgets the failure the instant this tick's call returns. A cell left in a genuinely
+     * unknown, partially-mutated state after both the forward write and its rollback failed must
+     * never be silently retried: a later tick could re-clear/re-charge/re-credit a cell this mod
+     * cannot actually verify the true state of, risking a double charge or double salvage credit for
+     * work this mod is no longer sure it ever actually paid for cleanly.
+     */
+    public boolean isCellBlocked(ResourceKey<Level> dimension, BlockPos pos) {
+        return blockedCells.contains(cellKey(dimension, pos));
+    }
+
+    /** Permanently (durably, across ticks and reloads) takes {@code pos} in {@code dimension} out
+     *  of construction - see {@link #isCellBlocked}. There is no automatic unblock: once both a
+     *  mutation and its own rollback have failed, this mod can no longer trust what is actually
+     *  there, so the only safe response is to never touch this exact cell again. */
+    public void markCellBlocked(ResourceKey<Level> dimension, BlockPos pos) {
+        blockedCells.add(cellKey(dimension, pos));
     }
 
     /**
@@ -209,6 +232,14 @@ public final class TownStorage extends SavedData {
             floorList.add(entryTag);
         }
         tag.put("SiteFloors", floorList);
+
+        ListTag blockedList = new ListTag();
+        for (String key : blockedCells) {
+            CompoundTag entryTag = new CompoundTag();
+            entryTag.putString("Key", key);
+            blockedList.add(entryTag);
+        }
+        tag.put("BlockedCells", blockedList);
         return tag;
     }
 
@@ -247,6 +278,10 @@ public final class TownStorage extends SavedData {
         for (int i = 0; i < floorList.size(); i++) {
             CompoundTag entryTag = floorList.getCompound(i);
             storage.siteFloors.put(entryTag.getString("Key"), entryTag.getInt("FloorY"));
+        }
+        ListTag blockedList = tag.getList("BlockedCells", Tag.TAG_COMPOUND);
+        for (int i = 0; i < blockedList.size(); i++) {
+            storage.blockedCells.add(blockedList.getCompound(i).getString("Key"));
         }
         return storage;
     }

@@ -131,11 +131,15 @@ public final class TownPassiveProductionHandlerGameTests {
     public static void aDestroyedJobSiteWithNoRemainingBlockIsNeverCredited(GameTestHelper helper) {
         prepareFlatGround(helper);
         BlockPos absoluteAnchor = helper.absolutePos(ANCHOR);
-        // The flat-ground helper leaves ANCHOR as AIR already - the memory points at a position
-        // that was never (or no longer) a real, physical job site.
         Villager villager = EntityType.VILLAGER.create(helper.getLevel(), null, absoluteAnchor, MobSpawnType.EVENT, false, false);
         helper.getLevel().addFreshEntity(villager);
         villager.setVillagerData(villager.getVillagerData().setProfession(VillagerProfession.FARMER));
+        // The job site must stay WITHIN this test's own loaded structure (hasChunkAt must be true)
+        // so the "destroyed block" check can actually confirm air - a position far enough away to
+        // dodge cross-test region collisions would also be far enough that hasChunkAt reads false,
+        // which skips the air check entirely (treated as "can't tell, don't reject") and defeats
+        // the very thing this test exists to prove. The flat-ground helper leaves ANCHOR as AIR
+        // already - the memory points at a position that was never (or no longer) a real job site.
         villager.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteAnchor));
 
         RegionCoord region = TownRegion.fromBlockCoords(absoluteAnchor.getX(), absoluteAnchor.getZ());

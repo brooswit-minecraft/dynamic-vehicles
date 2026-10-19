@@ -947,6 +947,56 @@ public final class TownGameTests {
     }
 
     /**
+     * MINECRAFT-388 review round 10, finding #1: a cell left in a genuinely unknown,
+     * partially-mutated state (a mutation AND its own rollback both failed) is permanently,
+     * DURABLY excluded from further construction - direct coverage of the persisted primitive
+     * {@link TownRoadConstructionService} now uses instead of a local variable that would forget
+     * the failure the instant the tick's own call returns.
+     */
+    @GameTest(template = "settlement_test")
+    public static void blockedCellsAreDurablyExcludedFromFurtherConstruction(GameTestHelper helper) {
+        TownStorage storage = new TownStorage();
+        BlockPos pos = helper.absolutePos(ANCHOR);
+        helper.assertTrue(!storage.isCellBlocked(helper.getLevel().dimension(), pos),
+                "a fresh store must not report any cell as blocked");
+
+        storage.markCellBlocked(helper.getLevel().dimension(), pos);
+
+        helper.assertTrue(storage.isCellBlocked(helper.getLevel().dimension(), pos),
+                "a marked cell must read back as blocked");
+        helper.assertTrue(!storage.isCellBlocked(helper.getLevel().dimension(), pos.offset(1, 0, 0)),
+                "marking one cell must not affect a different position");
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-388 review round 10, finding #1: road construction must never touch a cell already
+     * durably blocked (a prior mutation + rollback failure this mod can no longer trust) - no
+     * mutation, no charge, exactly like any other permanently-foreign content.
+     */
+    @GameTest(template = "settlement_test")
+    public static void roadConstructionNeverTouchesAPermanentlyBlockedCell(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos cell = ANCHOR;
+        BlockPos absoluteCell = helper.absolutePos(cell);
+        TownStorage storage = new TownStorage();
+        storage.markCellBlocked(helper.getLevel().dimension(), absoluteCell);
+        TownResourceStore store = storage.storeFor("test:road-blocked-cell");
+        store.credit(TownResourceCategory.STONE, 1000);
+        // A single-cell route (width defaults to MINOR_ROAD_WIDTH=3) still places its OTHER two
+        // width cells normally - this test isolates the ONE blocked cell specifically, not the
+        // whole route, so it does not assert on the aggregate balance.
+        List<TownRoadPlanner.RoadCell> cells = List.of(
+                new TownRoadPlanner.RoadCell(absoluteCell.getX(), absoluteCell.getZ(), absoluteCell.getY()));
+
+        TownRoadConstructionService.buildRoadCells(helper.getLevel(), cells, storage, store);
+
+        helper.assertTrue(!helper.getBlockState(cell).is(Blocks.DIRT_PATH),
+                "a permanently blocked cell must never be built over, found " + helper.getBlockState(cell));
+        helper.succeed();
+    }
+
+    /**
      * MINECRAFT-388 review round 4, finding #3: road construction's region-selection must be driven
      * purely by nearby-player presence in an already-FOUNDED region, entirely independent of
      * whether any campfire is claimed ANYWHERE in the level - exercises

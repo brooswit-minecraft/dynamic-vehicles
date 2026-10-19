@@ -166,6 +166,15 @@ public final class TownRoadConstructionService {
         if (!level.hasChunkAt(pos)) {
             return false;
         }
+        // [Review round 10, finding #1] A cell previously left in a genuinely unknown,
+        // partially-mutated state (a mutation AND its own rollback both failed - see the
+        // bottom of this method) is durably, permanently excluded from any further construction.
+        // This mod can no longer trust what is actually there, so it must never be silently
+        // retried - that could re-clear/re-charge/re-credit work it is no longer sure it ever
+        // cleanly paid for.
+        if (storage.isCellBlocked(level.dimension(), pos)) {
+            return false;
+        }
         // Headroom for a cell, its surface, and the two cells of clearance above it (villager
         // height) must all lie strictly within the dimension's own build limits.
         if (pos.getY() <= level.getMinBuildHeight() || pos.getY() + 2 >= level.getMaxBuildHeight()) {
@@ -285,9 +294,18 @@ public final class TownRoadConstructionService {
                         && level.getBlockState(supportCells.get(i)).equals(supportOriginals.get(i));
             }
             if (!rollbackOk) {
+                // [Review round 10, finding #1] Logging alone is not durable - a fresh tick (or a
+                // server restart) would simply retry this exact cell from scratch against a world
+                // state this mod can no longer verify, risking a double charge or double salvage
+                // credit for work it is no longer sure it ever cleanly paid for. Persist a
+                // permanent block on this cell instead, so the failure - and the decision to never
+                // touch it again - survives reload, not just this one tick's local variables.
                 io.github.brooswitminecraft.dynamicvehicles.DynamicVehiclesMod.LOGGER.error(
-                        "Dynamic Towns road rollback at {} did not fully restore its original blocks after a rejected surface placement",
+                        "Dynamic Towns road rollback at {} did not fully restore its original blocks after a rejected surface placement"
+                                + " - permanently excluding this cell from further construction",
                         pos);
+                storage.markCellBlocked(level.dimension(), pos);
+                storage.setDirty();
             }
             return false;
         }

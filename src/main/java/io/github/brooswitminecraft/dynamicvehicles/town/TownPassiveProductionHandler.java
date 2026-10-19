@@ -1,12 +1,9 @@
 package io.github.brooswitminecraft.dynamicvehicles.town;
 
 import io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord;
-import net.minecraft.core.GlobalPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.ai.memory.MemoryModuleType;
 import net.minecraft.world.entity.npc.Villager;
-import net.minecraft.world.entity.npc.VillagerProfession;
 import net.neoforged.neoforge.event.tick.LevelTickEvent;
 
 import java.util.HashMap;
@@ -47,19 +44,19 @@ public final class TownPassiveProductionHandler {
 
         Map<RegionCoord, Integer> workersByRegion = new HashMap<>();
         for (Entity entity : level.getEntities().getAll()) {
-            if (!(entity instanceof Villager villager) || villager.getVillagerData().getProfession() == VillagerProfession.NONE) {
+            if (!(entity instanceof Villager villager)) {
                 continue;
             }
-            // [Review round 4, finding #7] A JOB_SITE memory's own DIMENSION must actually match
-            // this tick's level before its position is trusted - a stale or cross-dimension memory
-            // must never credit a region in the wrong dimension just because the coordinates
-            // happen to overlap.
-            Optional<GlobalPos> jobSite = villager.getBrain().getMemory(MemoryModuleType.JOB_SITE);
-            if (jobSite.isEmpty() || !jobSite.get().dimension().equals(level.dimension())) {
+            // [Review round 4, finding #7 / round 5, finding #6] A JOB_SITE memory's own DIMENSION
+            // must actually match this tick's level before its position is trusted - a stale or
+            // cross-dimension memory must never credit a region in the wrong dimension just because
+            // the coordinates happen to overlap. Shared with TownDonationHandler via
+            // TownRegion#liveClaimedRegion so this validation can never drift between the two.
+            Optional<RegionCoord> region = TownRegion.liveClaimedRegion(level, villager);
+            if (region.isEmpty()) {
                 continue;
             }
-            RegionCoord region = TownRegion.fromBlockCoords(jobSite.get().pos().getX(), jobSite.get().pos().getZ());
-            workersByRegion.merge(region, 1, Integer::sum);
+            workersByRegion.merge(region.get(), 1, Integer::sum);
         }
         if (workersByRegion.isEmpty()) {
             return;

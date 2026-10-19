@@ -1,6 +1,13 @@
 package io.github.brooswitminecraft.dynamicvehicles.town;
 
 import io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord;
+import net.minecraft.core.GlobalPos;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.ai.memory.MemoryModuleType;
+import net.minecraft.world.entity.npc.Villager;
+import net.minecraft.world.entity.npc.VillagerProfession;
+
+import java.util.Optional;
 
 /**
  * Dynamic Towns' own fixed-size grid over {@code delivery.RegionCoord} cells: one {@code RegionCoord}
@@ -24,6 +31,27 @@ public final class TownRegion {
 
     public static int minBlockZ(RegionCoord region) {
         return region.z() * TownConstants.REGION_SIZE_BLOCKS;
+    }
+
+    /**
+     * [Review round 5, finding #6] The region a currently-employed villager is ACTIVELY
+     * claimed/working in right now, shared by every handler that credits a town off a villager's
+     * job site ({@link TownDonationHandler}, {@link TownPassiveProductionHandler}) so the same
+     * validation can never drift between them. Empty for an unemployed villager, one with no
+     * JOB_SITE memory at all, or - critically - one whose JOB_SITE memory's own dimension does not
+     * match {@code level}: a villager cannot be actively working a job site in a dimension it is
+     * not currently in, so such a memory is stale/foreign and must never credit a region merely
+     * because its coordinates happen to overlap.
+     */
+    public static Optional<RegionCoord> liveClaimedRegion(ServerLevel level, Villager villager) {
+        if (villager.getVillagerData().getProfession() == VillagerProfession.NONE) {
+            return Optional.empty();
+        }
+        Optional<GlobalPos> jobSite = villager.getBrain().getMemory(MemoryModuleType.JOB_SITE);
+        if (jobSite.isEmpty() || !jobSite.get().dimension().equals(level.dimension())) {
+            return Optional.empty();
+        }
+        return Optional.of(fromBlockCoords(jobSite.get().pos().getX(), jobSite.get().pos().getZ()));
     }
 
     /** The region immediately adjacent to {@code region} in {@code edge}'s direction. */

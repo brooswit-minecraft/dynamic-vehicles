@@ -146,6 +146,7 @@ public final class TownConstructionService {
             return;
         }
         Villager claimant = claimantOpt.get();
+        String siteOwner = TownStorage.siteOwner(campfire);
 
         RegionCoord region = TownRegion.fromBlockCoords(campfire.getX(), campfire.getZ());
         TownPlan plan = TownPlanner.generate(region, level.getSeed());
@@ -155,16 +156,30 @@ public final class TownConstructionService {
                 ? TownBuildingTemplates.Kind.STOREHOUSE
                 : TownBuildingTemplates.kindFor(plan.zoneAt(campfire.getX(), campfire.getZ()));
 
-        // [Review round 2, finding #2] The floor is the tree-excluded ESTIMATED ground height, not
-        // the campfire's own (possibly arbitrary - a trunk, a ledge, a tall column) current Y.
-        // estimateGroundHeightBelow (not the plain heightmap-driven estimateGroundHeight) is used
-        // deliberately: the campfire block ITSELF already registers as motion-blocking once
-        // placed, which would otherwise skew a heightmap query taken at its own column.
-        int floorY = TownTerrain.estimateGroundHeightBelow(level, campfire);
-        if (floorY <= level.getMinBuildHeight() || floorY >= level.getMaxBuildHeight()) {
-            // A bounded, validated floor: refuse to plan a site whose estimated ground falls
-            // outside the dimension entirely, rather than silently building garbage there.
-            return;
+        // [Review round 2, finding #2 / round 5 follow-up] The floor is the tree-excluded ESTIMATED
+        // ground height, not the campfire's own (possibly arbitrary - a trunk, a ledge, a tall
+        // column) current Y. estimateGroundHeightBelow (not the plain heightmap-driven
+        // estimateGroundHeight) is used deliberately: the campfire block ITSELF already registers as
+        // motion-blocking once placed, which would otherwise skew a heightmap query taken at its own
+        // column. This estimate is PERSISTED per site the first time it is computed, and reused on
+        // every later tick, rather than re-derived from the live world each time: once terrain prep
+        // clears a trunk the campfire was standing on, a fresh estimate taken on the NEXT tick would
+        // no longer see that (now-removed) trunk material to walk down through at all, snapping the
+        // floor estimate straight back up to the campfire's own elevated Y mid-build and silently
+        // replanning the whole site around a completely different, inconsistent floor.
+        Optional<Integer> persistedFloor = storage.floorFor(siteOwner);
+        int floorY;
+        if (persistedFloor.isPresent()) {
+            floorY = persistedFloor.get();
+        } else {
+            floorY = TownTerrain.estimateGroundHeightBelow(level, campfire);
+            if (floorY <= level.getMinBuildHeight() || floorY >= level.getMaxBuildHeight()) {
+                // A bounded, validated floor: refuse to plan a site whose estimated ground falls
+                // outside the dimension entirely, rather than silently building garbage there.
+                return;
+            }
+            storage.setFloor(siteOwner, floorY);
+            storage.setDirty();
         }
 
         // [Review round 4, finding #8] The workstation (and, on completion, the claimant's own
@@ -189,9 +204,20 @@ public final class TownConstructionService {
             // it must eventually be replaced, so an explicit placement for its own exact position
             // is appended - bottomUpOrder (by x/y/z match) defers it to the very last block, same
             // as when it coincided with the floor plane.
-            TownBuildingTemplates.Placement extra = new TownBuildingTemplates.Placement(
-                    campfire.getX(), campfire.getY(), campfire.getZ(),
-                    TownBuildingTemplates.wallBlockFor(kind), TownBuildingTemplates.costFor(kind));
+            // [Review round 5, finding #3] The real final target here is whatever this exact
+            // column/Y would ACTUALLY be inside the template's own planned volume - not an invented
+            // wall block regardless of position. A campfire sitting ABOVE the planned roof (e.g. in
+            // a tree, or on a ledge well above the tree-excluded floor) is outside the building
+            // entirely once finished; its real final state is AIR (removed), never a floating solid
+            // interior block. Only a campfire whose Y actually falls within the planned footprint's
+            // own vertical span gets the template's own wall material.
+            int plannedTopYForExtra = floorY + TownBuildingTemplates.heightFor(kind, plan.storehouseVariant());
+            boolean campfireWithinFootprintVolume = campfire.getY() >= floorY && campfire.getY() <= plannedTopYForExtra;
+            TownBuildingTemplates.Placement extra = campfireWithinFootprintVolume
+                    ? new TownBuildingTemplates.Placement(campfire.getX(), campfire.getY(), campfire.getZ(),
+                            TownBuildingTemplates.wallBlockFor(kind), TownBuildingTemplates.costFor(kind))
+                    : new TownBuildingTemplates.Placement(campfire.getX(), campfire.getY(), campfire.getZ(),
+                            Blocks.AIR, TownBuildingTemplates.costFor(kind));
             template.add(extra);
             byPosition.put(key(extra.x(), extra.y(), extra.z()), extra);
         }
@@ -228,7 +254,7 @@ public final class TownConstructionService {
         // because that foreign block was never recorded as this mod's own paid-for progress.
         int plannedTopY = floorY + TownBuildingTemplates.heightFor(kind, plan.storehouseVariant());
         if (!TownSitePreflight.isSiteSafe(level, campfire, radius, floorY, plannedTopY,
-                pos -> storage.isCellPlaced(level.dimension(), pos))) {
+                pos -> storage.isCellPlaced(level.dimension(), pos, siteOwner))) {
             return;
         }
 
@@ -262,7 +288,7 @@ public final class TownConstructionService {
             // live-world diff: only a cell THIS mod already placed and paid for (and whose block
             // still matches) is skipped for free - a foreign block that merely matches the planned
             // material is never treated as already-paid progress.
-            boolean alreadyPlaced = storage.isCellPlaced(level.dimension(), pos);
+            boolean alreadyPlaced = storage.isCellPlaced(level.dimension(), pos, siteOwner);
             if (alreadyPlaced && level.getBlockState(pos).is(placement.block())) {
                 continue;
             }
@@ -296,6 +322,19 @@ public final class TownConstructionService {
                 // defensive re-check, not the primary mechanism.
                 continue;
             }
+            // [Review round 5, finding #1] The claimant legitimately parks AT the campfire cell
+            // while working, which is fine for every OTHER placement (isEntityBlocking exempts the
+            // whole column above it) - but the final closing placement here can be a SOLID block
+            // landing exactly where the claimant's own body still is. Relocate it to a validated
+            // safe, reachable exit just outside the footprint before a solid closing block lands;
+            // an AIR target (the elevated-campfire case) never needs this - removing a block cannot
+            // place anything through anyone's body.
+            if (pos.equals(campfire) && !placement.block().defaultBlockState().isAir()
+                    && !relocateClaimantAwayFromCampfireIfStandingThere(level, claimant, campfire, radius)) {
+                // No safe exit found this tick - skip this cell rather than risk placing a solid
+                // block through the claimant's body; retry next tick.
+                continue;
+            }
             // [Review round 2, finding #3] Debit only AFTER a confirmed placement: first check
             // affordability (a non-mutating peek, never itself a charge), attempt the mutation, and
             // re-read the block to confirm it actually landed before the store is ever touched. A
@@ -317,7 +356,7 @@ public final class TownConstructionService {
             if (!alreadyPlaced) {
                 ConstructionSitePlan.tryPayForBlock(store, block, TownConstants.CONSTRUCTION_COST_PER_BLOCK);
             }
-            storage.markCellPlaced(level.dimension(), pos);
+            storage.markCellPlaced(level.dimension(), pos, siteOwner);
             placedThisTick++;
         }
         if (placedThisTick > 0) {
@@ -341,7 +380,68 @@ public final class TownConstructionService {
             } else {
                 claimant.setVillagerData(claimant.getVillagerData().setProfession(VillagerProfession.NONE));
             }
+            // The persisted floor commitment has served its purpose once the site is actually done.
+            storage.clearFloor(siteOwner);
         }
+    }
+
+    /**
+     * [Review round 5, finding #1] If {@code claimant} is currently standing in {@code campfire}'s
+     * own column, relocate it to a validated, reachable, safe exit just outside the footprint
+     * before a solid block closes over the campfire cell. Returns {@code true} once the claimant is
+     * confirmed clear of the column (whether or not relocation was needed), {@code false} if it is
+     * still standing there and no safe exit could be found this tick.
+     */
+    private static boolean relocateClaimantAwayFromCampfireIfStandingThere(ServerLevel level, Villager claimant,
+            BlockPos campfire, int radius) {
+        if (claimant.blockPosition().getX() != campfire.getX() || claimant.blockPosition().getZ() != campfire.getZ()) {
+            return true; // not standing in this column at all - nothing to relocate
+        }
+        BlockPos exit = findSafeExitNear(level, campfire, radius);
+        if (exit == null) {
+            return false;
+        }
+        claimant.teleportTo(exit.getX() + 0.5, exit.getY(), exit.getZ() + 0.5);
+        return true;
+    }
+
+    /** A nearby, reachable, safe-to-stand-on cell strictly outside the {@code radius} footprint
+     *  (so the exit itself is never a cell this site might still build over), searched first just
+     *  past the site's own south-facing door (the normal, intended way out) and then in a ring one
+     *  cell further out all around the footprint. {@code null} if nothing safe was found nearby. */
+    private static BlockPos findSafeExitNear(ServerLevel level, BlockPos campfire, int radius) {
+        BlockPos pastDoor = campfire.offset(0, 0, radius + 1);
+        if (isSafeStandingSpot(level, pastDoor)) {
+            return pastDoor;
+        }
+        for (int x = -radius - 1; x <= radius + 1; x++) {
+            for (int z = -radius - 1; z <= radius + 1; z++) {
+                if (Math.max(Math.abs(x), Math.abs(z)) <= radius) {
+                    continue; // still inside the footprint - never relocate INTO the site itself
+                }
+                BlockPos candidate = campfire.offset(x, 0, z);
+                if (isSafeStandingSpot(level, candidate)) {
+                    return candidate;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** {@code true} when a villager could actually stand at {@code pos} right now: solid ground
+     *  below, non-colliding space at feet and head height, and no other entity already there. */
+    private static boolean isSafeStandingSpot(ServerLevel level, BlockPos pos) {
+        if (!level.hasChunkAt(pos) || !level.getWorldBorder().isWithinBounds(pos)
+                || !withinBuildHeight(level, pos)) {
+            return false;
+        }
+        BlockState below = level.getBlockState(pos.below());
+        BlockState feet = level.getBlockState(pos);
+        BlockState head = level.getBlockState(pos.above());
+        return below.isFaceSturdy(level, pos.below(), net.minecraft.core.Direction.UP)
+                && feet.getCollisionShape(level, pos).isEmpty()
+                && head.getCollisionShape(level, pos.above()).isEmpty()
+                && level.getEntities((net.minecraft.world.entity.Entity) null, new net.minecraft.world.phys.AABB(pos)).isEmpty();
     }
 
     /** {@code true} once every planned cell in {@code template} already holds exactly its planned

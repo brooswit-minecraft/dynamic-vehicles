@@ -157,12 +157,14 @@ public final class TownDonationHandlerGameTests {
     }
 
     /**
-     * MINECRAFT-388 review round 4, finding #7: a JOB_SITE memory in a DIFFERENT dimension must
-     * never be trusted to resolve a credit against this level's own region/dimension pairing - the
-     * credited town key must itself carry the claim's own dimension, not this trade's dimension.
+     * MINECRAFT-388 review round 5, finding #6: a JOB_SITE memory in a DIFFERENT dimension from
+     * the one this trade is actually happening in is stale/foreign - a villager cannot be actively
+     * working a job site in a dimension it is not currently in. Neither this trade's own dimension
+     * (the claim does not point here) nor the claim's stale dimension (the villager is not actually
+     * there right now to be credited for working it) may be credited; the trade must be a no-op.
      */
     @GameTest(template = "settlement_test")
-    public static void donationWithACrossDimensionJobSiteCreditsThatDimensionsOwnTown(GameTestHelper helper) {
+    public static void donationWithAStaleCrossDimensionJobSiteCreditsNoTownAtAll(GameTestHelper helper) {
         prepareFlatGround(helper);
         BlockPos absoluteAnchor = helper.absolutePos(ANCHOR);
         Villager villager = EntityType.VILLAGER.create(helper.getLevel(), null, absoluteAnchor, MobSpawnType.EVENT, false, false);
@@ -184,8 +186,8 @@ public final class TownDonationHandlerGameTests {
 
         helper.assertTrue(storage.storeFor(thisDimensionKey).balance(TownResourceCategory.STONE) == thisBefore,
                 "this trade's own dimension must not be credited when the claim points at a different one");
-        helper.assertTrue(storage.storeFor(otherDimensionKey).balance(TownResourceCategory.STONE) > otherBefore,
-                "the claim's OWN dimension must be the one actually credited");
+        helper.assertTrue(storage.storeFor(otherDimensionKey).balance(TownResourceCategory.STONE) == otherBefore,
+                "a stale claim in a dimension the villager is not currently in must never be credited either");
         helper.succeed();
     }
 }

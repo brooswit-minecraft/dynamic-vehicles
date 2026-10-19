@@ -1,9 +1,7 @@
 package io.github.brooswitminecraft.dynamicvehicles.town;
 
 import io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord;
-import net.minecraft.core.GlobalPos;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.world.entity.ai.memory.MemoryModuleType;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -50,19 +48,21 @@ public final class TownDonationHandler {
             return;
         }
 
-        // [Review round 4, finding #7] Credit the town the villager is actually CLAIMED/working
-        // for - its own JOB_SITE memory's position AND dimension - never wherever it happens to be
-        // geometrically standing right now. A villager that has wandered across a region boundary
-        // (384 blocks) since taking its job must still credit its own real town, not whichever
-        // region its current position happens to fall in.
-        Optional<GlobalPos> jobSite = villager.getBrain().getMemory(MemoryModuleType.JOB_SITE);
-        if (jobSite.isEmpty()) {
-            return; // not actually working anywhere identifiable - no town to credit
+        // [Review round 4, finding #7 / round 5, finding #6] Credit the town the villager is
+        // actually, LIVE-ly claimed/working for - its own JOB_SITE memory's position, but only when
+        // that memory's dimension matches the dimension the villager is actually trading in right
+        // now. A villager that has wandered across a region boundary (384 blocks) since taking its
+        // job must still credit its own real town, not whichever region its current position
+        // happens to fall in - but a stale or cross-dimension memory (it cannot be actively working
+        // a job site in a dimension it is not currently in) must never credit a region merely
+        // because the coordinates happen to overlap. Shared with TownPassiveProductionHandler via
+        // TownRegion#liveClaimedRegion so this validation can never drift between the two.
+        Optional<RegionCoord> region = TownRegion.liveClaimedRegion(level, villager);
+        if (region.isEmpty()) {
+            return; // not actively, live-ly working an identifiable job site in this dimension
         }
-        GlobalPos site = jobSite.get();
-        RegionCoord region = TownRegion.fromBlockCoords(site.pos().getX(), site.pos().getZ());
         TownStorage storage = TownStorage.of(level.getServer());
-        TownResourceStore store = storage.storeFor(TownKeys.keyFor(site.dimension(), region));
+        TownResourceStore store = storage.storeFor(TownKeys.keyFor(level.dimension(), region.get()));
         store.credit(credit.category(), credit.amount() * consumedCount);
         storage.setDirty();
     }

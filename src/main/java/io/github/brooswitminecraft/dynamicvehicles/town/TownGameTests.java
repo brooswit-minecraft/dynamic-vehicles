@@ -855,12 +855,35 @@ public final class TownGameTests {
         TownStorage storage = new TownStorage();
         BlockPos a = helper.absolutePos(ANCHOR);
         BlockPos b = a.offset(1, 0, 0);
-        helper.assertTrue(!storage.isCellPlaced(helper.getLevel().dimension(), a), "a fresh store must not report any cell as placed");
+        String owner = "site:test-owner";
+        helper.assertTrue(!storage.isCellPlaced(helper.getLevel().dimension(), a, owner), "a fresh store must not report any cell as placed");
 
-        storage.markCellPlaced(helper.getLevel().dimension(), a);
+        storage.markCellPlaced(helper.getLevel().dimension(), a, owner);
 
-        helper.assertTrue(storage.isCellPlaced(helper.getLevel().dimension(), a), "a marked cell must read back as placed");
-        helper.assertTrue(!storage.isCellPlaced(helper.getLevel().dimension(), b), "marking one cell must not affect a different position");
+        helper.assertTrue(storage.isCellPlaced(helper.getLevel().dimension(), a, owner), "a marked cell must read back as placed");
+        helper.assertTrue(!storage.isCellPlaced(helper.getLevel().dimension(), b, owner), "marking one cell must not affect a different position");
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-388 review round 5, finding #2: a cell previously placed-and-paid-for by one plan
+     * must never be silently adopted as a DIFFERENT plan's own already-paid progress merely because
+     * they share a coordinate and the live block happens to match the second plan's own material
+     * too - each plan's progress is scoped to its own owner key.
+     */
+    @GameTest(template = "settlement_test")
+    public static void placedCellOwnershipIsScopedPerPlanNotJustPerPosition(GameTestHelper helper) {
+        TownStorage storage = new TownStorage();
+        BlockPos pos = helper.absolutePos(ANCHOR);
+        String roadOwner = TownStorage.roadOwner(helper.getLevel().dimension(), TownRegion.fromBlockCoords(pos.getX(), pos.getZ()));
+        String siteOwner = TownStorage.siteOwner(pos);
+
+        storage.markCellPlaced(helper.getLevel().dimension(), pos, roadOwner);
+
+        helper.assertTrue(storage.isCellPlaced(helper.getLevel().dimension(), pos, roadOwner),
+                "the road plan that actually placed this cell must read it back as its own progress");
+        helper.assertTrue(!storage.isCellPlaced(helper.getLevel().dimension(), pos, siteOwner),
+                "a different plan (a building site) must never read the road's own paid progress at the same coordinate as its own");
         helper.succeed();
     }
 
@@ -958,6 +981,69 @@ public final class TownGameTests {
         helper.succeed();
     }
 
+    /** MINECRAFT-388 review round 5, finding #4: the original surface block a road cell itself
+     *  consumes (not just its headroom) must also credit salvage exactly once - previously
+     *  discarded entirely. */
+    @GameTest(template = "settlement_test")
+    public static void roadConstructionCreditsSalvageForTheOriginalSurfaceBlockItself(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos cell = ANCHOR;
+        helper.setBlock(cell, Blocks.STONE);
+        BlockPos absoluteCell = helper.absolutePos(cell);
+        List<TownRoadPlanner.RoadCell> cells = List.of(
+                new TownRoadPlanner.RoadCell(absoluteCell.getX(), absoluteCell.getZ(), absoluteCell.getY()));
+
+        TownStorage storage = new TownStorage();
+        TownResourceStore store = storage.storeFor("test:road-surface-salvage");
+        store.credit(TownResourceCategory.STONE, 1000);
+        int before = store.balance(TownResourceCategory.STONE);
+
+        int placed = TownRoadConstructionService.buildRoadCells(helper.getLevel(), cells, storage, store);
+
+        helper.assertTrue(placed >= 1, "the targeted stone cell should place");
+        helper.assertTrue(helper.getBlockState(cell).is(Blocks.DIRT_PATH), "the road surface must actually be placed");
+        // Without surface salvage, net change would be exactly -placed (ROAD_COST_PER_BLOCK=1 per
+        // cell, debit only); the stone salvage credit for the one STONE surface block consumed
+        // must offset part of that, making the net change strictly greater than -placed.
+        int netChange = store.balance(TownResourceCategory.STONE) - before;
+        helper.assertTrue(netChange > -placed,
+                "the original stone surface block consumed by the road must be credited as salvage, net change was " + netChange);
+        helper.succeed();
+    }
+
+    /** MINECRAFT-388 review round 5, finding #4: a road cell whose support scan exhausts its whole
+     *  bounded depth without ever finding real solid ground (a deep ravine/cave/void) must be
+     *  rejected entirely - filling the bounded depth with dirt on top of nothing still leaves the
+     *  surface floating over whatever lies beyond that depth. */
+    @GameTest(template = "settlement_test")
+    public static void roadConstructionRejectsACellWithNoReachableSupportWithinTheBoundedScanDepth(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        // Override this one column to be air all the way down through where the flat-ground
+        // floor would otherwise be, so no solid ground exists within ROAD_SUPPORT_FILL_MAX_DEPTH
+        // cells below the road cell - deliberately deeper than roadConstructionFillsDeepSupportGapsNotJustOneCell's
+        // still-reachable gap.
+        for (int y = 0; y <= 12; y++) {
+            helper.setBlock(new BlockPos(5, y, 5), Blocks.AIR);
+        }
+        BlockPos cell = new BlockPos(5, 10, 5);
+        BlockPos absoluteCell = helper.absolutePos(cell);
+        List<TownRoadPlanner.RoadCell> cells = List.of(
+                new TownRoadPlanner.RoadCell(absoluteCell.getX(), absoluteCell.getZ(), absoluteCell.getY()));
+
+        TownStorage storage = new TownStorage();
+        TownResourceStore store = storage.storeFor("test:road-impossible-support");
+        store.credit(TownResourceCategory.STONE, 1000);
+
+        TownRoadConstructionService.buildRoadCells(helper.getLevel(), cells, storage, store);
+
+        helper.assertTrue(helper.getBlockState(cell).isAir(),
+                "a cell with no reachable support within the bounded scan depth must never be built over, found "
+                        + helper.getBlockState(cell));
+        helper.assertTrue(store.balance(TownResourceCategory.STONE) == 1000,
+                "a rejected impossible-support cell must never be charged");
+        helper.succeed();
+    }
+
     /**
      * MINECRAFT-388 review round 4, finding #6: the claimant's exemption from occupancy-blocking
      * must be narrowed to ONLY its reserved campfire cell - standing in a planned WALL cell must
@@ -1017,6 +1103,101 @@ public final class TownGameTests {
                 "no other cell in the footprint should have been built either - an occupied footprint aborts the whole site");
         helper.assertTrue(store.balance(TownResourceCategory.STONE) == 1000 && store.balance(TownResourceCategory.WOOD) == 1000,
                 "an aborted site must not charge any resources at all");
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-388 review round 5, finding #3: a campfire sitting well ABOVE the planned building's
+     * own roof (e.g. atop a tall tree) is OUTSIDE the footprint entirely once finished - its real
+     * final state is AIR (removed), never an invented floating solid interior wall block. Driven to
+     * full completion (not just the floor, which {@code constructionFloorIsTheTreeExcludedGroundNotTheCampfiresOwnElevatedY}
+     * already covers) to prove the elevated case actually finishes correctly end to end.
+     */
+    @GameTest(template = "settlement_test")
+    public static void elevatedCampfireAboveThePlannedRoofEndsAsAirNotAFloatingWallBlock(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos campfireCell = ANCHOR;
+        // A tall trunk well above any building's planned roof (height 4-7, per heightFor) - the
+        // campfire perched on top is unambiguously outside the planned footprint volume entirely.
+        for (int y = 0; y < 10; y++) {
+            helper.setBlock(campfireCell.above(y), Blocks.OAK_LOG);
+        }
+        BlockPos elevatedCampfireCell = campfireCell.above(10);
+        helper.setBlock(elevatedCampfireCell, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(elevatedCampfireCell);
+        Villager claimant = EntityType.VILLAGER.create(helper.getLevel(), null, absoluteCampfire, MobSpawnType.EVENT, false, false);
+        helper.getLevel().addFreshEntity(claimant);
+        claimant.setVillagerData(claimant.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
+        claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteCampfire));
+
+        TownStorage storage = new TownStorage();
+        fundStore(helper, storage, absoluteCampfire, 100000);
+
+        for (int i = 0; i < 500 && helper.getBlockState(elevatedCampfireCell).is(Blocks.CAMPFIRE); i++) {
+            TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
+        }
+
+        helper.assertTrue(helper.getBlockState(elevatedCampfireCell).isAir(),
+                "a campfire above the planned roof must end as AIR (removed), found " + helper.getBlockState(elevatedCampfireCell));
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-388 review round 5, finding #1: the claimant parks AT the campfire while working,
+     * which is fine for every other placement, but the FINAL closing placement there can be a solid
+     * block landing exactly where its own body still is. It must be relocated to a validated, safe,
+     * reachable exit first - never placed through, never damaged - and the site must still actually
+     * finish closing rather than stalling forever because its own claimant can never move itself.
+     */
+    @GameTest(template = "settlement_test")
+    public static void claimantIsRelocatedSafelyBeforeTheFinalClosingPlacementAndSurvivesUnharmed(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos campfireCell = ANCHOR;
+        helper.setBlock(campfireCell, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(campfireCell);
+
+        Villager claimant = EntityType.VILLAGER.create(helper.getLevel(), null, absoluteCampfire, MobSpawnType.EVENT, false, false);
+        helper.getLevel().addFreshEntity(claimant);
+        claimant.setVillagerData(claimant.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
+        claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteCampfire));
+        float startingHealth = claimant.getHealth();
+
+        TownStorage storage = new TownStorage();
+        fundStore(helper, storage, absoluteCampfire, 100000);
+
+        for (int i = 0; i < 500 && helper.getBlockState(campfireCell).is(Blocks.CAMPFIRE); i++) {
+            TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
+        }
+
+        helper.assertTrue(!helper.getBlockState(campfireCell).is(Blocks.CAMPFIRE),
+                "the site must still actually finish closing over the campfire cell, not stall forever on its own claimant");
+        helper.assertTrue(claimant.isAlive(), "the claimant must survive being relocated out of its own closing site");
+        helper.assertTrue(claimant.getHealth() >= startingHealth,
+                "the claimant must take no damage (e.g. suffocation) from the final closing placement");
+        helper.assertTrue(claimant.blockPosition().getX() != campfireCell.getX() || claimant.blockPosition().getZ() != campfireCell.getZ(),
+                "the claimant must have been relocated out of the campfire's own column before the final solid block closed over it");
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-388 review round 5, finding #1: a villager whose JOB_SITE memory points at this
+     * exact campfire position but in a DIFFERENT dimension is a stale/foreign bystander, never this
+     * site's own claimant - it cannot be actively working a job site in a dimension it is not
+     * currently in, so the campfire-column exemption must never apply to it.
+     */
+    @GameTest(template = "settlement_test")
+    public static void isEntityBlockingNeverExemptsAJobSiteMemoryFromADifferentDimension(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos campfireCell = ANCHOR;
+        BlockPos absoluteCampfire = helper.absolutePos(campfireCell);
+        Villager bystander = EntityType.VILLAGER.create(helper.getLevel(), null, absoluteCampfire, MobSpawnType.EVENT, false, false);
+        helper.getLevel().addFreshEntity(bystander);
+        bystander.setVillagerData(bystander.getVillagerData().setProfession(VillagerProfession.FARMER));
+        ResourceKey<Level> otherDimension = helper.getLevel().dimension().equals(Level.NETHER) ? Level.END : Level.NETHER;
+        bystander.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(otherDimension, absoluteCampfire));
+
+        helper.assertTrue(TownSitePreflight.isEntityBlocking(helper.getLevel(), absoluteCampfire, absoluteCampfire),
+                "a villager whose JOB_SITE memory points here but in a DIFFERENT dimension must never be exempted as this site's own claimant");
         helper.succeed();
     }
 }

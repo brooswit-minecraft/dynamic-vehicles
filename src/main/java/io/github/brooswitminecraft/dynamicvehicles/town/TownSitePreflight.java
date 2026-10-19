@@ -106,7 +106,11 @@ public final class TownSitePreflight {
             if (inCampfireColumn
                     && entity instanceof net.minecraft.world.entity.npc.Villager villager
                     && villager.getBrain().getMemory(net.minecraft.world.entity.ai.memory.MemoryModuleType.JOB_SITE)
-                            .map(gp -> gp.pos().equals(campfire)).orElse(false)
+                            // [Review round 5, finding #1] The JOB_SITE memory's own dimension must
+                            // also match - a villager actively working a job site in a DIFFERENT
+                            // dimension that merely happens to share this exact coordinate is a
+                            // stale/foreign bystander here, never this site's own claimant.
+                            .map(gp -> gp.dimension().equals(level.dimension()) && gp.pos().equals(campfire)).orElse(false)
                     && villager.blockPosition().getX() == campfire.getX()
                     && villager.blockPosition().getZ() == campfire.getZ()) {
                 continue; // the claiming villager parking at its own reserved campfire column

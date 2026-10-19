@@ -74,33 +74,50 @@ public final class TownFounder {
             return;
         }
 
-        // The existing-village piece-containment check is a 3-D test, so it must be evaluated at
-        // the actual ground level of this column, never at whatever Y the triggering player
-        // happens to occupy (flying far above a real village, or mining far below it, must not make
-        // it read as absent). target's own Y is deliberately ignored here.
-        BlockPos groundCheckPos = groundLevelPosition(level, target);
-        boolean existingVillage = level.structureManager().getStructureWithPieceAt(groundCheckPos, StructureTags.VILLAGE).isValid();
-        TownFoundationPlan.Decision decision = TownFoundationPlan.decide(existingVillage, storage.hasFoundedTown(key));
-        if (decision != TownFoundationPlan.Decision.FOUND) {
-            if (decision == TownFoundationPlan.Decision.EXISTING_VILLAGE) {
-                // A vanilla village already claims this centre; mark the region settled without
-                // ever placing anything, so this same check does not keep re-evaluating it every
-                // interval for the rest of the region's life.
-                storage.markTownFounded(key);
-                storage.setDirty();
+        // [Review round 5, finding #8] A prior attempt may have already placed a campfire here
+        // whose companion villager spawn (or whose own orphan cleanup) never confirmed. Reuse that
+        // EXACT persisted position rather than re-running the existing-village check and re-deriving
+        // a fresh surface point: the still-standing orphan campfire itself now reads as "the ground"
+        // to the heightmap findSurfacePoint uses, so a fresh query would land one block ABOVE it and
+        // place a second, duplicate campfire rather than retrying the same one.
+        java.util.Optional<BlockPos> pending = storage.pendingCampfireFor(key);
+        BlockPos campfirePos;
+        if (pending.isPresent()) {
+            campfirePos = pending.get();
+            if (!level.hasChunkAt(campfirePos)) {
+                return;
             }
-            return;
-        }
+        } else {
+            // The existing-village piece-containment check is a 3-D test, so it must be evaluated at
+            // the actual ground level of this column, never at whatever Y the triggering player
+            // happens to occupy (flying far above a real village, or mining far below it, must not
+            // make it read as absent). target's own Y is deliberately ignored here.
+            BlockPos groundCheckPos = groundLevelPosition(level, target);
+            boolean existingVillage = level.structureManager().getStructureWithPieceAt(groundCheckPos, StructureTags.VILLAGE).isValid();
+            TownFoundationPlan.Decision decision = TownFoundationPlan.decide(existingVillage, storage.hasFoundedTown(key));
+            if (decision != TownFoundationPlan.Decision.FOUND) {
+                if (decision == TownFoundationPlan.Decision.EXISTING_VILLAGE) {
+                    // A vanilla village already claims this centre; mark the region settled without
+                    // ever placing anything, so this same check does not keep re-evaluating it every
+                    // interval for the rest of the region's life.
+                    storage.markTownFounded(key);
+                    storage.setDirty();
+                }
+                return;
+            }
 
-        BlockPos campfirePos = findSurfacePoint(level, target);
-        if (campfirePos == null) {
-            return;
+            campfirePos = findSurfacePoint(level, target);
+            if (campfirePos == null) {
+                return;
+            }
         }
 
         // [Review round 2, finding #6] The one-way "founded" claim must NOT be persisted before
         // the placements it claims to represent are actually confirmed in the world: a rejected
         // block placement or spawn failure must leave the region retryable, never permanently
-        // "founded" with nothing (or only half of something) actually there.
+        // "founded" with nothing (or only half of something) actually there. A pending retry's
+        // campfire is already there (its own prior attempt placed it) - re-placing the identical
+        // block at the identical position is a harmless no-op, never a second placement.
         boolean campfirePlaced = level.setBlock(campfirePos, Blocks.CAMPFIRE.defaultBlockState(), 3)
                 && level.getBlockState(campfirePos).is(Blocks.CAMPFIRE);
         if (!campfirePlaced) {
@@ -117,14 +134,24 @@ public final class TownFounder {
 
         TownBootstrapOutcome.PlacementOutcome outcome = TownBootstrapOutcome.evaluatePlacement(campfirePlaced, villagerSpawned);
         if (outcome.cleanupCampfire()) {
-            // The campfire landed but its companion villager did not: never leave an orphan
-            // campfire with nothing to claim it and no way to retry - remove it so the next pass
-            // can attempt a clean placement of both from scratch.
-            level.removeBlock(campfirePos, false);
+            // [Review round 5, finding #8] The campfire landed but its companion villager did not:
+            // never leave an orphan campfire with nothing to claim it and no way to retry - remove
+            // it so the next pass can attempt a clean placement of both from scratch. The removal
+            // itself is now CONFIRMED (re-read, not merely attempted): if it genuinely fails, this
+            // exact position is persisted as pending so the next retry reuses it directly instead of
+            // re-deriving a fresh surface point that would stack a second campfire above the orphan.
+            boolean cleaned = level.removeBlock(campfirePos, false) && level.getBlockState(campfirePos).isAir();
+            if (cleaned) {
+                storage.clearPendingCampfire(key);
+            } else {
+                storage.setPendingCampfire(key, campfirePos);
+                storage.setDirty();
+            }
         }
         if (outcome.markFounded()) {
             // Only now, with BOTH placements confirmed, commit the one-way claim - a retry after
             // this point must never duplicate either placement.
+            storage.clearPendingCampfire(key);
             storage.markTownFounded(key);
             storage.setDirty();
         }

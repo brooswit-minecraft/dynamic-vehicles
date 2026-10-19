@@ -166,7 +166,14 @@ public final class TownRoadConstructionService {
         if (!level.getWorldBorder().isWithinBounds(pos)) {
             return false;
         }
-        boolean alreadyBuilt = storage.isCellPlaced(level.dimension(), pos);
+        // [Review round 5, finding #2] Owned by whichever region this cell's own coordinates fall
+        // in - computed from the cell itself rather than threaded through every caller, so a
+        // building site's own "site:" owner at this same coordinate (a road cell later re-planned
+        // as part of a site's footprint, or vice versa) never reads as this road's already-paid
+        // progress merely because the live block happens to still match.
+        RegionCoord ownerRegion = TownRegion.fromBlockCoords(pos.getX(), pos.getZ());
+        String roadOwner = TownStorage.roadOwner(level.dimension(), ownerRegion);
+        boolean alreadyBuilt = storage.isCellPlaced(level.dimension(), pos, roadOwner);
         BlockState state = level.getBlockState(pos);
         if (alreadyBuilt && state.is(ROAD_SURFACE)) {
             return false; // already built and paid for by this mod - nothing to do here
@@ -202,13 +209,23 @@ public final class TownRoadConstructionService {
         List<BlockPos> supportCells = new ArrayList<>();
         List<BlockState> supportOriginals = new ArrayList<>();
         BlockPos probe = pos.below();
+        boolean foundSolidGround = false;
         for (int depth = 0; depth < TownConstants.ROAD_SUPPORT_FILL_MAX_DEPTH; depth++, probe = probe.below()) {
             BlockState probeState = level.getBlockState(probe);
             if (!probeState.isAir() && probeState.isSolidRender(level, probe)) {
+                foundSolidGround = true;
                 break; // real solid ground found - nothing more to fill below this
             }
             supportCells.add(probe);
             supportOriginals.add(probeState);
+        }
+        if (!foundSolidGround) {
+            // [Review round 5, finding #4] The support scan exhausted its whole bounded depth
+            // without ever finding real ground (a deep ravine/cave/void below this cell) - filling
+            // ROAD_SUPPORT_FILL_MAX_DEPTH cells of dirt on top of nothing still leaves the surface
+            // floating over whatever lies beyond that depth. Reject this cell entirely rather than
+            // building an impossible, ungrounded support column; no mutation, no charge.
+            return false;
         }
 
         boolean clearedAbove1 = false;
@@ -235,26 +252,42 @@ public final class TownRoadConstructionService {
             // land - roll back everything mutated above, confirming each restoration too, so this
             // cell is left exactly as it was found, charge nothing, and try again next tick rather
             // than leaving a free partial mutation behind.
+            // [Review round 5, finding #4] Each restoration is itself confirmed (never assumed) -
+            // a rollback that itself fails to land means this cell is left in a genuinely unknown,
+            // partially-mutated state; that is surfaced via the logger (there is no safe automatic
+            // recovery once BOTH the forward mutation and its own rollback have failed) rather than
+            // silently treated as a clean no-op.
+            boolean rollbackOk = true;
             if (clearedAbove1) {
-                level.setBlock(above1, originalAbove1, Block.UPDATE_ALL);
+                rollbackOk &= level.setBlock(above1, originalAbove1, Block.UPDATE_ALL)
+                        && level.getBlockState(above1).equals(originalAbove1);
             }
             if (clearedAbove2) {
-                level.setBlock(above2, originalAbove2, Block.UPDATE_ALL);
+                rollbackOk &= level.setBlock(above2, originalAbove2, Block.UPDATE_ALL)
+                        && level.getBlockState(above2).equals(originalAbove2);
             }
             for (int i = supportCells.size() - 1; i >= 0; i--) {
-                level.setBlock(supportCells.get(i), supportOriginals.get(i), Block.UPDATE_ALL);
+                rollbackOk &= level.setBlock(supportCells.get(i), supportOriginals.get(i), Block.UPDATE_ALL)
+                        && level.getBlockState(supportCells.get(i)).equals(supportOriginals.get(i));
+            }
+            if (!rollbackOk) {
+                io.github.brooswitminecraft.dynamicvehicles.DynamicVehiclesMod.LOGGER.error(
+                        "Dynamic Towns road rollback at {} did not fully restore its original blocks after a rejected surface placement",
+                        pos);
             }
             return false;
         }
 
         store.tryDebit(TownResourceCategory.STONE, TownConstants.ROAD_COST_PER_BLOCK);
-        storage.markCellPlaced(level.dimension(), pos);
+        storage.markCellPlaced(level.dimension(), pos, roadOwner);
 
-        // [Review round 4, finding #5] Credit clearing salvage for the headroom actually removed,
-        // exactly once (only now that the whole cell transaction has committed) - support fills are
-        // leveling, not salvage (nothing was removed there), so they earn no credit, matching
-        // building terrain prep's own "fill is leveling, not salvage" rule.
+        // [Review round 4, finding #5 / round 5, finding #4] Credit clearing salvage for the
+        // headroom AND the original surface block actually removed, exactly once (only now that
+        // the whole cell transaction has committed) - support fills are leveling, not salvage
+        // (nothing was removed there), so they earn no credit, matching building terrain prep's own
+        // "fill is leveling, not salvage" rule.
         Map<TownClearingYields.ClearedMaterial, Integer> tally = new EnumMap<>(TownClearingYields.ClearedMaterial.class);
+        tallyClearedMaterial(tally, state);
         if (clearedAbove1) {
             tallyClearedMaterial(tally, originalAbove1);
         }

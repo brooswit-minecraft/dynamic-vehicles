@@ -195,6 +195,26 @@ public final class NewVehicleGameTests {
      * but "same symptom at the same kind of coordinate" remains correlation, not proof of a single shared
      * root cause, and is reported honestly as such.
      *
+     * <p><b>Round-8 follow-up: did the per-tick-from-tick-0 instrumentation the prior round suggested, and
+     * it further narrows (does not solve) the mechanism.</b> Logged raw {@code Pose3d} X/Y/Z and linear
+     * velocity from tick 1 through tick 100 (temporary, reverted before this commit). Findings: X and Z are
+     * BOTH frozen bit-identical from the very first tick (not just after an initial settle), while Y
+     * integrates continuously and with fine sub-block precision throughout. Across one 40-tick window, X
+     * velocity swings from 1.4 to 3.3 m/s and Z velocity swings from +1.8 to -2.46 m/s (real, substantial,
+     * changing velocity -- not near-zero) while X and Z positions do not move by even one bit, in either
+     * direction, at any point. This rules out a coarse floating-point rounding GRID as the mechanism (that
+     * would show periodic stepped jumps once accumulated sub-grid velocity crosses a rounding threshold --
+     * several such crossings would be expected across this much velocity over 40 ticks, and none occur): this
+     * is a hard, total halt of horizontal position integration specifically, not a quantization artifact.
+     * The one-time "0.5 blocks" value CI measures is consistent with a single settling nudge at mount/spawn
+     * (confirmed to occur before tick 1 in this trace) followed by that total halt, exactly as hypothesized
+     * last round -- not with ongoing coarse-grained motion. No fixable mechanism was found in this PR's own
+     * Java code during this investigation (which only reads back Sable's already-integrated pose, per the
+     * paragraph below); the halt is specific to Sable/Rapier's own horizontal-position integration at this
+     * magnitude of absolute coordinate, for reasons this investigation could not pin down further without
+     * source access to the native Rapier step itself. Reporting this as the honest current limit of what is
+     * knowable from this codebase, not as a proven root cause.
+     *
      * <p>This PR's own production code (as opposed to this test's own setup, which DID have the two latent
      * issues fixed above) never touches Sable's internal position representation, re-basing, or GameTest's
      * structure-placement coordinates -- it only reads back Sable's already-integrated pose and applies

@@ -5,8 +5,10 @@ import net.minecraft.world.entity.npc.VillagerProfession;
 import net.minecraft.world.level.block.BedBlock;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.DoorBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BedPart;
+import net.minecraft.world.level.block.state.properties.DoubleBlockHalf;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -62,9 +64,17 @@ public final class TownBuildingTemplates {
             VillagerProfession claimantProfession) {
         int width = kind == Kind.STOREHOUSE ? TownConstants.STOREHOUSE_FOOTPRINT_WIDTH : 5;
         int radius = (width - 1) / 2;
-        int height = kind == Kind.STOREHOUSE ? 4 + storehouseVariant : 4;
+        int height = heightFor(kind, storehouseVariant);
         Block wallBlock = wallBlockFor(kind);
         TownResourceCategory cost = costFor(kind);
+
+        // [Review round 3, finding #5] A single south-facing doorway, two cells tall, centred on
+        // that wall - without it the generated shell is completely sealed, so whatever fixture
+        // (bed/workstation) gets placed inside is never actually reachable. The interior itself
+        // has no dividing walls, so an opening here alone is enough to make every interior cell
+        // reachable from outside.
+        int doorX = centerX;
+        int doorZ = centerZ + radius;
 
         List<Placement> placements = new ArrayList<>();
         for (int x = -radius; x <= radius; x++) {
@@ -76,18 +86,45 @@ public final class TownBuildingTemplates {
                 placements.add(new Placement(centerX + x, baseY + height, centerZ + z, wallBlock, cost));
                 if (perimeter) {
                     for (int y = 1; y < height; y++) {
-                        placements.add(new Placement(centerX + x, baseY + y, centerZ + z, wallBlock, cost));
+                        int cellX = centerX + x;
+                        int cellZ = centerZ + z;
+                        if (cellX == doorX && cellZ == doorZ && (y == 1 || y == 2)) {
+                            continue; // doorway opening, placed explicitly below instead
+                        }
+                        placements.add(new Placement(cellX, y, cellZ, wallBlock, cost));
                     }
                 }
             }
         }
+        addDoor(placements, doorX, baseY, doorZ, cost);
 
         if (kind == Kind.RESIDENTIAL) {
             addBed(placements, centerX, baseY, centerZ, cost);
         } else if (kind == Kind.COMMERCIAL || kind == Kind.INDUSTRIAL) {
             addWorkstation(placements, centerX, baseY, centerZ, cost, claimantProfession);
+            // [Review round 3, finding #5] This site's own claimant lives here too, not only
+            // works here: a workplace zoned commercial/industrial must not leave its claimant
+            // without a bed anywhere. Full town-wide multi-villager housing allocation (counting
+            // every resident across every building) is out of this bounded fix's scope - each
+            // construction site here is still driven by exactly one known claimant - but that
+            // one claimant is never left without accommodation just because their workplace
+            // happens to be zoned commercial/industrial rather than residential.
+            addBed(placements, centerX, baseY, centerZ, cost);
         }
         return placements;
+    }
+
+    /** A single, functional (both halves) south-facing door, so the sealed shell above actually
+     *  has an entrance. */
+    private static void addDoor(List<Placement> placements, int x, int baseY, int z, TownResourceCategory cost) {
+        BlockState lower = Blocks.OAK_DOOR.defaultBlockState()
+                .setValue(DoorBlock.FACING, Direction.SOUTH)
+                .setValue(DoorBlock.HALF, DoubleBlockHalf.LOWER);
+        BlockState upper = Blocks.OAK_DOOR.defaultBlockState()
+                .setValue(DoorBlock.FACING, Direction.SOUTH)
+                .setValue(DoorBlock.HALF, DoubleBlockHalf.UPPER);
+        placements.add(new Placement(x, baseY + 1, z, Blocks.OAK_DOOR, cost, lower));
+        placements.add(new Placement(x, baseY + 2, z, Blocks.OAK_DOOR, cost, upper));
     }
 
     /** One interior, functional bed (HEAD + FOOT, correctly paired) so a residential building
@@ -115,6 +152,13 @@ public final class TownBuildingTemplates {
         }
         TownProfessionWorkstations.blockFor(claimantProfession).ifPresent(workstation ->
                 placements.add(new Placement(centerX + 1, baseY + 1, centerZ + 1, workstation, cost)));
+    }
+
+    /** The planned height (floor to roof, inclusive span) a {@link #generate} call for this
+     *  kind/variant will produce - exposed so callers (preflight) can bound their own scan by the
+     *  WHOLE planned volume, not just today's terrain top. */
+    public static int heightFor(Kind kind, int storehouseVariant) {
+        return kind == Kind.STOREHOUSE ? 4 + storehouseVariant : 4;
     }
 
     static Block wallBlockFor(Kind kind) {

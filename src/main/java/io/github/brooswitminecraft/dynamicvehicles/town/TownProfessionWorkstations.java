@@ -1,5 +1,6 @@
 package io.github.brooswitminecraft.dynamicvehicles.town;
 
+import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderProfession;
 import net.minecraft.world.entity.npc.VillagerProfession;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
@@ -38,8 +39,20 @@ public final class TownProfessionWorkstations {
 
     /** Empty for {@code NONE}/{@code NITWIT} (no vanilla job site at all) or any profession this
      *  mapping does not recognise - callers must simply omit a workstation in that case, never
-     *  invent a substitute block. */
+     *  invent a substitute block.
+     *
+     * <p>[Review round 3, finding #5] Real Dynamic Towns campfire claimants hold this mod's own
+     * custom Builder profession ({@code delivery.BuilderProfession}), never a vanilla one - the
+     * {@code BY_PROFESSION} map above only ever covered vanilla professions, so a real claimant's
+     * workstation was never found. Builder's own workstation IS the campfire
+     * ({@code delivery.BuilderPoiTypes#CAMPFIRE}), so that is what gets reused here, checked
+     * lazily (never baked into the static map above) so this class never forces
+     * {@code BuilderProfession.BUILDER}'s DeferredHolder to resolve before mod registries are
+     * actually populated. */
     public static Optional<Block> blockFor(VillagerProfession profession) {
+        if (profession == BuilderProfession.BUILDER.get()) {
+            return Optional.of(Blocks.CAMPFIRE);
+        }
         return Optional.ofNullable(BY_PROFESSION.get(profession));
     }
 }

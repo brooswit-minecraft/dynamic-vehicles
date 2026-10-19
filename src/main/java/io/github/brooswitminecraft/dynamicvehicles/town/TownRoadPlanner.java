@@ -65,17 +65,59 @@ public final class TownRoadPlanner {
     }
 
     public static List<RoadCell> routeForEdge(TownPlan plan, TownEdge edge, int centerReferenceHeight) {
+        int edgeHeight = edgeHeightFor(plan, edge);
+        List<int[]> xz = buildEdgeXZ(plan, edge);
+        return interpolateHeights(xz, edgeHeight, centerReferenceHeight);
+    }
+
+    /** The agreed-by-both-neighbours elevation this edge's route starts from - see the class
+     *  javadoc's "Height interpolation" section. */
+    public static int edgeHeightFor(TownPlan plan, TownEdge edge) {
+        // Anchored to a FIXED base (TownConstants.ROAD_EDGE_BASE_HEIGHT), never to either region's
+        // own town-centre height: that is what makes two neighbouring regions agree on the
+        // elevation at their shared boundary even when their own local terrain genuinely differs.
+        return TownConstants.ROAD_EDGE_BASE_HEIGHT + plan.edgeConnections().get(edge).heightOffset();
+    }
+
+    /**
+     * [Review round 3, finding #6] The grade-limited climb from an edge's own fixed-ish boundary
+     * height (near {@link TownConstants#ROAD_EDGE_BASE_HEIGHT}) can run out of route length
+     * before reaching a terrain-derived town-centre height that happens to be far from that base -
+     * exactly the case a high/low real centre height exposes. Rather than let each of the four
+     * edges independently climb toward the raw terrain height (and so risk disagreeing with each
+     * other at the shared centre point), this resolves ONE shared centre height every edge's own
+     * route can actually reach within the grade policy: it clamps the desired (terrain-derived)
+     * height into the intersection of what all four edges can reach from their own edge height
+     * within their own route length, so passing the SAME resolved value to every
+     * {@link #routeForEdge}/{@link #minorBranchesForEdge} call for this region guarantees they all
+     * converge on one consistent Y at the centre. If that intersection is empty (only possible for
+     * implausibly short routes or large offsets given this mod's own constants), falls back to the
+     * edges' own achievable midpoint so the four routes still agree with EACH OTHER, even if not
+     * with the raw terrain estimate - a correctness/consistency priority this bounded fix makes
+     * deliberately, documented here as the intended behaviour rather than a rejection/retry.
+     */
+    public static int resolveSharedCenterHeight(TownPlan plan, int desiredCenterHeight) {
+        int lo = Integer.MIN_VALUE;
+        int hi = Integer.MAX_VALUE;
+        for (TownEdge edge : TownEdge.values()) {
+            int edgeHeight = edgeHeightFor(plan, edge);
+            int steps = Math.max(0, buildEdgeXZ(plan, edge).size() - 1);
+            int maxDelta = steps / TownConstants.ROAD_GRADE_RUN_PER_RISE_BLOCK;
+            lo = Math.max(lo, edgeHeight - maxDelta);
+            hi = Math.min(hi, edgeHeight + maxDelta);
+        }
+        if (lo > hi) {
+            return (lo + hi) / 2;
+        }
+        return clamp(desiredCenterHeight, lo, hi);
+    }
+
+    private static List<int[]> buildEdgeXZ(TownPlan plan, TownEdge edge) {
         int[] edgePos = plan.edgeConnectionAbsolute(edge);
         int edgeX = edgePos[0];
         int edgeZ = edgePos[1];
         int centerX = plan.townCenterX();
         int centerZ = plan.townCenterZ();
-        // Anchored to a FIXED base (TownConstants.ROAD_EDGE_BASE_HEIGHT), never to the caller's own
-        // centerReferenceHeight: that is what makes two neighbouring regions agree on the elevation
-        // at their shared boundary even when their own local terrain (and so their own centre
-        // heights) genuinely differ - see the class javadoc.
-        int edgeHeight = TownConstants.ROAD_EDGE_BASE_HEIGHT + plan.edgeConnections().get(edge).heightOffset();
-
         List<int[]> xz = new ArrayList<>();
         switch (edge) {
             case NORTH, SOUTH -> {
@@ -87,7 +129,7 @@ public final class TownRoadPlanner {
                 addLineAlongZ(xz, centerX, edgeZ, centerZ, true);
             }
         }
-        return interpolateHeights(xz, edgeHeight, centerReferenceHeight);
+        return xz;
     }
 
     private static void addLineAlongZ(List<int[]> out, int fixedX, int fromZ, int toZ, boolean skipFirst) {

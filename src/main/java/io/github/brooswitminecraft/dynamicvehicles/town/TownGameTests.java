@@ -1,5 +1,6 @@
 package io.github.brooswitminecraft.dynamicvehicles.town;
 
+import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderProfession;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.GlobalPos;
@@ -498,8 +499,92 @@ public final class TownGameTests {
 
         List<TownBuildingTemplates.Placement> unemployedShop = TownBuildingTemplates.generate(
                 TownBuildingTemplates.Kind.COMMERCIAL, 0, 0, 0, 0, VillagerProfession.NONE);
-        helper.assertTrue(unemployedShop.stream().noneMatch(p -> p.block() != Blocks.BRICKS),
+        helper.assertTrue(unemployedShop.stream().noneMatch(p -> p.block() != Blocks.BRICKS
+                        && p.block() != Blocks.OAK_DOOR && p.block() != Blocks.RED_BED),
                 "an unclaimed/unemployed profession must never add an invented workstation block");
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-388 review round 3, finding #5: real Dynamic Towns campfire claimants hold this
+     * mod's own custom Builder profession, never a vanilla one - the previous test only covered
+     * vanilla ARMORER/MASON combinations production cannot naturally create. A commercial/
+     * industrial building for a REAL Builder claimant must include both the Builder's own
+     * workstation (the campfire, per {@code delivery.BuilderPoiTypes}) AND a bed, since that
+     * claimant lives there too; a residential building for the same real claimant must likewise
+     * include a bed. Every generated building must also include an actual door (both halves),
+     * not a sealed shell.
+     */
+    @GameTest(template = "settlement_test")
+    public static void realBuilderClaimantGetsAReachableWorkstationAndBedAcrossEveryZoneKind(GameTestHelper helper) {
+        VillagerProfession builder = BuilderProfession.BUILDER.get();
+
+        List<TownBuildingTemplates.Placement> commercial = TownBuildingTemplates.generate(
+                TownBuildingTemplates.Kind.COMMERCIAL, 0, 0, 0, 0, builder);
+        helper.assertTrue(commercial.stream().anyMatch(p -> p.block() == Blocks.CAMPFIRE),
+                "a commercial building for a REAL Builder claimant must include the Builder's own (campfire) workstation");
+        helper.assertTrue(commercial.stream().anyMatch(p -> p.block() == Blocks.RED_BED),
+                "a commercial building's own claimant must not go without a bed just because the workplace is zoned commercial");
+
+        List<TownBuildingTemplates.Placement> industrial = TownBuildingTemplates.generate(
+                TownBuildingTemplates.Kind.INDUSTRIAL, 0, 0, 0, 0, builder);
+        helper.assertTrue(industrial.stream().anyMatch(p -> p.block() == Blocks.CAMPFIRE),
+                "an industrial building for a REAL Builder claimant must include the Builder's own (campfire) workstation");
+        helper.assertTrue(industrial.stream().anyMatch(p -> p.block() == Blocks.RED_BED),
+                "an industrial building's own claimant must not go without a bed just because the workplace is zoned industrial");
+
+        List<TownBuildingTemplates.Placement> residential = TownBuildingTemplates.generate(
+                TownBuildingTemplates.Kind.RESIDENTIAL, 0, 0, 0, 0, builder);
+        helper.assertTrue(residential.stream().anyMatch(p -> p.block() == Blocks.RED_BED),
+                "a residential building for a REAL Builder claimant must still include a bed");
+
+        for (TownBuildingTemplates.Kind kind : TownBuildingTemplates.Kind.values()) {
+            List<TownBuildingTemplates.Placement> generated = TownBuildingTemplates.generate(kind, 0, 0, 0, 0, builder);
+            long doorHalves = generated.stream().filter(p -> p.block() == Blocks.OAK_DOOR).count();
+            helper.assertTrue(doorHalves == 2, kind + " building must have exactly one functional (two-half) door, found " + doorHalves);
+        }
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-388 review round 3, finding #5 (production-path half): drives
+     * {@link TownConstructionService#buildAt} to full completion for a REAL Builder claimant (the
+     * only profession production can ever actually hand this method, per
+     * {@code TownCampfireClaims}), then checks the "Builder-to-final-site transition": once every
+     * planned cell matches (door included), the claimant must be released back to
+     * {@code VillagerProfession.NONE} rather than left a permanently jobless Builder.
+     */
+    @GameTest(template = "settlement_test")
+    public static void realBuilderClaimantCompletesASiteAndIsReleasedFromItsJobAfterward(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos campfireCell = ANCHOR;
+        helper.setBlock(campfireCell, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(campfireCell);
+
+        Villager claimant = EntityType.VILLAGER.create(helper.getLevel(), null, absoluteCampfire, MobSpawnType.EVENT, false, false);
+        helper.getLevel().addFreshEntity(claimant);
+        claimant.setVillagerData(claimant.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
+        claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteCampfire));
+
+        TownStorage storage = new TownStorage();
+        TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
+
+        // Bounded but generous: large enough to finish even the biggest (storehouse) template at
+        // CONSTRUCTION_BLOCKS_PER_TICK per call, with headroom to spare.
+        boolean sawCampfireDisappear = false;
+        for (int i = 0; i < 500 && claimant.getVillagerData().getProfession() == BuilderProfession.BUILDER.get(); i++) {
+            TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
+            if (!helper.getBlockState(campfireCell).is(Blocks.CAMPFIRE)) {
+                sawCampfireDisappear = true;
+            }
+        }
+
+        helper.assertTrue(sawCampfireDisappear, "the site never actually finished replacing its own campfire cell");
+        helper.assertTrue(claimant.getVillagerData().getProfession() == VillagerProfession.NONE,
+                "a claimant whose site is fully built must be released back to NONE, found "
+                        + claimant.getVillagerData().getProfession());
+        helper.assertTrue(store.balance(TownResourceCategory.STONE) < 100000 || store.balance(TownResourceCategory.WOOD) < 100000,
+                "a completed site should have actually debited some resource category");
         helper.succeed();
     }
 

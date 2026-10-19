@@ -10,11 +10,13 @@ import net.minecraft.world.phys.AABB;
 /**
  * MINECRAFT-388 review finding #1: before {@link TownConstructionService} mutates any block at a
  * claimed-campfire site, the WHOLE site must be preflighted and rejected (no mutation, no resource
- * charge) when it overlaps occupied, protected, player-built, or otherwise-claimed content.
- * {@code delivery.BuilderSettlementService#isSafeBuildingSite} already demonstrates this exact
- * bounded footprint/occupancy-check shape for the legacy settlement mechanic; this reuses that
- * pattern (clear-or-known-natural-terrain + no foreign entities) rather than inventing a second
- * one.
+ * charge) when it overlaps occupied, protected, player-built, or otherwise-claimed content (clear-
+ * or-known-natural-terrain + no foreign entities).
+ *
+ * <p>[Review round 3, finding #3] The scan must cover the WHOLE planned building volume - floor
+ * through the tallest planned cell - not merely today's terrain/canopy top; see
+ * {@link #isSiteSafe(ServerLevel, BlockPos, int, int, int, java.util.function.Predicate)}'s
+ * {@code plannedTopY} parameter.
  */
 public final class TownSitePreflight {
     private TownSitePreflight() {}
@@ -27,7 +29,7 @@ public final class TownSitePreflight {
      * anything - the caller must then abort the entire site for this tick.
      */
     public static boolean isSiteSafe(ServerLevel level, BlockPos campfire, int radius, int baseY) {
-        return isSiteSafe(level, campfire, radius, baseY, pos -> false);
+        return isSiteSafe(level, campfire, radius, baseY, baseY, pos -> false);
     }
 
     /**
@@ -37,8 +39,16 @@ public final class TownSitePreflight {
      * content. Without this, a site that already has walls up would fail its own preflight on
      * every later tick purely because a placed plank/brick/cobblestone block is not "natural
      * terrain" - the whole-site check would never let construction continue past its first tick.
+     *
+     * <p>[Review round 3, finding #3] Scanning only up to today's terrain/canopy top is not
+     * enough: a chest sitting above the current terrain but still within the PLANNED building's
+     * walls/roof (e.g. inside a tree canopy above the roofline, or a player build overhead) would
+     * otherwise pass preflight and only be discovered mid-build, after earlier floor/wall cells
+     * are already placed and charged. Callers pass {@code plannedTopY} (the site's own planned
+     * roof Y) so this scans the UNION of the real terrain top and the whole planned footprint
+     * volume, never just one or the other.
      */
-    public static boolean isSiteSafe(ServerLevel level, BlockPos campfire, int radius, int baseY,
+    public static boolean isSiteSafe(ServerLevel level, BlockPos campfire, int radius, int baseY, int plannedTopY,
             java.util.function.Predicate<BlockPos> matchesPlannedBlock) {
         for (int x = -radius; x <= radius; x++) {
             for (int z = -radius; z <= radius; z++) {
@@ -47,7 +57,7 @@ public final class TownSitePreflight {
                 if (!level.hasChunkAt(new BlockPos(columnX, baseY, columnZ))) {
                     return false;
                 }
-                int columnTop = Math.max(baseY, TownTerrain.rawCanopyTop(level, columnX, columnZ));
+                int columnTop = Math.max(plannedTopY, TownTerrain.rawCanopyTop(level, columnX, columnZ));
                 for (int y = baseY; y <= columnTop; y++) {
                     BlockPos pos = new BlockPos(columnX, y, columnZ);
                     if (!level.getWorldBorder().isWithinBounds(pos)) {

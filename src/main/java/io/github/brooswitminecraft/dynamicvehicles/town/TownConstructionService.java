@@ -71,6 +71,14 @@ public final class TownConstructionService {
         }
     }
 
+    /**
+     * [Review round 3, finding #2] A JOB_SITE memory alone is not enough: vanilla sets it for
+     * EVERY workstation a villager employs at (a composter, a smithing table - any ordinary
+     * profession), not only a campfire. Only a job-site position whose block is ACTUALLY a
+     * campfire right now is a Dynamic Towns construction trigger; an ordinary workstation (even a
+     * fully funded one, per {@code TownPassiveProductionHandler}'s own passive credit) must never
+     * register as an active region or start road/building construction.
+     */
     private static Map<BlockPos, Villager> findClaimedCampfireSites(ServerLevel level) {
         Map<BlockPos, Villager> sites = new HashMap<>();
         for (Entity entity : level.getEntities().getAll()) {
@@ -78,9 +86,14 @@ public final class TownConstructionService {
                 continue;
             }
             Optional<GlobalPos> jobSite = villager.getBrain().getMemory(MemoryModuleType.JOB_SITE);
-            if (jobSite.isPresent() && jobSite.get().dimension().equals(level.dimension())) {
-                sites.put(jobSite.get().pos(), villager);
+            if (jobSite.isEmpty() || !jobSite.get().dimension().equals(level.dimension())) {
+                continue;
             }
+            BlockPos pos = jobSite.get().pos();
+            if (!level.getBlockState(pos).is(Blocks.CAMPFIRE)) {
+                continue;
+            }
+            sites.put(pos, villager);
         }
         return sites;
     }
@@ -159,7 +172,14 @@ public final class TownConstructionService {
         // charge at all. A cell that already holds exactly what THIS site's own template planned
         // there (a previous tick's progress) is explicitly allowed, so an in-progress site does
         // not fail its own preflight forever once its walls start going up.
-        if (!TownSitePreflight.isSiteSafe(level, campfire, radius, floorY,
+        // [Review round 3, finding #3] The preflight must cover the WHOLE planned footprint
+        // volume - floor through the tallest planned cell, walls and roof included - not merely
+        // today's terrain/canopy top. Otherwise protected content above the current terrain but
+        // still within the planned building (e.g. inside a tree canopy above the roofline, or a
+        // player build overhead) is only discovered mid-build, after earlier cells are already
+        // placed and charged.
+        int plannedTopY = floorY + TownBuildingTemplates.heightFor(kind, plan.storehouseVariant());
+        if (!TownSitePreflight.isSiteSafe(level, campfire, radius, floorY, plannedTopY,
                 pos -> {
                     TownBuildingTemplates.Placement planned = byPosition.get(key(pos.getX(), pos.getY(), pos.getZ()));
                     return planned != null && level.getBlockState(pos).is(planned.block());
@@ -245,6 +265,28 @@ public final class TownConstructionService {
         if (placedThisTick > 0) {
             storage.setDirty();
         }
+
+        // [Review round 3, finding #5] "Handle the actual Builder-to-final-site transition": once
+        // every planned cell (the former campfire cell included) actually matches the finished
+        // build, this claimant's Builder job here is done - release it back to NONE so vanilla can
+        // let it pick up a fresh job site elsewhere, rather than leaving it a permanently jobless
+        // Builder tied to a POI that is no longer a campfire at all (and so, per the finding #2 fix
+        // above, can never be re-discovered as an active construction site again anyway).
+        if (claimant.isAlive() && isSiteFullyBuilt(level, template)) {
+            claimant.setVillagerData(claimant.getVillagerData().setProfession(VillagerProfession.NONE));
+        }
+    }
+
+    /** {@code true} once every planned cell in {@code template} already holds exactly its planned
+     *  block - i.e. this site has nothing left to build. */
+    private static boolean isSiteFullyBuilt(ServerLevel level, List<TownBuildingTemplates.Placement> template) {
+        for (TownBuildingTemplates.Placement placement : template) {
+            BlockPos pos = new BlockPos(placement.x(), placement.y(), placement.z());
+            if (!level.getBlockState(pos).is(placement.block())) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** {@code true} when {@code pos} lies strictly within the dimension's own build-height bounds. */
@@ -297,12 +339,23 @@ public final class TownConstructionService {
                         // it here - this pass salvages NATURAL terrain only.
                         continue;
                     }
+                    // [Review round 3, finding #4] Classify BEFORE removal (removal destroys the
+                    // state needed to classify it), but only actually TALLY the credit after
+                    // confirming the removal landed - never before. A rejected/no-op removal
+                    // leaves the material still physically there, so crediting it first would let
+                    // it be credited again on a later tick/retry once it finally does get removed
+                    // (or worse, forever if it never does). Once a cell IS actually removed it
+                    // becomes air, so the `state.isAir()` check above already skips it on every
+                    // later pass - no separate "already credited" bookkeeping is needed.
                     TownClearingYields.ClearedMaterial material = TownTerrain.classify(state);
+                    boolean removed = level.removeBlock(pos, false) && level.getBlockState(pos).isAir();
+                    if (!removed) {
+                        continue;
+                    }
+                    mutated = true;
                     if (material != null) {
                         tally.merge(material, 1, Integer::sum);
                     }
-                    level.removeBlock(pos, false);
-                    mutated = true;
                 }
                 // Fill a gap below the floor (the terrain dips lower than this site's fixed floor
                 // height) with plain dirt - a leveling fill, not salvage, so it earns no credit.

@@ -108,6 +108,49 @@ class TownRoadPlannerTest {
                 "the road should have fully ramped to the centre's own height by the time it arrives there");
     }
 
+    /**
+     * MINECRAFT-388 review round 3, finding #6: the old behaviour let each of the four edges
+     * independently climb from the ~{@code ROAD_EDGE_BASE_HEIGHT}-ish boundary height toward the
+     * SAME raw terrain-derived centre height, stopping early (grade-limited) if its own route
+     * happened to be too short - meaning two edges with different route lengths could land at
+     * different Y on the same X/Z at the town centre. {@link TownRoadPlanner#resolveSharedCenterHeight}
+     * must resolve ONE height every edge's own route can actually reach, so all four
+     * {@link TownRoadPlanner#routeForEdge} calls fed that SAME resolved value always agree -
+     * exercised here with height deltas (high AND low) far larger than the mild ones the other
+     * tests in this class use.
+     */
+    @Test
+    void allFourEdgesConvergeOnTheSameSharedCenterHeightEvenWithALargeHeightDelta() {
+        RegionCoord region = new RegionCoord(4, -9);
+        TownPlan plan = TownPlanner.generate(region, SEED);
+
+        // Deliberately extreme, far outside ROAD_EDGE_HEIGHT_OFFSET_RANGE of the ~64 base - the
+        // exact "high/low terrain-derived centre" scenario the review flagged.
+        assertAllFourEdgesAgreeAtTheCenter(plan, 300);
+        assertAllFourEdgesAgreeAtTheCenter(plan, -40);
+    }
+
+    private static void assertAllFourEdgesAgreeAtTheCenter(TownPlan plan, int desiredCenterHeight) {
+        int resolved = TownRoadPlanner.resolveSharedCenterHeight(plan, desiredCenterHeight);
+        Integer commonHeight = null;
+        for (TownEdge edge : TownEdge.values()) {
+            List<TownRoadPlanner.RoadCell> route = TownRoadPlanner.routeForEdge(plan, edge, resolved);
+            int endpointHeight = route.get(route.size() - 1).y();
+            if (commonHeight == null) {
+                commonHeight = endpointHeight;
+            } else {
+                assertEquals(commonHeight, endpointHeight,
+                        "edge " + edge + " must end at the same centre height every other edge does for desired height "
+                                + desiredCenterHeight);
+            }
+            // Every edge's own grade limit must still be honoured along the way to that shared height.
+            for (int i = 1; i < route.size(); i++) {
+                int rise = Math.abs(route.get(i).y() - route.get(i - 1).y());
+                assertTrue(rise <= 1, "a single road cell must never rise/fall by more than one block");
+            }
+        }
+    }
+
     /** MINECRAFT-388 review round 2, finding #4: minor branch roads must actually exist (production
      *  had none at all before the fix), spaced off the major route, each a contiguous path of the
      *  configured length. */

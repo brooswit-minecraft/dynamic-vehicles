@@ -36,7 +36,11 @@ public final class TownRoadConstructionService {
     /** @return whether anything was actually mutated (so the caller knows whether to persist storage). */
     public static boolean buildRoadsForRegion(ServerLevel level, RegionCoord region, TownResourceStore store) {
         TownPlan plan = TownPlanner.generate(region, level.getSeed());
-        int centerHeight = TownTerrain.estimateGroundHeight(level, plan.townCenterX(), plan.townCenterZ());
+        int rawCenterHeight = TownTerrain.estimateGroundHeight(level, plan.townCenterX(), plan.townCenterZ());
+        // [Review round 3, finding #6] Resolve ONE shared centre height every edge can actually
+        // reach within the grade policy, instead of letting each edge independently chase the raw
+        // terrain height and risk disagreeing with the others at the shared centre point.
+        int centerHeight = TownRoadPlanner.resolveSharedCenterHeight(plan, rawCenterHeight);
 
         boolean mutated = false;
         int placedThisTick = 0;
@@ -159,23 +163,47 @@ public final class TownRoadConstructionService {
             return false; // out of funds - pause entirely, no partial charge
         }
 
+        // [Review round 3, finding #4] Snapshot the headroom/support cells BEFORE mutating any of
+        // them, so a failed surface placement below can roll every one of them back - headroom
+        // clearing and support filling must never be a free, uncharged, uncredited partial
+        // mutation that survives a rejected surface placement.
+        BlockPos below = pos.below();
+        BlockState originalAbove1 = level.getBlockState(above1);
+        BlockState originalAbove2 = level.getBlockState(above2);
+        BlockState originalBelow = level.getBlockState(below);
+
+        boolean clearedAbove1 = false;
+        boolean clearedAbove2 = false;
+        boolean filledBelow = false;
         // Clear headroom (villager-height corridor), then ensure solid support below so the
         // surface can never float over open air.
-        if (!level.getBlockState(above1).isAir()) {
+        if (!originalAbove1.isAir()) {
             level.removeBlock(above1, false);
+            clearedAbove1 = true;
         }
-        if (!level.getBlockState(above2).isAir()) {
+        if (!originalAbove2.isAir()) {
             level.removeBlock(above2, false);
+            clearedAbove2 = true;
         }
-        BlockPos below = pos.below();
-        BlockState belowState = level.getBlockState(below);
-        if (belowState.isAir() || !belowState.isSolidRender(level, below)) {
+        if (originalBelow.isAir() || !originalBelow.isSolidRender(level, below)) {
             level.setBlock(below, Blocks.DIRT.defaultBlockState(), net.minecraft.world.level.block.Block.UPDATE_ALL);
+            filledBelow = true;
         }
 
         boolean placedOk = level.setBlock(pos, ROAD_SURFACE.defaultBlockState(), net.minecraft.world.level.block.Block.UPDATE_ALL);
         if (!placedOk || !level.getBlockState(pos).is(ROAD_SURFACE)) {
-            // The mutation was rejected or did not land - charge nothing, try again next tick.
+            // The surface placement was rejected or did not land - roll back any headroom/support
+            // mutation above so this cell is left exactly as it was found, charge nothing, and try
+            // again next tick rather than leaving a free partial mutation behind.
+            if (clearedAbove1) {
+                level.setBlock(above1, originalAbove1, net.minecraft.world.level.block.Block.UPDATE_ALL);
+            }
+            if (clearedAbove2) {
+                level.setBlock(above2, originalAbove2, net.minecraft.world.level.block.Block.UPDATE_ALL);
+            }
+            if (filledBelow) {
+                level.setBlock(below, originalBelow, net.minecraft.world.level.block.Block.UPDATE_ALL);
+            }
             return false;
         }
         store.tryDebit(TownResourceCategory.STONE, TownConstants.ROAD_COST_PER_BLOCK);

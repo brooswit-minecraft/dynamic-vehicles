@@ -29,7 +29,7 @@ public final class TownSitePreflight {
      * anything - the caller must then abort the entire site for this tick.
      */
     public static boolean isSiteSafe(ServerLevel level, BlockPos campfire, int radius, int baseY) {
-        return isSiteSafe(level, campfire, radius, baseY, baseY, pos -> false, null);
+        return isSiteSafe(level, campfire, radius, baseY, baseY, pos -> false, null, pos -> false);
     }
 
     /**
@@ -49,9 +49,18 @@ public final class TownSitePreflight {
      * volume, never just one or the other. {@code claimantId} (nullable) is the UUID of the SPECIFIC
      * villager {@link TownConstructionService} selected as this site's own claimant - see
      * {@link #isEntityBlocking(ServerLevel, BlockPos, BlockPos, java.util.UUID)}.
+     *
+     * <p>[Review round 11, finding #2 supplement] {@code isBlocked} (see
+     * {@link TownStorage#isCellBlocked}) rejects the whole site the moment ANY planned cell was
+     * durably excluded after a DIFFERENT plan's own forward-write-plus-rollback failure (a road's,
+     * most commonly) - a claimed building must never adopt that unpaid, unverified partial state as
+     * ordinary clearable terrain just because its own preflight never otherwise objects to it. This
+     * check is deliberately unconditional (checked even where {@code pos.equals(campfire)} would
+     * otherwise always pass): a blocked cell is never safe, regardless of what else is planned there.
      */
     public static boolean isSiteSafe(ServerLevel level, BlockPos campfire, int radius, int baseY, int plannedTopY,
-            java.util.function.Predicate<BlockPos> matchesPlannedBlock, java.util.UUID claimantId) {
+            java.util.function.Predicate<BlockPos> matchesPlannedBlock, java.util.UUID claimantId,
+            java.util.function.Predicate<BlockPos> isBlocked) {
         for (int x = -radius; x <= radius; x++) {
             for (int z = -radius; z <= radius; z++) {
                 int columnX = campfire.getX() + x;
@@ -63,6 +72,9 @@ public final class TownSitePreflight {
                 for (int y = baseY; y <= columnTop; y++) {
                     BlockPos pos = new BlockPos(columnX, y, columnZ);
                     if (!level.getWorldBorder().isWithinBounds(pos)) {
+                        return false;
+                    }
+                    if (isBlocked.test(pos)) {
                         return false;
                     }
                     if (!isSafeToOverwrite(level, pos, campfire) && !matchesPlannedBlock.test(pos)) {

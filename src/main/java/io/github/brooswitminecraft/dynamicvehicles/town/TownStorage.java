@@ -243,7 +243,10 @@ public final class TownStorage extends SavedData {
         return tag;
     }
 
-    private static TownStorage load(CompoundTag tag, HolderLookup.Provider registries) {
+    /** Package-private (not {@code private}) purely so a GameTest can round-trip
+     *  {@code save}+{@code load} directly to prove persisted state (e.g. {@link #blockedCells})
+     *  genuinely survives a reload, not merely a same-session in-memory check. */
+    static TownStorage load(CompoundTag tag, HolderLookup.Provider registries) {
         TownStorage storage = new TownStorage();
         ListTag founded = tag.getList("FoundedTowns", Tag.TAG_COMPOUND);
         for (int i = 0; i < founded.size(); i++) {

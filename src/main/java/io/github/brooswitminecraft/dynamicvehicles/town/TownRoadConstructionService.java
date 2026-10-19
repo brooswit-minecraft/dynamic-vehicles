@@ -37,6 +37,23 @@ public final class TownRoadConstructionService {
      *  existing "simple footprints, no catalog" scope decision for buildings. */
     private static final Block ROAD_SURFACE = Blocks.DIRT_PATH;
 
+    /**
+     * [Review round 11, finding #2] Test-only fault injection. The real Minecraft API gives no
+     * deterministic way for a GameTest to force {@code Level#setBlock}/{@code #removeBlock} to
+     * fail on demand (every block-to-different-block mutation genuinely succeeds; there is no
+     * permission/validation layer at this level to exploit) - these two hooks are the seam a
+     * regression uses to engineer an actual forward-write failure (via
+     * {@link #testForceSurfaceFailureAt}, forcing the final surface placement to be rejected so
+     * the rollback path actually runs) and an actual rollback-restoration failure (via
+     * {@link #testForceRollbackFailureAt}, forcing one specific cell's own restoration to fail),
+     * so {@link #placeRoadCell}'s real failure/rollback/durable-block branch can be exercised
+     * end-to-end rather than only unit-tested as an isolated storage primitive. Each hook fires
+     * (and clears itself) at most once, matching exactly one targeted cell. {@code null} in
+     * normal (non-test) operation - zero behavioural effect on production.
+     */
+    static BlockPos testForceSurfaceFailureAt = null;
+    static BlockPos testForceRollbackFailureAt = null;
+
     /** @return whether anything was actually mutated (so the caller knows whether to persist storage). */
     public static boolean buildRoadsForRegion(ServerLevel level, RegionCoord region, TownStorage storage, TownResourceStore store) {
         // [Review round 4, finding #4] Dynamic Towns roads are an Overworld-only feature (see
@@ -267,7 +284,11 @@ public final class TownRoadConstructionService {
                     && level.getBlockState(supportCell).is(Blocks.DIRT);
         }
 
-        boolean placedOk = mutationsOk
+        boolean surfaceForcedToFail = pos.equals(testForceSurfaceFailureAt);
+        if (surfaceForcedToFail) {
+            testForceSurfaceFailureAt = null;
+        }
+        boolean placedOk = mutationsOk && !surfaceForcedToFail
                 && level.setBlock(pos, ROAD_SURFACE.defaultBlockState(), Block.UPDATE_ALL)
                 && level.getBlockState(pos).is(ROAD_SURFACE);
         if (!placedOk) {
@@ -280,31 +301,37 @@ public final class TownRoadConstructionService {
             // partially-mutated state; that is surfaced via the logger (there is no safe automatic
             // recovery once BOTH the forward mutation and its own rollback have failed) rather than
             // silently treated as a clean no-op.
-            boolean rollbackOk = true;
-            if (clearedAbove1) {
-                rollbackOk &= level.setBlock(above1, originalAbove1, Block.UPDATE_ALL)
-                        && level.getBlockState(above1).equals(originalAbove1);
+            List<BlockPos> failedRestorations = new ArrayList<>();
+            if (clearedAbove1 && !restoreCell(level, above1, originalAbove1)) {
+                failedRestorations.add(above1);
             }
-            if (clearedAbove2) {
-                rollbackOk &= level.setBlock(above2, originalAbove2, Block.UPDATE_ALL)
-                        && level.getBlockState(above2).equals(originalAbove2);
+            if (clearedAbove2 && !restoreCell(level, above2, originalAbove2)) {
+                failedRestorations.add(above2);
             }
             for (int i = supportCells.size() - 1; i >= 0; i--) {
-                rollbackOk &= level.setBlock(supportCells.get(i), supportOriginals.get(i), Block.UPDATE_ALL)
-                        && level.getBlockState(supportCells.get(i)).equals(supportOriginals.get(i));
+                if (!restoreCell(level, supportCells.get(i), supportOriginals.get(i))) {
+                    failedRestorations.add(supportCells.get(i));
+                }
             }
-            if (!rollbackOk) {
-                // [Review round 10, finding #1] Logging alone is not durable - a fresh tick (or a
-                // server restart) would simply retry this exact cell from scratch against a world
-                // state this mod can no longer verify, risking a double charge or double salvage
-                // credit for work it is no longer sure it ever cleanly paid for. Persist a
-                // permanent block on this cell instead, so the failure - and the decision to never
-                // touch it again - survives reload, not just this one tick's local variables.
+            if (!failedRestorations.isEmpty()) {
+                // [Review round 10, finding #1 / round 11, finding #2] Logging alone is not
+                // durable - a fresh tick (or a server restart) would simply retry this exact cell
+                // from scratch against a world state this mod can no longer verify, risking a
+                // double charge or double salvage credit for work it is no longer sure it ever
+                // cleanly paid for. Persist a permanent block on EVERY cell whose own restoration
+                // actually failed (not merely the road surface cell itself) - a neighbouring road
+                // cell's own headroom/support can legitimately overlap this one, and would
+                // otherwise see whatever foreign material was left behind as ordinary clearable
+                // natural terrain, risking phantom salvage for material that was never really
+                // there to begin with.
                 io.github.brooswitminecraft.dynamicvehicles.DynamicVehiclesMod.LOGGER.error(
-                        "Dynamic Towns road rollback at {} did not fully restore its original blocks after a rejected surface placement"
-                                + " - permanently excluding this cell from further construction",
-                        pos);
+                        "Dynamic Towns road rollback at {} did not fully restore {} after a rejected surface placement"
+                                + " - permanently excluding {} from further construction",
+                        pos, failedRestorations, failedRestorations);
                 storage.markCellBlocked(level.dimension(), pos);
+                for (BlockPos failed : failedRestorations) {
+                    storage.markCellBlocked(level.dimension(), failed);
+                }
                 storage.setDirty();
             }
             return false;
@@ -334,6 +361,16 @@ public final class TownRoadConstructionService {
             }
         }
         return true;
+    }
+
+    /** Restores {@code pos} to {@code original}, confirming the restoration actually landed - see
+     *  {@link #testForceRollbackFailureAt} for how a test engineers this to deterministically fail. */
+    private static boolean restoreCell(ServerLevel level, BlockPos pos, BlockState original) {
+        if (pos.equals(testForceRollbackFailureAt)) {
+            testForceRollbackFailureAt = null;
+            return false;
+        }
+        return level.setBlock(pos, original, Block.UPDATE_ALL) && level.getBlockState(pos).equals(original);
     }
 
     private static void tallyClearedMaterial(Map<TownClearingYields.ClearedMaterial, Integer> tally, BlockState removedState) {

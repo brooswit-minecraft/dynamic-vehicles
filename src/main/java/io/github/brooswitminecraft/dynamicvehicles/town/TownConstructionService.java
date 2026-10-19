@@ -258,12 +258,16 @@ public final class TownConstructionService {
         // own wall/floor material no longer bypasses protected-site rejection or resource cost,
         // because that foreign block was never recorded as this mod's own paid-for progress.
         int plannedTopY = floorY + TownBuildingTemplates.heightFor(kind, plan.storehouseVariant());
+        // [Review round 11, finding #2 supplement] A cell durably blocked after a DIFFERENT plan's
+        // own forward-write-plus-rollback failure (most commonly a road's) must never be silently
+        // adopted by a claimed building as ordinary clearable terrain - the whole site aborts, the
+        // same way any other protected/foreign content already does.
         if (!TownSitePreflight.isSiteSafe(level, campfire, radius, floorY, plannedTopY,
                 pos -> {
                     TownBuildingTemplates.Placement planned = byPosition.get(key(pos.getX(), pos.getY(), pos.getZ()));
                     return planned != null
                             && storage.isCellPlaced(level.dimension(), pos, siteOwner, cellSignature(planSignature, planned));
-                }, claimant.getUUID())) {
+                }, claimant.getUUID(), pos -> storage.isCellBlocked(level.dimension(), pos))) {
             return;
         }
 
@@ -275,7 +279,7 @@ public final class TownConstructionService {
         // reload, or retry). The campfire's own cell is left untouched here - it keeps its current
         // block (the campfire) until the bottom-up build reaches it last. Already-placed template
         // blocks (non-natural) are left alone, not re-cleared, so this cannot undo earlier progress.
-        if (prepareTerrain(level, campfire, radius, floorY, store)) {
+        if (prepareTerrain(level, campfire, radius, floorY, store, storage)) {
             storage.setDirty();
         }
 
@@ -292,6 +296,13 @@ public final class TownConstructionService {
             TownBuildingTemplates.Placement placement = byPosition.get(key(block.x(), block.y(), block.z()));
             if (placement == null) {
                 continue; // degenerately, no template entry - nothing to do here
+            }
+            if (storage.isCellBlocked(level.dimension(), pos)) {
+                // [Review round 11, finding #2 supplement] Redundant with the whole-site preflight
+                // above but kept here too as an explicit, defensive guard directly at the point of
+                // mutation: never place over a cell durably excluded after a different plan's own
+                // failed rollback.
+                continue;
             }
             String signature = cellSignature(planSignature, placement);
             // [Review round 4, finding #2] "Already placed" is the PERSISTED progress record, not a
@@ -514,7 +525,8 @@ public final class TownConstructionService {
      *
      * @return {@code true} if anything was mutated (so the caller knows whether to persist storage).
      */
-    private static boolean prepareTerrain(ServerLevel level, BlockPos campfire, int radius, int baseY, TownResourceStore store) {
+    private static boolean prepareTerrain(ServerLevel level, BlockPos campfire, int radius, int baseY, TownResourceStore store,
+            TownStorage storage) {
         Map<TownClearingYields.ClearedMaterial, Integer> tally = new EnumMap<>(TownClearingYields.ClearedMaterial.class);
         boolean mutated = false;
         for (int x = -radius; x <= radius; x++) {
@@ -530,6 +542,13 @@ public final class TownConstructionService {
                         // [Review round 2, finding #2] Never touch the campfire's own ACTUAL cell
                         // here, regardless of whether it happens to sit on the estimated floor
                         // plane baseY - the floor and the campfire's real position can now differ.
+                        continue;
+                    }
+                    if (storage.isCellBlocked(level.dimension(), pos)) {
+                        // [Review round 11, finding #2 supplement] Redundant with the whole-site
+                        // preflight above (which already covers this exact scan range) but kept
+                        // here too as an explicit, defensive guard: a durably blocked cell is never
+                        // cleared/salvaged, regardless of what else is true about it.
                         continue;
                     }
                     BlockState state = level.getBlockState(pos);
@@ -565,7 +584,7 @@ public final class TownConstructionService {
                 // height) with plain dirt - a leveling fill, not salvage, so it earns no credit.
                 for (int y = top; y < baseY; y++) {
                     BlockPos pos = new BlockPos(columnX, y, columnZ);
-                    if (pos.equals(campfire)) {
+                    if (pos.equals(campfire) || storage.isCellBlocked(level.dimension(), pos)) {
                         continue;
                     }
                     if (level.getBlockState(pos).isAir()) {

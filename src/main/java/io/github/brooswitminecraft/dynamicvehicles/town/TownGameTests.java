@@ -5,6 +5,7 @@ import io.github.brooswitminecraft.dynamicvehicles.delivery.GameTestMockPlayers;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.GlobalPos;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
@@ -993,6 +994,80 @@ public final class TownGameTests {
 
         helper.assertTrue(!helper.getBlockState(cell).is(Blocks.DIRT_PATH),
                 "a permanently blocked cell must never be built over, found " + helper.getBlockState(cell));
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-388 review round 11, finding #2: an actual forward-write-plus-rollback failure
+     * (engineered via {@link TownRoadConstructionService}'s test-only fault-injection hooks, since
+     * the real Minecraft API gives no deterministic way to force a mutation to fail) must durably
+     * block EVERY cell whose own restoration actually failed (not merely the road surface cell),
+     * survive an immediate retry with no further mutation or double charge/credit, survive a real
+     * save/load reload, AND be respected by a claimed BUILDING's own preflight/terrain-prep/
+     * placement paths if its footprint happens to overlap the blocked cell - proving the hold is a
+     * genuinely shared, cross-system guarantee, not merely a road-local bookkeeping detail.
+     */
+    @GameTest(template = "settlement_test")
+    public static void injectedRollbackFailureDurablyBlocksAffectedCellsAcrossRetryReloadAndBuildingOverlap(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos cell = ANCHOR;
+        BlockPos above1 = cell.above();
+        helper.setBlock(above1, Blocks.OAK_LOG); // real headroom to clear, so rollback has something to restore
+        BlockPos absoluteCell = helper.absolutePos(cell);
+        BlockPos absoluteAbove1 = helper.absolutePos(above1);
+
+        TownStorage storage = new TownStorage();
+        TownResourceStore store = storage.storeFor("test:road-rollback-failure");
+        store.credit(TownResourceCategory.STONE, 1000);
+        store.credit(TownResourceCategory.WOOD, 1000);
+
+        // Engineer the scenario the real API cannot otherwise produce: the surface placement is
+        // forced to fail AFTER headroom clearing already happened (so rollback has real work to
+        // do), and that rollback's own restoration of above1 is ALSO forced to fail.
+        TownRoadConstructionService.testForceSurfaceFailureAt = absoluteCell;
+        TownRoadConstructionService.testForceRollbackFailureAt = absoluteAbove1;
+        List<TownRoadPlanner.RoadCell> cells = List.of(
+                new TownRoadPlanner.RoadCell(absoluteCell.getX(), absoluteCell.getZ(), absoluteCell.getY()));
+        TownRoadConstructionService.buildRoadCells(helper.getLevel(), cells, 1, storage, store);
+
+        helper.assertTrue(storage.isCellBlocked(helper.getLevel().dimension(), absoluteCell),
+                "the road surface cell itself must be durably blocked after the failed rollback");
+        helper.assertTrue(storage.isCellBlocked(helper.getLevel().dimension(), absoluteAbove1),
+                "the specific headroom cell whose OWN restoration failed must be durably blocked too, not just the surface cell");
+        helper.assertTrue(!helper.getBlockState(cell).is(Blocks.DIRT_PATH), "the surface must never have been placed");
+        helper.assertTrue(helper.getBlockState(above1).isAir(),
+                "the headroom cell is left exactly as the forced failure made it (air, not restored) - this mod no longer touches it at all");
+        helper.assertTrue(store.balance(TownResourceCategory.STONE) == 1000 && store.balance(TownResourceCategory.WOOD) == 1000,
+                "a failed transaction must never charge or credit anything, even partially");
+
+        // Retry: no force flags set this time - a genuinely clean attempt must still be refused,
+        // with no further mutation and no double charge/credit, purely because both cells are now
+        // durably blocked.
+        TownRoadConstructionService.buildRoadCells(helper.getLevel(), cells, 1, storage, store);
+        helper.assertTrue(!helper.getBlockState(cell).is(Blocks.DIRT_PATH), "a retry must still never place the surface");
+        helper.assertTrue(helper.getBlockState(above1).isAir(), "a retry must never touch the blocked headroom cell either");
+        helper.assertTrue(store.balance(TownResourceCategory.STONE) == 1000 && store.balance(TownResourceCategory.WOOD) == 1000,
+                "a retry of a blocked cell must never charge or credit anything");
+
+        // Reload: the block must survive a genuine save/load round-trip, not merely this session's
+        // in-memory state.
+        CompoundTag saved = storage.save(new CompoundTag(), helper.getLevel().registryAccess());
+        TownStorage reloaded = TownStorage.load(saved, helper.getLevel().registryAccess());
+        helper.assertTrue(reloaded.isCellBlocked(helper.getLevel().dimension(), absoluteCell),
+                "the road surface cell's block must survive a reload");
+        helper.assertTrue(reloaded.isCellBlocked(helper.getLevel().dimension(), absoluteAbove1),
+                "the headroom cell's block must survive a reload too");
+
+        // Overlap: a claimed BUILDING whose own campfire sits EXACTLY on this same blocked cell
+        // must also refuse to adopt it as ordinary clearable terrain - the whole site aborts,
+        // exactly like any other protected/foreign content, never silently building elsewhere in
+        // the footprint around it either.
+        helper.setBlock(cell, Blocks.CAMPFIRE);
+        spawnClaimedVillager(helper, absoluteCell);
+        TownConstructionService.buildAt(helper.getLevel(), absoluteCell, reloaded);
+        helper.assertTrue(helper.getBlockState(cell).is(Blocks.CAMPFIRE), "an aborted site must leave the campfire untouched");
+        helper.assertTrue(helper.getBlockState(cell.offset(2, 0, 2)).isAir(),
+                "a building site whose own campfire cell is durably blocked must abort the WHOLE site, never build elsewhere in the footprint either");
         helper.succeed();
     }
 

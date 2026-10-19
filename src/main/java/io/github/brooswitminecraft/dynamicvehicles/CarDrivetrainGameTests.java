@@ -5,6 +5,11 @@ import io.github.brooswitminecraft.dynamicterrain.SlipMath;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.gametest.framework.GameTestInfo;
+import net.minecraft.gametest.framework.GameTestListener;
+import net.minecraft.gametest.framework.GameTestRunner;
+import net.minecraft.gametest.framework.GameTestSequence;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.Blocks;
@@ -604,10 +609,51 @@ public final class CarDrivetrainGameTests {
      * <p>Chunk-boundary note: the structure spans more than one 16-block chunk on the Z axis at an
      * arbitrary, non-chunk-aligned origin, so every chunk the block range actually touches must be force-
      * loaded, not just the one under the origin corner -- an earlier attempt that force-loaded only the
-     * origin's own chunk left the car barely moving (peak velocity ~0.46 m/s) for exactly this reason. */
-    @GameTest(template = "settlement_test", timeoutTicks = 165)
+     * origin's own chunk left the car barely moving (peak velocity ~0.46 m/s) for exactly this reason.
+     *
+     * <p>MINECRAFT-442 round-14 (review 48766/48786/48874): the first version of this method crashed the
+     * ENTIRE GameTestServer -- reproduced identically, local and hosted CI (run 39285394586) -- with
+     * {@code NullPointerException: ... "this.wrapped" is null} inside fastutil's
+     * {@code Object2LongOpenHashMap$MapIterator}, called from vanilla's own
+     * {@code GameTestInfo#tickInternal}. Root cause, confirmed (not hypothesis) against vanilla's own
+     * decompiled source: {@code GameTestInfo#tickInternal} runs this ENTIRE test method synchronously,
+     * up front during {@code startTest()} -- BEFORE it ever builds the iterator over its own
+     * {@code runAtTickTimeMap} (every {@code GameTestHelper#runAfterDelay} call registers into that
+     * exact map via {@code GameTestInfo#setRunAtTickTime}). Every top-level {@code runAfterDelay} call in
+     * this method (or any other test in this file) is therefore safe. The first version of this method
+     * instead nested ~170 further {@code runAfterDelay} calls INSIDE one outer
+     * {@code helper.runAfterDelay(5L, ...)} callback -- i.e. called them from code that itself runs from
+     * inside {@code tickInternal}'s own {@code iterator.next()}/{@code entry.getKey().run()}, mutating
+     * ({@code Object2LongOpenHashMap#put}) the very map that iterator was walking mid-iteration.
+     * fastutil's open-hash map has no fail-fast check for this (unlike {@code java.util.HashMap}); it
+     * rehashes mid-iteration instead, leaving the iterator's cached array stale -- exactly the observed
+     * NPE. Fixed below by moving every delayed callback back to this method's own top level (matching
+     * every other test in this file): only a {@code CarEntity[]} holder is shared forward into the later
+     * callbacks, set once by the tick-5 setup callback and read afterward -- nothing here schedules
+     * anything new from inside another already-scheduled callback.
+     *
+     * <p>Chunk-ticket cleanup (review 48766): released via a {@link GameTestListener} added to
+     * {@code helper.testInfo} rather than a {@code try/finally} in this method's own body -- the
+     * framework calls {@code testPassed}/{@code testFailed} on every terminal outcome including a
+     * {@code GameTestTimeoutException} this method's own stack frame is long gone by the time it fires,
+     * which no local {@code catch} here could ever observe.
+     *
+     * <p>Round-14 follow-up, same CI evidence: even past the crash, this test's own peak forward
+     * velocity still read ~0.6 m/s (CI run 39285394586 successor) -- the identical near-frozen symptom a
+     * fixed 5-tick wait was supposed to have fixed. A fixed tick count was always a guess at how long
+     * {@code setChunkForced}'s own ticket takes to actually reach a ticking chunk; replaced with
+     * {@link GameTestHelper#startSequence}'s {@code thenWaitUntil} (the "supported sequence API" review
+     * 48874 pointed at) polling the exact condition vanilla's own {@code GameTestInfo#tick} checks for
+     * ITS structure's own chunks -- {@code ServerLevel#isPositionEntityTicking} -- against this rig's own
+     * footprint corners, so setup only proceeds once the chunks are genuinely ready, however many ticks
+     * that actually takes. A {@link GameTestSequence}'s own events are ticked from a separate list
+     * ({@code GameTestInfo#sequences}), entirely independent of {@code runAtTickTimeMap} -- using it here
+     * for everything (wait, setup, the 150-tick sample window, final assertions) also means nothing in
+     * this method registers into {@code runAtTickTimeMap} at all any more, which was this method's own
+     * round-14 bug (see above) in the first place. */
+    @GameTest(template = "settlement_test", timeoutTicks = 300, batch = "carDrivetrainLedgeIsolated")
     public static void carRecoversCleanlyAfterDrivingOffALedgeAndLandingNearOrigin(GameTestHelper helper) {
-        net.minecraft.server.level.ServerLevel level = helper.getLevel();
+        ServerLevel level = helper.getLevel();
         int originX = 0;
         int originY = 100;
         int originZ = 20_000;
@@ -616,19 +662,41 @@ public final class CarDrivetrainGameTests {
         int minChunkZ = originZ >> 4;
         int maxChunkZ = (originZ + 14) >> 4;
         forceChunksNearOrigin(level, minChunkX, maxChunkX, minChunkZ, maxChunkZ, true);
-        try {
-            // Review, round 13 follow-up: a FORCED ticket is added to the chunk instantly, but the chunk
-            // itself does not finish loading/reach a ticking FullChunkStatus synchronously in the same
-            // tick the ticket is added -- building the ramp/gap and spawning the car immediately after
-            // forceChunksNearOrigin left every wheel raycast reporting MISS against a chunk that was not
-            // actually ready yet (peak forward velocity ~0.46 m/s, identical to the earlier single-chunk
-            // bug's own symptom, even after the chunk RANGE was already correct). Waiting a few ticks
-            // after forcing the chunk, before touching it at all, is the fix: by the time this runs the
-            // chunk is genuinely loaded and the wheel raycasts hit real blocks.
-            helper.runAfterDelay(5L, () -> {
-                try {
-                    // Exactly carRecoversCleanlyAfterDrivingOffALedgeAndLanding's own geometry, translated
-                    // from structure-relative (dx 4..6, dz 5..14) to fixed absolute coordinates.
+        helper.testInfo.addListener(new GameTestListener() {
+            @Override
+            public void testStructureLoaded(GameTestInfo info) {}
+
+            @Override
+            public void testPassed(GameTestInfo info, GameTestRunner runner) {
+                forceChunksNearOrigin(level, minChunkX, maxChunkX, minChunkZ, maxChunkZ, false);
+            }
+
+            @Override
+            public void testFailed(GameTestInfo info, GameTestRunner runner) {
+                forceChunksNearOrigin(level, minChunkX, maxChunkX, minChunkZ, maxChunkZ, false);
+            }
+
+            @Override
+            public void testAddedForRerun(GameTestInfo info, GameTestInfo retry, GameTestRunner runner) {}
+        });
+
+        CarEntity[] carRef = new CarEntity[1];
+        double[] startZ = {0.0};
+        double[] minVerticalVelocity = {0.0};
+        double[] peakForwardVelocity = {0.0};
+        boolean[] everUngrounded = {false};
+        long[] firstUngroundedTick = {-1L};
+        long[] sampleTickCount = {0L};
+
+        helper.startSequence()
+                .thenWaitUntil(() -> helper.assertTrue(
+                        level.isPositionEntityTicking(new BlockPos(originX - 1, originY, originZ))
+                                && level.isPositionEntityTicking(new BlockPos(originX + 1, originY, originZ + 14)),
+                        "near-origin chunks not yet entity-ticking"))
+                .thenExecute(() -> {
+                    // Exactly carRecoversCleanlyAfterDrivingOffALedgeAndLanding's own geometry,
+                    // translated from structure-relative (dx 4..6, dz 5..14) to fixed absolute
+                    // coordinates.
                     for (int dx = -1; dx <= 1; dx++) {
                         for (int dz = 0; dz <= 4; dz++) {
                             level.setBlock(new BlockPos(originX + dx, originY - 1, originZ + dz), Blocks.STONE.defaultBlockState(), 3);
@@ -652,77 +720,54 @@ public final class CarDrivetrainGameTests {
                     rider.setPos(car.getX(), car.getY(), car.getZ());
                     helper.assertTrue(rider.startRiding(car), "mock player failed to board the car");
                     rider.zza = 1.0f;
-                    double startZ = car.getZ();
-                    double[] minVerticalVelocity = {0.0};
-                    double[] peakForwardVelocity = {0.0};
-                    boolean[] everUngrounded = {false};
-                    long[] firstUngroundedTick = {-1L};
-                    double[] integratedZ = {startZ};
-                    for (long tick = 1; tick <= 150; tick++) {
-                        helper.runAfterDelay(tick, () -> integratedZ[0] += car.getDeltaMovement().z);
-                    }
-                    long[] sampleTicks = {5, 10, 15, 20, 25, 30, 35, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140};
-                    for (long sampleTick : sampleTicks) {
-                        helper.runAfterDelay(sampleTick, () -> {
-                            Vec3 v = car.getDeltaMovement();
-                            double vy = v.y * 20.0;
-                            double vz = v.z * 20.0;
-                            minVerticalVelocity[0] = Math.min(minVerticalVelocity[0], vy);
-                            peakForwardVelocity[0] = Math.max(peakForwardVelocity[0], vz);
-                            if (!car.debugTouching()) {
-                                everUngrounded[0] = true;
-                                if (firstUngroundedTick[0] < 0) {
-                                    firstUngroundedTick[0] = sampleTick;
-                                }
-                            }
-                        });
-                    }
-                    helper.runAfterDelay(150L, () -> {
-                        try {
-                            Vec3 finalVelocity = car.getDeltaMovement();
-                            double finalVy = finalVelocity.y * 20.0;
-                            double finalSpeed = car.debugSpeed();
-                            helper.assertTrue(Double.isFinite(finalVelocity.x) && Double.isFinite(finalVelocity.y) && Double.isFinite(finalVelocity.z),
-                                    "car velocity diverged after driving off a ledge: " + finalVelocity);
-                            helper.assertTrue(Double.isFinite(finalSpeed) && finalSpeed < 100.0,
-                                    "car speed diverged after driving off a ledge: " + finalSpeed);
-                            helper.assertTrue(peakForwardVelocity[0] > 1.0,
-                                    "car never actually built real forward speed under its own drive -- test setup invalid: peak forward velocity="
-                                            + peakForwardVelocity[0]);
-                            double traveled = car.getZ() - startZ;
-                            double integratedTraveled = integratedZ[0] - startZ;
-                            helper.assertTrue(minVerticalVelocity[0] < -2.0,
-                                    "car never showed a real falling (negative Y velocity) at any point -- the ledge drop never actually left the ground: worst Y velocity="
-                                            + minVerticalVelocity[0] + " m/s (ever ungrounded=" + everUngrounded[0]
-                                            + ", first ungrounded tick=" + firstUngroundedTick[0] + ", peak forward velocity="
-                                            + peakForwardVelocity[0] + " m/s, distance traveled (pose)=" + traveled
-                                            + " blocks, distance traveled (velocity-integrated)=" + integratedTraveled
-                                            + " blocks (need >5 to clear the ramp onto the gap), final speed=" + finalSpeed + ")");
-                            helper.assertTrue(finalVy > -2.0,
-                                    "car was still falling at the end of the window instead of having landed: final Y velocity=" + finalVy + " m/s");
-                            forceChunksNearOrigin(level, minChunkX, maxChunkX, minChunkZ, maxChunkZ, false);
-                            helper.succeed();
-                        } catch (RuntimeException | Error e) {
-                            forceChunksNearOrigin(level, minChunkX, maxChunkX, minChunkZ, maxChunkZ, false);
-                            throw e;
+                    carRef[0] = car;
+                    startZ[0] = car.getZ();
+                })
+                .thenExecuteFor(150, () -> {
+                    CarEntity car = carRef[0];
+                    long sampleTick = ++sampleTickCount[0];
+                    Vec3 v = car.getDeltaMovement();
+                    double vy = v.y * 20.0;
+                    double vz = v.z * 20.0;
+                    minVerticalVelocity[0] = Math.min(minVerticalVelocity[0], vy);
+                    peakForwardVelocity[0] = Math.max(peakForwardVelocity[0], vz);
+                    if (!car.debugTouching()) {
+                        everUngrounded[0] = true;
+                        if (firstUngroundedTick[0] < 0) {
+                            firstUngroundedTick[0] = sampleTick;
                         }
-                    });
-                } catch (RuntimeException | Error e) {
-                    forceChunksNearOrigin(level, minChunkX, maxChunkX, minChunkZ, maxChunkZ, false);
-                    throw e;
-                }
-            });
-        } catch (RuntimeException | Error e) {
-            forceChunksNearOrigin(level, minChunkX, maxChunkX, minChunkZ, maxChunkZ, false);
-            throw e;
-        }
+                    }
+                })
+                .thenExecute(() -> {
+                    CarEntity car = carRef[0];
+                    Vec3 finalVelocity = car.getDeltaMovement();
+                    double finalVy = finalVelocity.y * 20.0;
+                    double finalSpeed = car.debugSpeed();
+                    helper.assertTrue(Double.isFinite(finalVelocity.x) && Double.isFinite(finalVelocity.y) && Double.isFinite(finalVelocity.z),
+                            "car velocity diverged after driving off a ledge: " + finalVelocity);
+                    helper.assertTrue(Double.isFinite(finalSpeed) && finalSpeed < 100.0,
+                            "car speed diverged after driving off a ledge: " + finalSpeed);
+                    helper.assertTrue(peakForwardVelocity[0] > 1.0,
+                            "car never actually built real forward speed under its own drive -- test setup invalid: peak forward velocity="
+                                    + peakForwardVelocity[0]);
+                    double traveled = car.getZ() - startZ[0];
+                    helper.assertTrue(minVerticalVelocity[0] < -2.0,
+                            "car never showed a real falling (negative Y velocity) at any point -- the ledge drop never actually left the ground: worst Y velocity="
+                                    + minVerticalVelocity[0] + " m/s (ever ungrounded=" + everUngrounded[0]
+                                    + ", first ungrounded tick=" + firstUngroundedTick[0] + ", peak forward velocity="
+                                    + peakForwardVelocity[0] + " m/s, distance traveled (pose)=" + traveled
+                                    + " blocks (need >5 to clear the ramp onto the gap), final speed=" + finalSpeed + ")");
+                    helper.assertTrue(finalVy > -2.0,
+                            "car was still falling at the end of the window instead of having landed: final Y velocity=" + finalVy + " m/s");
+                })
+                .thenSucceed();
     }
 
     /** Force-loads (or releases) every chunk a near-origin absolute-coordinate rig's own block range
      * actually touches -- not just the chunk under the origin corner, which an earlier attempt at this
      * same fix got wrong for a structure spanning more than one 16-block chunk on an axis at a
      * non-chunk-aligned origin. */
-    private static void forceChunksNearOrigin(net.minecraft.server.level.ServerLevel level,
+    private static void forceChunksNearOrigin(ServerLevel level,
             int minChunkX, int maxChunkX, int minChunkZ, int maxChunkZ, boolean forced) {
         for (int cx = minChunkX; cx <= maxChunkX; cx++) {
             for (int cz = minChunkZ; cz <= maxChunkZ; cz++) {

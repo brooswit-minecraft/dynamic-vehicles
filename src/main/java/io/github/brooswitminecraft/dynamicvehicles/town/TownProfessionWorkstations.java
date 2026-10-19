@@ -91,4 +91,23 @@ public final class TownProfessionWorkstations {
         }
         return Optional.ofNullable(BY_PROFESSION.get(profession));
     }
+
+    /**
+     * MINECRAFT-388/455: {@code true} for a POI type matching any of this zone's own
+     * {@link #ASSIGNABLE_PROFESSIONS} workstations - used by {@link TownResidentAllocationHandler}
+     * to find a vacant, already-built workplace ANY unemployed town resident could pick up, never
+     * Builder's own campfire or any other mod's/vanilla's unrelated job-site type.
+     */
+    public static boolean isAssignableWorkstationType(net.minecraft.core.Holder<net.minecraft.world.entity.ai.village.poi.PoiType> type) {
+        return ASSIGNABLE_PROFESSIONS.stream().anyMatch(profession -> profession.heldJobSite().test(type));
+    }
+
+    /** The one {@link #ASSIGNABLE_PROFESSIONS} profession whose own job-site type {@code type} is -
+     *  the exact inverse of {@link #blockFor}, driven by vanilla's own per-profession
+     *  {@code heldJobSite} predicate rather than a second, separately-maintained block map that
+     *  could drift out of sync with it. Empty for any type {@link #isAssignableWorkstationType}
+     *  would also reject. */
+    public static Optional<VillagerProfession> professionForType(net.minecraft.core.Holder<net.minecraft.world.entity.ai.village.poi.PoiType> type) {
+        return ASSIGNABLE_PROFESSIONS.stream().filter(profession -> profession.heldJobSite().test(type)).findFirst();
+    }
 }

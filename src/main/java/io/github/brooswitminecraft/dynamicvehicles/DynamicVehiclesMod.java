@@ -50,6 +50,7 @@ import io.github.brooswitminecraft.dynamicvehicles.delivery.VillagerNoonProgress
 import io.github.brooswitminecraft.dynamicvehicles.town.TownFounder;
 import io.github.brooswitminecraft.dynamicvehicles.town.TownPassiveProductionHandler;
 import io.github.brooswitminecraft.dynamicvehicles.town.TownConstructionService;
+import io.github.brooswitminecraft.dynamicvehicles.town.TownResidentAllocationHandler;
 import io.github.brooswitminecraft.dynamicvehicles.town.TownDonationHandler;
 import io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderBlocks;
 import io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderHudPayload;
@@ -176,6 +177,7 @@ public class DynamicVehiclesMod {
         NeoForge.EVENT_BUS.addListener(TownFounder::onLevelTick);
         NeoForge.EVENT_BUS.addListener(TownPassiveProductionHandler::onLevelTick);
         NeoForge.EVENT_BUS.addListener(TownConstructionService::onLevelTick);
+        NeoForge.EVENT_BUS.addListener(TownResidentAllocationHandler::onLevelTick);
         NeoForge.EVENT_BUS.addListener(TownDonationHandler::onTrade);
         NeoForge.EVENT_BUS.addListener(ContractTickHandler::onServerTick);
         NeoForge.EVENT_BUS.addListener(ContractTickHandler::onPlayerLoggedIn);

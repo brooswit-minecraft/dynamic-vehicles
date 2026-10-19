@@ -119,4 +119,16 @@ public final class TownConstants {
     public static final int CONSTRUCTION_COST_PER_BLOCK = 1;
     public static final int CONSTRUCTION_BLOCKS_PER_TICK = 4;
     public static final long CONSTRUCTION_TICK_INTERVAL_TICKS = 20L; // one second
+
+    /**
+     * MINECRAFT-388/455: how often {@code TownResidentAllocationHandler} reconciles every town
+     * resident (not only a construction site's own claimant) against the town's own vacant,
+     * already-built beds/workplaces - the same per-minute cadence as passive production, since this
+     * is an ongoing background reconciliation, not something that needs to react within the same
+     * tick a fixture frees up. The search radius is half {@link #REGION_SIZE_BLOCKS} (the town's own
+     * full width out from its centre), so it can reach every fixture this mod could ever have built
+     * anywhere in the town, never further.
+     */
+    public static final long RESIDENT_ALLOCATION_INTERVAL_TICKS = 1200L; // one Minecraft minute
+    public static final int RESIDENT_ALLOCATION_SEARCH_RADIUS = REGION_SIZE_BLOCKS / 2;
 }

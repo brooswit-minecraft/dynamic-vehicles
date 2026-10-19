@@ -2,6 +2,8 @@ package io.github.brooswitminecraft.dynamicvehicles;
 
 import io.github.brooswitminecraft.dynamicterrain.Erosion;
 import io.github.brooswitminecraft.dynamicterrain.SlipMath;
+import java.util.ArrayList;
+import java.util.List;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
@@ -11,8 +13,10 @@ import net.minecraft.gametest.framework.GameTestRunner;
 import net.minecraft.gametest.framework.GameTestSequence;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
@@ -640,47 +644,131 @@ public final class CarDrivetrainGameTests {
      *
      * <p>Round-14 follow-up, same CI evidence: even past the crash, this test's own peak forward
      * velocity still read ~0.6 m/s (CI run 39285394586 successor) -- the identical near-frozen symptom a
-     * fixed 5-tick wait was supposed to have fixed. A fixed tick count was always a guess at how long
-     * {@code setChunkForced}'s own ticket takes to actually reach a ticking chunk; replaced with
-     * {@link GameTestHelper#startSequence}'s {@code thenWaitUntil} (the "supported sequence API" review
-     * 48874 pointed at) polling the exact condition vanilla's own {@code GameTestInfo#tick} checks for
-     * ITS structure's own chunks -- {@code ServerLevel#isPositionEntityTicking} -- against this rig's own
-     * footprint corners, so setup only proceeds once the chunks are genuinely ready, however many ticks
-     * that actually takes. A {@link GameTestSequence}'s own events are ticked from a separate list
-     * ({@code GameTestInfo#sequences}), entirely independent of {@code runAtTickTimeMap} -- using it here
-     * for everything (wait, setup, the 150-tick sample window, final assertions) also means nothing in
-     * this method registers into {@code runAtTickTimeMap} at all any more, which was this method's own
-     * round-14 bug (see above) in the first place. */
+     * fixed 5-tick wait was supposed to have fixed. Rewritten onto {@link GameTestHelper#startSequence}
+     * (the "supported sequence API" review 48874 pointed at): a {@link GameTestSequence}'s own events
+     * are ticked from a separate list ({@code GameTestInfo#sequences}), entirely independent of
+     * {@code runAtTickTimeMap} -- using it here for everything (the initial wait, setup, the 150-tick
+     * sample window, final assertions) means nothing in this method registers into
+     * {@code runAtTickTimeMap} at all any more, which was this method's own round-14 crash bug (see
+     * above) in the first place. An attempt at this same round to replace the fixed wait with
+     * {@code thenWaitUntil} polling {@code ServerLevel#isPositionEntityTicking} (the exact condition
+     * vanilla's own {@code GameTestInfo#tick} checks for ITS structure's own chunks) never actually
+     * tripped true within this test's own timeout for this rig -- whatever {@code canPositionTick}'s own
+     * additional requirements are here, a forced ticket alone does not satisfy them in this setup, so
+     * this method is back to a fixed idle (still via the sequence, so still immune to the round-14 crash
+     * class), at vanilla's own documented default ({@code GameTestInfo#ticksToWaitForChunkLoading = 20})
+     * rather than a smaller guessed number.
+     *
+     * <p>Round-15 (review 48900): the real cause of the ~0.6216 m/s cap, found by reading
+     * {@link CarGeometry} against this rig's own absolute coordinates, not by further guessing: a car
+     * spawned at {@code originZ + 0.5} facing {@code +Z} (yaw 0) has its REAR wheel rays at
+     * {@code CarGeometry.MOUNTS}' own {@code z=-1.2} -- {@code originZ + 0.5 - 1.2 = originZ - 0.7} --
+     * and its rear body edge at {@code CarGeometry.HALF_Z=1.5} -- {@code originZ + 0.5 - 1.5 = originZ -
+     * 1.0}. The floor this method built only covered {@code dz 0..4} (i.e. {@code originZ} and forward)
+     * and the forced chunk range only started at {@code originZ}'s own chunk -- so the car's own rear
+     * footprint sat over nothing (no block, no loaded chunk) from the moment it spawned, which is exactly
+     * the kind of persistent, deterministic contact-state corruption that would reproduce bit-for-bit
+     * every run regardless of how long the chunk-readiness wait takes (which is exactly what three
+     * independent runs showed). Fixed by extending the floor and the forced chunk range three blocks
+     * behind {@code originZ} -- comfortably past the {@code originZ - 1.0} minimum -- rather than
+     * lengthening the ramp or touching the sanity bound. */
     @GameTest(template = "settlement_test", timeoutTicks = 300, batch = "carDrivetrainLedgeIsolated")
     public static void carRecoversCleanlyAfterDrivingOffALedgeAndLandingNearOrigin(GameTestHelper helper) {
         ServerLevel level = helper.getLevel();
         int originX = 0;
         int originY = 100;
         int originZ = 20_000;
+        // Round-15: the car's own rear body edge reaches originZ - 1.0 (CarGeometry.HALF_Z=1.5 from a
+        // spawn at originZ+0.5) -- three blocks of margin behind that, not just behind originZ itself.
+        int rearMargin = 3;
+        // Round-16: a bare near-origin world has nothing past this rig's own explicit blocks -- unlike
+        // the original far-coordinate test's shared structure template, which keeps the pit's far wall
+        // from being the literal edge of the world. Now that round-15's fix lets the car build real
+        // speed, it can clear the pit's original 5-block floor and keep falling into true void past it
+        // (CI evidence: "car was still falling at the end of the window", final Y velocity ~-17 m/s, not
+        // a divergence or a landed-but-slow reading). A first widening to 16 blocks still left it falling
+        // (final Vy ~-11 m/s): the original test's own "distance traveled (velocity-integrated)=~94
+        // blocks" figure is the car's CUMULATIVE travel over the whole 150-tick window, most of it spent
+        // CRUISING on flat ground after landing (nothing stops it once it lands and throttle is still
+        // applied) -- the original's own template supplies that much continuous ground implicitly; this
+        // bare near-origin rig has to build it explicitly. Sized generously past that figure rather than
+        // tuned to the exact number, so ordinary run-to-run speed variance doesn't reopen this gap.
+        int gapEndDz = 120;
         int minChunkX = (originX - 2) >> 4;
         int maxChunkX = (originX + 2) >> 4;
-        int minChunkZ = originZ >> 4;
-        int maxChunkZ = (originZ + 14) >> 4;
+        int minChunkZ = (originZ - rearMargin) >> 4;
+        int maxChunkZ = (originZ + gapEndDz) >> 4;
+
+        // Review 48900: idempotent cleanup must restore whatever this rig's own coordinates held
+        // BEFORE this test touched them, not just assume blank/unforced -- captured here, before any
+        // block is overwritten, rather than hardcoding what we expect to find.
+        boolean[] wasAlreadyForced = new boolean[(maxChunkX - minChunkX + 1) * (maxChunkZ - minChunkZ + 1)];
+        int chunkCount = 0;
+        for (int cx = minChunkX; cx <= maxChunkX; cx++) {
+            for (int cz = minChunkZ; cz <= maxChunkZ; cz++) {
+                wasAlreadyForced[chunkCount++] = level.getForcedChunks().contains(new ChunkPos(cx, cz).toLong());
+            }
+        }
         forceChunksNearOrigin(level, minChunkX, maxChunkX, minChunkZ, maxChunkZ, true);
+
+        // setChunkForced(true) loads each chunk synchronously (ServerLevel#setChunkForced calls
+        // getChunk() right away) -- block reads/writes below are safe immediately; only ENTITY ticking
+        // readiness needs the later thenIdle wait.
+        List<BlockPos> touchedBlocks = new ArrayList<>();
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -rearMargin; dz <= 4; dz++) {
+                touchedBlocks.add(new BlockPos(originX + dx, originY - 1, originZ + dz));
+                touchedBlocks.add(new BlockPos(originX + dx, originY, originZ + dz));
+            }
+            for (int dz = 5; dz <= gapEndDz; dz++) {
+                touchedBlocks.add(new BlockPos(originX + dx, originY - 3, originZ + dz));
+                touchedBlocks.add(new BlockPos(originX + dx, originY - 2, originZ + dz));
+                touchedBlocks.add(new BlockPos(originX + dx, originY - 1, originZ + dz));
+                touchedBlocks.add(new BlockPos(originX + dx, originY, originZ + dz));
+            }
+        }
+        List<BlockState> priorBlockStates = new ArrayList<>(touchedBlocks.size());
+        for (BlockPos pos : touchedBlocks) {
+            priorBlockStates.add(level.getBlockState(pos));
+        }
+
+        CarEntity[] carRef = new CarEntity[1];
+        Runnable cleanup = () -> {
+            if (carRef[0] != null) {
+                carRef[0].discard();
+            }
+            for (int i = 0; i < touchedBlocks.size(); i++) {
+                level.setBlock(touchedBlocks.get(i), priorBlockStates.get(i), 3);
+            }
+            int index = 0;
+            for (int cx = minChunkX; cx <= maxChunkX; cx++) {
+                for (int cz = minChunkZ; cz <= maxChunkZ; cz++) {
+                    if (!wasAlreadyForced[index++]) {
+                        level.setChunkForced(cx, cz, false);
+                    }
+                }
+            }
+        };
         helper.testInfo.addListener(new GameTestListener() {
             @Override
             public void testStructureLoaded(GameTestInfo info) {}
 
             @Override
             public void testPassed(GameTestInfo info, GameTestRunner runner) {
-                forceChunksNearOrigin(level, minChunkX, maxChunkX, minChunkZ, maxChunkZ, false);
+                cleanup.run();
             }
 
             @Override
             public void testFailed(GameTestInfo info, GameTestRunner runner) {
-                forceChunksNearOrigin(level, minChunkX, maxChunkX, minChunkZ, maxChunkZ, false);
+                cleanup.run();
             }
 
             @Override
-            public void testAddedForRerun(GameTestInfo info, GameTestInfo retry, GameTestRunner runner) {}
+            public void testAddedForRerun(GameTestInfo info, GameTestInfo retry, GameTestRunner runner) {
+                cleanup.run();
+            }
         });
 
-        CarEntity[] carRef = new CarEntity[1];
         double[] startZ = {0.0};
         double[] minVerticalVelocity = {0.0};
         double[] peakForwardVelocity = {0.0};
@@ -689,22 +777,26 @@ public final class CarDrivetrainGameTests {
         long[] sampleTickCount = {0L};
 
         helper.startSequence()
-                .thenWaitUntil(() -> helper.assertTrue(
-                        level.isPositionEntityTicking(new BlockPos(originX - 1, originY, originZ))
-                                && level.isPositionEntityTicking(new BlockPos(originX + 1, originY, originZ + 14)),
-                        "near-origin chunks not yet entity-ticking"))
+                // Round-15 follow-up: isPositionEntityTicking never actually tripped true within this
+                // test's own 300-tick timeout for this rig (exact CI evidence: timed out waiting, not a
+                // velocity symptom) -- whatever canPositionTick's own additional requirements are here,
+                // they are not satisfied by a forced ticket alone in this setup. Reverted to a fixed
+                // idle, but via this sequence (never runAtTickTimeMap, so the round-14 crash class is
+                // still structurally impossible) and at vanilla's own documented default
+                // (GameTestInfo#ticksToWaitForChunkLoading = 20) rather than a smaller guessed number.
+                .thenIdle(20)
                 .thenExecute(() -> {
                     // Exactly carRecoversCleanlyAfterDrivingOffALedgeAndLanding's own geometry,
                     // translated from structure-relative (dx 4..6, dz 5..14) to fixed absolute
-                    // coordinates.
+                    // coordinates, plus a solid floor behind the car's own rear footprint (round-15).
                     for (int dx = -1; dx <= 1; dx++) {
-                        for (int dz = 0; dz <= 4; dz++) {
+                        for (int dz = -rearMargin; dz <= 4; dz++) {
                             level.setBlock(new BlockPos(originX + dx, originY - 1, originZ + dz), Blocks.STONE.defaultBlockState(), 3);
                             level.setBlock(new BlockPos(originX + dx, originY, originZ + dz), Blocks.AIR.defaultBlockState(), 3);
                         }
                     }
                     for (int dx = -1; dx <= 1; dx++) {
-                        for (int dz = 5; dz <= 9; dz++) {
+                        for (int dz = 5; dz <= gapEndDz; dz++) {
                             level.setBlock(new BlockPos(originX + dx, originY - 3, originZ + dz), Blocks.STONE.defaultBlockState(), 3);
                             level.setBlock(new BlockPos(originX + dx, originY - 2, originZ + dz), Blocks.AIR.defaultBlockState(), 3);
                             level.setBlock(new BlockPos(originX + dx, originY - 1, originZ + dz), Blocks.AIR.defaultBlockState(), 3);
@@ -715,12 +807,12 @@ public final class CarDrivetrainGameTests {
                     helper.assertTrue(car != null, "car entity failed to construct");
                     car.moveTo(originX + 0.5, originY, originZ + 0.5, 0.0f, 0.0f);
                     level.addFreshEntity(car);
+                    carRef[0] = car;
                     car.selectGear(CarPhysics.Gear.D1);
                     Player rider = helper.makeMockPlayer(GameType.CREATIVE);
                     rider.setPos(car.getX(), car.getY(), car.getZ());
                     helper.assertTrue(rider.startRiding(car), "mock player failed to board the car");
                     rider.zza = 1.0f;
-                    carRef[0] = car;
                     startZ[0] = car.getZ();
                 })
                 .thenExecuteFor(150, () -> {

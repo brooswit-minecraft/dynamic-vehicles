@@ -496,6 +496,24 @@ public final class CarDrivetrainGameTests {
         double[] peakForwardVelocity = {0.0};
         boolean[] everUngrounded = {false};
         long[] firstUngroundedTick = {-1L};
+        // Review, round 12: "correlate rider/car positions and bounding boxes at that actual query with
+        // independently observed body pose/integration" - a dense per-tick System.out diagnostic run
+        // (not kept here; see the round-12 PR/Jira comment for the full log) found and reproduced across
+        // two independent runs at completely different structure placements: car.getZ() (pose) stays
+        // EXACTLY, bit-for-bit frozen at its spawn value for the entire 150-tick window - not merely
+        // imprecise, literally zero change - while velocity (getDeltaMovement(), integrated tick by tick
+        // below, entirely independent of pose) implies ~90+ blocks of real forward travel, and
+        // car.getY() (pose, the SAME sync path) visibly moves by the small amount suspension settling
+        // alone would produce. That Y moves while Z does not, by exactly zero, rules out "pose sync is
+        // globally broken this run" - it is specifically this axis's own position component that never
+        // gets written back, confirming (with much sharper evidence than the original round-4/5 velocity-
+        // only check) that this is the same Sable-internal pose/position defect already diagnosed, not a
+        // new one and not this test's own fixture.
+        double[] integratedZ = {startZ};
+        for (long tick = 1; tick <= 150; tick++) {
+            long diagTick = tick;
+            helper.runAfterDelay(diagTick, () -> integratedZ[0] += car.getDeltaMovement().z);
+        }
         long[] sampleTicks = {5, 10, 15, 20, 25, 30, 35, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140};
         for (long sampleTick : sampleTicks) {
             helper.runAfterDelay(sampleTick, () -> {
@@ -532,11 +550,18 @@ public final class CarDrivetrainGameTests {
             // the actual "went airborne" evidence, read from velocity (not corrupted by the Sable AABB bug
             // above) rather than from the raycast-derived wheelTravel() or getY() (both corrupted by it).
             double traveled = car.getZ() - startZ;
+            // Review, round 12: integratedZ (velocity summed tick by tick, never reading pose) alongside
+            // the pose-based "traveled" above - see this method's own round-12 javadoc note for why the
+            // GAP between these two numbers is itself the diagnostic: reproduced across two independent
+            // runs, "traveled" (pose) reads ~0 while this reads 90+ blocks, confirming car.getZ() itself
+            // never updates in this test, not merely that the car failed to actually move.
+            double integratedTraveled = integratedZ[0] - startZ;
             helper.assertTrue(minVerticalVelocity[0] < -2.0,
                     "car never showed a real falling (negative Y velocity) at any point -- the ledge drop never actually left the ground: worst Y velocity="
                             + minVerticalVelocity[0] + " m/s (ever ungrounded=" + everUngrounded[0]
                             + ", first ungrounded tick=" + firstUngroundedTick[0] + ", peak forward velocity="
-                            + peakForwardVelocity[0] + " m/s, distance traveled=" + traveled
+                            + peakForwardVelocity[0] + " m/s, distance traveled (pose)=" + traveled
+                            + " blocks, distance traveled (velocity-integrated)=" + integratedTraveled
                             + " blocks (need >5 to clear the ramp onto the gap), final speed=" + finalSpeed + ")");
             // Landed, not still falling: the suspension's own upward force must have arrested the descent
             // by the end of the window.

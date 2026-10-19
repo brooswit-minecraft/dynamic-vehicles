@@ -350,6 +350,8 @@ public class DynamicVehiclesMod {
                     new io.github.brooswitminecraft.dynamicvehicles.delivery.ContractWaypointOverlay());
             event.registerAboveAll(ResourceLocation.fromNamespaceAndPath(MODID, "pathfinder_hud"),
                     new io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderHudOverlay());
+            event.registerAboveAll(ResourceLocation.fromNamespaceAndPath(MODID, "pathfinder_waypoint"),
+                    new io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderWaypointOverlay());
         }
     }
 }

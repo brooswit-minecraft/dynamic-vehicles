@@ -1,9 +1,13 @@
-package io.github.brooswitminecraft.dynamicvehicles.delivery;
+package io.github.brooswitminecraft.dynamicvehicles.hud;
 
 /**
- * Minecraft-free camera projection and edge-clamping for the contract waypoint.
- * Coordinates are normalized screen coordinates: (0, 0) is top-left and
- * (1, 1) is bottom-right.
+ * Minecraft-free camera projection and edge-clamping for a mission waypoint
+ * marker. Coordinates are normalized screen coordinates: (0, 0) is top-left
+ * and (1, 1) is bottom-right.
+ *
+ * <p>MINECRAFT-411: moved here (unchanged) from {@code delivery.WaypointMarkerLayout}
+ * so {@code delivery.ContractWaypointOverlay} and Pathfinder's mission overlay
+ * share one implementation instead of a second divergent copy.
  */
 public final class WaypointMarkerLayout {
     private static final double EPSILON = 1.0e-9;

@@ -52,7 +52,7 @@ public final class DiffuserAssistGameTests {
      * this SAME entity before its first tick (while {@code sableBody} is still null, so
      * {@code SableCarBody.create} reads this as the body's actual starting pose) rather than a fresh one.
      *
-     * <p>Offset 0.2 rad off exactly &pi;, not exactly &pi;: {@link DiffuserAssistMathTest#exactlyUpsideDownIsAnUnstableEquilibriumWithNoSpuriousKick}
+     * <p>Offset 0.5 rad off exactly &pi;, not exactly &pi;: {@link DiffuserAssistMathTest#exactlyUpsideDownIsAnUnstableEquilibriumWithNoSpuriousKick}
      * already proves {@code rollSelfRightingTorque} returns EXACTLY zero at the true inverted equilibrium
      * (by design -- a real restoring force must vanish there too, or it is not actually an equilibrium).
      * A first version of this fixture used exactly {@code Math.PI} with zero initial angular velocity and
@@ -132,4 +132,20 @@ public final class DiffuserAssistGameTests {
             helper.succeed();
         });
     }
+
+    // R17 (pitch/landing time-to-touchdown) production-path GameTest: attempted and deliberately NOT
+    // included here. Over a dozen full ./gradlew runGameTestServer runs with several fixture designs
+    // (checking at the airborne/grounded boundary via succeedWhen+isTouchingGroundForTest; checking a
+    // fixed tick with progressively stronger tuning and earlier tick numbers), the actual tick at which a
+    // pitched car's wheels first contact ground proved NOT deterministic in this environment -- the same
+    // fixture landed anywhere from tick ~6 to past tick ~20 run to run (observed directly, not guessed),
+    // which this ticket's own acceptance criteria ("finite bounded time-scaled response") cannot be
+    // reliably exercised against with a fixed-tick or airborne-boundary check. Rather than land a flaky
+    // test (intermittently red for reasons unrelated to the assist) or quietly loosen the assertion until
+    // it stopped catching anything meaningful, this is reported as genuine remaining work: R17's own pure
+    // -function behaviour (authority ramping, invalid/past-horizon estimates) is already covered by
+    // DiffuserAssistMathTest; a reliable production-path check needs either a steadier landing fixture
+    // (e.g. a much higher, slower-arriving drop column clear of the "Can't keep up" server-load variance
+    // observed during these runs) or a polling design keyed off the body's own predicted time-to-touchdown
+    // rather than a fixed tick or the first-contact boundary.
 }

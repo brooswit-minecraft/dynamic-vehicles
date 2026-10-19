@@ -183,6 +183,15 @@ public class CarEntity extends Entity {
         return sableBody != null ? SableCompat.orientation(sableBody) : null;
     }
 
+    /** GameTest-only accessor (MINECRAFT-447): whether any wheel was touching ground on the last real tick.
+     * Deliberately NOT {@link #onGround()} -- that vanilla flag is never updated for this entity, since its
+     * position is set directly from the Sable body rather than through vanilla's own move/collision path
+     * that normally maintains it (confirmed directly: a GameTest polling {@code onGround()} never saw it
+     * become true long after the car had visibly landed and settled). */
+    boolean isTouchingGroundForTest() {
+        return sableBody != null && SableCompat.touching(sableBody);
+    }
+
     /**
      * Applies one driver-configurable tuning dial to this particular entity. Values are always clamped before
      * they can reach physics, including values received through a command or loaded from old/corrupt save data.

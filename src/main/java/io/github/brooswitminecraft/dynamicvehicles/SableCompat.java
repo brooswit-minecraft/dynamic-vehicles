@@ -34,6 +34,10 @@ final class SableCompat {
         return ((SableCarBody) body).lastSlipSpeed();
     }
 
+    static boolean touching(Object body) {
+        return ((SableCarBody) body).touching();
+    }
+
     static double speed(Object body) {
         return ((SableCarBody) body).speed();
     }

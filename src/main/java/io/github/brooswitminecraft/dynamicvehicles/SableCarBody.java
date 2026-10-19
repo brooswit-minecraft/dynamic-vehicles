@@ -42,6 +42,14 @@ final class SableCarBody {
     private final RigidBodyHandle body;
     private double lastSlipSpeed;
     private double lastSpinSlip;
+    /** Whether any wheel had a positive suspension force on the last tick (MINECRAFT-447 GameTest support):
+     * {@code CarEntity}'s own vanilla {@code onGround()} is never updated for this entity (its position is
+     * set directly from the Sable body, not through vanilla's move/collision path that normally maintains
+     * that flag) -- observed directly: a GameTest polling {@code car.onGround()} never saw it become true
+     * even long after the car had visibly landed and settled. This is the real signal {@code tick}'s own
+     * {@code touching} local already computes every tick; it only needed persisting to be readable between
+     * ticks. */
+    private boolean lastTouching;
     // One real spin rate per wheel (rad/s), persisted tick to tick and advanced sub-step to sub-step by
     // WheelMath.spinRate - state, not a value re-derived from scratch each call. See spinRate's own
     // javadoc for why a gripping wheel is pulled to ground speed rather than carrying forward a stale slip.
@@ -518,6 +526,7 @@ final class SableCarBody {
         }
         lastSlipSpeed = slipThisTick;
         lastSpinSlip = spinSlipThisTick;
+        lastTouching = touching;
         if (CarDebug.enabled) {
             drawDebug(position, orientation, hits);
         }
@@ -705,6 +714,12 @@ final class SableCarBody {
     /** The largest tire slip speed seen on the last tick, m/s. */
     double lastSlipSpeed() {
         return lastSlipSpeed;
+    }
+
+    /** Whether any wheel had a positive suspension force on the last tick -- see {@link #lastTouching}'s
+     * own javadoc for why this exists instead of using vanilla's {@code onGround()}. */
+    boolean touching() {
+        return lastTouching;
     }
 
     /** Each wheel's suspension travel as of the last tick's single raycast, metres (a copy; not live state). */

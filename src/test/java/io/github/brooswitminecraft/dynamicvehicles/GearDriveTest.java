@@ -13,30 +13,56 @@ class GearDriveTest {
 
     @Test
     void acceleratorDrivesForwardOnlyInAForwardGear() {
-        double drive = GearDrive.drive(1.0, 0.0, CarPhysics.Gear.D1, DRIVE_FORCE, REVERSE_FORCE, 1.0, MAX_SPEED);
+        double drive = GearDrive.drive(1.0, 0.0, CarPhysics.Gear.D1, 1.0, DRIVE_FORCE, REVERSE_FORCE, 1.0, MAX_SPEED);
         assertTrue(drive > 0, "accelerator in a forward gear drives forward");
     }
 
     @Test
     void acceleratorNeverPropelsInNeutralRegardlessOfSpeed() {
-        assertEquals(0.0, GearDrive.drive(1.0, 0.0, CarPhysics.Gear.NEUTRAL, DRIVE_FORCE, REVERSE_FORCE, 1.0, MAX_SPEED), 0.0,
+        assertEquals(0.0, GearDrive.drive(1.0, 0.0, CarPhysics.Gear.NEUTRAL, 1.0, DRIVE_FORCE, REVERSE_FORCE, 1.0, MAX_SPEED), 0.0,
                 "MINECRAFT-382: positive accelerator must not drive the car in neutral");
-        assertEquals(0.0, GearDrive.drive(1.0, 12.0, CarPhysics.Gear.NEUTRAL, DRIVE_FORCE, REVERSE_FORCE, 1.0, MAX_SPEED), 0.0);
+        assertEquals(0.0, GearDrive.drive(1.0, 12.0, CarPhysics.Gear.NEUTRAL, 1.0, DRIVE_FORCE, REVERSE_FORCE, 1.0, MAX_SPEED), 0.0);
     }
 
     @Test
     void acceleratorDrivesBackwardWhenReverseIsSelected() {
-        double drive = GearDrive.drive(1.0, 0.0, CarPhysics.Gear.REVERSE, DRIVE_FORCE, REVERSE_FORCE, 1.0, MAX_SPEED);
+        double drive = GearDrive.drive(1.0, 0.0, CarPhysics.Gear.REVERSE, 1.0, DRIVE_FORCE, REVERSE_FORCE, 1.0, MAX_SPEED);
         assertTrue(drive < 0, "MINECRAFT-382: the accelerator must follow the selected REVERSE gear, not always drive forward");
     }
 
     @Test
-    void acceleratorNeverInstantlyReversesACarStillMovingTheOtherWay() {
-        // Still coasting forward at real speed: pressing the accelerator while in REVERSE must not snap
-        // the drive force backward in the same tick -- it waits until the car has actually slowed down.
-        assertEquals(0.0, GearDrive.drive(1.0, 5.0, CarPhysics.Gear.REVERSE, DRIVE_FORCE, REVERSE_FORCE, 1.0, MAX_SPEED), 0.0);
-        // Symmetric case: still rolling backward, accelerator in a forward gear must not snap forward.
-        assertEquals(0.0, GearDrive.drive(1.0, -5.0, CarPhysics.Gear.D1, DRIVE_FORCE, REVERSE_FORCE, 1.0, MAX_SPEED), 0.0);
+    void acceleratorAppliesTractionLimitedForceEvenWhileRollingTheOtherWay() {
+        // MINECRAFT-401: the old opposing-direction gate is removed. Forward torque while rolling
+        // backward, and reverse torque while rolling forward, both apply in the selected gear's own
+        // direction -- exactly what decelerates and eventually reverses the unwanted roll -- rather than
+        // doing nothing until the car has coasted to a near-standstill first.
+        double forwardWhileRollingBackward = GearDrive.drive(1.0, -5.0, CarPhysics.Gear.D1, 1.0, DRIVE_FORCE, REVERSE_FORCE, 1.0, MAX_SPEED);
+        assertTrue(forwardWhileRollingBackward > 0, "a forward gear must still push forward while the car rolls backward");
+        double reverseWhileRollingForward = GearDrive.drive(1.0, 5.0, CarPhysics.Gear.REVERSE, 1.0, DRIVE_FORCE, REVERSE_FORCE, 1.0, MAX_SPEED);
+        assertTrue(reverseWhileRollingForward < 0, "REVERSE must still push backward while the car rolls forward");
+        // Even far into the opposing direction, nowhere near this gear's own governed top speed, the
+        // force must not have decayed to zero -- the governor below is keyed to speed in the gear's OWN
+        // direction only, never to the magnitude of an opposing speed.
+        double farIntoOpposingRoll = GearDrive.drive(1.0, -(MAX_SPEED * 2), CarPhysics.Gear.D1, 1.0, DRIVE_FORCE, REVERSE_FORCE, 1.0, MAX_SPEED);
+        assertEquals(DRIVE_FORCE, farIntoOpposingRoll, 1e-9);
+    }
+
+    @Test
+    void theGovernorOnlySoftensForceInTheGearsOwnDirection() {
+        // Approaching this gear's own governed top speed in its own direction still tapers the force off,
+        // same as before MINECRAFT-401 -- only the OPPOSING-direction gate was removed, not the governor.
+        double nearOwnTopSpeed = GearDrive.drive(1.0, MAX_SPEED * 0.9, CarPhysics.Gear.D1, 1.0, DRIVE_FORCE, REVERSE_FORCE, 1.0, MAX_SPEED);
+        assertTrue(nearOwnTopSpeed > 0 && nearOwnTopSpeed < DRIVE_FORCE, "drive force should taper near the gear's own top speed");
+        double atOwnTopSpeed = GearDrive.drive(1.0, MAX_SPEED, CarPhysics.Gear.D1, 1.0, DRIVE_FORCE, REVERSE_FORCE, 1.0, MAX_SPEED);
+        assertEquals(0.0, atOwnTopSpeed, 1e-9);
+    }
+
+    @Test
+    void forceMultiplierScalesTheDriveForceForTheEngagedRatio() {
+        double low = GearDrive.drive(1.0, 0.0, CarPhysics.Gear.D1, 2.0, DRIVE_FORCE, REVERSE_FORCE, 1.0, MAX_SPEED);
+        double high = GearDrive.drive(1.0, 0.0, CarPhysics.Gear.D1, 0.5, DRIVE_FORCE, REVERSE_FORCE, 1.0, MAX_SPEED);
+        assertEquals(DRIVE_FORCE * 2.0, low, 1e-9);
+        assertEquals(DRIVE_FORCE * 0.5, high, 1e-9);
     }
 
     @Test
@@ -64,7 +90,7 @@ class GearDriveTest {
 
     @Test
     void driveIsZeroAtZeroOrNegativeThrottle() {
-        assertEquals(0.0, GearDrive.drive(0.0, 0.0, CarPhysics.Gear.D1, DRIVE_FORCE, REVERSE_FORCE, 1.0, MAX_SPEED), 0.0);
-        assertEquals(0.0, GearDrive.drive(-1.0, 0.0, CarPhysics.Gear.D1, DRIVE_FORCE, REVERSE_FORCE, 1.0, MAX_SPEED), 0.0);
+        assertEquals(0.0, GearDrive.drive(0.0, 0.0, CarPhysics.Gear.D1, 1.0, DRIVE_FORCE, REVERSE_FORCE, 1.0, MAX_SPEED), 0.0);
+        assertEquals(0.0, GearDrive.drive(-1.0, 0.0, CarPhysics.Gear.D1, 1.0, DRIVE_FORCE, REVERSE_FORCE, 1.0, MAX_SPEED), 0.0);
     }
 }

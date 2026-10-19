@@ -169,7 +169,10 @@ public final class WheelMapping {
     /**
      * Resolves a shifter button sample to the existing explicit gear state. Conflicting simultaneous
      * presses resolve deterministically by this fixed priority: reverse, then the dedicated neutral
-     * button (if mapped), then D1..D6 in order.
+     * button (if mapped), then D1..D5, then the sixth position, {@code d6()}, which selects
+     * {@link CarPhysics.Gear#AUTOMATIC} (MINECRAFT-401) rather than a sixth manual ratio -- the field is
+     * still named {@code d6} because it is the measured H-pattern's sixth physical lever position/button,
+     * not because it still maps to a manual gear.
      *
      * <p>The sample is validated FIRST, before any individual button is trusted: {@code null} (no gear
      * decision, leave the car's current gear alone) when nothing is actually mapped
@@ -192,7 +195,7 @@ public final class WheelMapping {
         if (buttonDown(buttons, mapping.d3())) return CarPhysics.Gear.D3;
         if (buttonDown(buttons, mapping.d4())) return CarPhysics.Gear.D4;
         if (buttonDown(buttons, mapping.d5())) return CarPhysics.Gear.D5;
-        if (buttonDown(buttons, mapping.d6())) return CarPhysics.Gear.D6;
+        if (buttonDown(buttons, mapping.d6())) return CarPhysics.Gear.AUTOMATIC;
         return mode == ShifterMode.H_PATTERN ? CarPhysics.Gear.NEUTRAL : null;
     }
 

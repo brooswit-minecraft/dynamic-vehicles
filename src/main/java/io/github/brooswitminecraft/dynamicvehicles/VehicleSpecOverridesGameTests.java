@@ -60,6 +60,12 @@ public final class VehicleSpecOverridesGameTests {
             helper.assertTrue(Math.abs(crawler.spec().restLength() - expectedRestLength) < 1e-9,
                     "restLength did not scale with the rideHeight override: expected " + expectedRestLength
                             + " got " + crawler.spec().restLength());
+            // MINECRAFT-443 review fix (comment 48876): CarRenderer must never draw from spec.rideHeight()
+            // (always stock on a logical client) -- authoritativeRideHeight() is the synced value it
+            // actually uses, and on this same logical server it must already equal the override.
+            helper.assertTrue(Math.abs(crawler.authoritativeRideHeight() - requestedRideHeight) < 1e-5,
+                    "authoritativeRideHeight() did not reflect the rideHeight override: expected "
+                            + requestedRideHeight + " got " + crawler.authoritativeRideHeight());
             helper.succeed();
         });
     }
@@ -139,8 +145,21 @@ public final class VehicleSpecOverridesGameTests {
         // A value nothing else in this suite uses for the bus, so a stale table from an earlier test
         // (which only ever touches truck/rock_crawler ids) cannot be mistaken for this fixture working.
         double fixtureRollingScale = 0.42;
+        // MINECRAFT-443 review fix (comment 48876): this test mutates the REAL config dir and the REAL
+        // override table (that is the whole point -- it is what proves the production wiring), so it
+        // must leave both exactly as it found them, not just "empty"/"no fixture": a pre-existing
+        // bus.json (however unlikely in a fresh gametest run, but not impossible on a reused one) is
+        // read back and restored byte-for-byte rather than deleted, and the table is restored by
+        // re-running the real loader against the real dir in whatever state that leaves it -- never
+        // wiped to "nothing loaded", which would be a regression for any other car's real fixture.
+        boolean fixtureExistedBefore = Files.isRegularFile(fixtureFile);
+        String previousFixtureContent = null;
         try {
-            Files.createDirectories(realCarsDir);
+            if (fixtureExistedBefore) {
+                previousFixtureContent = Files.readString(fixtureFile);
+            } else {
+                Files.createDirectories(realCarsDir);
+            }
             Files.writeString(fixtureFile, "{\"rollingScale\": " + fixtureRollingScale + "}");
 
             net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(
@@ -156,11 +175,17 @@ public final class VehicleSpecOverridesGameTests {
             throw new RuntimeException(e);
         } finally {
             try {
-                Files.deleteIfExists(fixtureFile);
+                if (fixtureExistedBefore) {
+                    Files.writeString(fixtureFile, previousFixtureContent);
+                } else {
+                    Files.deleteIfExists(fixtureFile);
+                }
             } catch (IOException ignored) {
-                // Best-effort cleanup of a file under the run's own disposable config dir.
+                // Best-effort restoration of a file under the run's own config dir.
             }
-            VehicleSpecOverrides.load(Path.of(System.getProperty("java.io.tmpdir"), "dynamicvehicles-no-such-config-dir"));
+            // Restores the table to whatever the real config dir actually holds now (its pre-existing,
+            // just-restored state), not to empty -- the real production loader, pointed at the real dir.
+            VehicleSpecOverrides.load(realConfigDir);
         }
     }
 

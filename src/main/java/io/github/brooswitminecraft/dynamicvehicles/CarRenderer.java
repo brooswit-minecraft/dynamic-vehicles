@@ -72,7 +72,10 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
             pose.mulPose(car.renderOrientation(partialTick));
         } else {
             // Simple model: the entity origin is on the ground, the body centre is a ride height above it.
-            pose.translate(0.0, car.spec().rideHeight(), 0.0);
+            // MINECRAFT-443: car.spec().rideHeight() is never safe to draw with -- on a logical client it
+            // is always the plain stock value, never an active per-car override (VehicleSpecOverrides'
+            // own javadoc). car.authoritativeRideHeight() is the server-resolved value, synced.
+            pose.translate(0.0, car.authoritativeRideHeight(), 0.0);
             pose.mulPose(com.mojang.math.Axis.YP.rotationDegrees(-yaw));
         }
         VehicleSpec spec = car.spec();
@@ -81,7 +84,11 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
         float hz = (float) spec.halfZ();
         float r = (float) spec.wheelRadius();
         float w = (float) spec.wheelWidth();
-        float cy = (float) spec.wheelCentreY();
+        // MINECRAFT-443: wheelRadius (unlike rideHeight) is not file-overridable -- see
+        // docs/per-car-config.md's "Not covered by this ticket" -- so it is safe to read straight off the
+        // (possibly stock-only, on a client) spec; only the rideHeight half of this formula needs the
+        // synced, authoritative value car.spec().wheelCentreY() itself cannot provide on a client.
+        float cy = -car.authoritativeRideHeight() + r;
         VehicleModel model = VehicleModel.forId(car.vehicleId());
         switch (model) {
         case CAR -> {

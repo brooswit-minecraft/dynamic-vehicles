@@ -70,6 +70,17 @@ public class CarEntity extends Entity {
     /** Per-wheel suspension travel, steer angle and spin rate (MINECRAFT-122), packed by {@link WheelSync}. */
     private static final net.minecraft.network.syncher.EntityDataAccessor<CompoundTag> DATA_WHEELS =
             net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.COMPOUND_TAG);
+    /** MINECRAFT-443 review fix (comment 48876): this car's AUTHORITATIVE (server-resolved, override-
+     * aware) ride height, synced so {@link CarRenderer} draws wheels/body at the height the server's
+     * physics actually used -- never the client's own {@link #spec}, which {@link
+     * VehicleSpecOverrides#resolveForSide} always keeps at the plain stock value (a logical client never
+     * reads the per-car config override table at all, by design: see that method's own javadoc for why).
+     * Without this, a rideHeight override made a car's wheels visually float or sink by exactly the
+     * override's delta, since the renderer would draw the stock wheel offset under a body the server
+     * actually suspended at a different height. Static for this car's whole lifetime (set once, here,
+     * never updated per-tick), unlike every other {@code DATA_*} field in this class. */
+    private static final net.minecraft.network.syncher.EntityDataAccessor<Float> DATA_RIDE_HEIGHT =
+            net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
     // Client side: the last two received per-wheel frames, for renderOrientation-style interpolation.
     // Zero-length default (no wheels known yet) rather than a guessed wheel count, so an empty tag
     // decodes to a frame the renderer can tell apart from "not synced yet" if it ever needs to.
@@ -145,6 +156,12 @@ public class CarEntity extends Entity {
         this.spec = VehicleSpecOverrides.resolveForSide(level.isClientSide(), this.vehicleId, stockSpecFor(this.vehicleId));
         this.vehicleTuning = spec.vehicleTuning();
         this.seats = new SeatAssignment<>(spec.seatCount());
+        // MINECRAFT-443: each side's own local best guess at construction time (the server's is
+        // authoritative; a logical client's is only its own stock spec, same as #spec always is) -- the
+        // server's own value then overwrites the client's guess via the ordinary entity-data sync that
+        // follows, which is what CarRenderer actually ends up drawing from (see DATA_RIDE_HEIGHT's own
+        // javadoc for why #spec itself is never safe for a client to draw suspension height from).
+        entityData.set(DATA_RIDE_HEIGHT, (float) spec.rideHeight());
     }
 
     private static String vehicleIdFor(EntityType<? extends CarEntity> type) {
@@ -228,6 +245,7 @@ public class CarEntity extends Entity {
         builder.define(DATA_RADIO_URL, "");
         builder.define(DATA_SLIP, 0.0f);
         builder.define(DATA_WHEELS, new CompoundTag());
+        builder.define(DATA_RIDE_HEIGHT, 0.0f);
     }
 
     @Override
@@ -358,6 +376,15 @@ public class CarEntity extends Entity {
     /** Client: how many wheels the last received frame carries, or 0 before the first sync. */
     public int syncedWheelCount() {
         return WheelSync.wheelCount(currentWheels);
+    }
+
+    /** MINECRAFT-443: this car's AUTHORITATIVE ride height -- what {@link CarRenderer} must draw the body
+     * and wheels at, never {@link #spec}'s own {@code rideHeight()} (see {@link #DATA_RIDE_HEIGHT}'s own
+     * javadoc for why). On the server this is already {@code spec.rideHeight()}; on a client it starts at
+     * its own local stock guess and is corrected by the ordinary entity-data sync within a tick or two of
+     * tracking the entity. */
+    public float authoritativeRideHeight() {
+        return entityData.get(DATA_RIDE_HEIGHT);
     }
 
     private float wheelField(int wheel, float partialTick, int field) {

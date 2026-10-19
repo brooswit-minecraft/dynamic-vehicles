@@ -26,7 +26,23 @@ public record VehicleSpec(
          * single-seat {@link #seats} list from exactly these two numbers. */
         double seatY, double seatZ,
         /** Grip on loose surfaces is multiplied by this (capped at the pavement's), and soft ground's rolling resistance by rollingScale. */
-        double looseGrip, double rollingScale,
+        double looseGrip,
+        /** Per-vehicle multiplier (MINECRAFT-62/450) on the surface's own {@code
+         * SurfaceProperties.rollingResistance()}, as consumed by {@link WheelMath#rollingCoefficient}:
+         * {@code rollingCoefficient = rollingResistance * rollingScale * (1 + deformability * DEFORMABILITY_ROLLING_GAIN)}.
+         * Dimensionless, intended range roughly 0.5..1.0 across the roster (e.g. {@code CAR}/{@code INDY}
+         * at the neutral {@code 1.0} &mdash; the surface's own coefficient applies unscaled; {@code
+         * ROCK_CRAWLER}/{@code MONSTER_TRUCK} down near {@code 0.5}..{@code 0.55} for tires tuned to roll
+         * easier on loose ground). {@code 1.0} is both the neutral value (no change from the surface's own
+         * number) and the value every vehicle that has not deliberately tuned this field away from it
+         * carries. There is no runtime "missing data" fallback for this field &mdash; it is a required
+         * constructor argument of this record, always supplied by a {@code VehicleSpec} constant below, so
+         * every vehicle always has a concrete value; the fallback that DOES exist is one layer up, in the
+         * terrain side of this multiplication: {@link io.github.brooswitminecraft.dynamicterrain.Surfaces#at}
+         * returns {@code SurfaceProperties.PAVEMENT} for air and otherwise falls back from a declared
+         * {@code SurfaceOverrides} entry to {@code SurfaceMath}'s automatic inference, never to a missing
+         * value this field would need to compensate for. */
+        double rollingScale,
         /** This vehicle's tire model tuning; {@link TireTuning#IDENTITY} for every vehicle that has not opted in. */
         TireTuning tireTuning,
         /** Downforce (MINECRAFT-184): extra tire grip per m/s of forward speed, applied as a multiplier on
@@ -57,6 +73,16 @@ public record VehicleSpec(
          * five fields are grouped into their own small type rather than folded into {@link TireTuning} or
          * left as bare fields on this record. */
         VehicleTuning vehicleTuning,
+        /** Per-vehicle handbrake strength multiplier (MINECRAFT-443): {@link SableCarBody#tick} computes
+         * {@code brake = HANDBRAKE_FORCE * forceScale() * handbrakeScale()} for a rear wheel while the
+         * handbrake is held, so a vehicle can get a stronger or weaker handbrake without touching the one
+         * shared {@code HANDBRAKE_FORCE} constant every vehicle used before this field existed. {@code 1.0}
+         * (identity, no extra scale) for every vehicle that has not opted in &mdash; today, every vehicle on
+         * the roster, so {@code SableCarBody.tick}'s handbrake branch is byte-for-byte unchanged for all of
+         * them. Distinct from (and does not touch) the separate, drift-only, already-live {@code
+         * TireTuning#handbrakeRearGripCut}, which scales the handbrake's lateral-grip cut, not its brake
+         * force, and is owned by {@code CarConfig}, not this per-vehicle field. */
+        double handbrakeScale,
         /** This vehicle's Diffuser KIT tuning (MINECRAFT-447/395 R02, R16-R19): roll self-righting, pitch
          * landing help, heading alignment and trajectory alignment &mdash; four distinct arcade assists,
          * deliberately separate from real aerodynamic downforce/drag ({@link #downforceGripPerSpeed},
@@ -67,10 +93,33 @@ public record VehicleSpec(
          * assist uses once a car's spec turns it on. */
         DiffuserTuning diffuserTuning) {
 
-    /** As the full (canonical) constructor above, minus the trailing {@link #vehicleTuning} (MINECRAFT-227/245):
-     * exactly the field list every vehicle spec used before this ticket. {@code CAR}, {@code TRUCK},
+    /** As the full (canonical) constructor above, minus the trailing {@link #handbrakeScale} and
+     * {@link #diffuserTuning} (MINECRAFT-443/447): exactly the field list every vehicle spec used before
+     * those tickets. Every existing vehicle still calls this constructor (directly or through a shorter
+     * overload below it), with {@link #handbrakeScale} defaulted to {@code 1.0} (identity) and
+     * {@link #diffuserTuning} to {@link DiffuserTuning#IDENTITY}. */
+    public VehicleSpec(double halfX, double halfY, double halfZ,
+            double[][] mounts, double wheelRadius, double wheelWidth,
+            double rideHeight, double restLength,
+            double massKg, double springRate, double dampingRate, double maxSpringForce,
+            double wheelbase, double maxSpeed,
+            double forceScale, double enginePitch,
+            double seatY, double seatZ,
+            double looseGrip, double rollingScale,
+            TireTuning tireTuning, double downforceGripPerSpeed, double antiRollScale,
+            List<Seat> seats, VehicleTuning vehicleTuning) {
+        this(halfX, halfY, halfZ, mounts, wheelRadius, wheelWidth, rideHeight, restLength,
+                massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
+                forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
+                downforceGripPerSpeed, antiRollScale, seats, vehicleTuning, 1.0, DiffuserTuning.IDENTITY);
+    }
+
+    /** As the full (canonical) constructor above, minus the trailing {@link #vehicleTuning},
+     * {@link #handbrakeScale} and {@link #diffuserTuning} (MINECRAFT-227/245, MINECRAFT-443, MINECRAFT-447):
+     * exactly the field list every vehicle spec used before those tickets. {@code CAR}, {@code TRUCK},
      * {@code TROPHY}, {@code DRIFT}, {@code BUS} and {@code CARGO_TRUCK} all still call this constructor
-     * unedited, with {@link #vehicleTuning} defaulted to {@link VehicleTuning#IDENTITY}. */
+     * unedited, with {@link #vehicleTuning} defaulted to {@link VehicleTuning#IDENTITY}, {@link
+     * #handbrakeScale} to {@code 1.0}, and {@link #diffuserTuning} to {@link DiffuserTuning#IDENTITY}. */
     public VehicleSpec(double halfX, double halfY, double halfZ,
             double[][] mounts, double wheelRadius, double wheelWidth,
             double rideHeight, double restLength,
@@ -84,7 +133,7 @@ public record VehicleSpec(
         this(halfX, halfY, halfZ, mounts, wheelRadius, wheelWidth, rideHeight, restLength,
                 massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
                 forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
-                downforceGripPerSpeed, antiRollScale, seats, VehicleTuning.IDENTITY, DiffuserTuning.IDENTITY);
+                downforceGripPerSpeed, antiRollScale, seats, VehicleTuning.IDENTITY, 1.0, DiffuserTuning.IDENTITY);
     }
 
     /**
@@ -163,7 +212,7 @@ public record VehicleSpec(
                 massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
                 forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
                 downforceGripPerSpeed, antiRollScale, List.of(new Seat(0.0, seatY, seatZ)), vehicleTuning,
-                DiffuserTuning.IDENTITY);
+                1.0, DiffuserTuning.IDENTITY);
     }
 
     /**

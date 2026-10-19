@@ -37,6 +37,97 @@ class WheelMathTest {
         assertEquals(WheelMath.MAX_FORCE, WheelMath.suspensionForce(0.6, 50.0), 0);
     }
 
+    /** MINECRAFT-443 review fix (comment 48829): {@link WheelMath#compression} is the exact method {@code
+     * SableCarBody.tick}'s raycast loop calls to turn a wheel's own {@code VehicleSpec#restLength} (what a
+     * per-car {@code rideHeight} config override actually scales) and raycast distance into a spring
+     * compression -- not a parallel reimplementation of the formula. */
+    @Test
+    void compressionIsRestLengthMinusDistance() {
+        assertEquals(0.3, WheelMath.compression(0.65, 0.35), 1e-9);
+        assertEquals(-0.1, WheelMath.compression(0.65, 0.75), 1e-9);
+    }
+
+    /** The full production seam a rideHeight override reaches, end to end: {@link WheelMath#compression}
+     * feeding directly into {@link WheelMath#suspensionForce} (both the exact methods {@code
+     * SableCarBody.tick} calls), using the rock crawler's own real restLength/spring/damper numbers scaled
+     * exactly the way {@code VehicleSpecOverrides} scales them for a halved rideHeight override -- proving
+     * the scaled value still produces a sane, positive, uncapped suspension force at a representative
+     * resting distance, not just that the spec field holds the right number. */
+    @Test
+    void aRideHeightOverridesDerivedRestLengthMakesTheActualRestingHeightMatchIt() {
+        VehicleSpec stock = VehicleSpec.ROCK_CRAWLER;
+        double mountY = stock.mounts()[0][1];
+        double overriddenRideHeight = stock.rideHeight() / 2.0;
+        double derivedRestLength = WheelMath.restLengthForRideHeight(overriddenRideHeight, mountY,
+                stock.massKg(), stock.springRate(), stock.mounts().length);
+
+        // The exact raycast distance at the REQUESTED resting height (not an approximation): a wheel
+        // mounted mountY below the body centre, with the body centre sitting at overriddenRideHeight.
+        double distanceAtRequestedRideHeight = overriddenRideHeight + mountY;
+        double compression = WheelMath.compression(derivedRestLength, distanceAtRequestedRideHeight);
+        double force = WheelMath.suspensionForce(compression, 0.0, stock.springRate(), stock.dampingRate(),
+                stock.maxSpringForce());
+
+        // Review fix 48903's whole point: this must be the car's own exact per-wheel static load, not
+        // merely "some positive, uncapped force" -- proving the actual resting height really is the
+        // requested one, not merely close to it or still bottomed/floating relative to it.
+        double expectedStaticLoadPerWheel = stock.massKg() * WheelMath.GRAVITY / stock.mounts().length;
+        assertEquals(expectedStaticLoadPerWheel, force, expectedStaticLoadPerWheel * 1e-6);
+    }
+
+    /** MINECRAFT-443 review fix (comment 48829): {@link WheelMath#handbrakeForce} is the exact method
+     * {@code SableCarBody.tick}'s handbrake branch calls -- not a parallel reimplementation -- so a
+     * regression that silently dropped the {@code handbrakeScale} multiplication (the review's own
+     * example) fails this test, not just the pure parse/clamp test in {@code VehicleSpecOverridesTest}. */
+    @Test
+    void handbrakeForceAppliesForceScaleAndHandbrakeScale() {
+        double base = 12_000.0;
+        assertEquals(base, WheelMath.handbrakeForce(base, 1.0, 1.0), 1e-9, "identity scales must leave the base force unchanged");
+        assertEquals(base * 2.0 * 0.5, WheelMath.handbrakeForce(base, 2.0, 0.5), 1e-9);
+    }
+
+    /** MINECRAFT-443 review fix (comment 48913): {@link VehicleSpecLimits}' car-agnostic 0.1 m floor is
+     * not usable for every car -- it must be rejected per car by {@link WheelMath#isUsableRideHeight},
+     * using CAR's own real geometry (halfY 0.5, mount depth 0.4) as a concrete example. */
+    @Test
+    void lowRideHeightsThatIntersectTheChassisOrSinkTheMountAreNotUsable() {
+        double halfY = VehicleSpec.CAR.halfY();
+        double mountY = VehicleSpec.CAR.mounts()[0][1];
+        assertTrue(!WheelMath.isUsableRideHeight(0.1, halfY, mountY),
+                "0.1 m is below CAR's own halfY (0.5) and mount depth (0.4) -- must not be usable");
+        assertTrue(!WheelMath.isUsableRideHeight(halfY, halfY, mountY),
+                "exactly halfY leaves the chassis bottom AT the ground, not clear of it");
+        assertTrue(WheelMath.isUsableRideHeight(0.9, halfY, mountY), "CAR's own stock rideHeight must be usable");
+    }
+
+    /** Every existing car's own per-car rideHeight floor (`max(halfY, |mountY|)`), pinned so
+     * docs/per-car-config.md's documented per-car floor table cannot silently drift from the real
+     * geometry it is computed from. */
+    @Test
+    void everyExistingCarsRideHeightFloorMatchesItsDocumentedValue() {
+        assertRideHeightFloor("car", VehicleSpec.CAR, 0.5);
+        assertRideHeightFloor("truck", VehicleSpec.TRUCK, 0.65);
+        assertRideHeightFloor("trophy_truck", VehicleSpec.TROPHY, 0.5);
+        assertRideHeightFloor("drift_car", VehicleSpec.DRIFT, 0.42);
+        assertRideHeightFloor("muscle_car", VehicleSpec.MUSCLE, 0.5);
+        assertRideHeightFloor("rock_crawler", VehicleSpec.ROCK_CRAWLER, 0.6);
+        assertRideHeightFloor("monster_truck", VehicleSpec.MONSTER_TRUCK, 0.75);
+        assertRideHeightFloor("indy_car", VehicleSpec.INDY, 0.35);
+        assertRideHeightFloor("bus", VehicleSpec.BUS, 0.9);
+        assertRideHeightFloor("cargo_truck", VehicleSpec.CARGO_TRUCK, 0.75);
+    }
+
+    private static void assertRideHeightFloor(String id, VehicleSpec spec, double documentedFloor) {
+        double floor = Math.max(spec.halfY(), -spec.mounts()[0][1]);
+        assertEquals(documentedFloor, floor, 1e-9, id + "'s rideHeight floor (docs/per-car-config.md)");
+        assertTrue(!WheelMath.isUsableRideHeight(floor, spec.halfY(), spec.mounts()[0][1]),
+                id + ": exactly at the floor must not be usable (strictly greater is required)");
+        assertTrue(WheelMath.isUsableRideHeight(floor + 0.01, spec.halfY(), spec.mounts()[0][1]),
+                id + ": just above the floor must be usable");
+        assertTrue(WheelMath.isUsableRideHeight(spec.rideHeight(), spec.halfY(), spec.mounts()[0][1]),
+                id + ": its own stock rideHeight must always be usable");
+    }
+
     private static final double N = 2943.0; // a quarter of the car at rest
     private static final double DT = 0.05;
 
@@ -330,6 +421,179 @@ class WheelMathTest {
                 spin = WheelMath.spinRate(spin, RADIUS, groundSpeed, excessForce, WheelMath.WHEEL_INERTIA, subDt);
             }
             assertEquals(oneStep, spin, 1e-9, "N=" + n + " must match the N=1 integration of the same net torque");
+        }
+    }
+
+    // --- MINECRAFT-450: rolling resistance through the production tire() seam, coast-down vs.
+    // throttle-to-hold, no-energy-injection, no near-rest sign flip, forward/reverse symmetry,
+    // finite/stable output, and sub-step total-impulse invariance -----------------------------------
+
+    /** One wheel's share of the car (1200 kg / 4), the same effectiveMass SableCarBody.tick passes. */
+    private static final double EFFECTIVE_MASS = WheelMath.EFFECTIVE_MASS;
+
+    /** Integrates one wheel's velocity under WheelMath.tire alone (no lateral motion, no friction-circle
+     * saturation expected) for {@code ticks} steps of {@code dt} seconds, coasting (drive = brake = 0). */
+    private static double coastDown(double rollingCoefficient, double vLong, double dt, int ticks) {
+        double v = vLong;
+        for (int i = 0; i < ticks; i++) {
+            WheelMath.Tire tire = WheelMath.tire(v, 0, N, WheelMath.BASE_FRICTION, rollingCoefficient, 1, 0, 0, dt);
+            v += tire.longitudinal() / EFFECTIVE_MASS * dt;
+        }
+        return v;
+    }
+
+    @Test
+    void coastDownIsSlowerOnAHigherRollingResistanceSurface() {
+        // Two "surfaces" by their rollingCoefficient, as WheelMath.rollingCoefficient would hand tire():
+        // pavement-like vs. sand-like, same starting speed, same number of ticks.
+        double pavementCoefficient = WheelMath.rollingCoefficient(0.02, 0.0, 1.0);
+        double sandCoefficient = WheelMath.rollingCoefficient(0.16, 0.95, 1.0);
+        double startSpeed = 10.0;
+        double afterPavement = coastDown(pavementCoefficient, startSpeed, DT, 40);
+        double afterSand = coastDown(sandCoefficient, startSpeed, DT, 40);
+        assertTrue(afterSand < afterPavement,
+                "coasting on the higher-rollingResistance surface must have lost more speed: pavement=" + afterPavement + " sand=" + afterSand);
+        assertTrue(afterPavement < startSpeed && afterSand < startSpeed, "both surfaces must still slow the car down");
+    }
+
+    @Test
+    void throttleThatHoldsSpeedOnPavementIsNotEnoughToHoldItOnSand() {
+        // A drive force sized to exactly cancel pavement's own steady-state rolling force at this speed/load
+        // holds pavement at (very nearly) constant speed, but the SAME drive force on the higher-resistance
+        // sand surface cannot keep up, so sand still loses speed under that same throttle.
+        double startSpeed = 8.0;
+        double pavementCoefficient = WheelMath.rollingCoefficient(0.02, 0.0, 1.0);
+        double sandCoefficient = WheelMath.rollingCoefficient(0.16, 0.95, 1.0);
+        double holdDrive = pavementCoefficient * N; // cancels pavement's rolling force at any speed above the dead zone
+
+        double v = startSpeed;
+        for (int i = 0; i < 60; i++) {
+            WheelMath.Tire tire = WheelMath.tire(v, 0, N, WheelMath.BASE_FRICTION, pavementCoefficient, 1, holdDrive, 0, DT);
+            v += tire.longitudinal() / EFFECTIVE_MASS * DT;
+        }
+        assertEquals(startSpeed, v, 0.05, "pavement's own cancelling throttle must hold speed almost exactly");
+
+        double vSand = startSpeed;
+        for (int i = 0; i < 60; i++) {
+            WheelMath.Tire tire = WheelMath.tire(vSand, 0, N, WheelMath.BASE_FRICTION, sandCoefficient, 1, holdDrive, 0, DT);
+            vSand += tire.longitudinal() / EFFECTIVE_MASS * DT;
+        }
+        assertTrue(vSand < startSpeed - 0.5,
+                "the same throttle that holds pavement must not hold sand, which rolls harder: ended at " + vSand);
+    }
+
+    @Test
+    void coastingDownNeverInjectsEnergySpeedIsMonotonicallyNonIncreasing() {
+        double rollingCoefficient = WheelMath.rollingCoefficient(0.1, 0.4, 1.0);
+        double v = 12.0;
+        double previous = v;
+        for (int i = 0; i < 260; i++) {
+            WheelMath.Tire tire = WheelMath.tire(v, 0, N, WheelMath.BASE_FRICTION, rollingCoefficient, 1, 0, 0, DT);
+            v += tire.longitudinal() / EFFECTIVE_MASS * DT;
+            assertTrue(Math.abs(v) <= Math.abs(previous) + 1e-9,
+                    "tick " + i + ": rolling resistance alone must never speed the car up, |v| went from " + previous + " to " + v);
+            previous = v;
+        }
+        // Once decelerated enough, the wheel settles inside (or very near) the 0.05 m/s dead zone and a
+        // further step changes it no further - never "near rest" meaning exactly 0 (the dead zone's own
+        // residual can be as large as one step's worth of deceleration below 0.05), but stable and small.
+        assertTrue(Math.abs(v) < 0.1, "a long enough coast-down must settle near rest, not orbit some nonzero speed: v=" + v);
+        double vAfterOneMore = v + WheelMath.tire(v, 0, N, WheelMath.BASE_FRICTION, rollingCoefficient, 1, 0, 0, DT)
+                .longitudinal() / EFFECTIVE_MASS * DT;
+        assertEquals(v, vAfterOneMore, 1e-9, "once settled, coasting must stay settled, not keep creeping or oscillating");
+    }
+
+    @Test
+    void coastingToRestNeverFlipsSignNearZeroSpeed() {
+        // The dead zone below 0.05 m/s (WheelMath.tire's own Math.abs(vLong) > 0.05 guard) must stop the
+        // wheel from ever being pushed past zero and out the other side by its own rolling resistance.
+        double rollingCoefficient = WheelMath.rollingCoefficient(0.2, 0.9, 1.0);
+        double v = 0.2; // a few sub-steps' worth above the dead zone at this dt
+        boolean everNegative = false;
+        for (int i = 0; i < 100; i++) {
+            WheelMath.Tire tire = WheelMath.tire(v, 0, N, WheelMath.BASE_FRICTION, rollingCoefficient, 1, 0, 0, DT);
+            v += tire.longitudinal() / EFFECTIVE_MASS * DT;
+            if (v < -1e-9) { // a sub-ulp rounding residual at exactly 0 is not a sign flip
+                everNegative = true;
+            }
+        }
+        assertTrue(!everNegative, "coasting to rest from a small positive speed must never cross zero into negative");
+        assertEquals(0.0, WheelMath.tire(v, 0, N, WheelMath.BASE_FRICTION, rollingCoefficient, 1, 0, 0, DT).longitudinal(), 1e-9,
+                "once inside the dead zone, rolling resistance must be exactly zero, not a residual nonzero push");
+    }
+
+    @Test
+    void rollingResistanceOpposesBothForwardAndReverseRollingTheSameWay() {
+        double rollingCoefficient = WheelMath.rollingCoefficient(0.08, 0.3, 1.0);
+        double forward = coastDown(rollingCoefficient, 10.0, DT, 1);
+        double reverse = coastDown(rollingCoefficient, -10.0, DT, 1);
+        assertTrue(forward < 10.0, "forward rolling must be slowed (resistance opposes +vLong)");
+        assertTrue(reverse > -10.0, "reverse rolling must be slowed (resistance opposes -vLong) rather than accelerated further backward");
+        assertEquals(10.0 - forward, reverse - (-10.0), 1e-9, "the same coefficient must slow forward and reverse rolling by the same amount");
+    }
+
+    @Test
+    void airborneWheelsGetNoRollingTerrainDragFromTireAtAll() {
+        // SableCarBody.tick never calls WheelMath.tire for a raycast-miss/zero-load wheel at all (see the
+        // `force <= 0` skip and its own comment), but tire() itself also pins the all-zero contract for a
+        // non-positive normalForce, so even a hypothetical call for an airborne wheel could not inject drag.
+        double rollingCoefficient = WheelMath.rollingCoefficient(0.5, 1.0, 1.0); // worst-case surface
+        WheelMath.Tire tire = WheelMath.tire(10.0, 0, 0.0, WheelMath.BASE_FRICTION, rollingCoefficient, 1, 0, 0, DT);
+        assertEquals(0.0, tire.longitudinal(), 0);
+        assertEquals(0.0, tire.slipSpeed(), 0);
+    }
+
+    @Test
+    void rollingResistanceOutputStaysFiniteAcrossAWideRangeOfInputs() {
+        double[] rollingResistances = {0.0, 0.02, 0.16, 0.5, 1.0};
+        double[] deformabilities = {0.0, 0.3, 0.95, 1.0};
+        double[] rollingScales = {0.0, 0.5, 1.0, 2.0};
+        double[] speeds = {-50.0, -0.05, -0.001, 0.0, 0.001, 0.05, 50.0};
+        for (double rr : rollingResistances) {
+            for (double def : deformabilities) {
+                for (double scale : rollingScales) {
+                    double coefficient = WheelMath.rollingCoefficient(rr, def, scale);
+                    assertTrue(Double.isFinite(coefficient), "rollingCoefficient produced a non-finite value");
+                    for (double v : speeds) {
+                        WheelMath.Tire tire = WheelMath.tire(v, 0.1, N, WheelMath.BASE_FRICTION, coefficient, 1, 0, 0, DT);
+                        assertTrue(Double.isFinite(tire.longitudinal()), "longitudinal() was not finite for v=" + v);
+                        assertTrue(Double.isFinite(tire.lateral()), "lateral() was not finite for v=" + v);
+                        assertTrue(Double.isFinite(tire.slipSpeed()), "slipSpeed() was not finite for v=" + v);
+                        assertTrue(Double.isFinite(tire.commandLongitudinal()), "commandLongitudinal() was not finite for v=" + v);
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void subSteppingRollingResistanceDeliversTheSameTotalImpulseRegardlessOfWheelSubSteps() {
+        // Mirrors SableCarBody.tick's own design comment: "Total impulse per tick stays consistent because
+        // every impulse below is force * subDt, summed N times." Pick a speed window where rolling
+        // resistance stays constant in sign and magnitude the whole tick (well above the dead zone, no
+        // drive/brake, so wantLong is exactly -sign(vLong) * rollingCoefficient * normalForce throughout),
+        // so the sum over N sub-steps must equal the single N=1 step exactly.
+        double rollingCoefficient = WheelMath.rollingCoefficient(0.1, 0.5, 1.0);
+        double tickDt = 0.05;
+        double v = 10.0;
+
+        double oneStepImpulse = WheelMath.tire(v, 0, N, WheelMath.BASE_FRICTION, rollingCoefficient, 1, 0, 0, tickDt)
+                .longitudinal() * tickDt;
+
+        for (int subSteps = 2; subSteps <= 4; subSteps++) {
+            double subDt = tickDt / subSteps;
+            double totalImpulse = 0.0;
+            for (int sub = 0; sub < subSteps; sub++) {
+                // Velocity barely moves over one tick of rolling resistance alone at this mass/coefficient,
+                // so it stays comfortably above the dead zone for every sub-step - the regime the production
+                // comment is about (a nearly-constant force spread over more, smaller impulses).
+                double force = WheelMath.tire(v, 0, N, WheelMath.BASE_FRICTION, rollingCoefficient, 1, 0, 0, subDt).longitudinal();
+                totalImpulse += force * subDt;
+                v += force / EFFECTIVE_MASS * subDt;
+            }
+            assertEquals(oneStepImpulse, totalImpulse, 1e-6,
+                    "subSteps=" + subSteps + " must deliver the same total rolling-resistance impulse as one un-sub-stepped step");
+            v = 10.0; // reset for the next subSteps count
         }
     }
 }

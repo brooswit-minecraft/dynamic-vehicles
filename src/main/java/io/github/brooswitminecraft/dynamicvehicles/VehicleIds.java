@@ -16,6 +16,17 @@ final class VehicleIds {
     static final String TROPHY_TRUCK = "trophy_truck";
     static final String DRIFT_CAR = "drift_car";
 
+    /** MINECRAFT-443: named here (rather than left as the literals {@code DynamicVehiclesMod} already
+     * registers them under) so {@link VehicleSpecOverrides} and the model/collision dispatch in
+     * {@link CarEntity}/{@link CarRenderer} share exactly one id string per car instead of two
+     * independently-typed copies drifting apart. */
+    static final String MUSCLE_CAR = "muscle_car";
+    static final String ROCK_CRAWLER = "rock_crawler";
+    static final String MONSTER_TRUCK = "monster_truck";
+    static final String INDY_CAR = "indy_car";
+    static final String BUS = "bus";
+    static final String CARGO_TRUCK = "cargo_truck";
+
     /** MINECRAFT-380: a watercraft, a rotor-powered aircraft and a fixed-wing aircraft. */
     static final String MOTORBOAT = "motorboat";
     static final String CHOPPER = "chopper";

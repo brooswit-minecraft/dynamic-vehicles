@@ -186,7 +186,7 @@ final class SableCarBody {
             }
             double distance = hit.getLocation().distanceTo(new Vec3(from.x, from.y, from.z));
             distances[wheel] = distance;
-            compressions[wheel] = spec.restLength() - distance;
+            compressions[wheel] = WheelMath.compression(spec.restLength(), distance);
             hits.add(new Vector3d(hit.getLocation().x, hit.getLocation().y, hit.getLocation().z));
 
             BlockPos blockPos = hit.getBlockPos();
@@ -353,7 +353,7 @@ final class SableCarBody {
                     brakeGain = 6.0;
                 }
                 if (handbrake && !front) {
-                    brake = HANDBRAKE_FORCE * spec.forceScale();
+                    brake = WheelMath.handbrakeForce(HANDBRAKE_FORCE, spec.forceScale(), spec.handbrakeScale());
                     drive = 0.0;
                     lateralScale = 0.35;
                 }

@@ -144,6 +144,7 @@ public class DynamicVehiclesMod {
         // CarConfig.SPEC above, and ConfigTracker throws on a second SERVER config reusing it.
         modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.SERVER, DispatcherOfferConfig.SPEC, "dynamicvehicles-dispatcher-server.toml");
         modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.SERVER, PathfinderServerConfig.SPEC, "dynamicvehicles-pathfinder-server.toml");
+        modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.SERVER, MotorboatConfig.SPEC, "dynamicvehicles-motorboat-server.toml");
         modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.CLIENT, ClientConfig.SPEC);
         ModSounds.SOUNDS.register(modEventBus);
         ENTITIES.register(modEventBus);
@@ -163,6 +164,13 @@ public class DynamicVehiclesMod {
         modEventBus.addListener(this::registerPayloads);
         NeoForge.EVENT_BUS.addListener(this::registerCommands);
         NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.server.ServerStartedEvent e) -> LightLedger.sweep(e.getServer()));
+        // MINECRAFT-443: per-car config files are read once, here, at server start -- not re-read while
+        // the server runs (see VehicleSpecOverrides' own javadoc for why that is a deliberate scope
+        // boundary rather than an oversight). ServerAboutToStartEvent specifically, not the later
+        // ServerStartingEvent: it fires before any level is loaded, so the override table is populated
+        // before a single saved CarEntity can be deserialized from world data and read it.
+        NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.server.ServerAboutToStartEvent e) ->
+                VehicleSpecOverrides.load(net.neoforged.fml.loading.FMLPaths.CONFIGDIR.get()));
         NeoForge.EVENT_BUS.addListener(DispatcherInteractionHandler::onEntityInteract);
         NeoForge.EVENT_BUS.addListener(BuilderTradeHandler::registerTrades);
         NeoForge.EVENT_BUS.addListener(BuilderTradeHandler::onTrade);

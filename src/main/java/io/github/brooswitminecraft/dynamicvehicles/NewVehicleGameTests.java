@@ -218,56 +218,88 @@ public final class NewVehicleGameTests {
      * <p>This PR's own production code (as opposed to this test's own setup, which DID have the two latent
      * issues fixed above) never touches Sable's internal position representation, re-basing, or GameTest's
      * structure-placement coordinates -- it only reads back Sable's already-integrated pose and applies
-     * impulses. The assertion below is kept at its real, meaningful bound, not weakened; this remains an
-     * explicit, evidenced dependency hold pending further investigation (ideally starting from the
-     * per-tick-position instrumentation suggested above) or an authorized scoped waiver, same as
-     * {@link #motorboatTiltedOnEntryRightsItselfThroughRealPerPointBuoyancy}'s own already-documented hold
-     * (which independently shows the same class of symptom under the same huge-coordinate condition, and
-     * which this exact round's repeated local runs show passing in some runs and failing in others --
-     * genuinely intermittent, unlike this test's own failure, which has been deterministic across every
-     * local run observed so far).
+     * impulses.
+     *
+     * <p><b>RESOLVED (not a Sable/Rapier-internal cause after all): the actual mechanism was GameTest's
+     * OWN structure-relative placement itself.</b> {@code GameTestServer.startTests} (decompiled) randomizes
+     * every test's absolute world coordinate across the full world-border radius ({@code
+     * serverlevel.random.nextIntBetweenInclusive(-14_999_992, 14_999_992)} on X/Z) on every single
+     * invocation -- this test's own {@code helper.setBlock}/{@code helper.spawn} calls were structure-relative
+     * (via {@code helper.absolutePos}), so they landed this rig at a fresh multi-million-magnitude absolute
+     * coordinate every run, deep inside Sable/Rapier's native float32 broad phase's documented precision
+     * envelope. A sibling mod in this codebase family, {@code dynamic-whips}, independently hit and fixed an
+     * analogous crash from this exact placement behaviour (MINECRAFT-255, {@code RopeConstants#
+     * MAX_SAFE_RAPIER_COORDINATE}) and its own {@code RopeGameTests#reelInCompletesNearGroundWhenUnobstructed}
+     * demonstrates the fix: build the rig directly on the level at fixed, small, absolute coordinates
+     * (bypassing {@code helper}'s structure-relative placement entirely) rather than trying to make Sable
+     * tolerate GameTest's randomized far coordinates. Applying that exact technique here (see the body below)
+     * resolves this test deterministically -- confirmed passing across repeated local
+     * {@code ./gradlew runGameTestServer} runs. The assertion itself is unchanged from its real, meaningful
+     * bound throughout this entire investigation.
      */
     @GameTest(template = "settlement_test", timeoutTicks = 150, batch = "motorboat_throttle_travel")
     public static void motorboatEntersWaterAndMovesAPlausibleDistanceUnderThrottle(GameTestHelper helper) {
-        // Water must span the hull's full width (halfWidth=0.7, so the hull's corners land as far as
-        // x=5-0.7=4.3 and x=5+0.7=5.7), not just the single x=5 column: a narrower strip leaves two of the
-        // four hull corners resting on dry/solid ground outside it, which props the whole rigid body up
-        // level and keeps even the water-side corners and the motor mount above the real surface --
-        // zero immersion, zero thrust, zero travel, with nothing wrong in the physics code itself.
-        for (int dx = 3; dx <= 7; dx++) {
-            for (int dz = 0; dz <= 20; dz++) {
-                helper.setBlock(new BlockPos(dx, 2, dz), Blocks.WATER);
-                helper.setBlock(new BlockPos(dx, 3, dz), Blocks.AIR);
+        // MINECRAFT-410 review follow-up (dynamic-whips precedent, MINECRAFT-255/RopeConstants#
+        // MAX_SAFE_RAPIER_COORDINATE): GameTestServer.startTests randomizes every test's structure
+        // placement across the FULL WORLD-BORDER RADIUS (serverlevel.random.nextIntBetweenInclusive(
+        // -14_999_992, 14_999_992) on X/Z, confirmed via decompiled source, no project-level override
+        // hook) -- so helper.setBlock/helper.spawn (both structure-relative, via helper.absolutePos)
+        // land this rig at a multi-million-magnitude absolute coordinate on every single run, deep
+        // inside Sable/Rapier's native float32 broad phase's documented precision envelope (dynamic-whips
+        // hit and fixed an analogous crash from the exact same placement behaviour). This test instead
+        // builds its rig directly on the level at FIXED, small, absolute coordinates -- bypassing
+        // GameTestHelper's structure-relative placement entirely, the same technique dynamic-whips' own
+        // RopeGameTests#reelInCompletesNearGroundWhenUnobstructed uses for an analogous near-origin probe.
+        int originX = 0;
+        int originY = 100;
+        int originZ = 2000;
+        helper.getLevel().setChunkForced(originX >> 4, originZ >> 4, true);
+        try {
+            // Water must span the hull's full width (halfWidth=0.7, so the hull's corners land as far as
+            // x=originX-0.7 and x=originX+0.7), not just a single column: a narrower strip leaves two of
+            // the four hull corners resting on dry/solid ground outside it, which props the whole rigid
+            // body up level and keeps even the water-side corners and the motor mount above the real
+            // surface -- zero immersion, zero thrust, zero travel, with nothing wrong in the physics code.
+            for (int dx = -2; dx <= 2; dx++) {
+                for (int dz = 0; dz <= 20; dz++) {
+                    helper.getLevel().setBlock(new BlockPos(originX + dx, originY - 1, originZ + dz),
+                            Blocks.WATER.defaultBlockState(), 3);
+                    helper.getLevel().setBlock(new BlockPos(originX + dx, originY, originZ + dz),
+                            Blocks.AIR.defaultBlockState(), 3);
+                }
             }
+            // z=originZ+2, not +0: the hull's half-length (1.6) means a boat spawned at dz=0 has its
+            // stern/motor mount at dz=-1.6, BEHIND where the water bed above actually starts -- the motor
+            // would never be wet at spawn, so there would be no initial thrust to ever move it. +2 puts
+            // the full hull footprint (dz=0.4..3.6) inside the water from the start.
+            MotorboatEntity boat = DynamicVehiclesMod.MOTORBOAT.get().create(helper.getLevel());
+            helper.assertTrue(boat != null, "failed to construct a motorboat entity for the absolute-coordinate rig");
+            boat.moveTo(originX + 0.5, originY, originZ + 2.5, 0.0f, 0.0f);
+            helper.getLevel().addFreshEntity(boat);
+            Player rider = helper.makeMockPlayer(GameType.CREATIVE);
+            // GameTestHelper#makeMockPlayer constructs the mock Player at absolute world BlockPos.ZERO.
+            // That is now close to (not millions of blocks from) this rig's own absolute coordinates, but
+            // still move it explicitly to the boat's exact position before mounting, as established in
+            // the prior review round, so it never carries even a small stale-position AABB.
+            rider.moveTo(boat.getX(), boat.getY(), boat.getZ(), boat.getYRot(), 0.0f);
+            helper.assertTrue(rider.startRiding(boat), "mock player failed to board the motorboat");
+            double startZ = boat.getZ();
+            pinThrottleEachTick(helper, rider, 1.0f, 0.0f, 100, () -> {
+                helper.assertTrue(boat.getControllingPassenger() == rider, "motorboat lost its rider mid-drive");
+                double traveled = Math.abs(boat.getZ() - startZ);
+                helper.assertTrue(Double.isFinite(traveled) && Double.isFinite(boat.getX()) && Double.isFinite(boat.getY()),
+                        "motorboat position became non-finite after full throttle");
+                helper.assertTrue(traveled > 0.5,
+                        "motorboat under full throttle should have travelled a real distance, got only " + traveled + " blocks");
+                helper.assertTrue(traveled < 20.0,
+                        "motorboat covered an unrealistic distance (the pre-fix unit-mismatch regression): " + traveled + " blocks");
+                helper.getLevel().setChunkForced(originX >> 4, originZ >> 4, false);
+                helper.succeed();
+            });
+        } catch (RuntimeException | Error e) {
+            helper.getLevel().setChunkForced(originX >> 4, originZ >> 4, false);
+            throw e;
         }
-        // z=2, not z=0: the hull's half-length (1.6) means a boat spawned at z=0 has its stern/motor
-        // mount at world z=-1.6, BEHIND where the water bed above actually starts (dz=0) -- the motor
-        // would never be wet at spawn, so there would be no initial thrust to ever move it. z=2 puts the
-        // full hull footprint (0.4..3.6) inside the water from the start.
-        MotorboatEntity boat = helper.spawn(DynamicVehiclesMod.MOTORBOAT.get(), new BlockPos(5, 3, 2));
-        boat.setYRot(0.0f);
-        Player rider = helper.makeMockPlayer(GameType.CREATIVE);
-        // GameTestHelper#makeMockPlayer constructs the mock Player at absolute world BlockPos.ZERO,
-        // NOT at this test's (huge, structure-translated) coordinates -- it is never moved there by
-        // startRiding either (that only wires up the vehicle/passenger reference; the actual position
-        // sync happens lazily on a later tick's rideTick). Without this, the rider's own AABB briefly
-        // spans from world origin to the GameTest's million-coordinate structure placement, which is
-        // exactly the "abnormally large AABB" signature logged against this test. Move the rider to the
-        // boat's real position BEFORE mounting so it never has a stale near-origin AABB at all.
-        rider.moveTo(boat.getX(), boat.getY(), boat.getZ(), boat.getYRot(), 0.0f);
-        helper.assertTrue(rider.startRiding(boat), "mock player failed to board the motorboat");
-        double startZ = boat.getZ();
-        pinThrottleEachTick(helper, rider, 1.0f, 0.0f, 100, () -> {
-            helper.assertTrue(boat.getControllingPassenger() == rider, "motorboat lost its rider mid-drive");
-            double traveled = Math.abs(boat.getZ() - startZ);
-            helper.assertTrue(Double.isFinite(traveled) && Double.isFinite(boat.getX()) && Double.isFinite(boat.getY()),
-                    "motorboat position became non-finite after full throttle");
-            helper.assertTrue(traveled > 0.5,
-                    "motorboat under full throttle should have travelled a real distance, got only " + traveled + " blocks");
-            helper.assertTrue(traveled < 20.0,
-                    "motorboat covered an unrealistic distance (the pre-fix unit-mismatch regression): " + traveled + " blocks");
-            helper.succeed();
-        });
     }
 
     /** Re-sets {@code rider.zza}/{@code rider.xxa} every tick for {@code ticks} ticks, then runs {@code
@@ -370,37 +402,56 @@ public final class NewVehicleGameTests {
      * MotorboatPhysicsTest.bowDeeperThanSternProducesARestoringPitchTorqueTowardLevel} proves in pure math,
      * now proven end to end through the real entity/rigid body.
      *
-     * <p>Like {@link #motorboatEntersWaterAndMovesAPlausibleDistanceUnderThrottle}, this can intermittently
-     * hit the same pre-existing upstream Sable/GameTest large-AABB broad-phase bug (observed directly: a
-     * run where the roll never changed from its exact starting value at all, consistent with the rigid
-     * body being stalled rather than the righting math being wrong) -- not fixable from this PR, same
-     * explicit dependency hold as that test, not a reason to weaken this one's bound either.
+     * <p>MINECRAFT-410 review follow-up: like {@link #motorboatEntersWaterAndMovesAPlausibleDistanceUnderThrottle},
+     * this used to intermittently hit GameTestHelper's structure-relative placement landing at a
+     * multi-million-magnitude absolute coordinate every run (GameTestServer.startTests randomizes the
+     * full world-border radius, confirmed via decompiled source) -- deep inside Sable/Rapier's native
+     * float32 broad phase's documented precision envelope (dynamic-whips' MINECRAFT-255/
+     * RapierCoordinateGuard precedent). Fixed the same way: build this rig directly on the level at
+     * fixed, small, absolute coordinates instead of through helper.setBlock/helper.spawn's
+     * structure-relative placement.
      */
     @GameTest(template = "settlement_test", timeoutTicks = 150)
     public static void motorboatTiltedOnEntryRightsItselfThroughRealPerPointBuoyancy(GameTestHelper helper) {
-        for (int dx = 0; dx <= 10; dx++) {
-            for (int dz = 0; dz <= 10; dz++) {
-                helper.setBlock(new BlockPos(dx, 2, dz), Blocks.WATER);
-                helper.setBlock(new BlockPos(dx, 3, dz), Blocks.AIR);
-                helper.setBlock(new BlockPos(dx, 4, dz), Blocks.AIR);
+        int originX = 0;
+        int originY = 100;
+        int originZ = 2200;
+        helper.getLevel().setChunkForced(originX >> 4, originZ >> 4, true);
+        try {
+            for (int dx = -5; dx <= 5; dx++) {
+                for (int dz = -5; dz <= 5; dz++) {
+                    helper.getLevel().setBlock(new BlockPos(originX + dx, originY - 1, originZ + dz),
+                            Blocks.WATER.defaultBlockState(), 3);
+                    helper.getLevel().setBlock(new BlockPos(originX + dx, originY, originZ + dz),
+                            Blocks.AIR.defaultBlockState(), 3);
+                    helper.getLevel().setBlock(new BlockPos(originX + dx, originY + 1, originZ + dz),
+                            Blocks.AIR.defaultBlockState(), 3);
+                }
             }
+            MotorboatEntity boat = DynamicVehiclesMod.MOTORBOAT.get().create(helper.getLevel());
+            helper.assertTrue(boat != null, "failed to construct a motorboat entity for the absolute-coordinate rig");
+            boat.moveTo(originX + 0.5, originY, originZ + 0.5, 0.0f, 0.0f);
+            helper.getLevel().addFreshEntity(boat);
+            org.joml.Quaternionf tilted = new org.joml.Quaternionf().rotateZ((float) Math.toRadians(25.0));
+            boat.setSavedOrientationForTest(tilted);
+            double startRoll = rollDegrees(tilted);
+            helper.runAfterDelay(100L, () -> {
+                org.joml.Quaternionf finalOrientation = boat.currentOrientationForTest();
+                helper.assertTrue(finalOrientation != null, "motorboat lost its rigid-body orientation");
+                double endRoll = rollDegrees(finalOrientation);
+                helper.assertTrue(Double.isFinite(endRoll), "motorboat roll became non-finite while righting itself");
+                helper.assertTrue(Math.abs(endRoll) < Math.abs(startRoll) - 5.0,
+                        "a boat released " + startRoll + " degrees of roll underwater should right itself substantially via real "
+                                + "per-point buoyancy, ended at " + endRoll + " degrees");
+                helper.assertTrue(Math.abs(endRoll) < 15.0,
+                        "motorboat should have settled much closer to level, ended at " + endRoll + " degrees");
+                helper.getLevel().setChunkForced(originX >> 4, originZ >> 4, false);
+                helper.succeed();
+            });
+        } catch (RuntimeException | Error e) {
+            helper.getLevel().setChunkForced(originX >> 4, originZ >> 4, false);
+            throw e;
         }
-        MotorboatEntity boat = helper.spawn(DynamicVehiclesMod.MOTORBOAT.get(), new BlockPos(5, 3, 5));
-        org.joml.Quaternionf tilted = new org.joml.Quaternionf().rotateZ((float) Math.toRadians(25.0));
-        boat.setSavedOrientationForTest(tilted);
-        double startRoll = rollDegrees(tilted);
-        helper.runAfterDelay(100L, () -> {
-            org.joml.Quaternionf finalOrientation = boat.currentOrientationForTest();
-            helper.assertTrue(finalOrientation != null, "motorboat lost its rigid-body orientation");
-            double endRoll = rollDegrees(finalOrientation);
-            helper.assertTrue(Double.isFinite(endRoll), "motorboat roll became non-finite while righting itself");
-            helper.assertTrue(Math.abs(endRoll) < Math.abs(startRoll) - 5.0,
-                    "a boat released " + startRoll + " degrees of roll underwater should right itself substantially via real "
-                            + "per-point buoyancy, ended at " + endRoll + " degrees");
-            helper.assertTrue(Math.abs(endRoll) < 15.0,
-                    "motorboat should have settled much closer to level, ended at " + endRoll + " degrees");
-            helper.succeed();
-        });
     }
 
     /**

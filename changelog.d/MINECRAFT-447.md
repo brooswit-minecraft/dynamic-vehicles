@@ -16,8 +16,10 @@ bump: minor
   today; out-of-range values are clamped and non-finite values fall back to stock, the same as every
   other field in that file. See `docs/per-car-config.md` for the full schema, units and ranges.
 - **Diffuser telemetry**: each assist's own last-applied torque is reported under its own key in the
-  per-car debug line (`diffuserRoll`, `diffuserPitch`, `diffuserHeading`, `diffuserTrajectory`), kept
-  distinct from aerodynamic downforce, which is a grip multiplier rather than a torque.
+  per-car debug line (`diffuserRoll`, `diffuserPitch`, `diffuserHeading`, `diffuserTrajectory`), so an
+  observed moment can be attributed to the system that produced it instead of being read off one combined
+  number — these assists are artificial corrections keyed to the car's orientation, separate from real
+  aerodynamic forces and moments, and separate again from the existing speed-dependent tire-grip bonus.
 
 ### Changed
 - Every existing car ships with all four assists disabled, so stock handling is unchanged: the assist

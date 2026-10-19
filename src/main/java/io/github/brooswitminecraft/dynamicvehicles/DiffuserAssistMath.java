@@ -13,10 +13,12 @@ package io.github.brooswitminecraft.dynamicvehicles;
  * its own vehicle's {@link VehicleSpec.DiffuserTuning} bound: {@code 0.0} whenever that assist is disabled,
  * its bound is {@code 0.0}, or its own activation condition is not met (see each method's own doc) &mdash;
  * never NaN or infinite for any finite input, so a caller can sum these directly into one tick's torque
- * impulse with no extra guarding. These are deliberately artificial game-feel corrections, distinguished in
- * telemetry/docs from real aerodynamic forces (MINECRAFT-446's wing downforce/drag): nothing here reads or
- * writes {@code VehicleSpec.downforceGripPerSpeed} or any wing force, so the two systems cannot double-count
- * the same torque.
+ * impulse with no extra guarding. These are deliberately artificial game-feel corrections, keyed to an
+ * orientation error rather than to airflow, and are kept distinct in telemetry and docs from two separate
+ * mechanisms they must not be confused with or double-count against: MINECRAFT-446's wing work, which
+ * produces genuine applied aerodynamic forces and moments, and MINECRAFT-184's already-shipped
+ * {@code VehicleSpec.downforceGripPerSpeed}, which is a tire-grip multiplier rather than a force or moment
+ * at all. Nothing here reads or writes either of them.
  */
 public final class DiffuserAssistMath {
     private DiffuserAssistMath() {}

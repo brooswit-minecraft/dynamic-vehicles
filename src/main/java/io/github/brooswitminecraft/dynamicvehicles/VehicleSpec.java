@@ -85,8 +85,10 @@ public record VehicleSpec(
         double handbrakeScale,
         /** This vehicle's Diffuser KIT tuning (MINECRAFT-447/395 R02, R16-R19): roll self-righting, pitch
          * landing help, heading alignment and trajectory alignment &mdash; four distinct arcade assists,
-         * deliberately separate from real aerodynamic downforce/drag ({@link #downforceGripPerSpeed},
-         * MINECRAFT-446). {@link DiffuserTuning#IDENTITY} (every assist disabled) for every vehicle that
+         * keyed to the car's own orientation error and deliberately separate both from MINECRAFT-446's wing
+         * work (genuine applied aerodynamic forces and moments) and from {@link #downforceGripPerSpeed}
+         * (MINECRAFT-184's already-shipped speed-dependent tire-GRIP multiplier, which is not a force or
+         * moment at all). {@link DiffuserTuning#IDENTITY} (every assist disabled) for every vehicle that
          * has not opted in &mdash; today that is every vehicle on the roster: this ticket delivers the
          * assist math and its per-car knob, not a tuned stock rollout for any existing car. See
          * {@link DiffuserTuning} and {@link DiffuserAssistMath} for the bounded, time-scaled math each

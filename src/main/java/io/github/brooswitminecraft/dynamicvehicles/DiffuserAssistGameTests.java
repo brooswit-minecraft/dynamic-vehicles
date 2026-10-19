@@ -411,9 +411,10 @@ public final class DiffuserAssistGameTests {
     /** Telemetry (open item from the ticket's own acceptance criteria): {@code SableCarBody.describe()}'s
      * debug line (logged every 20 ticks by {@code CarEntity.tickSable}, the same line every other car's
      * debug logging already goes through) must report each Diffuser KIT assist's own last-applied torque
-     * under its own clearly-labelled key, distinct from any MINECRAFT-446 wing/downforce quantity -- see
-     * {@code describe()}'s own javadoc for why the two can never be confused (the wing system reports a
-     * grip multiplier, never a torque, and this class never reads or writes it). This only checks the
+     * under its own clearly-labelled key, so an observed moment can be attributed to the system that
+     * produced it rather than read off one combined number -- see {@code describe()}'s own javadoc for the
+     * three distinct quantities in play (these artificial diffuser corrections, MINECRAFT-446's genuine
+     * aerodynamic forces and moments, and MINECRAFT-184's separate tire-grip multiplier). This only checks the
      * format is actually wired end-to-end (the real keys appear in the real production string for a real
      * car), not specific numeric values -- deliberately, after this ticket's other GameTests here found
      * that asserting on an EXACT post-launch/post-tumble number in this environment is not reliable; a

@@ -128,11 +128,17 @@ final class SableCarBody {
     // aligning to a bogus 0 degrees for a car that has never touched down (e.g. spawned mid-air).
     private double lastGroundedYawDeg = Double.NaN;
     // MINECRAFT-447: each assist's own last-applied torque (N*m, 0 for every stock car since none carries a
-    // non-identity DiffuserTuning), kept only for describe()'s own telemetry line below -- deliberately
-    // separate fields from any MINECRAFT-446 wing/downforce quantity (which is a grip multiplier, not a
-    // torque, and lives entirely in WheelMath/CamberToeGripModel, never read or written here) so a reader of
-    // that debug line can always tell "arcade diffuser correction" apart from "real aerodynamic force"
-    // rather than see one combined, unattributed number.
+    // non-identity DiffuserTuning), kept only for describe()'s own telemetry line below. Reported under its
+    // own per-assist key, and never folded into any aerodynamic quantity, so a reader of that debug line can
+    // attribute an observed moment to the system that actually produced it. Three DIFFERENT things are in
+    // play and this comment previously conflated two of them (review correction, PR #180):
+    //   - these diffuser values: deliberately artificial game-feel corrections, keyed to an orientation
+    //     error rather than to airflow, applied as a real torque by applyWorldTorqueAsCouple below;
+    //   - MINECRAFT-184's downforceGripPerSpeed (already shipped, Indy Car only): a tire-GRIP multiplier on
+    //     gripMu, not a force or a moment at all -- never read or written here;
+    //   - MINECRAFT-446's wing work: genuine applied aerodynamic forces and moments. A wing moment IS a
+    //     torque-like quantity, which is exactly why these need separate keys rather than one combined
+    //     number -- not, as this comment used to claim, because "the wing side isn't a torque".
     private double lastDiffuserRollTorque;
     private double lastDiffuserPitchTorque;
     private double lastDiffuserHeadingTorque;
@@ -1098,9 +1104,15 @@ final class SableCarBody {
      * drivetrain state (MINECRAFT-401, see below), and (MINECRAFT-447) each Diffuser KIT assist's own
      * last-applied torque, N*m -- {@code diffuserRoll} (R16), {@code diffuserPitch} (R17),
      * {@code diffuserHeading} (R18), {@code diffuserTrajectory} (R19), always 0.0 for every stock car today
-     * (none carries a non-identity {@code DiffuserTuning}) and never the same quantity as any
-     * MINECRAFT-446 wing/downforce number, which is a grip multiplier applied inside {@code WheelMath}/
-     * {@code CamberToeGripModel}, not a torque, and is not read or reported here. */
+     * (none carries a non-identity {@code DiffuserTuning}).
+     *
+     * <p>These four are reported under their own keys and never folded into any aerodynamic quantity, so an
+     * observed moment can be attributed to whichever system produced it: a diffuser value is an artificial
+     * game-feel correction keyed to an orientation error, MINECRAFT-446's wing work produces genuine
+     * aerodynamic forces and moments, and MINECRAFT-184's {@code downforceGripPerSpeed} is a third thing
+     * again -- a tire-grip multiplier on {@code gripMu}, not a force or moment, and not reported here. See
+     * {@link #lastDiffuserRollTorque}'s own comment for why separate keys matter precisely BECAUSE a wing
+     * moment is itself torque-like. */
     String describe(CarPhysics.Gear gear, double throttle) {
         box.updatePose();
         Pose3d pose = new Pose3d(box.getPose());

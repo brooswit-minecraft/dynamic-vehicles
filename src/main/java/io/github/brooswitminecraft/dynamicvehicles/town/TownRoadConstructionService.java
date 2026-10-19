@@ -173,7 +173,13 @@ public final class TownRoadConstructionService {
         // progress merely because the live block happens to still match.
         RegionCoord ownerRegion = TownRegion.fromBlockCoords(pos.getX(), pos.getZ());
         String roadOwner = TownStorage.roadOwner(level.dimension(), ownerRegion);
-        boolean alreadyBuilt = storage.isCellPlaced(level.dimension(), pos, roadOwner);
+        // [Review round 7, finding #1] A road's own plan never varies (always the same surface
+        // block and cost category), but the signature is still carried through explicitly, the
+        // same shape building sites use, rather than special-cased - any future road-plan
+        // versioning (a different surface material, say) then gets this same protection for free.
+        String roadSignature = "road:" + net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(ROAD_SURFACE) + ":"
+                + TownResourceCategory.STONE.name();
+        boolean alreadyBuilt = storage.isCellPlaced(level.dimension(), pos, roadOwner, roadSignature);
         BlockState state = level.getBlockState(pos);
         if (alreadyBuilt && state.is(ROAD_SURFACE)) {
             return false; // already built and paid for by this mod - nothing to do here
@@ -279,7 +285,7 @@ public final class TownRoadConstructionService {
         }
 
         store.tryDebit(TownResourceCategory.STONE, TownConstants.ROAD_COST_PER_BLOCK);
-        storage.markCellPlaced(level.dimension(), pos, roadOwner);
+        storage.markCellPlaced(level.dimension(), pos, roadOwner, roadSignature);
 
         // [Review round 4, finding #5 / round 5, finding #4] Credit clearing salvage for the
         // headroom AND the original surface block actually removed, exactly once (only now that

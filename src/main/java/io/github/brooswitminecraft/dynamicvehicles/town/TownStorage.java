@@ -39,13 +39,27 @@ import java.util.Set;
  * cell later re-planned as part of a building's footprint, or vice versa); without an owner, the
  * SECOND plan would read the FIRST plan's already-paid progress as its own free, pre-paid cell the
  * instant the live block also happened to match its own planned material.
+ *
+ * <p>[Review round 7, finding #1] Beyond the owner, each record also carries an opaque
+ * {@code signature} (expected block + cost category + template/plan identity, see
+ * {@link TownConstructionService}'s own signature construction) - the SAME owner (the campfire
+ * never moves) can still see a genuinely different plan over a site's lifetime, e.g. after the
+ * mod's own template/zoning logic changes between versions, or (in a future multi-stage plan) a
+ * site is deliberately replanned. A cell paid for under the OLD plan's signature must never be
+ * silently treated as already-paid progress for a NEW, different plan at the same position.
  */
 public final class TownStorage extends SavedData {
     private static final String NAME = "dynamicvehicles_towns";
 
+    /** An owner's claim on one persisted cell: WHO placed it (see {@link #siteOwner(BlockPos)} /
+     *  {@link #roadOwner}) and WHAT, exactly, was placed and paid for there (an opaque signature
+     *  capturing the expected block, cost category, and template/plan identity) - see
+     *  {@link #isCellPlaced(ResourceKey, BlockPos, String, String)}. */
+    private record PlacedCell(String owner, String signature) {}
+
     private final Set<String> foundedTowns = new HashSet<>();
     private final Map<String, TownResourceStore> stores = new HashMap<>();
-    private final Map<String, String> placedCells = new HashMap<>();
+    private final Map<String, PlacedCell> placedCells = new HashMap<>();
     private final Map<String, BlockPos> pendingCampfires = new HashMap<>();
     private final Map<String, Integer> siteFloors = new HashMap<>();
 
@@ -68,20 +82,24 @@ public final class TownStorage extends SavedData {
 
     /** {@code true} iff Dynamic Towns' plan identified by {@code owner} (e.g.
      *  {@link #siteOwner(BlockPos)} or {@link #roadOwner(ResourceKey, io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord)})
-     *  has already placed-and-paid-for {@code pos} in {@code dimension} — never merely "the live
-     *  block happens to match the plan", and never merely "SOME plan already claimed this cell": a
-     *  different plan's own progress at the same coordinate never counts as this plan's progress. */
-    public boolean isCellPlaced(ResourceKey<Level> dimension, BlockPos pos, String owner) {
-        return owner.equals(placedCells.get(cellKey(dimension, pos)));
+     *  has already placed-and-paid-for {@code pos} in {@code dimension} UNDER THE EXACT SAME
+     *  {@code signature} (expected block/cost/template identity) — never merely "the live block
+     *  happens to match the plan", never merely "SOME plan already claimed this cell" (a different
+     *  owner's progress never counts as this owner's), and never merely "this owner claimed SOME
+     *  cell here before" (the SAME owner's progress under a now-superseded plan/template never
+     *  counts as prepaid for a genuinely different current plan at the same position). */
+    public boolean isCellPlaced(ResourceKey<Level> dimension, BlockPos pos, String owner, String signature) {
+        PlacedCell cell = placedCells.get(cellKey(dimension, pos));
+        return cell != null && cell.owner().equals(owner) && cell.signature().equals(signature);
     }
 
     /** Records that {@code pos} in {@code dimension} has now actually been placed and paid for by
-     *  the plan identified by {@code owner} — the durable "construction progress" record a reload
-     *  must not lose. Overwrites whichever plan (if any) previously claimed this exact cell: the
-     *  world itself is the final arbiter of "what is here now", and only one plan can own a given
-     *  cell's paid progress at a time. */
-    public void markCellPlaced(ResourceKey<Level> dimension, BlockPos pos, String owner) {
-        placedCells.put(cellKey(dimension, pos), owner);
+     *  the plan identified by {@code owner}, under exactly {@code signature} — the durable
+     *  "construction progress" record a reload must not lose. Overwrites whichever plan (if any)
+     *  previously claimed this exact cell: the world itself is the final arbiter of "what is here
+     *  now", and only one plan can own a given cell's paid progress at a time. */
+    public void markCellPlaced(ResourceKey<Level> dimension, BlockPos pos, String owner, String signature) {
+        placedCells.put(cellKey(dimension, pos), new PlacedCell(owner, signature));
     }
 
     /**
@@ -163,10 +181,11 @@ public final class TownStorage extends SavedData {
         tag.put("Stores", storeList);
 
         ListTag placedList = new ListTag();
-        for (Map.Entry<String, String> entry : placedCells.entrySet()) {
+        for (Map.Entry<String, PlacedCell> entry : placedCells.entrySet()) {
             CompoundTag entryTag = new CompoundTag();
             entryTag.putString("Key", entry.getKey());
-            entryTag.putString("Owner", entry.getValue());
+            entryTag.putString("Owner", entry.getValue().owner());
+            entryTag.putString("Signature", entry.getValue().signature());
             placedList.add(entryTag);
         }
         tag.put("PlacedCells", placedList);
@@ -215,7 +234,8 @@ public final class TownStorage extends SavedData {
         ListTag placedList = tag.getList("PlacedCells", Tag.TAG_COMPOUND);
         for (int i = 0; i < placedList.size(); i++) {
             CompoundTag entryTag = placedList.getCompound(i);
-            storage.placedCells.put(entryTag.getString("Key"), entryTag.getString("Owner"));
+            storage.placedCells.put(entryTag.getString("Key"),
+                    new PlacedCell(entryTag.getString("Owner"), entryTag.getString("Signature")));
         }
         ListTag pendingList = tag.getList("PendingCampfires", Tag.TAG_COMPOUND);
         for (int i = 0; i < pendingList.size(); i++) {

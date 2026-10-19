@@ -887,12 +887,16 @@ public final class TownGameTests {
         BlockPos a = helper.absolutePos(ANCHOR);
         BlockPos b = a.offset(1, 0, 0);
         String owner = "site:test-owner";
-        helper.assertTrue(!storage.isCellPlaced(helper.getLevel().dimension(), a, owner), "a fresh store must not report any cell as placed");
+        String signature = "test-plan:minecraft:stone:STONE";
+        helper.assertTrue(!storage.isCellPlaced(helper.getLevel().dimension(), a, owner, signature),
+                "a fresh store must not report any cell as placed");
 
-        storage.markCellPlaced(helper.getLevel().dimension(), a, owner);
+        storage.markCellPlaced(helper.getLevel().dimension(), a, owner, signature);
 
-        helper.assertTrue(storage.isCellPlaced(helper.getLevel().dimension(), a, owner), "a marked cell must read back as placed");
-        helper.assertTrue(!storage.isCellPlaced(helper.getLevel().dimension(), b, owner), "marking one cell must not affect a different position");
+        helper.assertTrue(storage.isCellPlaced(helper.getLevel().dimension(), a, owner, signature),
+                "a marked cell must read back as placed");
+        helper.assertTrue(!storage.isCellPlaced(helper.getLevel().dimension(), b, owner, signature),
+                "marking one cell must not affect a different position");
         helper.succeed();
     }
 
@@ -908,13 +912,37 @@ public final class TownGameTests {
         BlockPos pos = helper.absolutePos(ANCHOR);
         String roadOwner = TownStorage.roadOwner(helper.getLevel().dimension(), TownRegion.fromBlockCoords(pos.getX(), pos.getZ()));
         String siteOwner = TownStorage.siteOwner(pos);
+        String signature = "test-plan:minecraft:dirt_path:STONE";
 
-        storage.markCellPlaced(helper.getLevel().dimension(), pos, roadOwner);
+        storage.markCellPlaced(helper.getLevel().dimension(), pos, roadOwner, signature);
 
-        helper.assertTrue(storage.isCellPlaced(helper.getLevel().dimension(), pos, roadOwner),
+        helper.assertTrue(storage.isCellPlaced(helper.getLevel().dimension(), pos, roadOwner, signature),
                 "the road plan that actually placed this cell must read it back as its own progress");
-        helper.assertTrue(!storage.isCellPlaced(helper.getLevel().dimension(), pos, siteOwner),
+        helper.assertTrue(!storage.isCellPlaced(helper.getLevel().dimension(), pos, siteOwner, signature),
                 "a different plan (a building site) must never read the road's own paid progress at the same coordinate as its own");
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-388 review round 7, finding #1: the SAME owner (a site's campfire anchor never
+     * moves) can still see a genuinely different plan over its lifetime - a cell paid for under the
+     * OLD plan's signature must never be silently honored as already-paid progress for a NEW,
+     * different plan (a different expected block/cost here) at the exact same owner+position.
+     */
+    @GameTest(template = "settlement_test")
+    public static void placedCellProgressIsInvalidatedWhenTheSameOwnersPlanChanges(GameTestHelper helper) {
+        TownStorage storage = new TownStorage();
+        BlockPos pos = helper.absolutePos(ANCHOR);
+        String owner = TownStorage.siteOwner(pos);
+        String oldPlanSignature = "RESIDENTIAL:0:none:minecraft:oak_planks:WOOD";
+        String newPlanSignature = "COMMERCIAL:0:FARMER:minecraft:stone_bricks:STONE";
+
+        storage.markCellPlaced(helper.getLevel().dimension(), pos, owner, oldPlanSignature);
+        helper.assertTrue(storage.isCellPlaced(helper.getLevel().dimension(), pos, owner, oldPlanSignature),
+                "the original plan must read its own progress back correctly");
+
+        helper.assertTrue(!storage.isCellPlaced(helper.getLevel().dimension(), pos, owner, newPlanSignature),
+                "the SAME owner's progress under a now-superseded plan must never count as prepaid for a genuinely different current plan");
         helper.succeed();
     }
 

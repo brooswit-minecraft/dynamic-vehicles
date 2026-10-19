@@ -194,6 +194,15 @@ public final class TownConstructionService {
                 finalProfession.orElse(null)));
         int radius = footprintRadius(kind);
 
+        // [Review round 7, finding #1] A pure identifier for THIS exact plan (kind, storehouse
+        // variant, and final profession all deterministically decide what generate() produces) -
+        // combined per-cell with that cell's own expected block/cost in cellSignature below, so a
+        // persisted "already placed" record is only ever honored when it was paid for under THIS
+        // precise plan, never merely at this owner's position under some other (recreated/upgraded/
+        // differently-seeded) plan.
+        String planSignature = kind.name() + ":" + plan.storehouseVariant() + ":"
+                + finalProfession.map(net.minecraft.core.registries.BuiltInRegistries.VILLAGER_PROFESSION::getKey).map(Object::toString).orElse("none");
+
         Map<String, TownBuildingTemplates.Placement> byPosition = new HashMap<>();
         for (TownBuildingTemplates.Placement placement : template) {
             byPosition.put(key(placement.x(), placement.y(), placement.z()), placement);
@@ -250,7 +259,11 @@ public final class TownConstructionService {
         // because that foreign block was never recorded as this mod's own paid-for progress.
         int plannedTopY = floorY + TownBuildingTemplates.heightFor(kind, plan.storehouseVariant());
         if (!TownSitePreflight.isSiteSafe(level, campfire, radius, floorY, plannedTopY,
-                pos -> storage.isCellPlaced(level.dimension(), pos, siteOwner), claimant.getUUID())) {
+                pos -> {
+                    TownBuildingTemplates.Placement planned = byPosition.get(key(pos.getX(), pos.getY(), pos.getZ()));
+                    return planned != null
+                            && storage.isCellPlaced(level.dimension(), pos, siteOwner, cellSignature(planSignature, planned));
+                }, claimant.getUUID())) {
             return;
         }
 
@@ -280,11 +293,12 @@ public final class TownConstructionService {
             if (placement == null) {
                 continue; // degenerately, no template entry - nothing to do here
             }
+            String signature = cellSignature(planSignature, placement);
             // [Review round 4, finding #2] "Already placed" is the PERSISTED progress record, not a
             // live-world diff: only a cell THIS mod already placed and paid for (and whose block
             // still matches) is skipped for free - a foreign block that merely matches the planned
             // material is never treated as already-paid progress.
-            boolean alreadyPlaced = storage.isCellPlaced(level.dimension(), pos, siteOwner);
+            boolean alreadyPlaced = storage.isCellPlaced(level.dimension(), pos, siteOwner, signature);
             if (alreadyPlaced && level.getBlockState(pos).is(placement.block())) {
                 continue;
             }
@@ -361,7 +375,7 @@ public final class TownConstructionService {
             if (!alreadyPlaced) {
                 ConstructionSitePlan.tryPayForBlock(store, block, TownConstants.CONSTRUCTION_COST_PER_BLOCK);
             }
-            storage.markCellPlaced(level.dimension(), pos, siteOwner);
+            storage.markCellPlaced(level.dimension(), pos, siteOwner, signature);
             placedThisTick++;
         }
         if (placedThisTick > 0) {
@@ -587,5 +601,17 @@ public final class TownConstructionService {
 
     private static String key(int x, int y, int z) {
         return x + "," + y + "," + z;
+    }
+
+    /**
+     * [Review round 7, finding #1] The full opaque signature a persisted "already placed" record
+     * must match EXACTLY: the site-wide {@code planSignature} (kind/variant/final profession) plus
+     * this one cell's own expected block and cost category. Two different plans at the same owner
+     * (the campfire anchor never moves, but a recreated/upgraded/differently-seeded plan still can)
+     * never share a signature, so a cell paid for under the OLD plan is never silently honored as
+     * already-paid progress for a genuinely different NEW plan at the same position.
+     */
+    private static String cellSignature(String planSignature, TownBuildingTemplates.Placement placement) {
+        return planSignature + ":" + net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(placement.block()) + ":" + placement.cost().name();
     }
 }

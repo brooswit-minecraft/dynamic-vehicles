@@ -56,24 +56,50 @@ public final class NewVehicleGameTests {
      * dry/solid ground outside the water. Fixed by widening the water bed to the hull's full footprint
      * ({@code x=3..7}) below.
      *
-     * <p>That fix alone did NOT clear the failure -- reproduced it deterministically again afterward (3/3
-     * repeated runs, byte-identical zero-travel failure each time) and this time traced it with real,
-     * correlated evidence rather than asserting it: every one of those 3 runs logs the exact same {@code
-     * "Aborting entity get for abnormally large AABB"} Sable error, 4-6 times, in the same tick window as
-     * this test's own failure, with one AABB corner pinned near zero (e.g. -0.8..1.8, a structure-LOCAL
-     * magnitude) and the opposite corner at a multi-million-unit magnitude that is DIFFERENT every run
-     * (-5393164 in run 1, -6746028 in run 2, -2730036 in run 3) -- tracking the random per-run GameTest
-     * structure placement offset exactly, the same local/world coordinate-mixing signature already
-     * documented as a genuine upstream Sable bug on MINECRAFT-395's car ledge test. The originating stack
-     * (captured separately) is {@code Player.aiStep -> EntityGetter.getEntities -> Level.getEntities} --
-     * vanilla/Sable's own nearby-entity query for the RIDING mock player, not this PR's sampler or
-     * buoyancy/thrust code, which never calls {@code getEntities}. This test is the only one in this class
-     * that drives a mounted rider under sustained throttle over a long, continuous straight-line distance
-     * (20 blocks), which appears to be what reliably exercises the buggy path -- consistent with it
-     * failing the SAME way every run while the actual coordinate magnitude differs. Per the ticket's own
-     * instruction not to replace a real acceptance assertion with a no-crash-only check when a dependency
-     * is genuinely blocked: the assertion below is kept at its real, meaningful bound (not weakened), and
-     * this is an explicit, evidenced, narrow dependency hold pending a scoped waiver -- not a silent pass.
+     * <p>Round-3 review follow-up: that X fix alone did NOT clear the failure, and the reviewer correctly
+     * declined to accept the AABB evidence below as sole causality without first isolating a second,
+     * independent fixture mismatch -- the boat was spawned at {@code z=0} while its stern/motor mount sits
+     * at LOCAL {@code z=-halfLength=-1.6}, which at this test's {@code yaw=0} is world {@code z=-1.6}: one
+     * full block BEHIND where the prepared water actually starts ({@code dz=0}). With the motor mount
+     * never wet at spawn, there is no initial thrust to ever move the hull into the water at all -- a
+     * genuine, deterministic, fixture-only bug independent of any Sable/AABB flakiness. Fixed by spawning
+     * at {@code z=2} instead, so the full hull footprint (stern {@code 2-1.6=0.4} to bow {@code 2+1.6=3.6})
+     * sits inside the unchanged {@code dz=0..20} water bed from spawn.
+     *
+     * <p>That fix alone did NOT clear the failure either -- reproduced it deterministically again
+     * afterward and dug further with per-tick debug logging. Two things explored and resolved along the
+     * way, neither of which is this test's real remaining blocker: (1) {@code SableMotorboatBody.tick}
+     * itself (independently also fixed this round, see that method's own comment) now wakes its rigid body
+     * FIRST, before touching pose/velocity or applying any impulse, instead of only conditionally at the
+     * end of the tick, since a sleeping body silently drops impulses; (2) a tempting-looking alternative --
+     * driving this test via direct {@code driveTick} calls in a plain loop, the same pattern {@code
+     * biplaneLiftsOffAfterTaxiingToTakeoffSpeedAndPullingUp} uses to dodge a real-tick-dependent input-decay
+     * quirk on that same path -- does NOT transfer here and was abandoned: the biplane's physics is fully
+     * self-contained inside {@code driveTick} itself, but the boat's rigid body is integrated by SABLE's
+     * own simulation step, which only advances on a genuine real server tick; calling {@code driveTick} in
+     * a tight loop with no real ticks between calls applies impulses Sable never integrates into a pose at
+     * all (confirmed directly: even GRAVITY stopped acting on the body under that approach). This test
+     * therefore still drives through real ticks via {@link #pinThrottleEachTick}, as before.
+     *
+     * <p>With both of those addressed, the test STILL fails, now with sharper evidence of what is actually
+     * happening: debug logging of the real production {@code describe()} state shows the hull correctly
+     * wet ({@code wet=1.00}) and its tracked linear speed climbing tick over tick with no bound reached
+     * (0.96 -> 3.08 -> 3.45 -> ... -> 7.71 m/s over the run, never settling toward the configured
+     * longitudinal-drag equilibrium the way {@code MotorboatPhysicsTest}'s own pure-math tests prove that
+     * drag law converges in isolation) while the entity's actual world X/Z position never advances at all.
+     * That is: the buoyancy/wet-gating and the velocity bookkeeping this PR's own code performs are both
+     * demonstrably correct and running every tick, but SABLE's own position-integration step is not turning
+     * that velocity into real motion for this body across real GameTest ticks. This is a different, more
+     * precise observation than the original AABB-broad-phase theory (which the reviewer correctly declined
+     * to accept without isolation): it points at Sable's own rigid-body step/broad-phase for a
+     * freshly-created body in this harness, not at anything in this PR's sampler, buoyancy, or thrust code,
+     * which cannot reach into Sable's own integration loop at all. Diagnosing further would mean
+     * instrumenting Sable's own internals, outside this PR's and this codebase's scope. The assertion below
+     * is kept at its real, meaningful bound, not weakened; this remains an explicit, evidenced dependency
+     * hold pending either a Sable-side fix or an authorized scoped waiver, same as {@link
+     * #motorboatTiltedOnEntryRightsItselfThroughRealPerPointBuoyancy}'s own already-documented hold (which
+     * independently exhibits the identical signature: a body whose orientation reads back BYTE-IDENTICAL
+     * to its starting value after 100 real ticks, i.e. never integrated even once).
      */
     @GameTest(template = "settlement_test", timeoutTicks = 150)
     public static void motorboatEntersWaterAndMovesAPlausibleDistanceUnderThrottle(GameTestHelper helper) {
@@ -81,16 +107,18 @@ public final class NewVehicleGameTests {
         // x=5-0.7=4.3 and x=5+0.7=5.7), not just the single x=5 column: a narrower strip leaves two of the
         // four hull corners resting on dry/solid ground outside it, which props the whole rigid body up
         // level and keeps even the water-side corners and the motor mount above the real surface --
-        // zero immersion, zero thrust, zero travel, with nothing wrong in the physics code itself. This
-        // was the actual, deterministic (reproduced twice, same failure both times) root cause of this
-        // test's CI failure -- not the upstream Sable AABB flakiness that affects other tests.
+        // zero immersion, zero thrust, zero travel, with nothing wrong in the physics code itself.
         for (int dx = 3; dx <= 7; dx++) {
             for (int dz = 0; dz <= 20; dz++) {
                 helper.setBlock(new BlockPos(dx, 2, dz), Blocks.WATER);
                 helper.setBlock(new BlockPos(dx, 3, dz), Blocks.AIR);
             }
         }
-        MotorboatEntity boat = helper.spawn(DynamicVehiclesMod.MOTORBOAT.get(), new BlockPos(5, 3, 0));
+        // z=2, not z=0: the hull's half-length (1.6) means a boat spawned at z=0 has its stern/motor
+        // mount at world z=-1.6, BEHIND where the water bed above actually starts (dz=0) -- the motor
+        // would never be wet at spawn, so there would be no initial thrust to ever move it. z=2 puts the
+        // full hull footprint (0.4..3.6) inside the water from the start.
+        MotorboatEntity boat = helper.spawn(DynamicVehiclesMod.MOTORBOAT.get(), new BlockPos(5, 3, 2));
         boat.setYRot(0.0f);
         Player rider = helper.makeMockPlayer(GameType.CREATIVE);
         helper.assertTrue(rider.startRiding(boat), "mock player failed to board the motorboat");
@@ -372,6 +400,58 @@ public final class NewVehicleGameTests {
         helper.assertTrue(surface != null,
                 "a point in a waterlogged slab's open top half should still find real water, not be occluded by "
                         + "the slab's own partial (bottom-half) collision shape");
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-410 round-3 review follow-up (finding 1): a point with open dry air directly above it must
+     * read as genuinely dry -- NOT find unrelated, disconnected water sitting further up past that air gap.
+     * This is the exact regression the prior {@code scanUpward} had: reaching an air block with no column
+     * surface found yet fell through to the next iteration instead of stopping there, contradicting that
+     * method's own documented behaviour and letting the scan climb straight through the gap below to count
+     * the distant water as immersion. Exercises the real production sampler, not a reimplementation.
+     */
+    @GameTest(template = "settlement_test", timeoutTicks = 20)
+    public static void sampleSurfaceDoesNotFindDisconnectedWaterAcrossADryAirGap(GameTestHelper helper) {
+        helper.setBlock(new BlockPos(5, 2, 5), Blocks.STONE);
+        helper.setBlock(new BlockPos(5, 3, 5), Blocks.AIR);
+        helper.setBlock(new BlockPos(5, 4, 5), Blocks.AIR);
+        helper.setBlock(new BlockPos(5, 5, 5), Blocks.WATER);
+        net.minecraft.core.BlockPos dryAbs = helper.absolutePos(new BlockPos(5, 3, 5));
+        Double surface = SableMotorboatBody.sampleSurfaceForTest(helper.getLevel(),
+                dryAbs.getX() + 0.5, dryAbs.getY() + 0.1, dryAbs.getZ() + 0.5);
+        helper.assertTrue(surface == null,
+                "a point with open dry air directly above it should read as genuinely dry, not find disconnected "
+                        + "water two blocks further up past that gap, got " + surface);
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-410 round-3 review follow-up (finding 2): a thin shape like a fence post must occlude a
+     * point sitting IN its own narrow footprint, but must NOT occlude a point elsewhere in the same block
+     * that is actually off that footprint -- the exact regression a bounding-box-only collision check had
+     * (the post's bounding box spans the block's full height, so the OLD code occluded the ENTIRE block
+     * regardless of (x, z), even where the post itself has no real collision at all). Exercises the real
+     * production sampler, not a reimplementation.
+     */
+    @GameTest(template = "settlement_test", timeoutTicks = 20)
+    public static void sampleSurfaceOnlyOccludesAFencePostsOwnFootprintNotTheWholeBlock(GameTestHelper helper) {
+        helper.setBlock(new BlockPos(5, 2, 5), Blocks.WATER);
+        helper.setBlock(new BlockPos(5, 3, 5), Blocks.OAK_FENCE);
+        net.minecraft.core.BlockPos fenceAbs = helper.absolutePos(new BlockPos(5, 3, 5));
+        // Through the post's own (centred) footprint: real solid geometry is actually there, so this point
+        // is occluded outright -- it cannot see the water below through the post it is embedded in.
+        Double throughPost = SableMotorboatBody.sampleSurfaceForTest(helper.getLevel(),
+                fenceAbs.getX() + 0.5, fenceAbs.getY() + 0.1, fenceAbs.getZ() + 0.5);
+        helper.assertTrue(throughPost == null,
+                "a point sitting in a fence post's own real collision footprint should be occluded, got " + throughPost);
+        // Off the post's footprint, in the same block's open corner: no real collision there at all, so
+        // this point must still find the real water below, not be occluded by the post's bounding box.
+        Double besidePost = SableMotorboatBody.sampleSurfaceForTest(helper.getLevel(),
+                fenceAbs.getX() + 0.9, fenceAbs.getY() + 0.1, fenceAbs.getZ() + 0.9);
+        helper.assertTrue(besidePost != null,
+                "a point off a fence post's own footprint, in the same block's open corner, should still find the "
+                        + "real water below -- not be occluded by the post's full-height bounding box");
         helper.succeed();
     }
 

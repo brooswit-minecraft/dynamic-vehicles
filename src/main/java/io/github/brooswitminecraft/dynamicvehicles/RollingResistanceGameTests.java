@@ -214,44 +214,105 @@ public final class RollingResistanceGameTests {
         });
     }
 
+    /** Ticks to build real horizontal speed, well above {@code WheelMath.tire}'s own 0.05 m/s rolling
+     * dead zone, before either losing ground contact or (the control) staying grounded. */
+    private static final int LIFTOFF_ACCEL_TICKS = 60;
+    /** Short enough to keep the airborne car's own free-fall vertical speed small relative to its
+     * horizontal cruise speed -- {@code SableCarBody.tick}'s air-drag term scales with the FULL 3D speed,
+     * so a long fall would eventually inflate drag on the airborne car for a reason that has nothing to do
+     * with terrain rolling resistance (an unwanted confound, not the regression this test is for). */
+    private static final int AIRBORNE_COAST_TICKS = 10;
+
     /**
-     * AC4 (raycast miss / lost contact): every wheel is suspended over a cleared-out pit deeper than
-     * {@code WheelMath.REST_LENGTH + 0.25} (the wheel raycast's own range), so {@code
+     * AC4 (raycast miss / lost contact): every wheel of one car is suspended over a cleared-out pit deeper
+     * than {@code WheelMath.REST_LENGTH + 0.25} (the wheel raycast's own range), so {@code
      * level.clip(...).getType() == HitResult.Type.MISS} for all four wheels, exactly like {@code
-     * SableCarBody.tick}'s own guards. A missed wheel must publish fully-extended suspension travel (0.0,
-     * see {@code suspensionTravel}'s own javadoc) and contribute no tire/rolling-resistance force at all
-     * (the {@code force &lt;= 0} skip before any {@code Surfaces.at}/{@code WheelMath.tire} call) -- and
-     * the car must not crash or go non-finite for having no ground under it at all.
+     * SableCarBody.tick}'s own guards -- the missed wheel must publish fully-extended suspension travel
+     * (0.0, see {@code suspensionTravel}'s own javadoc), kept as its own direct proof the miss setup is
+     * real.
+     *
+     * <p>Review (PR #181): a first draft spawned this car STATIONARY over the pit and asserted only "no
+     * crash, telemetry finite" -- vacuous, because {@code WheelMath.tire}'s own {@code vLong > 0.05} dead
+     * zone (around line 114-116) already forces the rolling term to 0 for a car with no horizontal speed
+     * at all, regardless of whether {@code SableCarBody.tick}'s airborne/{@code force <= 0} skip does
+     * anything. A regression that wrongly applied terrain rolling drag to an ungrounded wheel would have
+     * stayed green. This version establishes REAL horizontal speed first (driven on real sand, same as the
+     * grounded control below, so both start identically), then removes the ground out from under that same
+     * car -- the same "block changes under a never-recreated, never-repositioned body" pattern {@link
+     * CarFireDamageGameTests#burningContinuesAfterLeavingLava} already uses -- and compares its speed loss
+     * against a matched control that stays grounded on the same real sand at the same starting speed the
+     * whole time, rather than against a hand-derived expected number. Both cars still feel the same
+     * surface-independent air drag once moving; only the grounded control should ALSO feel real terrain
+     * rolling resistance on top of that, so it must lose strictly more speed over the same short window.
      */
-    @GameTest(template = "settlement_test", timeoutTicks = 60)
+    @GameTest(template = "settlement_test", timeoutTicks = 150)
     public static void airborneWheelsOverAPitGetNoTerrainRollingDrag(GameTestHelper helper) {
-        int cx = 5;
-        int cz = 5;
-        // Clear a pit well wider than the car's own track/wheelbase (CarGeometry: halfX 0.95, halfZ 1.5) and
-        // the full template height (y 0..7), so every wheel's raycast -- at most restLength + 0.25 = 0.9 m
-        // -- finds nothing below it, regardless of exactly where in the pit it lands.
-        for (int dx = -3; dx <= 3; dx++) {
-            for (int dz = -3; dz <= 3; dz++) {
-                for (int y = 0; y <= 7; y++) {
-                    helper.setBlock(new BlockPos(cx + dx, y, cz + dz), Blocks.AIR);
+        fillFloor(helper, 5, 2, 5, Blocks.SAND.defaultBlockState());
+        fillFloor(helper, 5, 2, 15, Blocks.SAND.defaultBlockState());
+
+        CarEntity grounded = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
+        CarEntity airborne = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 15));
+
+        grounded.forceDrive(1.0, 0.0, LIFTOFF_ACCEL_TICKS);
+        airborne.forceDrive(1.0, 0.0, LIFTOFF_ACCEL_TICKS);
+        helper.runAfterDelay((long) LIFTOFF_ACCEL_TICKS, () -> {
+            helper.assertTrue(grounded.sableBody() != null && airborne.sableBody() != null,
+                    "a car's Sable body was never created during the liftoff acceleration phase");
+            double groundedSpeedBefore = horizontalSpeed(grounded);
+            double airborneSpeedBefore = horizontalSpeed(airborne);
+            helper.assertTrue(groundedSpeedBefore > 0.05 && airborneSpeedBefore > 0.05,
+                    "test setup never got either car moving above WheelMath.tire's own rolling dead zone "
+                            + "before the airborne car lost contact -- a test at vLong == 0 would be vacuous: "
+                            + "grounded=" + groundedSpeedBefore + " airborne=" + airborneSpeedBefore);
+            for (double travel : SableCompat.wheelTravel(grounded.sableBody())) {
+                helper.assertTrue(travel > 0.0, "the grounded control was not actually touching the ground "
+                        + "right before the comparison window: suspensionTravel=" + travel);
+            }
+
+            // The airborne car loses its ground the instant the comparison window starts; the grounded
+            // control's real sand floor is untouched. Clear a pit well wider than the car's own
+            // track/wheelbase (CarGeometry: halfX 0.95, halfZ 1.5) and the full template height (y 0..7),
+            // so every wheel's raycast -- at most restLength + 0.25 = 0.9 m -- finds nothing below it.
+            for (int dx = -3; dx <= 3; dx++) {
+                for (int dz = -3; dz <= 3; dz++) {
+                    for (int y = 0; y <= 7; y++) {
+                        helper.setBlock(new BlockPos(5 + dx, y, 15 + dz), Blocks.AIR);
+                    }
                 }
             }
-        }
-        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(cx, 6, cz));
-        helper.runAfterDelay(3L, () -> {
-            helper.assertTrue(car.sableBody() != null, "car's Sable body was never created");
-            double[] travel = SableCompat.wheelTravel(car.sableBody());
-            for (int wheel = 0; wheel < travel.length; wheel++) {
-                helper.assertTrue(travel[wheel] == 0.0,
-                        "wheel " + wheel + " over an open pit reported nonzero suspension travel (should read "
-                                + "fully extended/ungrounded, 0.0): " + travel[wheel]);
-            }
-            double slip = SableCompat.slip(car.sableBody());
-            double speed = SableCompat.speed(car.sableBody());
-            helper.assertTrue(!Double.isNaN(slip) && !Double.isNaN(speed) && !Double.isInfinite(speed),
-                    "an airborne car produced non-finite telemetry: slip=" + slip + " speed=" + speed);
-            helper.assertTrue(!car.isRemoved(), "car crashed/was removed while falling with no ground under it");
-            helper.succeed();
+            grounded.forceDrive(0.0, 0.0, AIRBORNE_COAST_TICKS);
+            airborne.forceDrive(0.0, 0.0, AIRBORNE_COAST_TICKS);
+            helper.runAfterDelay((long) AIRBORNE_COAST_TICKS, () -> {
+                helper.assertTrue(!airborne.isRemoved(), "the airborne car crashed/was removed while falling "
+                        + "with no ground under it");
+                double[] groundedTravel = SableCompat.wheelTravel(grounded.sableBody());
+                double[] airborneTravel = SableCompat.wheelTravel(airborne.sableBody());
+                for (double travel : groundedTravel) {
+                    helper.assertTrue(travel > 0.0,
+                            "the grounded control stopped touching the ground during the comparison window "
+                                    + "(not a valid matched control any more): suspensionTravel=" + travel);
+                }
+                for (int wheel = 0; wheel < airborneTravel.length; wheel++) {
+                    helper.assertTrue(airborneTravel[wheel] == 0.0,
+                            "wheel " + wheel + " over the open pit reported nonzero suspension travel (should "
+                                    + "read fully extended/ungrounded, 0.0): " + airborneTravel[wheel]);
+                }
+
+                double groundedSpeedAfter = horizontalSpeed(grounded);
+                double airborneSpeedAfter = horizontalSpeed(airborne);
+                helper.assertTrue(!Double.isNaN(groundedSpeedAfter) && !Double.isNaN(airborneSpeedAfter),
+                        "the comparison window produced a NaN speed: grounded=" + groundedSpeedAfter
+                                + " airborne=" + airborneSpeedAfter);
+                double groundedLoss = groundedSpeedBefore - groundedSpeedAfter;
+                double airborneLoss = airborneSpeedBefore - airborneSpeedAfter;
+                helper.assertTrue(groundedLoss > airborneLoss,
+                        "a car that stayed grounded on real sand must lose MORE horizontal speed over this "
+                                + "window than a matched car at the same starting speed that lost ground contact "
+                                + "-- the grounded car alone should feel real terrain rolling resistance on top "
+                                + "of the same surface-independent air drag both feel: groundedLoss=" + groundedLoss
+                                + " airborneLoss=" + airborneLoss);
+                helper.succeed();
+            });
         });
     }
 }

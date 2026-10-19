@@ -67,6 +67,10 @@ class VehicleSpecOverridesTest {
         VehicleSpec resolved = VehicleSpecOverrides.resolve("rock_crawler", VehicleSpec.ROCK_CRAWLER);
 
         assertEquals(1.2, resolved.rideHeight());
+        // restLength must move with rideHeight by the same ratio (review fix): the rock crawler's stock
+        // restLength (2.0) scaled by the same 1.2/1.9 the ride height itself just moved by.
+        assertEquals(VehicleSpec.ROCK_CRAWLER.restLength() * (1.2 / VehicleSpec.ROCK_CRAWLER.rideHeight()),
+                resolved.restLength(), 1e-9);
         // 999.0 is out of VehicleSpecLimits' range -- clamped, not rejected outright.
         assertEquals(VehicleSpecLimits.MAX_ANTI_ROLL_SCALE, resolved.antiRollScale());
         assertEquals(0.9, resolved.vehicleTuning().lsdLockPercent());
@@ -77,6 +81,17 @@ class VehicleSpecOverridesTest {
         assertEquals(VehicleSpec.ROCK_CRAWLER.vehicleTuning().frontTorqueSplit(), resolved.vehicleTuning().frontTorqueSplit());
         assertEquals(VehicleSpec.ROCK_CRAWLER.massKg(), resolved.massKg());
         assertEquals(VehicleSpec.ROCK_CRAWLER.seats(), resolved.seats());
+    }
+
+    @Test
+    void restLengthStaysStockWhenRideHeightIsNotOverridden(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "rock_crawler", "{\"antiRollScale\": 1.0}");
+
+        VehicleSpecOverrides.load(configDir);
+        VehicleSpec resolved = VehicleSpecOverrides.resolve("rock_crawler", VehicleSpec.ROCK_CRAWLER);
+
+        assertEquals(VehicleSpec.ROCK_CRAWLER.restLength(), resolved.restLength());
+        assertEquals(VehicleSpec.ROCK_CRAWLER.rideHeight(), resolved.rideHeight());
     }
 
     @Test

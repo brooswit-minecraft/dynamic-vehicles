@@ -13,20 +13,27 @@ resolved into `CarEntity`.
 id the entity/item registry uses — see `VehicleIds` and the `ENTITIES.register`
 calls in `DynamicVehiclesMod`).
 
-Read **once, at server start** (a `ServerStartingEvent` listener calls
-`VehicleSpecOverrides.load`), same as every other `SERVER`-type config value in
-this mod before this ticket (`CarConfig`'s own `toml`, excepting the two fields
-it already documents as read live: `driftHandbrakeRearGripCut`'s neighbours and
-`RADIO_STATIONS`). Editing a car's file while the server is running has no
-effect until the next server start. This is a deliberate scope boundary, not an
-oversight — see MINECRAFT-443's ticket discussion.
+Read **once, at server start** — a `ServerAboutToStartEvent` listener calls
+`VehicleSpecOverrides.load` before any level loads, so the override table is
+populated before a single saved car can be deserialized from world data.
+Editing a car's file while the server is running has no effect until the next
+server start. This is **narrower** than most of `CarConfig`'s own existing
+`toml` values: NeoForge's `ModConfigSpec` already re-reads most of those live
+on every `.get()` call (an edited file takes effect without a restart — see
+`RADIO_STATIONS` and the drift tuning values' own doc comments, which call
+this out explicitly). This loader's start-only behavior is a new, deliberate
+scope boundary unique to this per-car format, not a claim that the rest of
+this mod's config already worked this way — see MINECRAFT-443's ticket
+discussion for why this one stays start-only (no implemented reload test).
 
-**Server-authoritative, not synced.** The resolved spec is only ever used
-where `CarEntity` picks its physics spec; like every other config value here,
-it lives on the server (or the integrated server a singleplayer world runs) and
-is never sent to a remote client. A dedicated server's clients see this
-server's physics outcome through the usual entity-state sync, not the file
-itself.
+**Server-authoritative, not synced.** `CarEntity` only consults a per-car
+override on its logical-server side (`!level.isClientSide()`, which includes a
+singleplayer world's own integrated server); a logical client always uses the
+plain stock spec. This is deliberate, not just "physics are server-decided
+anyway": `VehicleSpecOverrides`' table is one process-global map, so a client
+that previously hosted/played a singleplayer world with overrides loaded, then
+joins a remote server in that same client session, must not keep reading that
+now-stale table.
 
 **Missing file or a missing/invalid field inside it always falls back to that
 car's stock default** — a server with no files at all behaves byte-for-byte as
@@ -41,7 +48,7 @@ Every field is optional; an absent field keeps that car's stock value.
 
 | Key | Unit | Range | Notes |
 |---|---|---|---|
-| `rideHeight` | metres | 0.1 – 5.0 | Body-centre height above the ground at rest. |
+| `rideHeight` | metres | 0.1 – 5.0 | Body-centre height above the ground at rest. Also scales `restLength` by the same ratio, so the suspension's rest geometry moves with it instead of leaving the car floating at its old height or a spring that cannot reach the new one. |
 | `dampingRate` | N·s/m | 0.0 – 40,000.0 | Suspension damper rate. |
 | `antiRollScale` | multiplier | 0.0 – 5.0 | Identity 1.0; see `VehicleSpec#antiRollScale`. |
 | `rollingScale` | multiplier | 0.0 – 5.0 | Identity 1.0; soft-ground rolling resistance scale. |
@@ -71,6 +78,28 @@ mass, drive force/top speed, engine pitch, tire/downforce tuning and loose-grip
 are not file-configurable — they define a car's identity, not its stock tuning,
 and changing them here would risk the "preserve identity and currently
 enjoyable stock driving feel" requirement this ticket is built around.
+
+**Handbrake is explicitly NOT migrated.** The acceptance list names it, but
+there is no per-car handbrake *strength* field in the existing baseline to
+migrate: `SableCarBody.tick`'s handbrake behavior (`HANDBRAKE_FORCE`, a
+`0.35` lateral-grip multiplier) is one hardcoded constant shared by every car,
+scaled only by `forceScale` (not file-configurable). The one handbrake-shaped
+field that does exist per vehicle, `TireTuning#handbrakeRearGripCut`, belongs
+only to drift-tuned cars and is already explicitly owned by the live
+`CarConfig.driftHandbrakeRearGripCut` value, not a per-car file, per that
+field's own doc comment. Rather than invent a new strength field with no
+existing baseline behind it, this is flagged here for confirmation instead —
+see the ticket's own instruction to report missing design decisions rather
+than invent them.
+
+**`camberDeg`/`toeDeg` have no effect on a drift-tuned car.** Per
+`VehicleTuning`'s own doc comment, camber and toe are read by
+`CamberToeGripModel` only through `WheelMath.tire`; a car whose `tireTuning()`
+is non-identity (today, only `drift_car`) routes cornering grip through
+`DriftTireModel` instead, which does not consult them. This is pre-existing
+architecture this ticket does not change — `drift_car.json` can still set
+`camberDeg`/`toeDeg` (and they will be clamped and stored), but they will be
+inert until a future ticket connects `DriftTireModel` to them.
 
 ### Reserved for downstream tasks
 

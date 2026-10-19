@@ -165,8 +165,10 @@ public class DynamicVehiclesMod {
         NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.server.ServerStartedEvent e) -> LightLedger.sweep(e.getServer()));
         // MINECRAFT-443: per-car config files are read once, here, at server start -- not re-read while
         // the server runs (see VehicleSpecOverrides' own javadoc for why that is a deliberate scope
-        // boundary rather than an oversight).
-        NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.server.ServerStartingEvent e) ->
+        // boundary rather than an oversight). ServerAboutToStartEvent specifically, not the later
+        // ServerStartingEvent: it fires before any level is loaded, so the override table is populated
+        // before a single saved CarEntity can be deserialized from world data and read it.
+        NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.server.ServerAboutToStartEvent e) ->
                 VehicleSpecOverrides.load(net.neoforged.fml.loading.FMLPaths.CONFIGDIR.get()));
         NeoForge.EVENT_BUS.addListener(DispatcherInteractionHandler::onEntityInteract);
         NeoForge.EVENT_BUS.addListener(BuilderTradeHandler::registerTrades);

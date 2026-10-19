@@ -112,6 +112,15 @@ public class CarEntity extends Entity {
     private int forcedDriveTicks;
 
     private final VehicleSpec spec;
+    /** MINECRAFT-443: this car's registry id (see {@link VehicleIds}), kept alongside {@link #spec}
+     * precisely because {@code spec} is no longer always {@code ==} one of {@link VehicleSpec}'s stock
+     * constants once a per-car config override exists for it. {@link CarRenderer} and this class's own
+     * model/collision-privilege branches ({@code hitBlockAhead}) must key off this id, never off spec
+     * identity &mdash; keying off identity meant an override file for the truck (even an empty one) made
+     * {@code spec == VehicleSpec.TRUCK} silently false, which both picked the generic renderer fallback
+     * model and (more seriously) granted the truck's deliberately-narrow vegetation-only collision
+     * privilege to every other block type instead. */
+    private final String vehicleId;
     /** Per-entity tuning, initialized from the immutable vehicle type then retained in this entity's NBT. */
     private VehicleSpec.VehicleTuning vehicleTuning;
     /** Which seat each current passenger sits in (MINECRAFT-172); seat 0 is always the driver. */
@@ -129,30 +138,53 @@ public class CarEntity extends Entity {
 
     public CarEntity(EntityType<? extends CarEntity> type, Level level) {
         super(type, level);
-        // MINECRAFT-443: each branch resolves through any per-car config file override loaded for that
-        // car id (VehicleSpecOverrides.resolve falls straight back to the stock constant when no file was
-        // loaded for it, so this is behaviourally identical to the plain stock lookup it replaces).
-        this.spec = DynamicVehiclesMod.TRUCK.isBound() && type == DynamicVehiclesMod.TRUCK.get()
-                        ? VehicleSpecOverrides.resolve(VehicleIds.TRUCK, VehicleSpec.TRUCK)
-                : DynamicVehiclesMod.TROPHY.isBound() && type == DynamicVehiclesMod.TROPHY.get()
-                        ? VehicleSpecOverrides.resolve(VehicleIds.TROPHY_TRUCK, VehicleSpec.TROPHY)
-                : DynamicVehiclesMod.DRIFT.isBound() && type == DynamicVehiclesMod.DRIFT.get()
-                        ? VehicleSpecOverrides.resolve(VehicleIds.DRIFT_CAR, VehicleSpec.DRIFT)
-                : DynamicVehiclesMod.MUSCLE.isBound() && type == DynamicVehiclesMod.MUSCLE.get()
-                        ? VehicleSpecOverrides.resolve("muscle_car", VehicleSpec.MUSCLE)
-                : DynamicVehiclesMod.ROCK_CRAWLER.isBound() && type == DynamicVehiclesMod.ROCK_CRAWLER.get()
-                        ? VehicleSpecOverrides.resolve("rock_crawler", VehicleSpec.ROCK_CRAWLER)
-                : DynamicVehiclesMod.MONSTER_TRUCK.isBound() && type == DynamicVehiclesMod.MONSTER_TRUCK.get()
-                        ? VehicleSpecOverrides.resolve("monster_truck", VehicleSpec.MONSTER_TRUCK)
-                : DynamicVehiclesMod.INDY.isBound() && type == DynamicVehiclesMod.INDY.get()
-                        ? VehicleSpecOverrides.resolve("indy_car", VehicleSpec.INDY)
-                : DynamicVehiclesMod.BUS.isBound() && type == DynamicVehiclesMod.BUS.get()
-                        ? VehicleSpecOverrides.resolve("bus", VehicleSpec.BUS)
-                : DynamicVehiclesMod.CARGO_TRUCK.isBound() && type == DynamicVehiclesMod.CARGO_TRUCK.get()
-                        ? VehicleSpecOverrides.resolve("cargo_truck", VehicleSpec.CARGO_TRUCK)
-                        : VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR);
+        this.vehicleId = vehicleIdFor(type);
+        VehicleSpec stock = stockSpecFor(this.vehicleId);
+        // MINECRAFT-443: the server (including a singleplayer world's own integrated server) resolves
+        // through any per-car config file override loaded for this car id; a logical client never does,
+        // even in that same singleplayer process -- VehicleSpecOverrides' table is a single process-global
+        // map, so a client that previously hosted/played a singleplayer world with overrides loaded and
+        // then joins a remote server in the same session must not keep reading that now-stale table. The
+        // client's spec is cosmetic only (rendering/hitbox dimensions); real physics are server-decided
+        // and reach the client through ordinary entity-state sync either way.
+        this.spec = level.isClientSide() ? stock : VehicleSpecOverrides.resolve(this.vehicleId, stock);
         this.vehicleTuning = spec.vehicleTuning();
         this.seats = new SeatAssignment<>(spec.seatCount());
+    }
+
+    private static String vehicleIdFor(EntityType<? extends CarEntity> type) {
+        return DynamicVehiclesMod.TRUCK.isBound() && type == DynamicVehiclesMod.TRUCK.get() ? VehicleIds.TRUCK
+                : DynamicVehiclesMod.TROPHY.isBound() && type == DynamicVehiclesMod.TROPHY.get() ? VehicleIds.TROPHY_TRUCK
+                : DynamicVehiclesMod.DRIFT.isBound() && type == DynamicVehiclesMod.DRIFT.get() ? VehicleIds.DRIFT_CAR
+                : DynamicVehiclesMod.MUSCLE.isBound() && type == DynamicVehiclesMod.MUSCLE.get() ? VehicleIds.MUSCLE_CAR
+                : DynamicVehiclesMod.ROCK_CRAWLER.isBound() && type == DynamicVehiclesMod.ROCK_CRAWLER.get() ? VehicleIds.ROCK_CRAWLER
+                : DynamicVehiclesMod.MONSTER_TRUCK.isBound() && type == DynamicVehiclesMod.MONSTER_TRUCK.get() ? VehicleIds.MONSTER_TRUCK
+                : DynamicVehiclesMod.INDY.isBound() && type == DynamicVehiclesMod.INDY.get() ? VehicleIds.INDY_CAR
+                : DynamicVehiclesMod.BUS.isBound() && type == DynamicVehiclesMod.BUS.get() ? VehicleIds.BUS
+                : DynamicVehiclesMod.CARGO_TRUCK.isBound() && type == DynamicVehiclesMod.CARGO_TRUCK.get() ? VehicleIds.CARGO_TRUCK
+                : VehicleIds.CAR;
+    }
+
+    private static VehicleSpec stockSpecFor(String vehicleId) {
+        return switch (vehicleId) {
+            case VehicleIds.TRUCK -> VehicleSpec.TRUCK;
+            case VehicleIds.TROPHY_TRUCK -> VehicleSpec.TROPHY;
+            case VehicleIds.DRIFT_CAR -> VehicleSpec.DRIFT;
+            case VehicleIds.MUSCLE_CAR -> VehicleSpec.MUSCLE;
+            case VehicleIds.ROCK_CRAWLER -> VehicleSpec.ROCK_CRAWLER;
+            case VehicleIds.MONSTER_TRUCK -> VehicleSpec.MONSTER_TRUCK;
+            case VehicleIds.INDY_CAR -> VehicleSpec.INDY;
+            case VehicleIds.BUS -> VehicleSpec.BUS;
+            case VehicleIds.CARGO_TRUCK -> VehicleSpec.CARGO_TRUCK;
+            default -> VehicleSpec.CAR;
+        };
+    }
+
+    /** This car's registry id (see {@link VehicleIds}) -- the stable key {@link CarRenderer} and this
+     * class's own model/collision branches must dispatch on instead of {@link #spec}'s identity, which a
+     * per-car config override can legitimately change without changing which car this is. */
+    String vehicleId() {
+        return vehicleId;
     }
 
     /** This vehicle's shape and drivetrain: the car's or the truck's. */
@@ -445,7 +477,7 @@ public class CarEntity extends Entity {
             boolean dirtOrSand = state.is(BlockTags.DIRT) || state.is(BlockTags.SAND);
             boolean glass = state.getBlock() instanceof TransparentBlock || state.getBlock() instanceof StainedGlassPaneBlock;
             ImpactRules.BlockImpactRoute route = ImpactRules.blockImpactRoute(
-                    spec == VehicleSpec.TRUCK, dirtOrSand, bamboo, breakable);
+                    VehicleIds.TRUCK.equals(vehicleId), dirtOrSand, bamboo, breakable);
 
             // Dynamic Terrain is the sole authority for loose terrain; it decides resistance and whether
             // material shifts downhill or degrades. This is selected before the truck-only return below,
@@ -457,7 +489,7 @@ public class CarEntity extends Entity {
 
             // The truck has a deliberately narrow vegetation interaction. It never gains the generic
             // block-breaking privilege merely by being heavier than a car.
-            if (spec == VehicleSpec.TRUCK) {
+            if (VehicleIds.TRUCK.equals(vehicleId)) {
                 if (route == ImpactRules.BlockImpactRoute.TRUCK_BAMBOO) {
                     serverLevel.destroyBlock(pos, true, this);
                 }

@@ -19,16 +19,24 @@ import java.util.concurrent.ConcurrentHashMap;
  * (geometry, mass, seats, drive force, top speed, tire/downforce tuning) is not file-configurable by this
  * ticket; see {@code docs/per-car-config.md} for the full rationale and schema.
  *
- * <p><b>Loaded once, at server start</b> ({@link #load}, called from a {@code ServerStartingEvent}
- * listener) &mdash; not re-read while the server runs. A file edited while the server is up takes effect
- * on the next start, exactly like {@code CarConfig}'s own {@code toml} values before this ticket; this is
- * a deliberate scope boundary (see MINECRAFT-443's ticket discussion), not an oversight.
+ * <p><b>Loaded once, at server start</b> ({@link #load}, called from a {@code ServerAboutToStartEvent}
+ * listener, before any level loads) &mdash; not re-read while the server runs. A file edited while the
+ * server is up takes effect on the next start. This is narrower than {@code CarConfig}'s own existing
+ * {@code toml} values, most of which NeoForge's {@code ModConfigSpec} already re-reads live on every
+ * {@code .get()} call (an edited file takes effect without a restart) &mdash; this loader's start-only
+ * behaviour is a deliberate, new scope boundary unique to this per-car format (see MINECRAFT-443's ticket
+ * discussion), not a claim that every other config value in this mod already behaved this way.
  *
- * <p><b>Server-authoritative, not synced</b>: {@link #resolve} is only ever consulted where a
- * {@link VehicleSpec} is chosen for server-side physics ({@link CarEntity}'s constructor); like every
- * other {@code SERVER}-type config in this mod, the resolved values live only on the server/integrated
- * server and are never sent to remote clients. A dedicated server's clients always see this server's
- * physics outcome through the usual entity-state sync, never the config file itself.
+ * <p><b>Server-authoritative, not synced</b>: {@link CarEntity} only consults {@link #resolve} on its
+ * logical-server side ({@code !level.isClientSide()}, which includes a singleplayer world's own
+ * integrated server); a logical client always uses the plain stock spec, both because physics are
+ * server-decided and reach it through ordinary entity-state sync regardless, and because this table is a
+ * single process-global map that must never leak a previous singleplayer session's overrides into a
+ * later remote-server connection made from the same client process.
+ *
+ * <p>Overriding {@code rideHeight} also scales {@code restLength} by the same ratio, so the suspension's
+ * own rest geometry moves with it instead of leaving the car floating at its old height or a spring that
+ * cannot reach the new one.
  *
  * <p>Missing file, a missing field within a file, or a file that fails to parse at all each fall back to
  * the car's stock default: missing/absent fields keep that field's stock value; a file that throws any
@@ -109,6 +117,14 @@ final class VehicleSpecOverrides {
         double rideHeight = file.rideHeight == null ? stock.rideHeight()
                 : VehicleSpecLimits.clamp(file.rideHeight, VehicleSpecLimits.MIN_RIDE_HEIGHT,
                         VehicleSpecLimits.MAX_RIDE_HEIGHT, stock.rideHeight());
+        // A rideHeight override must move the suspension's own rest geometry with it, or the car either
+        // floats at its old visual height (wheelCentreY only subtracts rideHeight, restLength is untouched)
+        // or the spring runs out of travel before reaching the new ride height. Scale restLength by the
+        // same ratio rideHeight itself just moved by, which keeps every car's existing ride-height/travel
+        // relationship (e.g. the rock crawler's restLength deliberately exceeding its rideHeight) intact
+        // under a uniform suspension lift/drop instead of reinventing a per-car travel curve.
+        double restLength = rideHeight == stock.rideHeight() ? stock.restLength()
+                : stock.restLength() * (rideHeight / stock.rideHeight());
         double dampingRate = file.dampingRate == null ? stock.dampingRate()
                 : VehicleSpecLimits.clamp(file.dampingRate, VehicleSpecLimits.MIN_DAMPING_RATE,
                         VehicleSpecLimits.MAX_DAMPING_RATE, stock.dampingRate());
@@ -130,7 +146,7 @@ final class VehicleSpecOverrides {
 
         return new VehicleSpec(stock.halfX(), stock.halfY(), stock.halfZ(),
                 stock.mounts(), stock.wheelRadius(), stock.wheelWidth(),
-                rideHeight, stock.restLength(),
+                rideHeight, restLength,
                 stock.massKg(), stock.springRate(), dampingRate, stock.maxSpringForce(),
                 stock.wheelbase(), stock.maxSpeed(),
                 stock.forceScale(), stock.enginePitch(),

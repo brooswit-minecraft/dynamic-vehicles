@@ -19,45 +19,71 @@ class VehicleSpecWingTest {
             VehicleSpec.ROCK_CRAWLER, VehicleSpec.MONSTER_TRUCK, VehicleSpec.INDY, VehicleSpec.BUS,
             VehicleSpec.CARGO_TRUCK);
 
+    /** Every assertion here is on exact arithmetic, so this only absorbs double representation error. */
+    private static final double TOLERANCE = 1e-9;
+    /** The identity value of both downforce coefficients: no wing at all. */
+    private static final double NO_WING = 0.0;
+    /** A unit coefficient, so {@code wingDownforceNewtons}' output IS the speed squared and the
+     * speed-squared relationship is readable directly off the expected values below. */
+    private static final double UNIT_COEFF = 1.0;
+    /** Arbitrary nonzero coefficients, for the cases where the exact value is irrelevant to the claim. */
+    private static final double SOME_COEFF = 2.5;
+    private static final double ANOTHER_COEFF = 1.3;
+    /** A speed at and around this car's own working range (the roster's top speed is INDY's 48 m/s). */
+    private static final double SOME_SPEED = 25.0;
+    private static final double TOP_END_SPEED = 40.0;
+    private static final double STANDSTILL = 0.0;
+
+    /** One plausible "big front splitter, small rear wing, and the extra drag a wing like that brings"
+     * setup, for the constructor round-trip below: front deliberately above rear, and a drag coefficient
+     * above the roster's own stock {@link VehicleSpec#LEGACY_AIR_DRAG}. */
+    private static final double FRONT_HEAVY_FRONT_COEFF = 3.0;
+    private static final double FRONT_HEAVY_REAR_COEFF = 1.0;
+    private static final double FRONT_HEAVY_DRAG_COEFF = 0.6;
+
     @Test
     void everyExistingVehicleHasNoWingDownforceAndTheOldGlobalDragValue() {
         for (VehicleSpec spec : ROSTER) {
-            assertEquals(0.0, spec.frontWingDownforceCoeff(), 1e-9, "no vehicle has a wing yet");
-            assertEquals(0.0, spec.rearWingDownforceCoeff(), 1e-9, "no vehicle has a wing yet");
-            // 0.4 N per (m/s)^2: byte-for-byte the old hardcoded SableCarBody#AIR_DRAG constant every
-            // vehicle shared before this field existed.
-            assertEquals(0.4, spec.wingDragCoeff(), 1e-9);
+            assertEquals(NO_WING, spec.frontWingDownforceCoeff(), TOLERANCE, "no vehicle has a wing yet");
+            assertEquals(NO_WING, spec.rearWingDownforceCoeff(), TOLERANCE, "no vehicle has a wing yet");
+            // Byte-for-byte the old hardcoded SableCarBody#AIR_DRAG constant every vehicle shared before
+            // this field existed -- asserted against that constant itself, not a restated number, so this
+            // cannot drift away from it. (The DOCUMENTED value is pinned separately, as a literal, by
+            // PerCarConfigDocsDefaultsTest -- that one must not follow the constant.)
+            assertEquals(VehicleSpec.LEGACY_AIR_DRAG, spec.wingDragCoeff(), TOLERANCE);
         }
     }
 
     @Test
     void wingDownforceIsZeroAtZeroSpeedRegardlessOfCoefficient() {
-        assertEquals(0.0, VehicleSpec.wingDownforceNewtons(2.5, 0.0), 1e-9);
+        assertEquals(0.0, VehicleSpec.wingDownforceNewtons(SOME_COEFF, STANDSTILL), TOLERANCE);
     }
 
     @Test
     void wingDownforceIsZeroWhenTheCoefficientIsZeroRegardlessOfSpeed() {
-        assertEquals(0.0, VehicleSpec.wingDownforceNewtons(0.0, 40.0), 1e-9);
+        assertEquals(0.0, VehicleSpec.wingDownforceNewtons(NO_WING, TOP_END_SPEED), TOLERANCE);
     }
 
     @Test
     void wingDownforceGrowsWithTheSquareOfSpeed() {
-        double at10 = VehicleSpec.wingDownforceNewtons(1.0, 10.0);
-        double at20 = VehicleSpec.wingDownforceNewtons(1.0, 20.0);
-        double at40 = VehicleSpec.wingDownforceNewtons(1.0, 40.0);
-        assertEquals(100.0, at10, 1e-9);
-        assertEquals(400.0, at20, 1e-9);
-        assertEquals(1600.0, at40, 1e-9);
+        // Deliberately literal: at UNIT_COEFF these expected values ARE speed squared (10^2, 20^2, 40^2),
+        // which is the specification under test -- naming them would hide the very relationship asserted.
+        double at10 = VehicleSpec.wingDownforceNewtons(UNIT_COEFF, 10.0);
+        double at20 = VehicleSpec.wingDownforceNewtons(UNIT_COEFF, 20.0);
+        double at40 = VehicleSpec.wingDownforceNewtons(UNIT_COEFF, 40.0);
+        assertEquals(100.0, at10, TOLERANCE);
+        assertEquals(400.0, at20, TOLERANCE);
+        assertEquals(1600.0, at40, TOLERANCE);
         // Doubling speed quadruples downforce (v^2), not merely doubles it.
-        assertEquals(4.0 * at10, at20, 1e-9);
-        assertEquals(4.0 * at20, at40, 1e-9);
+        assertEquals(4.0 * at10, at20, TOLERANCE);
+        assertEquals(4.0 * at20, at40, TOLERANCE);
     }
 
     @Test
     void wingDownforceDoesNotDependOnTravelDirection() {
-        double forward = VehicleSpec.wingDownforceNewtons(1.3, 25.0);
-        double reverse = VehicleSpec.wingDownforceNewtons(1.3, -25.0);
-        assertEquals(forward, reverse, 1e-9, "a wing's downforce should not flip or vanish in reverse");
+        double forward = VehicleSpec.wingDownforceNewtons(ANOTHER_COEFF, SOME_SPEED);
+        double reverse = VehicleSpec.wingDownforceNewtons(ANOTHER_COEFF, -SOME_SPEED);
+        assertEquals(forward, reverse, TOLERANCE, "a wing's downforce should not flip or vanish in reverse");
         assertTrue(forward > 0.0);
     }
 
@@ -74,11 +100,11 @@ class VehicleSpecWingTest {
                 VehicleSpec.CAR.looseGrip(), VehicleSpec.CAR.rollingScale(),
                 VehicleSpec.CAR.tireTuning(), VehicleSpec.CAR.downforceGripPerSpeed(), VehicleSpec.CAR.antiRollScale(),
                 VehicleSpec.CAR.seats(), VehicleSpec.CAR.vehicleTuning(), VehicleSpec.CAR.handbrakeScale(),
-                3.0, 1.0, 0.6);
+                FRONT_HEAVY_FRONT_COEFF, FRONT_HEAVY_REAR_COEFF, FRONT_HEAVY_DRAG_COEFF);
 
-        assertEquals(3.0, winged.frontWingDownforceCoeff());
-        assertEquals(1.0, winged.rearWingDownforceCoeff());
-        assertEquals(0.6, winged.wingDragCoeff());
+        assertEquals(FRONT_HEAVY_FRONT_COEFF, winged.frontWingDownforceCoeff());
+        assertEquals(FRONT_HEAVY_REAR_COEFF, winged.rearWingDownforceCoeff());
+        assertEquals(FRONT_HEAVY_DRAG_COEFF, winged.wingDragCoeff());
         // Front-heavier than rear: a plausible "front splitter, no rear wing" configuration.
         assertTrue(winged.frontWingDownforceCoeff() > winged.rearWingDownforceCoeff());
     }

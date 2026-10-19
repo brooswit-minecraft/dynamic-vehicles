@@ -35,36 +35,161 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 public final class WingAeroGameTests {
     private WingAeroGameTests() {}
 
+    // ---- Inputs -------------------------------------------------------------------------------------
+    /** Well under the tire's grip limit, so a comparison between two cars reflects the forces under test
+     * rather than which car's wheels broke traction first (same rationale as {@code
+     * RollingResistanceGameTests.GENTLE_THROTTLE}). */
     private static final double GENTLE_THROTTLE = 0.3;
+    private static final double FULL_THROTTLE = 1.0;
+    private static final double NO_THROTTLE = 0.0;
+    /** Enough to move a fully submerged car without fighting buoyancy hard enough to launch it out of the
+     * water column before the check that follows. */
+    private static final double SUBMERGED_THROTTLE = 0.5;
+    private static final double NO_STEER = 0.0;
+
+    // ---- Windows (ticks) ----------------------------------------------------------------------------
+    /** 5 s of sustained throttle: long enough for a real aerodynamic difference to separate two
+     * identically-driven cars, short enough to stay inside each test's own {@code timeoutTicks}. */
     private static final int DRIVE_TICKS = 100;
+    /** {@code CarEntity} creates its real Sable body on its own first server tick, so
+     * {@link #suspensionTravel} reads {@code null} until at least one tick has passed; this is the delay
+     * every "measure at rest, before driving" leg waits out first. */
+    private static final int BODY_SETTLE_TICKS = 5;
+    /** Long enough that a spurious force at rest would show up as real drift, not just jitter. */
+    private static final int AT_REST_OBSERVE_TICKS = 100;
+    private static final int COAST_SPIN_UP_TICKS = 60;
+    private static final int COAST_TICKS = 100;
+    /** Sampling cadence across the coast-down, so a transient speed-up partway through is caught rather
+     * than averaged away by a single end-of-window reading. */
+    private static final int COAST_SAMPLE_INTERVAL_TICKS = 10;
+
+    // ---- Wing coefficients under test (N per (m/s)^2) -----------------------------------------------
     /** Strong enough that its signal clearly exceeds the acceleration-driven rear-squat confound described
      * in this class' own javadoc, without being so large the suspension simply bottoms out. */
     private static final double STRONG_DOWNFORCE_COEFF = 8.0;
+    /** A plausible, middle-of-the-range wing for the tests that only need SOME real downforce present. */
+    private static final double MODERATE_DOWNFORCE_COEFF = 4.0;
+    /** Both well above the roster's own stock 0.4, so drag's effect is unmistakable within a short window;
+     * the elevated one is used where the test turns on drag actually dominating the coast-down. */
+    private static final double MODERATE_DRAG_COEFF = 2.0;
+    private static final double ELEVATED_DRAG_COEFF = 3.0;
+
+    // ---- Thresholds ---------------------------------------------------------------------------------
+    /** Test-setup floor: below this a car never really got going, so the measurement that follows would be
+     * reading settling noise rather than the forces under test. */
+    private static final double MOVING_SPEED_FLOOR = 1.0;
+    /** As {@link #MOVING_SPEED_FLOOR}, for the full-throttle legs that should reach a genuinely high speed
+     * (where downforce, being speed-squared, is actually significant). */
+    private static final double REAL_SPEED_FLOOR = 3.0;
+    /** A car left untouched at rest should read essentially zero; this allows for the suspension's own
+     * settling without allowing real drift. */
+    private static final double AT_REST_SPEED_CEILING = 0.2;
+    /** Floating-point noise floor for "this speed actually went up" / "this change is actually measurable"
+     * comparisons, so an exact-equality reading cannot register as a real change. */
+    private static final double NEGLIGIBLE = 1e-6;
+    /** Full submersion, as {@code EnvironmentMath.submersionFraction} reports it. */
+    private static final double FULL_SUBMERSION = 1.0;
+    /** How far the net compression change may differ between {@link #ONE_SUB_STEP} and
+     * {@link #MANY_SUB_STEPS}. Generous on purpose: wing downforce itself is applied once per tick
+     * regardless of sub-step count, but the suspension/tire forces a compression reading ALSO reflects do
+     * have their own real, documented sub-step sensitivity (see {@code CarDrivetrainGameTests
+     * #wheelSubStepCountDoesNotMateriallyChangeReachedSpeedAfterAFixedWindow}, which uses a band for the
+     * same reason) -- this catches a wing force wrongly applied per sub-step (which would scale with the
+     * count), not those expected few-percent differences. */
+    private static final double SUB_STEP_RATIO_MIN = 0.5;
+    private static final double SUB_STEP_RATIO_MAX = 2.0;
+    private static final int ONE_SUB_STEP = 1;
+    private static final int MANY_SUB_STEPS = 4;
+
+    // ---- Test world layout --------------------------------------------------------------------------
+    /** Half-width of the floor patch under each spawn point: wide enough that every one of a car's four
+     * wheel raycasts lands on placed floor rather than the template's own terrain. */
+    private static final int FLOOR_PATCH_RADIUS = 2;
+    private static final int LANE_X = 5;
+    private static final int FLOOR_Y = 2;
+    /** One block above {@link #FLOOR_Y} -- a car spawns resting on the floor patch, not inside it. */
+    private static final int SPAWN_Y = FLOOR_Y + 1;
+    /** Two lanes far enough apart that two cars driven at once never interact. */
+    private static final int FIRST_LANE_Z = 5;
+    private static final int SECOND_LANE_Z = 20;
+
+    /** Read submersion as soon as the car has ticked at all: driving first would let buoyancy float it up
+     * out of full submersion, which is orthogonal, expected behaviour rather than what this checks. */
+    private static final int SUBMERSION_READ_TICKS = 2;
+
+    /** Game ticks per second, for converting {@code getDeltaMovement()} (blocks/tick) to m/s. */
+    private static final double TICKS_PER_SECOND = 20.0;
+
+    /** Wheel indices of each axle in {@code CarGeometry.MOUNTS} order: mounts 0/1 are the front pair
+     * (local z = +1.2), 2/3 the rear (z = -1.2) -- the same {@code mount[2] > 0} front test {@code
+     * SableCarBody.tick} itself applies. Named here so no test hard-codes a bare index. */
+    private static final int[] FRONT_WHEELS = {0, 1};
+    private static final int[] REAR_WHEELS = {2, 3};
+
+    // ---- Per-car config bodies ----------------------------------------------------------------------
+    /** The {@code wing} section's own field names, exactly as {@code docs/per-car-config.md} documents
+     * them -- declared once here rather than re-spelled in every test's JSON literal. */
+    private static final String FRONT_DOWNFORCE_KEY = "frontDownforceCoeff";
+    private static final String REAR_DOWNFORCE_KEY = "rearDownforceCoeff";
+    private static final String DRAG_KEY = "dragCoeff";
+
+    /** A per-car config file body setting all three wing fields. */
+    private static String wingJson(double frontCoeff, double rearCoeff, double dragCoeff) {
+        return String.format("{\"wing\": {\"%s\": %s, \"%s\": %s, \"%s\": %s}}",
+                FRONT_DOWNFORCE_KEY, frontCoeff, REAR_DOWNFORCE_KEY, rearCoeff, DRAG_KEY, dragCoeff);
+    }
+
+    /** A per-car config file body naming ONE wing field only &mdash; the shape the tests that turn on
+     * "every field this file did not mention stays at its stock value" need. */
+    private static String wingJsonWithOnly(String key, double value) {
+        return String.format("{\"wing\": {\"%s\": %s}}", key, value);
+    }
+
+    /** A per-car config file body setting both downforce coefficients and deliberately NOT mentioning
+     * {@link #DRAG_KEY}, so drag stays at this car's stock value while downforce is under test. */
+    private static String wingJsonWithOnlyDownforce(double frontCoeff, double rearCoeff) {
+        return String.format("{\"wing\": {\"%s\": %s, \"%s\": %s}}",
+                FRONT_DOWNFORCE_KEY, frontCoeff, REAR_DOWNFORCE_KEY, rearCoeff);
+    }
 
     private static void fillFloor(GameTestHelper helper, int cx, int y, int cz) {
-        for (int dx = -2; dx <= 2; dx++) {
-            for (int dz = -2; dz <= 2; dz++) {
+        for (int dx = -FLOOR_PATCH_RADIUS; dx <= FLOOR_PATCH_RADIUS; dx++) {
+            for (int dz = -FLOOR_PATCH_RADIUS; dz <= FLOOR_PATCH_RADIUS; dz++) {
                 helper.setBlock(new BlockPos(cx + dx, y, cz + dz), Blocks.STONE.defaultBlockState());
             }
         }
     }
 
+    /** The floor patch and spawn point for one lane, as a matched pair, so the two can never drift apart. */
+    private static BlockPos prepareLane(GameTestHelper helper, int laneZ) {
+        fillFloor(helper, LANE_X, FLOOR_Y, laneZ);
+        return new BlockPos(LANE_X, SPAWN_Y, laneZ);
+    }
+
     private static double horizontalSpeed(CarEntity car) {
         Vec3 v = car.getDeltaMovement();
-        return Math.hypot(v.x, v.z) * 20.0;
+        return Math.hypot(v.x, v.z) * TICKS_PER_SECOND;
     }
 
     /** {@code null} for a few ticks after spawn, until {@code CarEntity}'s own first server tick creates
-     * the real Sable body &mdash; callers must only read this after at least one {@code runAfterDelay}. */
+     * the real Sable body &mdash; callers must only read this after at least one {@code runAfterDelay}
+     * (see {@link #BODY_SETTLE_TICKS}). */
     private static double[] suspensionTravel(CarEntity car) {
         return ((SableCarBody) car.sableBody()).suspensionTravel();
     }
 
+    /** Mean suspension compression across one axle's own wheels. */
+    private static double averageTravel(double[] travel, int[] wheels) {
+        double sum = 0.0;
+        for (int wheel : wheels) {
+            sum += travel[wheel];
+        }
+        return sum / wheels.length;
+    }
+
     private static double frontMinusRearTravel(CarEntity car) {
         double[] travel = suspensionTravel(car);
-        double front = (travel[0] + travel[1]) / 2.0;
-        double rear = (travel[2] + travel[3]) / 2.0;
-        return front - rear;
+        return averageTravel(travel, FRONT_WHEELS) - averageTravel(travel, REAR_WHEELS);
     }
 
     /** AC (front/rear load balance): a car whose wing config gives it front downforce only (rear left at
@@ -76,17 +201,17 @@ public final class WingAeroGameTests {
      * or shift it the wrong way. */
     @GameTest(template = "settlement_test", timeoutTicks = 300)
     public static void frontOnlyWingDownforceShiftsLoadForwardComparedToStock(GameTestHelper helper) {
-        fillFloor(helper, 5, 2, 5);
-        fillFloor(helper, 5, 2, 20);
-        CarEntity stock = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
-        withLoadedOverride(VehicleIds.CAR, "{\"wing\": {\"frontDownforceCoeff\": " + STRONG_DOWNFORCE_COEFF + "}}", () -> {
-            CarEntity winged = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 20));
-            stock.forceDrive(GENTLE_THROTTLE, 0.0, DRIVE_TICKS);
-            winged.forceDrive(GENTLE_THROTTLE, 0.0, DRIVE_TICKS);
-            helper.runAfterDelay((long) DRIVE_TICKS, () -> {
+        BlockPos stockSpawn = prepareLane(helper, FIRST_LANE_Z);
+        BlockPos wingedSpawn = prepareLane(helper, SECOND_LANE_Z);
+        CarEntity stock = helper.spawn(DynamicVehiclesMod.CAR.get(), stockSpawn);
+        withLoadedOverride(VehicleIds.CAR, wingJsonWithOnly(FRONT_DOWNFORCE_KEY, STRONG_DOWNFORCE_COEFF), () -> {
+            CarEntity winged = helper.spawn(DynamicVehiclesMod.CAR.get(), wingedSpawn);
+            stock.forceDrive(GENTLE_THROTTLE, NO_STEER, DRIVE_TICKS);
+            winged.forceDrive(GENTLE_THROTTLE, NO_STEER, DRIVE_TICKS);
+            helper.runAfterDelay(DRIVE_TICKS, () -> {
                 double stockSpeed = horizontalSpeed(stock);
                 double wingedSpeed = horizontalSpeed(winged);
-                helper.assertTrue(stockSpeed > 1.0 && wingedSpeed > 1.0,
+                helper.assertTrue(stockSpeed > MOVING_SPEED_FLOOR && wingedSpeed > MOVING_SPEED_FLOOR,
                         "test setup never got both cars moving: stock=" + stockSpeed + " winged=" + wingedSpeed);
                 double stockBalance = frontMinusRearTravel(stock);
                 double wingedBalance = frontMinusRearTravel(winged);
@@ -106,25 +231,22 @@ public final class WingAeroGameTests {
      * growth on top of whatever the stock car's own suspension already gains from acceleration alone. */
     @GameTest(template = "settlement_test", timeoutTicks = 300)
     public static void wingDownforceAddsExtraCompressionGrowthComparedToStock(GameTestHelper helper) {
-        fillFloor(helper, 5, 2, 5);
-        fillFloor(helper, 5, 2, 20);
-        CarEntity stock = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
+        BlockPos stockSpawn = prepareLane(helper, FIRST_LANE_Z);
+        BlockPos wingedSpawn = prepareLane(helper, SECOND_LANE_Z);
+        CarEntity stock = helper.spawn(DynamicVehiclesMod.CAR.get(), stockSpawn);
         withLoadedOverride(VehicleIds.CAR,
-                "{\"wing\": {\"frontDownforceCoeff\": " + STRONG_DOWNFORCE_COEFF + ", \"rearDownforceCoeff\": "
-                        + STRONG_DOWNFORCE_COEFF + "}}",
+                wingJsonWithOnlyDownforce(STRONG_DOWNFORCE_COEFF, STRONG_DOWNFORCE_COEFF),
                 () -> {
-                    CarEntity winged = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 20));
-                    // A few ticks to let CarEntity create its real Sable body (null for a moment right
-                    // after spawn) before either car has moved meaningfully.
-                    helper.runAfterDelay(5L, () -> {
+                    CarEntity winged = helper.spawn(DynamicVehiclesMod.CAR.get(), wingedSpawn);
+                    helper.runAfterDelay(BODY_SETTLE_TICKS, () -> {
                         double stockRest = totalTravel(stock);
                         double wingedRest = totalTravel(winged);
-                        stock.forceDrive(1.0, 0.0, DRIVE_TICKS);
-                        winged.forceDrive(1.0, 0.0, DRIVE_TICKS);
-                        helper.runAfterDelay((long) DRIVE_TICKS, () -> {
+                        stock.forceDrive(FULL_THROTTLE, NO_STEER, DRIVE_TICKS);
+                        winged.forceDrive(FULL_THROTTLE, NO_STEER, DRIVE_TICKS);
+                        helper.runAfterDelay(DRIVE_TICKS, () -> {
                             double stockSpeed = horizontalSpeed(stock);
                             double wingedSpeed = horizontalSpeed(winged);
-                            helper.assertTrue(stockSpeed > 3.0 && wingedSpeed > 3.0,
+                            helper.assertTrue(stockSpeed > REAL_SPEED_FLOOR && wingedSpeed > REAL_SPEED_FLOOR,
                                     "test setup never got both cars up to real speed: stock=" + stockSpeed
                                             + " winged=" + wingedSpeed);
                             double stockGrowth = totalTravel(stock) - stockRest;
@@ -140,9 +262,11 @@ public final class WingAeroGameTests {
                 });
     }
 
+    /** Mean suspension compression across every wheel &mdash; front and rear axles combined, the quantity
+     * a vertical force applied anywhere on the body moves in one direction. */
     private static double totalTravel(CarEntity car) {
         double[] travel = suspensionTravel(car);
-        return travel[0] + travel[1] + travel[2] + travel[3];
+        return averageTravel(travel, FRONT_WHEELS) + averageTravel(travel, REAR_WHEELS);
     }
 
     /** AC (stable zero-speed and tick/substep behaviour): a car carrying a real wing config, left entirely
@@ -151,13 +275,13 @@ public final class WingAeroGameTests {
      * applied some fixed or discontinuous force at rest would show up here as real horizontal drift. */
     @GameTest(template = "settlement_test", timeoutTicks = 200)
     public static void aWingedCarAtRestStaysStable(GameTestHelper helper) {
-        fillFloor(helper, 5, 2, 5);
+        BlockPos spawn = prepareLane(helper, FIRST_LANE_Z);
         withLoadedOverride(VehicleIds.CAR,
-                "{\"wing\": {\"frontDownforceCoeff\": 4.0, \"rearDownforceCoeff\": 4.0, \"dragCoeff\": 2.0}}", () -> {
-                    CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
-                    helper.runAfterDelay(100L, () -> {
+                wingJson(MODERATE_DOWNFORCE_COEFF, MODERATE_DOWNFORCE_COEFF, MODERATE_DRAG_COEFF), () -> {
+                    CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), spawn);
+                    helper.runAfterDelay(AT_REST_OBSERVE_TICKS, () -> {
                         double speed = horizontalSpeed(car);
-                        helper.assertTrue(!Double.isNaN(speed) && speed < 0.2,
+                        helper.assertTrue(!Double.isNaN(speed) && speed < AT_REST_SPEED_CEILING,
                                 "a winged car left at rest with no input must stay essentially stationary, not "
                                         + speed);
                         helper.succeed();
@@ -172,27 +296,28 @@ public final class WingAeroGameTests {
      * (which a final-speed-only comparison could miss) is caught too. */
     @GameTest(template = "settlement_test", timeoutTicks = 400)
     public static void elevatedDragOnlyEverSlowsACoastingCarDown(GameTestHelper helper) {
-        fillFloor(helper, 5, 2, 5);
-        withLoadedOverride(VehicleIds.CAR, "{\"wing\": {\"dragCoeff\": 3.0}}", () -> {
-            CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
-            car.forceDrive(1.0, 0.0, 60);
-            helper.runAfterDelay(60L, () -> {
+        BlockPos spawn = prepareLane(helper, FIRST_LANE_Z);
+        withLoadedOverride(VehicleIds.CAR, wingJsonWithOnly(DRAG_KEY, ELEVATED_DRAG_COEFF), () -> {
+            CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), spawn);
+            car.forceDrive(FULL_THROTTLE, NO_STEER, COAST_SPIN_UP_TICKS);
+            helper.runAfterDelay(COAST_SPIN_UP_TICKS, () -> {
                 double speedAtThrottleRelease = horizontalSpeed(car);
-                helper.assertTrue(speedAtThrottleRelease > 1.0,
+                helper.assertTrue(speedAtThrottleRelease > MOVING_SPEED_FLOOR,
                         "test setup never got the car moving before coast-down: " + speedAtThrottleRelease);
-                car.forceDrive(0.0, 0.0, 100);
+                car.forceDrive(NO_THROTTLE, NO_STEER, COAST_TICKS);
                 double[] lastSpeed = {speedAtThrottleRelease};
                 boolean[] everSpedUp = {false};
-                for (long delay = 10; delay <= 100; delay += 10) {
+                for (int delay = COAST_SAMPLE_INTERVAL_TICKS; delay <= COAST_TICKS;
+                        delay += COAST_SAMPLE_INTERVAL_TICKS) {
                     helper.runAfterDelay(delay, () -> {
                         double speed = horizontalSpeed(car);
-                        if (speed > lastSpeed[0] + 1e-6) {
+                        if (speed > lastSpeed[0] + NEGLIGIBLE) {
                             everSpedUp[0] = true;
                         }
                         lastSpeed[0] = speed;
                     });
                 }
-                helper.runAfterDelay(100L, () -> {
+                helper.runAfterDelay(COAST_TICKS, () -> {
                     helper.assertTrue(!everSpedUp[0],
                             "a coasting car with elevated aerodynamic drag must never speed back up, only "
                                     + "slow down -- drag injected energy instead of only opposing velocity");
@@ -220,21 +345,20 @@ public final class WingAeroGameTests {
      * the same reason that test's own javadoc explains. */
     @GameTest(template = "settlement_test", timeoutTicks = 300, batch = "wingAeroSubStepIsolated")
     public static void wingDownforceGrowthIsSubstepCountInvariant(GameTestHelper helper) {
-        fillFloor(helper, 5, 2, 5);
-        fillFloor(helper, 5, 2, 20);
+        BlockPos oneStepSpawn = prepareLane(helper, FIRST_LANE_Z);
+        BlockPos manyStepSpawn = prepareLane(helper, SECOND_LANE_Z);
         int originalSubSteps = CarConfig.WHEEL_SUB_STEPS.get();
-        String wingJson = "{\"wing\": {\"frontDownforceCoeff\": " + STRONG_DOWNFORCE_COEFF
-                + ", \"rearDownforceCoeff\": " + STRONG_DOWNFORCE_COEFF + "}}";
+        String wingJson = wingJsonWithOnlyDownforce(STRONG_DOWNFORCE_COEFF, STRONG_DOWNFORCE_COEFF);
         try {
-            CarConfig.WHEEL_SUB_STEPS.set(1);
+            CarConfig.WHEEL_SUB_STEPS.set(ONE_SUB_STEP);
             withLoadedOverride(VehicleIds.CAR, wingJson, () -> {
-                CarEntity oneStepCar = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
-                helper.runAfterDelay(5L, () -> {
+                CarEntity oneStepCar = helper.spawn(DynamicVehiclesMod.CAR.get(), oneStepSpawn);
+                helper.runAfterDelay(BODY_SETTLE_TICKS, () -> {
                     double oneStepRest = totalTravel(oneStepCar);
-                    oneStepCar.forceDrive(1.0, 0.0, DRIVE_TICKS);
-                    helper.runAfterDelay((long) DRIVE_TICKS, () -> {
+                    oneStepCar.forceDrive(FULL_THROTTLE, NO_STEER, DRIVE_TICKS);
+                    helper.runAfterDelay(DRIVE_TICKS, () -> {
                         double oneStepGrowth = totalTravel(oneStepCar) - oneStepRest;
-                        runFourSubStepLegAndRestore(helper, originalSubSteps, wingJson, oneStepGrowth);
+                        runManySubStepLegAndRestore(helper, originalSubSteps, wingJson, manyStepSpawn, oneStepGrowth);
                     });
                 });
             });
@@ -244,16 +368,16 @@ public final class WingAeroGameTests {
         }
     }
 
-    private static void runFourSubStepLegAndRestore(GameTestHelper helper, int originalSubSteps, String wingJson,
-            double oneStepGrowth) {
+    private static void runManySubStepLegAndRestore(GameTestHelper helper, int originalSubSteps, String wingJson,
+            BlockPos spawn, double oneStepGrowth) {
         try {
-            CarConfig.WHEEL_SUB_STEPS.set(4);
+            CarConfig.WHEEL_SUB_STEPS.set(MANY_SUB_STEPS);
             withLoadedOverride(VehicleIds.CAR, wingJson, () -> {
-                CarEntity fourStepCar = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 20));
-                helper.runAfterDelay(5L, () -> {
+                CarEntity fourStepCar = helper.spawn(DynamicVehiclesMod.CAR.get(), spawn);
+                helper.runAfterDelay(BODY_SETTLE_TICKS, () -> {
                     double fourStepRest = totalTravel(fourStepCar);
-                    fourStepCar.forceDrive(1.0, 0.0, DRIVE_TICKS);
-                    helper.runAfterDelay((long) DRIVE_TICKS, () -> {
+                    fourStepCar.forceDrive(FULL_THROTTLE, NO_STEER, DRIVE_TICKS);
+                    helper.runAfterDelay(DRIVE_TICKS, () -> {
                         try {
                             double fourStepGrowth = totalTravel(fourStepCar) - fourStepRest;
                             CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
@@ -264,7 +388,7 @@ public final class WingAeroGameTests {
                             // does not swing wildly, and does not flip sign, between substep counts.
                             double oneStepAbs = Math.abs(oneStepGrowth);
                             double fourStepAbs = Math.abs(fourStepGrowth);
-                            helper.assertTrue(oneStepAbs > 1e-6 && fourStepAbs > 1e-6,
+                            helper.assertTrue(oneStepAbs > NEGLIGIBLE && fourStepAbs > NEGLIGIBLE,
                                     "test setup invalid -- wing downforce produced no measurable compression "
                                             + "change at either substep count: 1-step=" + oneStepGrowth
                                             + " 4-step=" + fourStepGrowth);
@@ -272,7 +396,7 @@ public final class WingAeroGameTests {
                                     "wheelSubSteps flipped the sign of the net compression change: 1-step="
                                             + oneStepGrowth + " 4-step=" + fourStepGrowth);
                             double ratio = fourStepAbs / oneStepAbs;
-                            helper.assertTrue(ratio > 0.5 && ratio < 2.0,
+                            helper.assertTrue(ratio > SUB_STEP_RATIO_MIN && ratio < SUB_STEP_RATIO_MAX,
                                     "wing downforce's own once-per-tick contribution must not swing wildly with "
                                             + "wheelSubSteps: 1-step=" + oneStepGrowth + " 4-step=" + fourStepGrowth
                                             + " ratio=" + ratio);
@@ -304,24 +428,29 @@ public final class WingAeroGameTests {
      * paths running together in the same tick without the earlier submersion check racing against it. */
     @GameTest(template = "settlement_test", timeoutTicks = 200)
     public static void aWingedCarFullySubmergedInWaterStaysBuoyantAndStable(GameTestHelper helper) {
-        helper.setBlock(new BlockPos(5, 2, 5), Blocks.WATER);
-        helper.setBlock(new BlockPos(5, 3, 5), Blocks.WATER);
-        helper.setBlock(new BlockPos(5, 4, 5), Blocks.AIR);
-        withLoadedOverride("indy_car",
-                "{\"wing\": {\"frontDownforceCoeff\": " + STRONG_DOWNFORCE_COEFF + ", \"rearDownforceCoeff\": "
-                        + STRONG_DOWNFORCE_COEFF + ", \"dragCoeff\": 3.0}}",
+        // Two full, non-surface water layers, so the one layer the car's own box overlaps is reported at
+        // full height rather than the top surface's partial one; the air layer above bounds the pool
+        // explicitly (same setup as EnvironmentGameTests' own submersion test).
+        BlockPos pool = new BlockPos(LANE_X, FLOOR_Y, FIRST_LANE_Z);
+        helper.setBlock(pool, Blocks.WATER);
+        helper.setBlock(pool.above(), Blocks.WATER);
+        helper.setBlock(pool.above(2), Blocks.AIR);
+        // INDY is the roster's shortest car (0.7 m tall), so two full water layers cover it completely --
+        // the same vehicle EnvironmentGameTests' own full-submersion test uses, and for the same reason.
+        withLoadedOverride(VehicleIds.INDY_CAR,
+                wingJson(STRONG_DOWNFORCE_COEFF, STRONG_DOWNFORCE_COEFF, ELEVATED_DRAG_COEFF),
                 () -> {
-                    CarEntity car = helper.spawn(DynamicVehiclesMod.INDY.get(), new BlockPos(5, 2, 5));
-                    helper.runAfterDelay(2L, () -> {
-                        double vehicleHeight = 2.0 * car.spec().halfY();
+                    CarEntity car = helper.spawn(DynamicVehiclesMod.INDY.get(), pool);
+                    helper.runAfterDelay(SUBMERSION_READ_TICKS, () -> {
+                        double vehicleHeight = car.spec().height();
                         double fraction = EnvironmentMath.submersionFraction(
                                 car.getFluidHeight(FluidTags.WATER), vehicleHeight);
-                        helper.assertTrue(fraction == 1.0,
+                        helper.assertTrue(fraction == FULL_SUBMERSION,
                                 "a winged car fully covered by water did not read back as fully submerged "
                                         + "(wing fields must not interfere with the separate buoyancy system): "
                                         + fraction);
-                        car.forceDrive(0.5, 0.0, 100);
-                        helper.runAfterDelay(100L, () -> {
+                        car.forceDrive(SUBMERGED_THROTTLE, NO_STEER, DRIVE_TICKS);
+                        helper.runAfterDelay(DRIVE_TICKS, () -> {
                             Vec3 motion = car.getDeltaMovement();
                             Vec3 pos = car.position();
                             helper.assertTrue(

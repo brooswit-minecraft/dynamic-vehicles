@@ -109,8 +109,10 @@ public record VehicleSpec(
     /** Legacy drag coefficient (MINECRAFT-446): every vehicle on the roster used this single hardcoded
      * {@code AIR_DRAG} value in {@code SableCarBody} before {@link #wingDragCoeff} existed as a per-vehicle
      * field; every constructor below that does not take an explicit {@link #wingDragCoeff} still defaults
-     * to exactly this value, so none of them change behaviour. */
-    private static final double LEGACY_AIR_DRAG = 0.4;
+     * to exactly this value, so none of them change behaviour. Package-private rather than private so
+     * {@code VehicleSpecWingTest} can assert the roster still carries THIS value rather than restating the
+     * number and silently drifting from it. */
+    static final double LEGACY_AIR_DRAG = 0.4;
 
     /** As the full (canonical) constructor above, minus the trailing {@link #handbrakeScale}, {@link
      * #frontWingDownforceCoeff}, {@link #rearWingDownforceCoeff} and {@link #wingDragCoeff} (MINECRAFT-443/

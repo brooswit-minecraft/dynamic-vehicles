@@ -403,16 +403,77 @@ public final class TownConstructionService {
         // to) still releases the claimant to NONE so vanilla can let it pick up a fresh job site
         // elsewhere.
         if (claimant.isAlive() && isSiteFullyBuilt(level, template)) {
-            if (finalProfession.isPresent()) {
-                BlockPos workstationPos = TownBuildingTemplates.workstationPosition(campfire.getX(), floorY, campfire.getZ());
-                claimant.setVillagerData(claimant.getVillagerData().setProfession(finalProfession.get()));
-                claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), workstationPos));
-            } else {
-                claimant.setVillagerData(claimant.getVillagerData().setProfession(VillagerProfession.NONE));
-            }
+            finishClaimantLifecycle(level, claimant, campfire, floorY, kind, finalProfession);
             // The persisted floor commitment has served its purpose once the site is actually done.
             storage.clearFloor(siteOwner);
         }
+    }
+
+    /**
+     * MINECRAFT-388 review round 12, finding #1: the Builder-to-final-site handoff must go through
+     * the SAME real POI reservation machinery vanilla itself uses, not a raw memory/profession
+     * overwrite alone - otherwise the new workstation/bed are never actually reserved against other
+     * villagers, a residential/storehouse claimant released to NONE keeps a stale JOB_SITE memory
+     * pointed at a campfire that no longer exists, and stale trade state (offers/XP/level) survives
+     * a profession the claimant never actually traded under.
+     *
+     * <p>The former campfire cell's own POI record needs no explicit release here: every template
+     * this method hands off from always overwrites that exact cell as part of finishing the SAME
+     * build (the floor itself, or - when the campfire sat elevated above the floor - the dedicated
+     * "clear the old campfire cell" placement), so vanilla's own block-change hook has already
+     * queued that record's removal before this runs.
+     *
+     * <p>Bounded to this one known claimant per site, exactly as the round-3/4 precedent this
+     * extends already was: town-wide allocation of beds/workplaces across OTHER residents (not the
+     * site's own claimant) remains a separate, larger, explicitly out-of-scope item.
+     */
+    private static void finishClaimantLifecycle(ServerLevel level, Villager claimant, BlockPos campfire, int floorY,
+            TownBuildingTemplates.Kind kind, Optional<VillagerProfession> finalProfession) {
+        claimant.getBrain().eraseMemory(MemoryModuleType.JOB_SITE);
+        claimant.getBrain().eraseMemory(MemoryModuleType.HOME);
+
+        if (finalProfession.isPresent()) {
+            BlockPos workstationPos = TownBuildingTemplates.workstationPosition(campfire.getX(), floorY, campfire.getZ());
+            claimant.setVillagerData(claimant.getVillagerData().setProfession(finalProfession.get()));
+            acquirePoiTicket(level, workstationPos);
+            claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), workstationPos));
+            // A real new job supersedes whatever the temporary Builder trade accumulated - it must
+            // start with its own clean offers/XP/level, never Builder's leftover trade state.
+            claimant.getOffers().clear();
+            claimant.setVillagerXp(0);
+            claimant.setVillagerData(claimant.getVillagerData().setLevel(1));
+        } else {
+            claimant.setVillagerData(claimant.getVillagerData().setProfession(VillagerProfession.NONE));
+        }
+
+        if (kind == TownBuildingTemplates.Kind.RESIDENTIAL || kind == TownBuildingTemplates.Kind.COMMERCIAL
+                || kind == TownBuildingTemplates.Kind.INDUSTRIAL) {
+            BlockPos bedPos = TownBuildingTemplates.bedPosition(campfire.getX(), floorY, campfire.getZ());
+            acquirePoiTicket(level, bedPos);
+            claimant.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), bedPos));
+        }
+    }
+
+    /**
+     * Actually reserves (acquires a ticket for) the POI record at {@code pos} - the real vanilla
+     * reservation a villager's AI would otherwise acquire on its own, done explicitly here since
+     * this handoff is a direct memory/profession assignment, not a goal a villager walked up and
+     * triggered itself.
+     *
+     * <p>Registers the record directly (via {@link PoiManager#add}) rather than relying on it
+     * already being there: {@link ServerLevel#onBlockStateChange} - the normal hook that would
+     * otherwise register it - defers the actual {@code PoiManager} update by one server tick (it
+     * runs via {@code getServer().execute(...)}), so a block placed and then handed off within the
+     * SAME tick (routine for a small site that finishes in one {@link #buildAt} call) would
+     * otherwise still read as unregistered here. {@code add} is idempotent for an already-registered
+     * position, so calling it unconditionally is always safe.
+     */
+    private static void acquirePoiTicket(ServerLevel level, BlockPos pos) {
+        net.minecraft.world.entity.ai.village.poi.PoiManager poiManager = level.getPoiManager();
+        net.minecraft.world.entity.ai.village.poi.PoiTypes.forState(level.getBlockState(pos)).ifPresent(type -> {
+            poiManager.add(pos, type);
+            poiManager.take(t -> true, (t, p) -> p.equals(pos), pos, 1);
+        });
     }
 
     /**

@@ -15,6 +15,10 @@ import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.entity.ai.memory.MemoryModuleType;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.npc.VillagerProfession;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.item.trading.ItemCost;
+import net.minecraft.world.item.trading.MerchantOffer;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.BedBlock;
 import net.minecraft.world.level.block.Blocks;
@@ -602,6 +606,12 @@ public final class TownGameTests {
         helper.getLevel().addFreshEntity(claimant);
         claimant.setVillagerData(claimant.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
         claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteCampfire));
+        // [Review round 12, finding #1] Seed real Builder trade state (offers/XP/level) so the
+        // handoff's reset can actually be proven, rather than trivially "still empty".
+        claimant.getOffers().add(new MerchantOffer(
+                new ItemCost(Items.EMERALD, 1), new ItemStack(Items.BREAD), 1, 1, 0.05f));
+        claimant.setVillagerXp(50);
+        claimant.setVillagerData(claimant.getVillagerData().setLevel(3));
 
         TownStorage storage = new TownStorage();
         TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
@@ -629,19 +639,39 @@ public final class TownGameTests {
         helper.assertTrue(sawCampfireDisappear, "the site never actually finished replacing its own campfire cell");
         helper.assertTrue(claimant.getVillagerData().getProfession() != BuilderProfession.BUILDER.get(),
                 "a claimant whose site is fully built must never be left a permanently jobless Builder");
+        int floorY = TownTerrain.estimateGroundHeightBelow(helper.getLevel(), absoluteCampfire);
         if (expectedFinalProfession.isPresent()) {
             helper.assertTrue(claimant.getVillagerData().getProfession() == expectedFinalProfession.get(),
                     "a commercial/industrial claimant must be handed off to the zone's own assigned final profession, expected "
                             + expectedFinalProfession.get() + " found " + claimant.getVillagerData().getProfession());
             BlockPos expectedWorkstation = TownBuildingTemplates.workstationPosition(
-                    absoluteCampfire.getX(), TownTerrain.estimateGroundHeightBelow(helper.getLevel(), absoluteCampfire), absoluteCampfire.getZ());
+                    absoluteCampfire.getX(), floorY, absoluteCampfire.getZ());
             helper.assertTrue(claimant.getBrain().getMemory(MemoryModuleType.JOB_SITE)
                             .map(gp -> gp.pos().equals(expectedWorkstation)).orElse(false),
                     "the handed-off claimant's JOB_SITE must point at the real workstation this build just placed");
+            // [Review round 12, finding #1] The new workstation POI must be actually RESERVED
+            // (ticket taken), not just referenced by a raw memory write - otherwise another
+            // villager could still freely acquire the same workstation.
+            helper.assertTrue(helper.getLevel().getPoiManager().getFreeTickets(expectedWorkstation) == 0,
+                    "the new workstation's POI ticket must already be held by the handed-off claimant, not still free");
+            // A real new job must start with its own clean trade state, never Builder's leftovers.
+            helper.assertTrue(claimant.getOffers().isEmpty(), "the handed-off claimant's stale Builder offers must be cleared");
+            helper.assertTrue(claimant.getVillagerXp() == 0, "the handed-off claimant's stale Builder XP must be reset");
+            helper.assertTrue(claimant.getVillagerData().getLevel() == 1, "the handed-off claimant's stale Builder level must be reset");
         } else {
             helper.assertTrue(claimant.getVillagerData().getProfession() == VillagerProfession.NONE,
                     "a residential/storehouse claimant whose site is fully built must be released back to NONE, found "
                             + claimant.getVillagerData().getProfession());
+            helper.assertTrue(claimant.getBrain().getMemory(MemoryModuleType.JOB_SITE).isEmpty(),
+                    "a claimant released to NONE must never keep a stale JOB_SITE memory pointed at the old campfire");
+        }
+        if (kind != TownBuildingTemplates.Kind.STOREHOUSE) {
+            BlockPos expectedBed = TownBuildingTemplates.bedPosition(absoluteCampfire.getX(), floorY, absoluteCampfire.getZ());
+            helper.assertTrue(claimant.getBrain().getMemory(MemoryModuleType.HOME)
+                            .map(gp -> gp.pos().equals(expectedBed)).orElse(false),
+                    "the claimant must be assigned a HOME at the bed this build just placed");
+            helper.assertTrue(helper.getLevel().getPoiManager().getFreeTickets(expectedBed) == 0,
+                    "the new bed's POI ticket must already be held by the claimant, not still free");
         }
         helper.assertTrue(store.balance(TownResourceCategory.STONE) < 100000 || store.balance(TownResourceCategory.WOOD) < 100000,
                 "a completed site should have actually debited some resource category");

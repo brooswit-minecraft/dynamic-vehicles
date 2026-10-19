@@ -165,6 +165,15 @@ public final class TownBuildingTemplates {
         return new net.minecraft.core.BlockPos(centerX + 1, baseY + 1, centerZ + 1);
     }
 
+    /** The exact interior cell {@link #addBed} places the bed's HEAD half at, exposed so
+     *  {@link TownConstructionService} can point the claimant's own {@code HOME} memory at the SAME
+     *  cell once construction completes, rather than duplicating this offset. Only meaningful for
+     *  {@link Kind#RESIDENTIAL}/{@link Kind#COMMERCIAL}/{@link Kind#INDUSTRIAL} - {@link Kind#STOREHOUSE}
+     *  never places a bed at all. */
+    public static net.minecraft.core.BlockPos bedPosition(int centerX, int baseY, int centerZ) {
+        return new net.minecraft.core.BlockPos(centerX - 1, baseY + 1, centerZ);
+    }
+
     /** The planned height (floor to roof, inclusive span) a {@link #generate} call for this
      *  kind/variant will produce - exposed so callers (preflight) can bound their own scan by the
      *  WHOLE planned volume, not just today's terrain top. */

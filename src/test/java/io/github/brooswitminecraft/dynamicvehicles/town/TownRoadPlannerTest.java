@@ -151,6 +151,44 @@ class TownRoadPlannerTest {
         }
     }
 
+    /**
+     * MINECRAFT-388 review round 8, finding #2: when the four edges' own achievable height ranges
+     * are genuinely DISJOINT (no single height is reachable by all four under the grade policy -
+     * only realistically possible with production's own extreme-real-terrain edge heights, injected
+     * here directly since {@link TownPlan}-generated offsets are bounded far too tightly to trigger
+     * this from a real plan alone), the resolved shared height must still be reachable by AT LEAST
+     * one edge - never an arbitrary value (the prior buggy midpoint of an inverted, empty interval)
+     * that no edge can actually reach at all.
+     */
+    @Test
+    void disjointEdgeIntervalsResolveToAHeightReachableByAtLeastOneEdge() {
+        RegionCoord region = new RegionCoord(1, 1);
+        TownPlan plan = TownPlanner.generate(region, SEED);
+
+        java.util.Map<TownEdge, Integer> heights = java.util.Map.of(
+                TownEdge.NORTH, -1_000_000,
+                TownEdge.SOUTH, 1_000_000,
+                TownEdge.EAST, 500_000,
+                TownEdge.WEST, -500_000);
+        java.util.function.ToIntFunction<TownEdge> edgeHeight = heights::get;
+
+        int resolved = TownRoadPlanner.computeSharedCenterHeight(plan, 0, edgeHeight);
+
+        boolean reachableByAtLeastOneEdge = false;
+        for (TownEdge edge : TownEdge.values()) {
+            int steps = TownRoadPlanner.routeForEdge(plan, edge, 0).size() - 1;
+            int maxDelta = steps / TownConstants.ROAD_GRADE_RUN_PER_RISE_BLOCK;
+            int lo = heights.get(edge) - maxDelta;
+            int hi = heights.get(edge) + maxDelta;
+            if (resolved >= lo && resolved <= hi) {
+                reachableByAtLeastOneEdge = true;
+            }
+        }
+        assertTrue(reachableByAtLeastOneEdge,
+                "with disjoint per-edge intervals, the resolved shared height must still be reachable by AT LEAST one edge, found "
+                        + resolved);
+    }
+
     /** MINECRAFT-388 review round 2, finding #4: minor branch roads must actually exist (production
      *  had none at all before the fix), spaced off the major route, each a contiguous path of the
      *  configured length. */

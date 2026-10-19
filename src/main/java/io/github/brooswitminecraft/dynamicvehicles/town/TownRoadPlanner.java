@@ -144,7 +144,7 @@ public final class TownRoadPlanner {
      * deliberately, documented here as the intended behaviour rather than a rejection/retry.
      */
     public static int resolveSharedCenterHeight(TownPlan plan, int desiredCenterHeight) {
-        return resolveSharedCenterHeight(plan, desiredCenterHeight, edge -> edgeHeightFor(plan, edge));
+        return computeSharedCenterHeight(plan, desiredCenterHeight, edge -> edgeHeightFor(plan, edge));
     }
 
     /** As above, but resolving each edge's own real terrain-sampled height (see
@@ -152,10 +152,20 @@ public final class TownRoadPlanner {
      *  convergence invariant (every edge reaches the SAME centre height) holds against real terrain
      *  too, not just the pure fixed-base edge heights. */
     public static int resolveSharedCenterHeight(ServerLevel level, TownPlan plan, int desiredCenterHeight) {
-        return resolveSharedCenterHeight(plan, desiredCenterHeight, edge -> edgeHeightFor(level, plan, edge));
+        return computeSharedCenterHeight(plan, desiredCenterHeight, edge -> edgeHeightFor(level, plan, edge));
     }
 
-    private static int resolveSharedCenterHeight(TownPlan plan, int desiredCenterHeight, ToIntFunction<TownEdge> edgeHeight) {
+    /** Package-private, and deliberately NOT an overload of {@code resolveSharedCenterHeight}
+     *  (a same-arity overload sharing that name forces javac's overload resolution to also resolve
+     *  the {@code ServerLevel}-based overload's signature even when calling THIS one, which fails
+     *  the Minecraft-free {@code src/test} compilation unit that needs to inject a deliberately-
+     *  disjoint {@code edgeHeight} function directly - real {@link TownPlan}-generated edge offsets
+     *  are bounded tightly enough (see {@link TownConstants#ROAD_EDGE_HEIGHT_OFFSET_RANGE}) relative
+     *  to a route's own achievable grade delta that the {@code lo > hi} branch below is only
+     *  reachable at all via genuinely extreme REAL terrain (production's own
+     *  {@link #edgeHeightFor(ServerLevel, TownPlan, TownEdge)}), which a GameTest cannot easily
+     *  construct across a region's full ~192-block edge-to-centre span. */
+    static int computeSharedCenterHeight(TownPlan plan, int desiredCenterHeight, ToIntFunction<TownEdge> edgeHeight) {
         int lo = Integer.MIN_VALUE;
         int hi = Integer.MAX_VALUE;
         for (TownEdge edge : TownEdge.values()) {
@@ -166,9 +176,41 @@ public final class TownRoadPlanner {
             hi = Math.min(hi, height + maxDelta);
         }
         if (lo > hi) {
-            return (lo + hi) / 2;
+            // [Review round 8, finding #2] No single height is reachable by ALL four edges within
+            // the grade policy - an arbitrary midpoint of this (inverted, empty) interval can be
+            // unreachable by EVERY edge, including ones that could otherwise have agreed with each
+            // other. Instead pick the height reachable by the MAXIMUM NUMBER of edges (a classic
+            // interval max-overlap sweep over each edge's own [height-maxDelta, height+maxDelta]
+            // range) - the best achievable common ground when full agreement is provably
+            // impossible, rather than a value chosen with no regard for how many edges can actually
+            // reach it at all.
+            return mostAchievableSharedHeight(plan, edgeHeight);
         }
         return clamp(desiredCenterHeight, lo, hi);
+    }
+
+    private static int mostAchievableSharedHeight(TownPlan plan, ToIntFunction<TownEdge> edgeHeight) {
+        List<int[]> events = new ArrayList<>(); // {position, delta}: +1 at an edge's own range start, -1 just past its end
+        for (TownEdge edge : TownEdge.values()) {
+            int height = edgeHeight.applyAsInt(edge);
+            int steps = Math.max(0, buildEdgeXZ(plan, edge).size() - 1);
+            int maxDelta = steps / TownConstants.ROAD_GRADE_RUN_PER_RISE_BLOCK;
+            events.add(new int[] {height - maxDelta, 1});
+            events.add(new int[] {height + maxDelta + 1, -1});
+        }
+        // Starts sort before ends at the same position, so a single-point range is counted.
+        events.sort((a, b) -> a[0] != b[0] ? Integer.compare(a[0], b[0]) : Integer.compare(b[1], a[1]));
+        int bestHeight = events.get(0)[0];
+        int bestCount = 0;
+        int count = 0;
+        for (int[] event : events) {
+            count += event[1];
+            if (count > bestCount) {
+                bestCount = count;
+                bestHeight = event[0];
+            }
+        }
+        return bestHeight;
     }
 
     private static List<int[]> buildEdgeXZ(TownPlan plan, TownEdge edge) {

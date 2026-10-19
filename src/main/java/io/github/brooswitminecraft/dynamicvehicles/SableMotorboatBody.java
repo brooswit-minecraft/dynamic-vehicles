@@ -331,9 +331,17 @@ final class SableMotorboatBody {
         // returning null is also the ordinary "nothing above, keep checking below" signal) and could find
         // real water sitting BELOW the very solid the point is embedded in -- as if the solid were
         // transparent to anything underneath it.
+        //
+        // Round-4 review follow-up: this used to compare y only against the block's TOPMOST solid hit
+        // (solidTopY), which is wrong for a partial shape whose solid interval doesn't start at the block's
+        // own bottom -- a waterlogged TOP slab's solid spans only [blockBottom+0.5, blockTop], so its
+        // topmost hit sits right at blockTop, and "y <= topmost hit" was then true for EVERY y inside the
+        // block, including the OPEN bottom half (just water, under the slab) -- wrongly rejecting a point
+        // that isn't embedded in anything. Embedded now means y actually falls WITHIN the solid's own
+        // interval ({@link #embeddedInSolid}), not merely at-or-below its topmost surface.
         BlockPos base = BlockPos.containing(x, y, z);
         Probe home = probe(level, x, z, base);
-        if (home.solidTopY != null && y <= home.solidTopY) {
+        if (embeddedInSolid(home, y)) {
             return null;
         }
         Double up = scanUpward(level, x, y, z);
@@ -365,20 +373,24 @@ final class SableMotorboatBody {
         for (int dy = 0; dy <= PROBE_UP; dy++) {
             BlockPos pos = base.offset(0, dy, 0);
             Probe p = probe(level, x, z, pos);
-            if (isFullyBlocking(p, pos)) {
-                // Solid spans this block's FULL height at this exact (x, z) column -- a true stop, same as
-                // the old OCCLUDED sentinel. (The point embedded in its OWN block's solid, dy=0, is already
-                // handled once up front by sampleSurface before this method is even called.)
+            if (blocksEntryFromBelow(p, pos)) {
+                // Round-4 review follow-up: this used to ask "does solid reach this block's TOP" (the wrong
+                // side for a scan arriving from BELOW), so a waterlogged BOTTOM slab -- solid spanning only
+                // [blockBottom, blockBottom+0.5], its topmost hit well short of the top -- never tripped
+                // this check, fell through to the water-height branch below (true, since waterlogged), and
+                // the climb crossed straight through the slab's own solid lower half as if it were open
+                // water. The side that matters for an upward-moving scan is the one it actually ENTERS
+                // from: does solid start right at THIS block's bottom boundary.
                 return columnSurface;
             }
             if (p.waterSurfaceY != null) {
                 columnSurface = p.waterSurfaceY;
                 continue;
             }
-            // Neither water nor a full-height solid at this column (open air, or a non-water obstacle that
-            // only partially occupies this block, e.g. off a fence post's own thin footprint): stop here,
-            // whether or not columnSurface is already set -- never keep searching across this dry gap for
-            // unrelated water further up.
+            // Neither water nor solid blocking entry from below at this column (open air, or a non-water
+            // obstacle that only partially occupies this block, e.g. off a fence post's own thin footprint):
+            // stop here, whether or not columnSurface is already set -- never keep searching across this
+            // dry gap for unrelated water further up.
             return columnSurface;
         }
         return columnSurface;
@@ -392,7 +404,7 @@ final class SableMotorboatBody {
         for (int dy = -1; dy >= -PROBE_DOWN; dy--) {
             BlockPos pos = base.offset(0, dy, 0);
             Probe p = probe(level, x, z, pos);
-            if (isFullyBlocking(p, pos)) {
+            if (blocksEntryFromAbove(p, pos)) {
                 return null;
             }
             if (p.waterSurfaceY != null) {
@@ -407,21 +419,46 @@ final class SableMotorboatBody {
         return null;
     }
 
-    /** One probe's findings for a single block, at the sample's own fractional {@code (x, z)}: where real
-     * (not bounding-box) collision geometry begins along that column within this block ({@code solidTopY},
-     * absolute world Y, or {@code null} if nothing collides on this exact column), and this block's own
-     * real water surface ({@code waterSurfaceY}, or {@code null} if this block is not water). */
-    private record Probe(Double solidTopY, Double waterSurfaceY) {}
+    /** One probe's findings for a single block, at the sample's own fractional {@code (x, z)}: the real
+     * solid INTERVAL along that column within this block ({@code solidBottomY}..{@code solidTopY}, both
+     * absolute world Y, or both {@code null} if nothing collides on this exact column), and this block's
+     * own real water surface ({@code waterSurfaceY}, or {@code null} if this block is not water, or if a
+     * solid ceiling directly above the water caps it lower than its own unobstructed height -- see
+     * {@link #probe}). A partial shape like a slab has a single contiguous solid interval that may start at
+     * either the block's bottom (a bottom slab) or its top (a top slab) -- round-4 review follow-up: a lone
+     * {@code solidTopY} (the old field) cannot distinguish those two cases from each other, which is exactly
+     * what let a point in the OPEN remainder be misread as embedded ({@link #embeddedInSolid}) and let an
+     * upward scan misread a solid interval starting at the bottom as passable ({@link #blocksEntryFromBelow}). */
+    private record Probe(Double solidBottomY, Double solidTopY, Double waterSurfaceY) {}
 
-    /** Whether a probe's solid geometry spans this block's FULL height at this exact column. {@link
+    /** Whether the given world Y actually falls WITHIN a probe's own solid interval -- not merely
+     * at-or-below its topmost surface, which (round-4 review follow-up) is true for every Y in a block
+     * whose solid occupies only the TOP half (a waterlogged top slab), wrongly treating the OPEN bottom
+     * half -- real water, not solid -- as embedded matter. */
+    private static boolean embeddedInSolid(Probe p, double y) {
+        return p.solidBottomY != null && p.solidTopY != null && y >= p.solidBottomY && y <= p.solidTopY;
+    }
+
+    /** Whether a probe's solid geometry blocks entry into this block from ABOVE -- i.e. starts right at
+     * this block's own top boundary, same as a scan arriving from above would actually meet first. {@link
      * VoxelShape#clip}'s own fast path (see its source) always reports a hit 0.001 short of the ray's own
-     * start, so a truly full-height shape's own {@code solidTopY} comes back at {@code blockTop - 0.001},
-     * never exactly {@code blockTop} -- a tight ({@code 1.0e-6}) tolerance against the raw block boundary
-     * would therefore never actually match a real full block. {@code 0.01} comfortably covers that known
-     * 0.001 fast-path offset with real margin, without being loose enough to misclassify a genuinely
+     * start, so a truly full-height-from-the-top shape's own {@code solidTopY} comes back at
+     * {@code blockTop - 0.001}, never exactly {@code blockTop} -- a tight ({@code 1.0e-6}) tolerance against
+     * the raw block boundary would therefore never actually match it. {@code 0.01} comfortably covers that
+     * known 0.001 fast-path offset with real margin, without being loose enough to misclassify a genuinely
      * partial shape (a slab's own half-block gap is two full orders of magnitude bigger than this). */
-    private static boolean isFullyBlocking(Probe p, BlockPos pos) {
+    private static boolean blocksEntryFromAbove(Probe p, BlockPos pos) {
         return p.solidTopY != null && p.solidTopY >= pos.getY() + 1.0 - 0.01;
+    }
+
+    /** Whether a probe's solid geometry blocks entry into this block from BELOW -- i.e. starts right at
+     * this block's own bottom boundary, same as a scan arriving from below would actually meet first.
+     * Round-4 review follow-up: {@link #scanUpward} used to ask the ABOVE-entry question
+     * ({@link #blocksEntryFromAbove}) regardless of its own direction, which never tripped for a waterlogged
+     * BOTTOM slab (solid starting at the bottom, not the top) and let the climb cross straight through its
+     * solid lower half as if it were open water. Same {@code 0.01} fast-path margin as above, mirrored. */
+    private static boolean blocksEntryFromBelow(Probe p, BlockPos pos) {
+        return p.solidBottomY != null && p.solidBottomY <= pos.getY() + 0.01;
     }
 
     /** One probe position, clipped against the block's REAL {@link VoxelShape} at the sample's own (x, z)
@@ -429,20 +466,37 @@ final class SableMotorboatBody {
      * covers this block's height at this column (a waterlogged slab's solid half) no longer gets conflated
      * with "fully blocks," and a shape with a full-height bounding box but a narrow actual footprint (a
      * fence post) no longer occludes points off that footprint. The fluid height used is the block's own
-     * real {@link FluidState#getHeight}, never a flat {@code blockY+1}. */
+     * real {@link FluidState#getHeight}, never a flat {@code blockY+1} -- except when a solid ceiling sits
+     * directly above the water in this same column (a waterlogged TOP slab): {@code getHeight} reports the
+     * fluid's own unobstructed height regardless of what's above it, which would otherwise claim a surface
+     * HIGHER than the solid ceiling actually pinning it down, so that case is capped at the ceiling's own
+     * underside ({@code solidBottomY}) -- round-4 review follow-up, alongside the two solid-interval fixes
+     * above, so the open lower half of a waterlogged top slab reports its real (capped), not its nominal,
+     * surface. */
     private static Probe probe(ServerLevel level, double x, double z, BlockPos pos) {
         BlockState state = level.getBlockState(pos);
         VoxelShape shape = state.getCollisionShape(level, pos);
         Double solidTopY = null;
+        Double solidBottomY = null;
         if (!shape.isEmpty()) {
-            BlockHitResult hit = shape.clip(new Vec3(x, pos.getY() + 1.0, z), new Vec3(x, pos.getY(), z), pos);
-            if (hit != null) {
-                solidTopY = hit.getLocation().y;
+            BlockHitResult topDown = shape.clip(new Vec3(x, pos.getY() + 1.0, z), new Vec3(x, pos.getY(), z), pos);
+            if (topDown != null) {
+                solidTopY = topDown.getLocation().y;
+            }
+            BlockHitResult bottomUp = shape.clip(new Vec3(x, pos.getY(), z), new Vec3(x, pos.getY() + 1.0, z), pos);
+            if (bottomUp != null) {
+                solidBottomY = bottomUp.getLocation().y;
             }
         }
         FluidState fluid = state.getFluidState();
-        Double waterSurfaceY = fluid.is(FluidTags.WATER) ? pos.getY() + (double) fluid.getHeight(level, pos) : null;
-        return new Probe(solidTopY, waterSurfaceY);
+        Double waterSurfaceY = null;
+        if (fluid.is(FluidTags.WATER)) {
+            double natural = pos.getY() + (double) fluid.getHeight(level, pos);
+            boolean solidCeilingAbove = solidTopY != null && solidBottomY != null
+                    && solidTopY >= pos.getY() + 1.0 - 0.01 && solidBottomY > pos.getY() + 0.01;
+            waterSurfaceY = solidCeilingAbove ? Math.min(natural, solidBottomY) : natural;
+        }
+        return new Probe(solidBottomY, solidTopY, waterSurfaceY);
     }
 
     /** Debug summary: pitch/roll in degrees and speed, mirroring {@code SableCarBody.describe}. */

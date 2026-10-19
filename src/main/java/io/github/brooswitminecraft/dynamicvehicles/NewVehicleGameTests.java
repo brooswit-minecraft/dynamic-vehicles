@@ -81,25 +81,45 @@ public final class NewVehicleGameTests {
      * all (confirmed directly: even GRAVITY stopped acting on the body under that approach). This test
      * therefore still drives through real ticks via {@link #pinThrottleEachTick}, as before.
      *
-     * <p>With both of those addressed, the test STILL fails, now with sharper evidence of what is actually
-     * happening: debug logging of the real production {@code describe()} state shows the hull correctly
-     * wet ({@code wet=1.00}) and its tracked linear speed climbing tick over tick with no bound reached
-     * (0.96 -> 3.08 -> 3.45 -> ... -> 7.71 m/s over the run, never settling toward the configured
-     * longitudinal-drag equilibrium the way {@code MotorboatPhysicsTest}'s own pure-math tests prove that
-     * drag law converges in isolation) while the entity's actual world X/Z position never advances at all.
-     * That is: the buoyancy/wet-gating and the velocity bookkeeping this PR's own code performs are both
-     * demonstrably correct and running every tick, but SABLE's own position-integration step is not turning
-     * that velocity into real motion for this body across real GameTest ticks. This is a different, more
-     * precise observation than the original AABB-broad-phase theory (which the reviewer correctly declined
-     * to accept without isolation): it points at Sable's own rigid-body step/broad-phase for a
-     * freshly-created body in this harness, not at anything in this PR's sampler, buoyancy, or thrust code,
-     * which cannot reach into Sable's own integration loop at all. Diagnosing further would mean
-     * instrumenting Sable's own internals, outside this PR's and this codebase's scope. The assertion below
+     * <p>With both of those addressed, the test STILL fails -- but round-4 review follow-up found the
+     * actual, specific, falsifiable mechanism instead of a second unverified theory. Per-tick debug logging
+     * of the entity's own raw {@code getX}/{@code getY}/{@code getZ} (not just the production {@code
+     * describe()} summary) over this exact run shows X and Z BIT-FOR-BIT IDENTICAL across 40+ consecutive
+     * ticks -- {@code -7671073.5} and {@code 1322998.5}, to the very last decimal, never once changing --
+     * while in the SAME ticks Y moves smoothly (-57.176 -> -57.345 -> ... -> settling, a real buoyancy
+     * spring converging) and pitch rotates and settles too (0.59{@literal deg} -> 2.47{@literal deg} ->
+     * back down, a real restoring torque damping out), and the tracked linear speed climbs then decays
+     * (1.03 -> 7.81 -> 1.73 m/s) in lockstep with that same pitch oscillation. This is not "integration
+     * never happens for a fresh body" (that would freeze Y and pitch too, and it does not) -- it is
+     * specifically X/Z, and specifically at THIS magnitude.
+     *
+     * <p>The reason is a plain floating-point one: GameTest places each test's structure at a large,
+     * test-isolating absolute world offset (here on the order of {@code 7.67} million blocks on X/Z, vs.
+     * Y staying near {@code -57}, the actual world height). A 32-bit float's representable step size at
+     * magnitude {@code v} is {@code v * 2^-23} -- at {@code 7671073.5} that is {@code ~0.91} blocks, LARGER
+     * than this body's own real per-tick translation at this test's speeds ({@code speed * dt ~ 7.8 * 0.05
+     * = ~0.39} blocks). If Sable's own rigid-body position is held internally as a float at this scale (the
+     * public {@code Vector3d} accessors this PR's code reads are double, but widening a float costs nothing
+     * back), {@code x + dx == x} EXACTLY whenever {@code |dx|} is smaller than that float's own ULP at
+     * {@code x}'s magnitude -- not a rare rounding wobble but a hard, total floor on any translation this
+     * small ever registering at all, tick after tick, with no accumulation across ticks either (each tick's
+     * dx is independently swallowed, not banked toward a future step). Y (magnitude ~57) and the
+     * quaternion's own unit-scale components sit at magnitudes whose own ULP is many orders of magnitude
+     * smaller than their real per-tick deltas, so neither one ever hits this floor -- exactly why they
+     * alone move normally. This is consistent with (not a new, unrelated theory alongside) the
+     * already-documented upstream Sable "abnormally large AABB" broad-phase errors this same run logs at
+     * these same huge coordinates, and with MINECRAFT-395's independently-documented car ledge-test failure
+     * showing the identical signature (real forward speed, zero net travel) at a similarly huge GameTest
+     * coordinate.
+     *
+     * <p>This is a Sable/GameTest-harness interaction over which this PR's code has no control -- it only
+     * ever reads back Sable's own already-integrated pose and applies impulses, never touches Sable's
+     * internal position representation or GameTest's structure-placement coordinates. The assertion below
      * is kept at its real, meaningful bound, not weakened; this remains an explicit, evidenced dependency
-     * hold pending either a Sable-side fix or an authorized scoped waiver, same as {@link
-     * #motorboatTiltedOnEntryRightsItselfThroughRealPerPointBuoyancy}'s own already-documented hold (which
-     * independently exhibits the identical signature: a body whose orientation reads back BYTE-IDENTICAL
-     * to its starting value after 100 real ticks, i.e. never integrated even once).
+     * hold pending either a Sable-side fix (representing rigid-body position in double, or re-basing it
+     * relative to the structure's own origin rather than the world's) or an authorized scoped waiver, same
+     * as {@link #motorboatTiltedOnEntryRightsItselfThroughRealPerPointBuoyancy}'s own already-documented
+     * hold (which independently shows the same class of symptom under the same huge-coordinate condition).
      */
     @GameTest(template = "settlement_test", timeoutTicks = 150)
     public static void motorboatEntersWaterAndMovesAPlausibleDistanceUnderThrottle(GameTestHelper helper) {
@@ -452,6 +472,65 @@ public final class NewVehicleGameTests {
         helper.assertTrue(besidePost != null,
                 "a point off a fence post's own footprint, in the same block's open corner, should still find the "
                         + "real water below -- not be occluded by the post's full-height bounding box");
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-410 round-4 review follow-up (finding 1): a point sitting in the OPEN bottom half of a
+     * waterlogged TOP slab must still find real water, not be rejected as "embedded in solid" -- the prior
+     * fix only compared y against the block's topmost solid hit (which, for a top slab, sits right at the
+     * block's own top boundary), making that comparison true for EVERY y in the block, including this open
+     * half. Exercises the real production sampler, not a reimplementation.
+     */
+    @GameTest(template = "settlement_test", timeoutTicks = 20)
+    public static void sampleSurfaceFindsWaterInTheOpenHalfOfAWaterloggedTopSlabInsteadOfRejectingTheWholeBlock(GameTestHelper helper) {
+        net.minecraft.world.level.block.state.BlockState waterloggedTopSlab = Blocks.STONE_SLAB.defaultBlockState()
+                .setValue(net.minecraft.world.level.block.SlabBlock.TYPE, net.minecraft.world.level.block.state.properties.SlabType.TOP)
+                .setValue(net.minecraft.world.level.block.SlabBlock.WATERLOGGED, true);
+        helper.setBlock(new BlockPos(5, 3, 5), waterloggedTopSlab);
+        helper.setBlock(new BlockPos(5, 4, 5), Blocks.AIR);
+        net.minecraft.core.BlockPos slabAbs = helper.absolutePos(new BlockPos(5, 3, 5));
+        // In the slab's own OPEN bottom half (below its solid top-half collision shape): must find water.
+        Double surface = SableMotorboatBody.sampleSurfaceForTest(helper.getLevel(),
+                slabAbs.getX() + 0.5, slabAbs.getY() + 0.1, slabAbs.getZ() + 0.5);
+        helper.assertTrue(surface != null,
+                "a point in a waterlogged top slab's open bottom half should still find real water, not be "
+                        + "rejected as embedded in the slab's own solid (top-half-only) collision shape, got "
+                        + surface);
+        // That water's own surface cannot rise above the slab's solid underside -- it is physically capped
+        // there, not at the fluid's own nominal (unobstructed) height.
+        double slabSolidUnderside = slabAbs.getY() + 0.5;
+        helper.assertTrue(surface <= slabSolidUnderside + 1.0e-6,
+                "the open half's water surface must be capped at the slab's own solid underside (" + slabSolidUnderside
+                        + "), not the fluid's unobstructed nominal height -- got " + surface);
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-410 round-4 review follow-up (finding 2): an upward scan climbing through consecutive water
+     * must STOP at a waterlogged BOTTOM slab's own solid lower half -- not cross straight through it (as
+     * waterlogged, it still reports a fluid state, which the prior fix let an upward scan treat as climbable
+     * water regardless of whether solid actually blocked that same column from below). Exercises the real
+     * production sampler, not a reimplementation.
+     */
+    @GameTest(template = "settlement_test", timeoutTicks = 20)
+    public static void sampleSurfaceStopsAtAWaterloggedBottomSlabsSolidHalfInsteadOfClimbingThroughIt(GameTestHelper helper) {
+        helper.setBlock(new BlockPos(5, 2, 5), Blocks.WATER);
+        net.minecraft.world.level.block.state.BlockState waterloggedBottomSlab = Blocks.STONE_SLAB.defaultBlockState()
+                .setValue(net.minecraft.world.level.block.SlabBlock.TYPE, net.minecraft.world.level.block.state.properties.SlabType.BOTTOM)
+                .setValue(net.minecraft.world.level.block.SlabBlock.WATERLOGGED, true);
+        helper.setBlock(new BlockPos(5, 3, 5), waterloggedBottomSlab);
+        helper.setBlock(new BlockPos(5, 4, 5), Blocks.WATER);
+        net.minecraft.core.BlockPos homeAbs = helper.absolutePos(new BlockPos(5, 2, 5));
+        Double surface = SableMotorboatBody.sampleSurfaceForTest(helper.getLevel(),
+                homeAbs.getX() + 0.5, homeAbs.getY() + 0.5, homeAbs.getZ() + 0.5);
+        helper.assertTrue(surface != null, "a point already in water should find a real surface, got null");
+        double homeBlockSurface = homeAbs.getY()
+                + helper.getLevel().getBlockState(homeAbs).getFluidState().getHeight(helper.getLevel(), homeAbs);
+        helper.assertTrue(Math.abs(surface - homeBlockSurface) < 1.0e-6,
+                "an upward scan must stop at a waterlogged bottom slab's own solid lower half -- not climb "
+                        + "through it to the real water block above -- got surface=" + surface + " expected "
+                        + "(capped at the slab, i.e. the home block's own surface) =" + homeBlockSurface);
         helper.succeed();
     }
 

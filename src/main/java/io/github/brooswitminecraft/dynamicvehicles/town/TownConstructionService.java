@@ -365,6 +365,22 @@ public final class TownConstructionService {
                     continue;
                 }
             }
+            // [Review round 2, finding #3] Debit only AFTER a confirmed placement: first check
+            // affordability (a non-mutating peek, never itself a charge), attempt the mutation, and
+            // re-read the block to confirm it actually landed before the store is ever touched. A
+            // rejected/failed mutation costs nothing and places nothing.
+            // [Review round 4, finding #2] A cell already recorded as paid-for progress (the
+            // griefed-then-rebuilt case above) is never charged again - only a cell not yet in the
+            // persisted progress record pays.
+            // [Review round 16, finding #1] Checked BEFORE any handoff reservation below (not
+            // after): reserving a destination and only THEN discovering this closing cell is
+            // unaffordable would leak that reservation on this break - nothing left holding it, but
+            // the ticket still occupied, permanently blocking the site's own eventual completion.
+            if (!alreadyPlaced && !store.canAfford(block.cost(), TownConstants.CONSTRUCTION_COST_PER_BLOCK)) {
+                // Insufficient resources: pause construction at this site for this tick without
+                // charging anything, per MINECRAFT-388 ("no free construction, no negative stores").
+                break;
+            }
             // [Review round 14, finding #1] "Handle the actual Builder-to-final-site transition" -
             // but BEFORE the campfire (the site's own sole discoverable anchor; see
             // findClaimedCampfireSites) is ever allowed to close. Reaching this point for pos ==
@@ -383,18 +399,6 @@ public final class TownConstructionService {
                 if (reservedHandoff.isEmpty()) {
                     continue;
                 }
-            }
-            // [Review round 2, finding #3] Debit only AFTER a confirmed placement: first check
-            // affordability (a non-mutating peek, never itself a charge), attempt the mutation, and
-            // re-read the block to confirm it actually landed before the store is ever touched. A
-            // rejected/failed mutation costs nothing and places nothing.
-            // [Review round 4, finding #2] A cell already recorded as paid-for progress (the
-            // griefed-then-rebuilt case above) is never charged again - only a cell not yet in the
-            // persisted progress record pays.
-            if (!alreadyPlaced && !store.canAfford(block.cost(), TownConstants.CONSTRUCTION_COST_PER_BLOCK)) {
-                // Insufficient resources: pause construction at this site for this tick without
-                // charging anything, per MINECRAFT-388 ("no free construction, no negative stores").
-                break;
             }
             boolean mutated = level.setBlock(pos, placement.state(), net.minecraft.world.level.block.Block.UPDATE_ALL);
             if (!mutated || !level.getBlockState(pos).is(placement.block())) {

@@ -935,6 +935,83 @@ public final class TownGameTests {
         helper.succeed();
     }
 
+    /**
+     * MINECRAFT-388 review round 16, finding #1: reserving a handoff destination and only THEN
+     * discovering the campfire's own closing cell is unaffordable must never leak that reservation -
+     * funded to cover every planned cell EXCEPT the final one, the site must pause indefinitely with
+     * NO provisional ticket held, then actually complete once resources (and a reload in between)
+     * are back.
+     */
+    @GameTest(template = "settlement_test")
+    public static void anInsufficientFundsPauseNeverLeaksAProvisionalHandoffReservation(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos campfireCell = ANCHOR;
+        helper.setBlock(campfireCell, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(campfireCell);
+
+        Villager claimant = EntityType.VILLAGER.create(helper.getLevel(), null, absoluteCampfire, MobSpawnType.EVENT, false, false);
+        helper.getLevel().addFreshEntity(claimant);
+        claimant.setVillagerData(claimant.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
+        claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteCampfire));
+
+        TownStorage storage = new TownStorage();
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
+        TownPlan plan = TownPlanner.generate(region, helper.getLevel().getSeed());
+        boolean isStorehouseSite = Math.abs(absoluteCampfire.getX() - plan.townCenterX()) <= TownConstants.STOREHOUSE_FOOTPRINT_WIDTH
+                && Math.abs(absoluteCampfire.getZ() - plan.townCenterZ()) <= TownConstants.STOREHOUSE_FOOTPRINT_WIDTH;
+        TownBuildingTemplates.Kind kind = isStorehouseSite ? TownBuildingTemplates.Kind.STOREHOUSE
+                : TownBuildingTemplates.kindFor(plan.zoneAt(absoluteCampfire.getX(), absoluteCampfire.getZ()));
+        java.util.Optional<VillagerProfession> expectedFinalProfession = TownProfessionWorkstations.finalProfessionFor(
+                kind, helper.getLevel().getSeed(), absoluteCampfire.getX(), absoluteCampfire.getZ());
+        boolean bedApplies = kind != TownBuildingTemplates.Kind.STOREHOUSE;
+
+        int floorY = TownTerrain.estimateGroundHeightBelow(helper.getLevel(), absoluteCampfire);
+        List<TownBuildingTemplates.Placement> template = TownBuildingTemplates.generate(
+                kind, absoluteCampfire.getX(), floorY, absoluteCampfire.getZ(), plan.storehouseVariant(),
+                expectedFinalProfession.orElse(null));
+        TownResourceCategory costCategory = TownBuildingTemplates.costFor(kind);
+        TownResourceStore store = storage.storeFor(TownKeys.keyFor(helper.getLevel().dimension(), region));
+        // Fund EXACTLY enough for every planned cell except the final (campfire-closing) one -
+        // every cell in a single kind's template costs the SAME category at CONSTRUCTION_COST_PER_BLOCK.
+        store.credit(costCategory, (template.size() - 1) * TownConstants.CONSTRUCTION_COST_PER_BLOCK);
+
+        for (int i = 0; i < 500 && claimant.getVillagerData().getProfession() == BuilderProfession.BUILDER.get(); i++) {
+            TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
+        }
+
+        helper.assertTrue(claimant.getVillagerData().getProfession() == BuilderProfession.BUILDER.get(),
+                "test setup: the site must be paused on the final cell for insufficient funds, not already complete");
+        helper.assertTrue(helper.getBlockState(campfireCell).is(Blocks.CAMPFIRE),
+                "the campfire must still be physically present while paused for insufficient funds");
+        BlockPos workstationPos = expectedFinalProfession.isPresent()
+                ? TownBuildingTemplates.workstationPosition(absoluteCampfire.getX(), floorY, absoluteCampfire.getZ()) : null;
+        BlockPos bedPos = bedApplies
+                ? TownBuildingTemplates.bedPosition(absoluteCampfire.getX(), floorY, absoluteCampfire.getZ()) : null;
+        if (workstationPos != null) {
+            helper.assertTrue(helper.getLevel().getPoiManager().getFreeTickets(workstationPos) > 0,
+                    "a paused-for-funds site must never leak a provisional workstation reservation");
+        }
+        if (bedPos != null) {
+            helper.assertTrue(helper.getLevel().getPoiManager().getFreeTickets(bedPos) > 0,
+                    "a paused-for-funds site must never leak a provisional bed reservation");
+        }
+
+        // A reload while paused must never disturb the retry - the persisted floor/cell-progress
+        // record is the only state this mod itself keeps about this in-progress site.
+        CompoundTag saved = storage.save(new CompoundTag(), helper.getLevel().registryAccess());
+        TownStorage reloaded = TownStorage.load(saved, helper.getLevel().registryAccess());
+        TownResourceStore reloadedStore = reloaded.storeFor(TownKeys.keyFor(helper.getLevel().dimension(), region));
+
+        // Replenish and confirm the site actually completes through normal ticks.
+        reloadedStore.credit(costCategory, 1000);
+        for (int i = 0; i < 500 && claimant.getVillagerData().getProfession() == BuilderProfession.BUILDER.get(); i++) {
+            TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, reloaded);
+        }
+        helper.assertTrue(claimant.getVillagerData().getProfession() != BuilderProfession.BUILDER.get(),
+                "once replenished (and reloaded), the paused site must actually complete");
+        helper.succeed();
+    }
+
     /** Places a genuinely valid, correctly-paired (HEAD+FOOT) bed at the given ABSOLUTE head
      *  position and immediately registers + fully reserves its POI record, standing in for a
      *  fixture some OTHER, unrelated villager already holds. Deliberately places BOTH halves - a

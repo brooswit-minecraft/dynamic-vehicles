@@ -348,16 +348,34 @@ public record VehicleSpec(
     public record SuspensionTuning(double fastCompressionDamping, double slowReboundDamping,
             double fastReboundDamping, double dampingKneeSpeed, double bumpStopTravel, double bumpStopRate) {
 
+        /** The {@link #dampingKneeSpeed} a car carries until it tunes one, m/s. Any value is equally
+         * correct for a car whose four damping rates are all equal ({@link #singleRate}): the slow rate
+         * applies up to the knee and the identical fast rate beyond it, so the knee's position has no
+         * observable effect at all. A plain {@code 1.0} rather than, say, {@code 0.0} so the value still
+         * reads as a sane knee speed the moment an operator overrides only one of the rates around it. */
+        public static final double DEFAULT_DAMPING_KNEE_SPEED = 1.0;
+
+        /** The {@link #bumpStopTravel} that disables the bump stop by being unreachable: a wheel's
+         * compression is bounded by its own {@code restLength}, so {@code compression > bumpStopTravel} is
+         * never true and {@link WheelMath}'s bump-stop term stays exactly zero. Paired with {@link
+         * #NO_BUMP_STOP_RATE}, which disables it a second, independent way. */
+        public static final double BUMP_STOP_DISABLED_TRAVEL = Double.MAX_VALUE;
+
+        /** The {@link #bumpStopRate} that disables the bump stop regardless of {@link #bumpStopTravel}:
+         * zero N/m past the threshold is zero extra force. */
+        public static final double NO_BUMP_STOP_RATE = 0.0;
+
         /** Single-rate damping, no bump stop: {@code fastCompressionDamping}/{@code slowReboundDamping}/
          * {@code fastReboundDamping} all equal {@code dampingRate} itself (the car's existing, unsplit
          * damper rate), so {@link WheelMath}'s four-rate {@code suspensionForce} overload reduces
          * algebraically to exactly {@code dampingRate * compressionRate} regardless of {@code
-         * dampingKneeSpeed} -- see that method's own javadoc for the reduction. {@code bumpStopTravel} is
-         * {@link Double#MAX_VALUE} (compression can never reach it, so the bump stop never engages) and
-         * {@code bumpStopRate} is {@code 0.0}. Every vehicle on the roster that has not opted into this
-         * ticket's tuning uses exactly this, built from its own stock {@code dampingRate}. */
+         * dampingKneeSpeed} -- see that method's own javadoc for the reduction. The bump stop is disabled
+         * both ways ({@link #BUMP_STOP_DISABLED_TRAVEL}, {@link #NO_BUMP_STOP_RATE}). Every vehicle on the
+         * roster that has not opted into this ticket's tuning uses exactly this, built from its own stock
+         * {@code dampingRate}. */
         public static SuspensionTuning singleRate(double dampingRate) {
-            return new SuspensionTuning(dampingRate, dampingRate, dampingRate, 1.0, Double.MAX_VALUE, 0.0);
+            return new SuspensionTuning(dampingRate, dampingRate, dampingRate, DEFAULT_DAMPING_KNEE_SPEED,
+                    BUMP_STOP_DISABLED_TRAVEL, NO_BUMP_STOP_RATE);
         }
     }
 

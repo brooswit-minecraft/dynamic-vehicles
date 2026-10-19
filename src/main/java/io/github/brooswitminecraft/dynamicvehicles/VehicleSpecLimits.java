@@ -46,12 +46,13 @@ final class VehicleSpecLimits {
     static final double MAX_DAMPING_KNEE_SPEED = 10.0;
 
     /** MINECRAFT-445: metres of compression before the progressive bump stop engages. 0.0 (engaged from the
-     * very first touch of compression) is a valid, finite configuration; 5.0 matches {@code
-     * VehicleSpecLimits.MAX_RIDE_HEIGHT} as a car-agnostic outer bound -- a value a particular car's own
-     * geometry can never actually reach is simply inert (the bump stop never engages), not degenerate, so
-     * unlike {@code rideHeight} this field needs no per-car {@code isUsable} check. */
+     * very first touch of compression) is a valid, finite configuration; the upper bound deliberately
+     * tracks {@link #MAX_RIDE_HEIGHT} (no car's suspension travel can exceed the tallest ride height this
+     * format allows) rather than restating its number, so the two can never drift apart. A value a
+     * particular car's own geometry can never actually reach is simply inert (the bump stop never engages),
+     * not degenerate, so unlike {@code rideHeight} this field needs no per-car {@code isUsable} check. */
     static final double MIN_BUMP_STOP_TRAVEL = 0.0;
-    static final double MAX_BUMP_STOP_TRAVEL = 5.0;
+    static final double MAX_BUMP_STOP_TRAVEL = MAX_RIDE_HEIGHT;
 
     /** MINECRAFT-445: N/m applied only to the compression past {@code bumpStopTravel}. 0.0 (no extra bump
      * stop force at all, same as an unreachable {@code bumpStopTravel}) is a valid, finite configuration;

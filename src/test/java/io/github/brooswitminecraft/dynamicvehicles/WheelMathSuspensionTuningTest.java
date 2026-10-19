@@ -3,6 +3,7 @@ package io.github.brooswitminecraft.dynamicvehicles;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.github.brooswitminecraft.dynamicvehicles.VehicleSpec.SuspensionTuning;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -12,110 +13,147 @@ import org.junit.jupiter.api.Test;
  */
 class WheelMathSuspensionTuningTest {
 
+    /** The car's own spring rate, so these cases sit on a real vehicle's scale rather than an invented one. */
+    private static final double SPRING_RATE = WheelMath.SPRING_RATE;
+    /** The car's own damper rate, used wherever a test needs one rate that is not the point of the test. */
+    private static final double DAMPING_RATE = WheelMath.DAMPING_RATE;
+    /** A force cap high enough never to clamp, so a test asserting the formula sees the formula. */
+    private static final double UNCAPPED_FORCE = Double.MAX_VALUE;
+    /** Compression (m) well inside every roster car's travel, used wherever the exact depth is incidental. */
+    private static final double TOUCHING_COMPRESSION = 0.1;
+    /** A compression rate (m/s) of exactly zero: the damper contributes nothing, isolating spring + bump stop. */
+    private static final double AT_REST = 0.0;
+    /** The knee speed (m/s) these cases tune around; distinct from {@link SuspensionTuning#DEFAULT_DAMPING_KNEE_SPEED}
+     * only where a test needs to prove the knee's position is what moved the result. */
+    private static final double KNEE_SPEED = 1.0;
+    /** How far past {@link #KNEE_SPEED} the "fast" assertions probe, m/s. */
+    private static final double SPEED_PAST_KNEE = 1.0;
+    /** A slow-stroke rate (N*s/m) deliberately far below {@link #FAST_RATE}, so a slow/fast mix-up is obvious. */
+    private static final double SLOW_RATE = 1_000.0;
+    /** A fast-stroke rate (N*s/m) deliberately far above {@link #SLOW_RATE}. */
+    private static final double FAST_RATE = 9_000.0;
+    /** Compression travel (m) past which the bump-stop cases engage their stop. */
+    private static final double BUMP_STOP_TRAVEL = 0.2;
+    /** A bump-stop rate (N/m) stiffer than {@link #SPRING_RATE}, as a real mechanical stop is. */
+    private static final double BUMP_STOP_RATE = 50_000.0;
+    /** Tolerance for comparisons of a force assembled by the same arithmetic in test and production. */
+    private static final double FORCE_TOLERANCE = 1e-6;
+    /** Tolerance for an equality that must hold to the algebraic reduction, not merely approximately. */
+    private static final double REDUCTION_TOLERANCE = 1e-9;
+
+    /** The four-rate overload at one shared rate for all four strokes and no bump stop -- the configuration
+     * {@link SuspensionTuning#singleRate} produces, expressed here as a call so each test states which rate
+     * it is collapsing to. */
+    private static double singleRateForce(double compression, double compressionRate, double rate, double kneeSpeed,
+            double maxForce) {
+        return WheelMath.suspensionForce(compression, compressionRate, SPRING_RATE, rate, rate, rate, rate,
+                kneeSpeed, maxForce, SuspensionTuning.BUMP_STOP_DISABLED_TRAVEL, SuspensionTuning.NO_BUMP_STOP_RATE);
+    }
+
     @Test
     void reducesToSingleRateWhenEveryDampingRateMatches() {
-        double compression = 0.2;
-        double springRate = 19_620.0;
-        double maxForce = 40_000.0;
-        for (double rate : new double[] {0.0, 10.0}) {
-            double single = WheelMath.suspensionForce(compression, rate, springRate, 3_400.0, maxForce);
-            double fourRate = WheelMath.suspensionForce(compression, rate, springRate,
-                    3_400.0, 3_400.0, 3_400.0, 3_400.0, 1.0, maxForce, Double.MAX_VALUE, 0.0);
-            assertEquals(single, fourRate, 1e-9, "compressionRate=" + rate);
+        for (double compressionRate : new double[] {AT_REST, 10.0}) {
+            double single = WheelMath.suspensionForce(TOUCHING_COMPRESSION, compressionRate, SPRING_RATE,
+                    DAMPING_RATE, WheelMath.MAX_FORCE);
+            double fourRate = singleRateForce(TOUCHING_COMPRESSION, compressionRate, DAMPING_RATE, KNEE_SPEED,
+                    WheelMath.MAX_FORCE);
+            assertEquals(single, fourRate, REDUCTION_TOLERANCE, "compressionRate=" + compressionRate);
         }
     }
 
     @Test
     void reducesToSingleRateForAnyKneeSpeedWhenEveryDampingRateMatches() {
         // The algebraic reduction must not depend on where the knee sits, since every rate on both sides of
-        // it is identical.
-        double compression = 0.2;
+        // it is identical -- which is what makes SuspensionTuning.DEFAULT_DAMPING_KNEE_SPEED's exact value
+        // unobservable for every car on the roster today.
         double compressionRate = 2.5;
-        double single = WheelMath.suspensionForce(compression, compressionRate, 19_620.0, 3_400.0, 40_000.0);
-        for (double knee : new double[] {0.0, 0.5, 1.0, 5.0, 100.0}) {
-            double fourRate = WheelMath.suspensionForce(compression, compressionRate, 19_620.0,
-                    3_400.0, 3_400.0, 3_400.0, 3_400.0, knee, 40_000.0, Double.MAX_VALUE, 0.0);
-            assertEquals(single, fourRate, 1e-9, "kneeSpeed=" + knee);
+        double single = WheelMath.suspensionForce(TOUCHING_COMPRESSION, compressionRate, SPRING_RATE, DAMPING_RATE,
+                WheelMath.MAX_FORCE);
+        for (double knee : new double[] {0.0, 0.5, SuspensionTuning.DEFAULT_DAMPING_KNEE_SPEED, 5.0, 100.0}) {
+            double fourRate = singleRateForce(TOUCHING_COMPRESSION, compressionRate, DAMPING_RATE, knee,
+                    WheelMath.MAX_FORCE);
+            assertEquals(single, fourRate, REDUCTION_TOLERANCE, "kneeSpeed=" + knee);
         }
     }
 
     @Test
     void fastCompressionDampingOnlyAppliesAboveTheKnee() {
-        double compression = 0.1;
-        double springRate = 19_620.0;
-        double maxForce = 100_000.0;
-        double slow = 1_000.0;
-        double fast = 9_000.0;
-        double knee = 1.0;
+        double springForce = SPRING_RATE * TOUCHING_COMPRESSION;
 
         // At exactly the knee: only the slow rate has applied so far.
-        double atKnee = WheelMath.suspensionForce(compression, knee, springRate, slow, fast, slow, fast, knee,
-                maxForce, Double.MAX_VALUE, 0.0);
-        assertEquals(springRate * compression + slow * knee, atKnee, 1e-6);
+        double atKnee = compressionForce(KNEE_SPEED);
+        assertEquals(springForce + SLOW_RATE * KNEE_SPEED, atKnee, FORCE_TOLERANCE);
 
         // Just below the knee uses only the slow rate, scaling linearly with speed.
-        double belowKnee = WheelMath.suspensionForce(compression, knee / 2, springRate, slow, fast, slow, fast,
-                knee, maxForce, Double.MAX_VALUE, 0.0);
-        assertEquals(springRate * compression + slow * knee / 2, belowKnee, 1e-6);
+        double belowKnee = compressionForce(KNEE_SPEED / 2);
+        assertEquals(springForce + SLOW_RATE * KNEE_SPEED / 2, belowKnee, FORCE_TOLERANCE);
 
         // Above the knee, the extra speed is damped at the FAST rate, continuous with the value at the knee.
-        double aboveKnee = WheelMath.suspensionForce(compression, knee + 1.0, springRate, slow, fast, slow, fast,
-                knee, maxForce, Double.MAX_VALUE, 0.0);
-        assertEquals(springRate * compression + slow * knee + fast * 1.0, aboveKnee, 1e-6);
+        double aboveKnee = compressionForce(KNEE_SPEED + SPEED_PAST_KNEE);
+        assertEquals(springForce + SLOW_RATE * KNEE_SPEED + FAST_RATE * SPEED_PAST_KNEE, aboveKnee, FORCE_TOLERANCE);
+    }
+
+    /** {@link #SLOW_RATE}/{@link #FAST_RATE} on both strokes, no bump stop, at this compression rate. */
+    private static double compressionForce(double compressionRate) {
+        return WheelMath.suspensionForce(TOUCHING_COMPRESSION, compressionRate, SPRING_RATE, SLOW_RATE, FAST_RATE,
+                SLOW_RATE, FAST_RATE, KNEE_SPEED, UNCAPPED_FORCE, SuspensionTuning.BUMP_STOP_DISABLED_TRAVEL,
+                SuspensionTuning.NO_BUMP_STOP_RATE);
     }
 
     @Test
     void reboundUsesItsOwnRatesIndependentlyOfCompression() {
-        double compression = 0.1;
-        double springRate = 19_620.0;
-        double maxForce = 100_000.0;
-        double knee = 1.0;
-        double slowRebound = 2_000.0;
-        double fastRebound = 12_000.0;
+        // Compression rates an order of magnitude above the rebound ones, so a mix-up would be obvious.
+        double unusedCompressionRate = FAST_RATE * 10;
+        double reboundSpeed = KNEE_SPEED + SPEED_PAST_KNEE;
 
-        // compressionRate negative (-2.0 m/s, 1.0 m/s past the knee): rebound-only rates must apply, not the
-        // compression ones (10x the rebound values here, so a mix-up would be obvious).
-        double force = WheelMath.suspensionForce(compression, -2.0, springRate,
-                50_000.0, 50_000.0, slowRebound, fastRebound, knee, maxForce, Double.MAX_VALUE, 0.0);
-        double expectedDampingForce = -(slowRebound * knee + fastRebound * 1.0);
-        assertEquals(Math.max(0.0, springRate * compression + expectedDampingForce), force, 1e-6);
+        double force = WheelMath.suspensionForce(TOUCHING_COMPRESSION, -reboundSpeed, SPRING_RATE,
+                unusedCompressionRate, unusedCompressionRate, SLOW_RATE, FAST_RATE, KNEE_SPEED, UNCAPPED_FORCE,
+                SuspensionTuning.BUMP_STOP_DISABLED_TRAVEL, SuspensionTuning.NO_BUMP_STOP_RATE);
+
+        double expectedDampingForce = -(SLOW_RATE * KNEE_SPEED + FAST_RATE * SPEED_PAST_KNEE);
+        assertEquals(Math.max(0.0, SPRING_RATE * TOUCHING_COMPRESSION + expectedDampingForce), force, FORCE_TOLERANCE);
     }
 
     @Test
     void bumpStopAddsNoForceBelowItsOwnTravelThreshold() {
-        double withoutBumpStop = WheelMath.suspensionForce(0.1, 0.0, 19_620.0, 3_400.0, 3_400.0, 3_400.0,
-                3_400.0, 1.0, 100_000.0, Double.MAX_VALUE, 50_000.0);
-        double belowThreshold = WheelMath.suspensionForce(0.1, 0.0, 19_620.0, 3_400.0, 3_400.0, 3_400.0,
-                3_400.0, 1.0, 100_000.0, 0.2, 50_000.0);
-        assertEquals(withoutBumpStop, belowThreshold, 1e-9);
+        double withoutBumpStop = singleRateForce(TOUCHING_COMPRESSION, AT_REST, DAMPING_RATE, KNEE_SPEED,
+                UNCAPPED_FORCE);
+        double belowThreshold = WheelMath.suspensionForce(TOUCHING_COMPRESSION, AT_REST, SPRING_RATE, DAMPING_RATE,
+                DAMPING_RATE, DAMPING_RATE, DAMPING_RATE, KNEE_SPEED, UNCAPPED_FORCE, BUMP_STOP_TRAVEL,
+                BUMP_STOP_RATE);
+
+        // TOUCHING_COMPRESSION is inside BUMP_STOP_TRAVEL, so the configured stop must contribute nothing.
+        assertTrue(TOUCHING_COMPRESSION < BUMP_STOP_TRAVEL, "this case requires compression inside the stop");
+        assertEquals(withoutBumpStop, belowThreshold, REDUCTION_TOLERANCE);
     }
 
     @Test
     void bumpStopAddsProgressiveForcePastItsOwnTravelThreshold() {
-        double springRate = 19_620.0;
-        double bumpStopTravel = 0.2;
-        double bumpStopRate = 50_000.0;
-        double compression = 0.25;
+        double pastTheStop = 0.05;
+        double compression = BUMP_STOP_TRAVEL + pastTheStop;
 
-        double force = WheelMath.suspensionForce(compression, 0.0, springRate, 3_400.0, 3_400.0, 3_400.0,
-                3_400.0, 1.0, 1_000_000.0, bumpStopTravel, bumpStopRate);
+        double force = WheelMath.suspensionForce(compression, AT_REST, SPRING_RATE, DAMPING_RATE, DAMPING_RATE,
+                DAMPING_RATE, DAMPING_RATE, KNEE_SPEED, UNCAPPED_FORCE, BUMP_STOP_TRAVEL, BUMP_STOP_RATE);
 
-        double expected = springRate * compression + bumpStopRate * (compression - bumpStopTravel);
-        assertEquals(expected, force, 1e-6);
+        assertEquals(SPRING_RATE * compression + BUMP_STOP_RATE * pastTheStop, force, FORCE_TOLERANCE);
     }
 
     @Test
     void bumpStopNeverPullsForceNegativeAndStaysCappedAtMaxForce() {
-        double force = WheelMath.suspensionForce(5.0, 0.0, 19_620.0, 3_400.0, 3_400.0, 3_400.0, 3_400.0, 1.0,
-                40_000.0, 0.1, 500_000.0);
+        // A deep compression against a very stiff stop: the sum far exceeds the cap, which must still hold.
+        double force = WheelMath.suspensionForce(5.0, AT_REST, SPRING_RATE, DAMPING_RATE, DAMPING_RATE,
+                DAMPING_RATE, DAMPING_RATE, KNEE_SPEED, WheelMath.MAX_FORCE, TOUCHING_COMPRESSION,
+                VehicleSpecLimits.MAX_BUMP_STOP_RATE);
+
         assertTrue(force >= 0.0);
-        assertEquals(40_000.0, force, 0);
+        assertEquals(WheelMath.MAX_FORCE, force, 0);
     }
 
     @Test
     void notTouchingTheGroundIsStillZeroRegardlessOfTireKitFields() {
-        assertEquals(0.0,
-                WheelMath.suspensionForce(-0.1, 5.0, 19_620.0, 1.0, 2.0, 3.0, 4.0, 0.5, 40_000.0, 0.1, 50_000.0),
-                0);
+        double notTouching = -TOUCHING_COMPRESSION;
+
+        assertEquals(0.0, WheelMath.suspensionForce(notTouching, 5.0, SPRING_RATE, SLOW_RATE, FAST_RATE,
+                SLOW_RATE, FAST_RATE, KNEE_SPEED, WheelMath.MAX_FORCE, BUMP_STOP_TRAVEL, BUMP_STOP_RATE), 0);
     }
 }

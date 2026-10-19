@@ -170,27 +170,41 @@ class VehicleSpecOverridesTest {
         assertEquals(VehicleSpec.BUS.massKg(), resolved.massKg());
     }
 
+    /** Past {@link VehicleSpecLimits#MAX_TIRE_KIT_DAMPING}, so the loader must clamp rather than reject. */
+    private static final double OVER_MAX_DAMPING = VehicleSpecLimits.MAX_TIRE_KIT_DAMPING * 10;
+    /** In-range tireKit values, written into the file and asserted back out of the resolved spec, so the
+     * JSON and its expectation can never drift apart. */
+    private static final double REQUESTED_SLOW_REBOUND_DAMPING = 500.0;
+    private static final double REQUESTED_BUMP_STOP_TRAVEL = 0.1;
+    private static final double REQUESTED_BUMP_STOP_RATE = 60_000.0;
+    /** An in-range flat dampingRate override, distinct from every roster car's own stock rate. */
+    private static final double REQUESTED_DAMPING_RATE = 5_000.0;
+    /** JSON parses this as a Double but it is not finite -- the realistic corrupt-number shape, since JSON
+     * has no NaN/Infinity literal. */
+    private static final String NON_FINITE_JSON_NUMBER = "1e400";
+
     @Test
     void tireKitOverridesOnlyTheFieldsItSetsAndClampsThem(@TempDir Path configDir) throws IOException {
         writeCarsFile(configDir, "car", """
                 {
                   "tireKit": {
-                    "compressionDampingFast": 999999.0,
-                    "reboundDampingSlow": 500.0,
-                    "bumpStopTravel": 0.1,
-                    "bumpStopRate": 60000.0
+                    "compressionDampingFast": %s,
+                    "reboundDampingSlow": %s,
+                    "bumpStopTravel": %s,
+                    "bumpStopRate": %s
                   }
                 }
-                """);
+                """.formatted(OVER_MAX_DAMPING, REQUESTED_SLOW_REBOUND_DAMPING, REQUESTED_BUMP_STOP_TRAVEL,
+                        REQUESTED_BUMP_STOP_RATE));
 
         VehicleSpecOverrides.load(configDir);
         VehicleSpec.SuspensionTuning tuning = VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR).suspensionTuning();
 
-        // 999999.0 is out of VehicleSpecLimits' range -- clamped, not rejected outright.
+        // OVER_MAX_DAMPING is out of VehicleSpecLimits' range -- clamped, not rejected outright.
         assertEquals(VehicleSpecLimits.MAX_TIRE_KIT_DAMPING, tuning.fastCompressionDamping());
-        assertEquals(500.0, tuning.slowReboundDamping());
-        assertEquals(0.1, tuning.bumpStopTravel());
-        assertEquals(60000.0, tuning.bumpStopRate());
+        assertEquals(REQUESTED_SLOW_REBOUND_DAMPING, tuning.slowReboundDamping());
+        assertEquals(REQUESTED_BUMP_STOP_TRAVEL, tuning.bumpStopTravel());
+        assertEquals(REQUESTED_BUMP_STOP_RATE, tuning.bumpStopRate());
         // Fields the tireKit section did not mention keep the stock car's own value.
         assertEquals(VehicleSpec.CAR.suspensionTuning().fastReboundDamping(), tuning.fastReboundDamping());
         assertEquals(VehicleSpec.CAR.suspensionTuning().dampingKneeSpeed(), tuning.dampingKneeSpeed());
@@ -210,20 +224,19 @@ class VehicleSpecOverridesTest {
     void overridingDampingRateWithNoTireKitSectionStillActsAsSingleRate(@TempDir Path configDir) throws IOException {
         // A file that only sets the flat dampingRate (no tireKit at all) must still behave as single-rate
         // damping at its NEW dampingRate, not the stock car's old one.
-        writeCarsFile(configDir, "car", "{\"dampingRate\": 5000.0}");
+        writeCarsFile(configDir, "car", "{\"dampingRate\": %s}".formatted(REQUESTED_DAMPING_RATE));
 
         VehicleSpecOverrides.load(configDir);
         VehicleSpec resolved = VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR);
 
-        assertEquals(5000.0, resolved.dampingRate());
-        assertEquals(5000.0, resolved.suspensionTuning().fastCompressionDamping());
-        assertEquals(5000.0, resolved.suspensionTuning().slowReboundDamping());
-        assertEquals(5000.0, resolved.suspensionTuning().fastReboundDamping());
+        assertEquals(REQUESTED_DAMPING_RATE, resolved.dampingRate());
+        assertEquals(VehicleSpec.SuspensionTuning.singleRate(REQUESTED_DAMPING_RATE), resolved.suspensionTuning());
     }
 
     @Test
     void nonFiniteTireKitFieldsFallBackToTheStockValue(@TempDir Path configDir) throws IOException {
-        writeCarsFile(configDir, "car", "{\"tireKit\": {\"bumpStopRate\": 1e400}}");
+        writeCarsFile(configDir, "car",
+                "{\"tireKit\": {\"bumpStopRate\": %s}}".formatted(NON_FINITE_JSON_NUMBER));
 
         VehicleSpecOverrides.load(configDir);
         VehicleSpec resolved = VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR);

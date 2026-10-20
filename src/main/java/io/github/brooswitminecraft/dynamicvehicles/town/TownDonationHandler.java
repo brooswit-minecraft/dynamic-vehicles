@@ -63,9 +63,7 @@ public final class TownDonationHandler {
         if (region.isEmpty()) {
             return; // not actively, live-ly working an identifiable, live, founded job site here
         }
-        TownResourceStore store = storage.storeFor(TownKeys.keyFor(level.dimension(), region.get()));
-        store.credit(credit.category(), credit.amount() * consumedCount);
-        storage.setDirty();
+        storage.creditStore(TownKeys.keyFor(level.dimension(), region.get()), credit.category(), credit.amount() * consumedCount);
     }
 
     /**

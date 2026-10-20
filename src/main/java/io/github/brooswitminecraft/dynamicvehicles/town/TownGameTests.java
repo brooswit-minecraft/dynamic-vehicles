@@ -1852,4 +1852,40 @@ public final class TownGameTests {
                 "a villager whose JOB_SITE memory points here but in a DIFFERENT dimension (and whose identity is not the real claimant) must block");
         helper.succeed();
     }
+
+    /** [Review round 21 follow-up] {@code TownStorage#creditStore}/{@code tryDebitStore} are the
+     *  SOLE mutation path for resource balances precisely because {@link TownResourceStore} itself
+     *  has no reference back to its owning {@code TownStorage} and so cannot mark it dirty on its
+     *  own - donation, passive-production, and construction credits/debits that went straight
+     *  through the raw store (the pre-round-21-follow-up pattern) could silently never persist.
+     *  Proves both halves of that contract: the dirty flag actually flips on a real mutation (and
+     *  stays clear on a declined one), and the balance itself genuinely survives a real save/load
+     *  round trip, not merely an in-memory check. */
+    @GameTest(template = "settlement_test")
+    public static void creditAndDebitStoreMarkTheStorageDirtyAndSurviveASaveLoadRoundTrip(GameTestHelper helper) {
+        TownStorage storage = new TownStorage();
+        String townKey = "test-town-key";
+        helper.assertTrue(!storage.isDirty(), "test setup: a fresh TownStorage must not start out dirty");
+
+        storage.creditStore(townKey, TownResourceCategory.STONE, 10);
+        helper.assertTrue(storage.isDirty(), "creditStore must mark the storage dirty");
+        helper.assertTrue(storage.storeFor(townKey).balance(TownResourceCategory.STONE) == 10,
+                "creditStore must actually credit the balance");
+
+        storage.setDirty(false);
+        boolean debited = storage.tryDebitStore(townKey, TownResourceCategory.STONE, 4);
+        helper.assertTrue(debited, "test setup: the debit must actually succeed");
+        helper.assertTrue(storage.isDirty(), "a successful tryDebitStore must mark the storage dirty");
+
+        storage.setDirty(false);
+        boolean declinedDebit = storage.tryDebitStore(townKey, TownResourceCategory.STONE, 1000);
+        helper.assertTrue(!declinedDebit, "test setup: this debit must actually be declined (insufficient funds)");
+        helper.assertTrue(!storage.isDirty(), "a DECLINED tryDebitStore must never mark the storage dirty - nothing actually changed");
+
+        CompoundTag saved = storage.save(new CompoundTag(), helper.getLevel().registryAccess());
+        TownStorage reloaded = TownStorage.load(saved, helper.getLevel().registryAccess());
+        helper.assertTrue(reloaded.storeFor(townKey).balance(TownResourceCategory.STONE) == 6,
+                "the credited-then-debited balance (10 - 4 = 6) must survive a real save/load round trip");
+        helper.succeed();
+    }
 }

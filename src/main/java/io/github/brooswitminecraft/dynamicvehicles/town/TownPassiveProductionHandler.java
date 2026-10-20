@@ -71,11 +71,10 @@ public final class TownPassiveProductionHandler {
             if (credit <= 0) {
                 continue;
             }
-            TownResourceStore store = storage.storeFor(TownKeys.keyFor(level.dimension(), entry.getKey()));
+            String townKey = TownKeys.keyFor(level.dimension(), entry.getKey());
             for (TownResourceCategory category : TownResourceCategory.values()) {
-                store.credit(category, credit);
+                storage.creditStore(townKey, category, credit);
             }
-            storage.setDirty();
         }
     }
 }

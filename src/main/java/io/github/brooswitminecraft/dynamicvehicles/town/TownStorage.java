@@ -86,8 +86,41 @@ public final class TownStorage extends SavedData {
         setDirty();
     }
 
+    /** Returns {@code townKey}'s resource store, creating a fresh all-zero one (and marking this
+     *  storage dirty for having done so) the first time it is ever asked for. Still safe for
+     *  READ-ONLY use ({@code balance}/{@code canAfford}/{@code snapshot}) - {@link TownResourceStore}
+     *  itself has no reference back to this owning {@code TownStorage} and so cannot mark it dirty
+     *  on its own, which is exactly why every actual BALANCE mutation must instead go through
+     *  {@link #creditStore}/{@link #tryDebitStore} below, never through this store's own
+     *  {@code credit}/{@code tryDebit} directly. */
     public TownResourceStore storeFor(String townKey) {
-        return stores.computeIfAbsent(townKey, k -> new TownResourceStore());
+        return stores.computeIfAbsent(townKey, k -> {
+            setDirty();
+            return new TownResourceStore();
+        });
+    }
+
+    /**
+     * [Review round 21 follow-up] The sole path for crediting a town's resource balance - marks
+     * this storage dirty itself, since the returned {@link TownResourceStore} from {@link #storeFor}
+     * has no way to do so on its own. A caller that credited the raw store directly (the previous
+     * pattern, relying on each caller to separately remember {@code setDirty()}) could silently
+     * leave a real donation/production credit in memory only, lost on the next server restart.
+     */
+    public void creditStore(String townKey, TownResourceCategory category, int amount) {
+        storeFor(townKey).credit(category, amount);
+        setDirty();
+    }
+
+    /** The sole path for debiting a town's resource balance (see {@link TownResourceStore#tryDebit}
+     *  for the no-partial-charge contract) - marks this storage dirty only when the debit actually
+     *  changed the balance; a declined attempt leaves nothing new to persist. */
+    public boolean tryDebitStore(String townKey, TownResourceCategory category, int amount) {
+        boolean debited = storeFor(townKey).tryDebit(category, amount);
+        if (debited) {
+            setDirty();
+        }
+        return debited;
     }
 
     /** {@code true} iff Dynamic Towns' plan identified by {@code owner} (e.g.

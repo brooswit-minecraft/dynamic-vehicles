@@ -47,8 +47,15 @@ import java.nio.file.Path;
 public final class SuspensionTuningGameTests {
     private SuspensionTuningGameTests() {}
 
-    /** The tick each test's own assertions run at: comfortably past {@link #SAMPLE_UNTIL_TICK}, so every
-     * per-tick sample a test compares has already been taken. */
+    /** The tick a test's assertions run at when its cars were all spawned at tick 0: comfortably past
+     * {@link #SAMPLE_WINDOW_TICKS}, so every per-tick sample it compares has already been taken.
+     *
+     * <p>A test that spawns a SECOND car partway through (the sub-step one must, since {@code
+     * WHEEL_SUB_STEPS} is global and the two cars cannot run concurrently) has to offset both its sampling
+     * window and its assertion tick by the tick that car actually appeared at. {@code runAtTickTime} takes
+     * an ABSOLUTE test tick, so a window of 1..50 requested at tick 60 simply never fires -- which is
+     * exactly how an earlier revision of that test came to read a peak of 0.0 for its second car and
+     * report "never touched the ground" for a car that landed perfectly well. */
     private static final long MEASURE_TICK = 60L;
 
     /** A bump stop engaging well INSIDE the car's own spring-only static compression ({@code massKg * g /
@@ -130,8 +137,8 @@ public final class SuspensionTuningGameTests {
         CarEntity configured = spawnWithOverride(helper, LOAD_BEARING_BUMP_STOP,
                 new BlockPos(5, 3 + DROP_BLOCKS, 15));
 
-        PeakCompression stockPeak = peakCompressionOverDrop(helper, stock);
-        PeakCompression configuredPeak = peakCompressionOverDrop(helper, configured);
+        PeakCompression stockPeak = peakCompressionOverDrop(helper, stock, 0L);
+        PeakCompression configuredPeak = peakCompressionOverDrop(helper, configured, 0L);
 
         helper.runAfterDelay(MEASURE_TICK, () -> {
             helper.assertTrue(configured.spec().suspensionTuning().bumpStopRate() == VehicleSpecLimits.MAX_BUMP_STOP_RATE,
@@ -280,7 +287,7 @@ public final class SuspensionTuningGameTests {
             CarConfig.WHEEL_SUB_STEPS.set(1);
             CarEntity oneStep = spawnWithOverride(helper, LOAD_BEARING_BUMP_STOP,
                     new BlockPos(5, 3 + DROP_BLOCKS, 5));
-            PeakCompression oneStepPeak = peakCompressionOverDrop(helper, oneStep);
+            PeakCompression oneStepPeak = peakCompressionOverDrop(helper, oneStep, 0L);
             helper.runAfterDelay(MEASURE_TICK,
                     () -> compareFourSubStepsAndRestore(helper, originalSubSteps, oneStepPeak));
         } catch (RuntimeException e) {
@@ -295,7 +302,9 @@ public final class SuspensionTuningGameTests {
             CarConfig.WHEEL_SUB_STEPS.set(4);
             CarEntity fourStep = spawnWithOverride(helper, LOAD_BEARING_BUMP_STOP,
                     new BlockPos(5, 3 + DROP_BLOCKS, 15));
-            PeakCompression fourStepPeak = peakCompressionOverDrop(helper, fourStep);
+            PeakCompression fourStepPeak = peakCompressionOverDrop(helper, fourStep, MEASURE_TICK);
+            // Delay measured from NOW (this callback already runs at MEASURE_TICK), so the second car gets
+            // the same full sampling window the first one did before anything is compared.
             helper.runAfterDelay(MEASURE_TICK, () -> {
                 try {
                     CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
@@ -401,7 +410,7 @@ public final class SuspensionTuningGameTests {
     }
 
     /**
-     * Samples every wheel's compression on each of the first {@link #SAMPLE_UNTIL_TICK} ticks and returns a
+     * Samples every wheel's compression on each of the {@link #SAMPLE_WINDOW_TICKS} ticks after {@code fromTick} and returns a
      * holder of the PEAK (deepest) compression seen on any wheel.
      *
      * <p>This is the observable the bump stop and the damper rates actually exist to change, and it is the
@@ -412,9 +421,9 @@ public final class SuspensionTuningGameTests {
      * rolling, with real contact on only one axle). Taking a peak across the whole window also removes any
      * dependence on which single tick the comparison lands on.
      */
-    private static PeakCompression peakCompressionOverDrop(GameTestHelper helper, CarEntity car) {
+    private static PeakCompression peakCompressionOverDrop(GameTestHelper helper, CarEntity car, long fromTick) {
         PeakCompression peak = new PeakCompression();
-        for (long tick = 1; tick <= SAMPLE_UNTIL_TICK; tick++) {
+        for (long tick = fromTick + 1; tick <= fromTick + SAMPLE_WINDOW_TICKS; tick++) {
             helper.runAtTickTime(tick, () -> {
                 for (double travel : SableCompat.wheelTravel(car.sableBody())) {
                     if (Double.isFinite(travel)) {
@@ -443,9 +452,9 @@ public final class SuspensionTuningGameTests {
      * template. */
     private static final int DROP_BLOCKS = 3;
 
-    /** Last tick {@link #peakCompressionOverDrop} samples; comfortably past the landing and the bounce that
-     * follows it. */
-    private static final long SAMPLE_UNTIL_TICK = 50L;
+    /** How many ticks {@link #peakCompressionOverDrop} samples for, starting from the tick its car was
+     * spawned at; comfortably past the landing and the bounce that follows it. */
+    private static final long SAMPLE_WINDOW_TICKS = 50L;
 
     /** Throttle held across the measurement window: enough to keep the rigid body awake and its wheels
      * loaded, gentle enough (the same value {@code RollingResistanceGameTests} uses for its own cruise

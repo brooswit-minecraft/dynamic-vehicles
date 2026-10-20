@@ -849,7 +849,7 @@ final class SableCarBody {
 
         if (!car.diffuserTuning().isIdentity()) {
             applyDiffuserAssists(car, position, orientation, inverse, carForward, subLinear, subAngular,
-                    touching, steer, handbrake, dt);
+                    touching, steer, handbrake, gear, dt);
         }
         lastSlipSpeed = slipThisTick;
         lastSpinSlip = spinSlipThisTick;
@@ -916,7 +916,7 @@ final class SableCarBody {
      */
     private void applyDiffuserAssists(CarEntity car, Vector3d position, Quaterniond orientation, Quaterniond inverse,
             Vector3d carForward, Vector3d linear, Vector3d angular, boolean touching, double steer,
-            boolean handbrake, double dt) {
+            boolean handbrake, CarPhysics.Gear gear, double dt) {
         VehicleSpec.DiffuserTuning diffuser = car.diffuserTuning();
         Vector3d right = orientation.transform(new Vector3d(1, 0, 0));
         Vector3d up = orientation.transform(new Vector3d(0, 1, 0));
@@ -968,8 +968,15 @@ final class SableCarBody {
         // fighting a handbrake slide.
         boolean intentionalSlide = handbrake;
         // Same review fix as headingTorque above, same reasoning: swapped operands, not a rate change.
+        // Reverse-aware target (MINECRAFT-447 reverse coverage): classified on MEASURED forward speed, with
+        // the selected gear only separating an intentional reverse from a rollback -- see
+        // DiffuserAssistMath#trajectoryErrorRad. A rollback yields NaN there, which trajectoryAlignmentTorque
+        // already turns into exactly zero torque, so the assist stays out of the way rather than either
+        // spinning the car or pinning it to a direction it is merely drifting in.
+        double forwardSpeed = linear.dot(carForward);
         double trajectoryTorque = DiffuserAssistMath.trajectoryAlignmentTorque(
-                DiffuserAssistMath.wrapAngle(Math.toRadians(currentYawDeg - travelYawDeg)),
+                DiffuserAssistMath.trajectoryErrorRad(travelYawDeg, currentYawDeg, forwardSpeed,
+                        gear == CarPhysics.Gear.REVERSE, DiffuserAssistMath.REVERSE_CLASSIFICATION_DEADBAND),
                 yawRateRadPerSec, horizontalSpeed, intentionalSlide, diffuser);
 
         Vector3d totalTorque = new Vector3d(carForward).mul(rollTorque)

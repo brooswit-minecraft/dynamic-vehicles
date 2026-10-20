@@ -7,6 +7,8 @@ import net.minecraft.gametest.framework.GameTestInfo;
 import net.minecraft.gametest.framework.GameTestListener;
 import net.minecraft.gametest.framework.GameTestRunner;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.Blocks;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
@@ -738,6 +740,84 @@ public final class DiffuserAssistGameTests {
                 });
             });
         });
+    }
+
+    /** How far off the pure reverse line the reverse fixtures slew the car: a real misalignment the assist
+     * should straighten when the reverse is intentional, and must leave alone when it is a rollback --
+     * small enough that it could never be confused with the ~180 a naive forward-only target would report
+     * for the same pose. */
+    private static final double REVERSE_SLEW_DEG = 20.0;
+
+    /** Seeds real velocity along a given Minecraft yaw, using the same forward convention
+     * {@code SableCarBody.yawOf} defines ({@code forward = (-sin(yaw), 0, cos(yaw))}). */
+    private static void seedVelocityAlongYaw(CarEntity car, double yawDeg, double speed) {
+        double radians = Math.toRadians(yawDeg);
+        car.addLinearVelocityForTest(-Math.sin(radians) * speed, 0.0, Math.cos(radians) * speed);
+    }
+
+    /** R19 reverse coverage (MINECRAFT-447, review-scoped): a car genuinely travelling backwards must have
+     * its reverse PRESERVED, not corrected away by a forced half-turn -- while a car rolling backwards
+     * without having asked to is left alone entirely.
+     *
+     * <p>Both cases use the identical pose: velocity pointing behind the car and slewed
+     * {@value #REVERSE_SLEW_DEG} degrees off the pure reverse line, so there is a real, small misalignment
+     * present. Only the selected gear differs, which is exactly the distinction under test:
+     * <ul>
+     * <li>reverse selected -- an intentional reverse: the assist straightens that slew, turning the car
+     *     toward its reverse line rather than spinning it around;</li>
+     * <li>a forward gear -- a rollback: suppressed entirely, so the car keeps whatever heading it had.</li>
+     * </ul>
+     * A naive forward-only target would report a ~180 degree error for this pose and swing the car round in
+     * BOTH cases, so either assertion failing that way is the regression this exists to catch.
+     *
+     * <p>These fixtures seat a real mock driver, which is not incidental: {@code CarEntity.tick} resets a
+     * driverless car's gear to {@link CarPhysics.Gear#DEFAULT_FORWARD} on EVERY tick, so reverse can only
+     * exist while someone is actually driving. An earlier version of this fixture selected reverse on an
+     * empty car, had it silently reset before the next physics tick, and so ran the "intentional reverse"
+     * case as a rollback -- which is also a fair statement of the product behaviour: a car rolling
+     * backwards with nobody in it is a rollback, never an intentional reverse. */
+    private static void assertReverseTravelIsHandled(GameTestHelper helper, boolean reverseSelected) {
+        CarEntity car = spawnCarWithCleanup(helper, DROP_SPAWN);
+        Player driver = helper.makeMockPlayer(GameType.CREATIVE);
+        helper.assertTrue(driver.startRiding(car), "mock driver failed to board the car");
+        helper.runAfterDelay(BODY_EXISTS_TICK, () -> {
+            helper.assertTrue(car.sableBody() != null, "car's Sable body was never created on its first real tick");
+            double startYaw = car.getYRot();
+            // Must be re-selected with the driver aboard: see this method's javadoc on the driverless reset.
+            car.selectGear(reverseSelected ? CarPhysics.Gear.REVERSE : CarPhysics.Gear.D1);
+            seedVelocityAlongYaw(car, startYaw + 180.0 + REVERSE_SLEW_DEG, SEEDED_SPEED);
+            car.setDiffuserTuningForTest(
+                    trajectoryOnly(ASSIST_MAX_TORQUE, ASSIST_GAIN, ASSIST_DAMPING, TRAJECTORY_MIN_SPEED));
+            helper.runAfterDelay(OBSERVE_TICKS, () -> {
+                double moved = wrapDeg(car.getYRot() - startYaw);
+                // Either way the car must NOT be swung toward its velocity: that is the forced half-turn
+                // this coverage exists to rule out.
+                helper.assertTrue(Math.abs(moved) < 90.0,
+                        "the assist swung a reversing car toward its own velocity instead of preserving the "
+                                + "reverse: yaw moved " + moved + " degrees");
+                if (reverseSelected) {
+                    helper.assertTrue(moved > MIN_YAW_RECOVERY_DEG,
+                            "an INTENTIONAL reverse should still have its " + REVERSE_SLEW_DEG
+                                    + " degree slew straightened toward the reverse line, but yaw moved only "
+                                    + moved + " degrees");
+                } else {
+                    helper.assertTrue(Math.abs(moved) < MIN_YAW_RECOVERY_DEG,
+                            "a backward ROLLBACK in a forward gear must leave the car's heading alone, but "
+                                    + "yaw moved " + moved + " degrees");
+                }
+                helper.succeed();
+            });
+        });
+    }
+
+    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    public static void intentionalReverseIsStraightenedNotSpunAround(GameTestHelper helper) {
+        assertReverseTravelIsHandled(helper, true);
+    }
+
+    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    public static void backwardRollbackWithoutReverseSelectedLeavesHeadingAlone(GameTestHelper helper) {
+        assertReverseTravelIsHandled(helper, false);
     }
 
     /** Telemetry (open item from the ticket's own acceptance criteria): {@code SableCarBody.describe()}'s

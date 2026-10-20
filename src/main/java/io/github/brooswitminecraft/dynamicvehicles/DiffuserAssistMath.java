@@ -104,6 +104,61 @@ public final class DiffuserAssistMath {
     }
 
     /**
+     * Forward-speed magnitude (m/s) below which the car is NOT classified as reversing, however the
+     * velocity happens to be pointing (MINECRAFT-447 reverse coverage). Without a deadband the
+     * forward/backward classification flips every time the forward component crosses zero -- during a
+     * near-sideways slide, a gear change, or the instant of a direction reversal -- and the assist's
+     * target would jump 180 degrees with it. Matching the spirit of {@code SableCarBody}'s own drag
+     * deadband: below this the car is treated as going forward, which is the existing behaviour.
+     */
+    public static final double REVERSE_CLASSIFICATION_DEADBAND = 0.5;
+
+    /**
+     * R19's target, reverse-aware (MINECRAFT-447): the error to hand {@link #trajectoryAlignmentTorque},
+     * in the same physical convention its caller already uses ({@code current - target}).
+     *
+     * <p>Aligning the nose to the raw velocity direction is right going forwards and wrong going
+     * backwards: a reversing car's velocity points behind it, so a naive target asks the assist to swing
+     * the car through 180 degrees, which is the opposite of helping someone reverse. The three cases this
+     * distinguishes, per the review's own scope:
+     *
+     * <ul>
+     * <li><b>Forward</b> (forward speed above {@code -deadband}): target is the travel direction, exactly
+     *     as before. Unchanged behaviour, including for a near-sideways slide, where the forward component
+     *     is small but the car is not reversing.</li>
+     * <li><b>Intentional reverse</b> (genuinely moving backwards AND reverse actually selected): target is
+     *     the travel direction turned 180 degrees -- i.e. keep the car tracking straight along its line of
+     *     travel, nose trailing, rather than spinning it around. Reverse travel is preserved, not
+     *     corrected away.</li>
+     * <li><b>Backward rollback</b> (moving backwards WITHOUT reverse selected -- rolling back down a
+     *     slope, or still carrying backward momentum after a shift): {@link Double#NaN}, which
+     *     {@link #trajectoryAlignmentTorque} already turns into exactly zero torque. The driver has not
+     *     asked to travel backwards, so the assist neither spins the car nor pins it to a direction it is
+     *     only drifting in; it simply stays out of the way until the car is going somewhere deliberate.</li>
+     * </ul>
+     *
+     * <p>The classification is driven by MEASURED velocity, never by the selected gear alone: a car in
+     * reverse that is still rolling forwards is treated as going forwards. The gear only distinguishes an
+     * intentional reverse from a rollback once the car is genuinely moving backwards.
+     *
+     * @param travelYawDeg direction of travel, degrees, Minecraft yaw convention
+     * @param currentYawDeg the car's own heading, degrees, same convention
+     * @param forwardSpeed the velocity's component along the car's own forward axis, m/s: negative when
+     *        the car is moving backwards relative to where it points
+     * @param reverseSelected whether the driver actually has reverse selected
+     * @param deadband see {@link #REVERSE_CLASSIFICATION_DEADBAND}
+     */
+    public static double trajectoryErrorRad(double travelYawDeg, double currentYawDeg, double forwardSpeed,
+            boolean reverseSelected, double deadband) {
+        boolean movingBackwards = forwardSpeed < -Math.abs(deadband);
+        if (movingBackwards && !reverseSelected) {
+            return Double.NaN;
+        }
+        double targetYawDeg = movingBackwards ? travelYawDeg + 180.0 : travelYawDeg;
+        return wrapAngle(Math.toRadians(currentYawDeg - targetYawDeg));
+    }
+
+    /**
      * R19: trajectory alignment, pulling the car's nose toward its own horizontal velocity direction (the
      * caller supplies {@code trajectoryErrorRad}, signed radians, the shortest turn from the car's current
      * heading to its horizontal velocity direction, wrapped to {@code (-pi, pi]} by the caller). Inactive

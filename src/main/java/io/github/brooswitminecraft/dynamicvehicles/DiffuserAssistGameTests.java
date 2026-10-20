@@ -340,6 +340,144 @@ public final class DiffuserAssistGameTests {
         assertTrajectoryTurnsTowardVelocity(helper, -SEEDED_SPEED);
     }
 
+    /** Full player steering input, for the suppression case below. */
+    private static final double FULL_STEER = 1.0;
+    /** Suppression of 1.0 means full steer hands the assist's whole authority back to the player. */
+    private static final double FULL_SUPPRESSION = 1.0;
+    /** With the assist fully suppressed the yaw error must not close by even this much -- the same
+     * threshold the un-suppressed fixtures must EXCEED, so the two assertions cannot both hold. */
+    private static final double SUPPRESSED_TOLERANCE_DEG = MIN_YAW_RECOVERY_DEG;
+
+    private static VehicleSpec.DiffuserTuning headingOnlyWithSuppression(double suppression) {
+        return new VehicleSpec.DiffuserTuning(false, 0, 0, 0, false, 0, 0, 0, 0,
+                true, ASSIST_MAX_TORQUE, ASSIST_GAIN, ASSIST_DAMPING, suppression, false, 0, 0, 0, 0);
+    }
+
+    private static VehicleSpec.DiffuserTuning headingAndTrajectory() {
+        return new VehicleSpec.DiffuserTuning(false, 0, 0, 0, false, 0, 0, 0, 0,
+                true, ASSIST_MAX_TORQUE, ASSIST_GAIN, ASSIST_DAMPING, FULL_SUPPRESSION,
+                true, ASSIST_MAX_TORQUE, ASSIST_GAIN, ASSIST_DAMPING, TRAJECTORY_MIN_SPEED);
+    }
+
+    /** R18's own player-authority rule, on the production path: steering gives the player their authority
+     * back. Same clean single-axis fixture as the heading direction pair, with the ONLY change being full
+     * steer held against a tuning whose {@code headingAlignmentSteerSuppression} is 1.0.
+     *
+     * <p>This fixture is unusually clean for exactly the reason that makes it worth having: while airborne,
+     * a steering input has no physical effect whatsoever (steer turns a car through tire forces, and no
+     * wheel is touching anything here), so the ONLY route by which steer can change the outcome is
+     * {@code DiffuserAssistMath.headingAlignmentTorque}'s own suppression term. Any difference observed
+     * against {@link #headingAlignmentTurnsTowardATargetAheadOfCurrentYawNotAwayFromIt}, which is identical
+     * but for the steer, is attributable to suppression and nothing else. */
+    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    public static void fullSteerSuppressesHeadingAlignmentEntirely(GameTestHelper helper) {
+        CarEntity car = spawnCarWithCleanup(helper, DROP_SPAWN);
+        helper.runAfterDelay(BODY_EXISTS_TICK, () -> {
+            helper.assertTrue(car.sableBody() != null, "car's Sable body was never created on its first real tick");
+            double startYaw = car.getYRot();
+            double targetYaw = startYaw + HEADING_TARGET_OFFSET_DEG;
+            car.setDiffuserTuningForTest(headingOnlyWithSuppression(FULL_SUPPRESSION));
+            car.setLastGroundedYawDegForTest(targetYaw);
+            car.forceDrive(0.0, FULL_STEER, (int) OBSERVE_TICKS + 2);
+            double errorBefore = Math.abs(wrapDeg(targetYaw - startYaw));
+            helper.runAfterDelay(OBSERVE_TICKS, () -> {
+                double errorAfter = Math.abs(wrapDeg(targetYaw - car.getYRot()));
+                helper.assertTrue(errorAfter > errorBefore - SUPPRESSED_TOLERANCE_DEG,
+                        "full steer against suppression 1.0 should have handed the player the assist's whole "
+                                + "authority, leaving the heading error essentially untouched, but it closed from "
+                                + errorBefore + " to " + errorAfter);
+                helper.succeed();
+            });
+        });
+    }
+
+    /** MINECRAFT-395's explicit "do not collapse heading and trajectory into one behaviour" requirement,
+     * verified on the production path rather than argued from the source.
+     *
+     * <p>The two assists are given targets on OPPOSITE sides of the car's own current yaw: heading is
+     * seeded {@code +HEADING_TARGET_OFFSET_DEG} ahead, while the seeded velocity puts the travel direction
+     * far to the other side. If the two had been collapsed into a single behaviour -- reading one target,
+     * or summing into one error -- a car with only ONE of them enabled could not turn in opposite
+     * directions depending on which one that is. Each is enabled alone, and the resulting signed yaw
+     * changes are asserted to have opposite signs, which no single shared signal can produce. */
+    private static void assertSingleAssistTurnsInItsOwnDirection(GameTestHelper helper, boolean heading) {
+        CarEntity car = spawnCarWithCleanup(helper, DROP_SPAWN);
+        helper.runAfterDelay(BODY_EXISTS_TICK, () -> {
+            helper.assertTrue(car.sableBody() != null, "car's Sable body was never created on its first real tick");
+            double startYaw = car.getYRot();
+            car.addLinearVelocityForTest(SEEDED_SPEED, 0.0, 0.0);
+            double travelYawDeg = Math.toDegrees(Math.atan2(-SEEDED_SPEED, 0.0));
+            helper.assertTrue(wrapDeg(travelYawDeg - startYaw) < -MIN_MEANINGFUL_GAP_DEG,
+                    "fixture assumes the seeded travel direction sits well to the NEGATIVE side of spawn yaw, "
+                            + "opposite the +" + HEADING_TARGET_OFFSET_DEG + " heading target: travelYaw="
+                            + travelYawDeg + " startYaw=" + startYaw);
+            if (heading) {
+                car.setDiffuserTuningForTest(headingOnly(ASSIST_MAX_TORQUE, ASSIST_GAIN, ASSIST_DAMPING));
+                car.setLastGroundedYawDegForTest(startYaw + HEADING_TARGET_OFFSET_DEG);
+            } else {
+                car.setDiffuserTuningForTest(
+                        trajectoryOnly(ASSIST_MAX_TORQUE, ASSIST_GAIN, ASSIST_DAMPING, TRAJECTORY_MIN_SPEED));
+            }
+            helper.runAfterDelay(OBSERVE_TICKS, () -> {
+                double moved = wrapDeg(car.getYRot() - startYaw);
+                if (heading) {
+                    helper.assertTrue(moved > 0.0,
+                            "heading alignment, alone, must turn toward its OWN +" + HEADING_TARGET_OFFSET_DEG
+                                    + " target, not toward the velocity direction on the other side: moved=" + moved);
+                } else {
+                    helper.assertTrue(moved < 0.0,
+                            "trajectory alignment, alone, must turn toward the velocity direction, not toward "
+                                    + "heading's own target on the other side: moved=" + moved);
+                }
+                helper.succeed();
+            });
+        });
+    }
+
+    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    public static void headingAloneTurnsTowardItsOwnTargetNotTheVelocityDirection(GameTestHelper helper) {
+        assertSingleAssistTurnsInItsOwnDirection(helper, true);
+    }
+
+    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    public static void trajectoryAloneTurnsTowardVelocityNotHeadingsOwnTarget(GameTestHelper helper) {
+        assertSingleAssistTurnsInItsOwnDirection(helper, false);
+    }
+
+    /** Two assists enabled at once stay bounded and keep producing finite, sane orientation -- the
+     * combined-assist case. With heading and trajectory pulling toward targets on opposite sides, the
+     * interesting property is not which one wins (that is just the larger bounded torque) but that the
+     * result stays finite and inside the span the two targets bracket, rather than diverging or going NaN
+     * the way an unbounded or double-counted sum would. */
+    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    public static void bothYawAssistsTogetherStayFiniteAndBounded(GameTestHelper helper) {
+        CarEntity car = spawnCarWithCleanup(helper, DROP_SPAWN);
+        helper.runAfterDelay(BODY_EXISTS_TICK, () -> {
+            helper.assertTrue(car.sableBody() != null, "car's Sable body was never created on its first real tick");
+            double startYaw = car.getYRot();
+            car.addLinearVelocityForTest(SEEDED_SPEED, 0.0, 0.0);
+            car.setDiffuserTuningForTest(headingAndTrajectory());
+            car.setLastGroundedYawDegForTest(startYaw + HEADING_TARGET_OFFSET_DEG);
+            helper.runAfterDelay(OBSERVE_TICKS, () -> {
+                double yaw = car.getYRot();
+                double roll = rollAngleRad(car);
+                double pitch = pitchAngleRad(car);
+                helper.assertTrue(Double.isFinite(yaw) && Double.isFinite(roll) && Double.isFinite(pitch),
+                        "two assists at once produced a non-finite orientation: yaw=" + yaw + " roll=" + roll
+                                + " pitch=" + pitch);
+                double moved = Math.abs(wrapDeg(yaw - startYaw));
+                helper.assertTrue(moved <= 180.0,
+                        "two assists at once drove the car past a half turn inside " + OBSERVE_TICKS
+                                + " ticks, which no bounded pair of torques should: moved=" + moved);
+                // Neither yaw assist applies any roll or pitch torque, so both must stay near level.
+                helper.assertTrue(Math.abs(roll) < MIN_START_TILT_RAD && Math.abs(pitch) < MIN_START_TILT_RAD,
+                        "yaw-only assists disturbed roll/pitch, so they are not acting on the axis they claim: "
+                                + "roll=" + roll + " pitch=" + pitch);
+                helper.succeed();
+            });
+        });
+    }
+
     /** Pitch angle (radians, 0 = level, positive = nose up) of a car's current real Sable body orientation,
      * exactly the same {@code asin(forward.y)} formula {@code SableCarBody.applyDiffuserAssists} itself
      * uses. */

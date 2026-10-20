@@ -48,6 +48,12 @@ import java.util.UUID;
  * mod's own template/zoning logic changes between versions, or (in a future multi-stage plan) a
  * site is deliberately replanned. A cell paid for under the OLD plan's signature must never be
  * silently treated as already-paid progress for a NEW, different plan at the same position.
+ *
+ * <p>[Review follow-up] Every mutator below calls {@link #setDirty()} itself. A real server save
+ * only ever writes a {@link SavedData} whose own {@code isDirty()} is true - a mutator that forgot
+ * to flag it (several callers used to do this externally, inconsistently, instead) would have its
+ * change silently survive only until the next server restart, with no error anywhere to reveal it.
+ * Keeping this self-contained means a caller can never get it wrong by omission.
  */
 public final class TownStorage extends SavedData {
     private static final String NAME = "dynamicvehicles_towns";
@@ -77,6 +83,7 @@ public final class TownStorage extends SavedData {
 
     public void markTownFounded(String key) {
         foundedTowns.add(key);
+        setDirty();
     }
 
     public TownResourceStore storeFor(String townKey) {
@@ -135,12 +142,14 @@ public final class TownStorage extends SavedData {
      *  to compare against. */
     public void setReservationOwner(ResourceKey<Level> dimension, BlockPos pos, UUID villagerId) {
         reservationOwners.put(cellKey(dimension, pos), villagerId);
+        setDirty();
     }
 
     /** Clears {@code pos}'s ownership record - called once its actual ticket is released, so a
      *  future occupant never gets read as still "owned" by whoever held it before. */
     public void clearReservationOwner(ResourceKey<Level> dimension, BlockPos pos) {
         reservationOwners.remove(cellKey(dimension, pos));
+        setDirty();
     }
 
     /** Records that {@code pos} in {@code dimension} has now actually been placed and paid for by
@@ -150,6 +159,7 @@ public final class TownStorage extends SavedData {
      *  now", and only one plan can own a given cell's paid progress at a time. */
     public void markCellPlaced(ResourceKey<Level> dimension, BlockPos pos, String owner, String signature) {
         placedCells.put(cellKey(dimension, pos), new PlacedCell(owner, signature));
+        setDirty();
     }
 
     /**
@@ -172,6 +182,7 @@ public final class TownStorage extends SavedData {
      *  there, so the only safe response is to never touch this exact cell again. */
     public void markCellBlocked(ResourceKey<Level> dimension, BlockPos pos) {
         blockedCells.add(cellKey(dimension, pos));
+        setDirty();
     }
 
     /**
@@ -188,12 +199,14 @@ public final class TownStorage extends SavedData {
 
     public void setFloor(String owner, int floorY) {
         siteFloors.put(owner, floorY);
+        setDirty();
     }
 
     /** Called once a site is fully built and its claimant released - the floor commitment has
      *  served its purpose and need not be retained forever. */
     public void clearFloor(String owner) {
         siteFloors.remove(owner);
+        setDirty();
     }
 
     /**
@@ -210,10 +223,12 @@ public final class TownStorage extends SavedData {
 
     public void setPendingCampfire(String key, BlockPos pos) {
         pendingCampfires.put(key, pos);
+        setDirty();
     }
 
     public void clearPendingCampfire(String key) {
         pendingCampfires.remove(key);
+        setDirty();
     }
 
     /** The stable owner key for a building site, anchored on its own original campfire position -

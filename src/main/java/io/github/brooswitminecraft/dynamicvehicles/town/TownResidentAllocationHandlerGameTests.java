@@ -741,7 +741,7 @@ public final class TownResidentAllocationHandlerGameTests {
      *  durable-persistence proof this suite already requires of {@link TownStorage}'s other records
      *  (see its own class doc on {@code blockedCells}). */
     @GameTest(template = "settlement_test")
-    public static void reservationOwnershipRecordSurvivesASaveLoadRoundTrip(GameTestHelper helper) {
+    public static void reservationOwnershipMarksTheStorageDirtyAndSurvivesASaveLoadRoundTrip(GameTestHelper helper) {
         prepareFlatGround(helper);
         BlockPos bedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
         placeValidBed(helper, bedHead);
@@ -756,12 +756,24 @@ public final class TownResidentAllocationHandlerGameTests {
                 "test setup: the owner must actually be assigned the bed first");
         BlockPos ownedPos = owner.getBrain().getMemory(MemoryModuleType.HOME).get().pos();
 
+        // [Review follow-up] A direct save()/load() round trip alone does not prove a REAL server
+        // save would ever have happened: the normal save scheduler only writes data whose own
+        // isDirty() is true. setReservationOwner must actually mark this storage dirty, not merely
+        // mutate its in-memory map, or a real save could silently skip persisting it.
+        helper.assertTrue(storage.isDirty(),
+                "setReservationOwner must mark the storage dirty, or a real server save could silently skip persisting it");
+
         net.minecraft.nbt.CompoundTag saved = storage.save(new net.minecraft.nbt.CompoundTag(), helper.getLevel().registryAccess());
         TownStorage reloaded = TownStorage.load(saved, helper.getLevel().registryAccess());
 
         Villager impostor = spawnVillager(helper, ANCHOR.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
         helper.assertTrue(reloaded.isReservedByADifferentVillager(helper.getLevel().dimension(), ownedPos, impostor.getUUID()),
                 "the reservation-ownership record must survive a save/load round trip, not silently reset on reload");
+
+        reloaded.setDirty(false);
+        reloaded.clearReservationOwner(helper.getLevel().dimension(), ownedPos);
+        helper.assertTrue(reloaded.isDirty(),
+                "clearReservationOwner must also mark the storage dirty");
         helper.succeed();
     }
 }

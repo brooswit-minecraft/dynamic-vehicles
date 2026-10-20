@@ -34,7 +34,16 @@ final class SableCarBody {
     private static final double REVERSE_FORCE = 1_400.0;
     private static final double BRAKE_FORCE = 3_000.0;
     private static final double HANDBRAKE_FORCE = 6_000.0;
-    private static final double AIR_DRAG = 0.4; // N per (m/s)^2
+    /** Total speed (m/s) at or below which NO aerodynamic/fluid/foliage drag impulse is applied at all
+     * (MINECRAFT-446 review, comment 49064: named and documented rather than left as a bare literal, since
+     * it is part of the per-car drag contract's own speed dependence). Pre-existing behaviour, unchanged by
+     * this ticket; {@code docs/per-car-config.md}'s `wing` section documents it, and {@code
+     * WingAeroGameTests} pins that the documented value still matches this one. Note the wing DOWNFORCE
+     * path below has no such dead band: it applies at any nonzero airflow speed. */
+    static final double DRAG_SPEED_DEADBAND = 0.5;
+    // MINECRAFT-446: the old hardcoded "AIR_DRAG = 0.4 N per (m/s)^2" constant moved to
+    // VehicleSpec#wingDragCoeff (defaulted to 0.4 for the whole roster), so it is per-car configurable
+    // through the wing section of a per-car config file.
 
     private final VehicleSpec spec;
     private final Vector3d halfExtents;
@@ -99,6 +108,28 @@ final class SableCarBody {
     // check the delivered force against the REAL per-wheel-per-tick budget instead of a fixed global
     // worst-case ceiling - tighter, and catches a smaller overflow the generous global bound would miss.
     private final double[] wheelFrictionLimit;
+    // MINECRAFT-446 review (comment 49019): the REAL aero downforce this tick's production path actually
+    // applied, captured at the one real application site below - not re-derived by a test from an assumed
+    // speed. The review's own finding is why these exist: a test that infers the wing's contribution from
+    // net suspension compression cannot separate it from the acceleration/settling baseline, and so passes
+    // even if the wing load is absent or wrong by a factor of the sub-step count. These three make the
+    // applied force itself observable instead:
+    //  - lastAeroAirflowSpeed: the forward airflow speed (m/s, signed) the downforce formula was evaluated
+    //    at, so a test can check the applied force against VehicleSpec.wingDownforceNewtons at the speed
+    //    the car ACTUALLY reached rather than needing two runs to reach matching speeds.
+    //  - lastAeroDownforceNewtons: total downward aero force (N, front + rear, including forceScale) this
+    //    tick. Applied once per tick outside the sub-step loop, so this is sub-step-count invariant BY
+    //    CONSTRUCTION - which is exactly the property under test, hence worth observing directly.
+    //  - lastAeroApplications: how many aero impulses were handed to applyImpulseAtPoint this tick (one per
+    //    axle that has a nonzero coefficient). The crispest "once per tick, not once per sub-step" signal
+    //    there is: an application wrongly placed inside the sub-step loop multiplies this by wheelSubSteps.
+    // All three hold their last real value on a tick that applied no aero at all (both coefficients 0, or
+    // a standstill), same as lastSlipSpeed/lastErosionReport* above; a test must therefore establish a
+    // nonzero lastAeroAirflowSpeed before reading the other two, which is also the review's own
+    // "establish nonzero measured forward speed" ask.
+    private double lastAeroAirflowSpeed;
+    private double lastAeroDownforceNewtons;
+    private int lastAeroApplications;
     // Per-wheel values published to clients for rendering (MINECRAFT-122). Airborne/zero-load/raycast-miss
     // behaviour differs per value, each deliberate:
     //  - suspensionTravel is replaced wholesale every tick from pass 1's own compressions[] (the single
@@ -714,14 +745,82 @@ final class SableCarBody {
         }
         // Air drag (plus any fluid/foliage drag above) along the velocity: once per tick in total, at the
         // full dt, not once per sub-step - using the velocity as it stands after every sub-step's impulses.
+        // MINECRAFT-446: spec.wingDragCoeff() replaces the old hardcoded AIR_DRAG global constant -- 0.4
+        // for every vehicle that has not opted into a different per-car wing config, so this is
+        // byte-for-byte the same impulse as before for the whole roster until an operator overrides it.
+        //
+        // MINECRAFT-446 review (comment 49064): the effective applied force is
+        //   dragCoeff * forceScale() * |v| * v        (opposing the full 3D velocity vector)
+        // i.e. the configured coefficient is scaled by this vehicle's own forceScale, and NOTHING is
+        // applied at or below DRAG_SPEED_DEADBAND. Both are pre-existing behaviour this ticket preserves
+        // byte-for-byte, and both are now documented as part of the contract in docs/per-car-config.md
+        // rather than left implicit -- see that doc's `wing` section for the exact formulas.
         double speed = subLinear.length();
-        if (speed > 0.5) {
+        if (speed > DRAG_SPEED_DEADBAND) {
             double fluidDrag = fluidScale * (
                     EnvironmentMath.fluidDragCoefficient(waterFraction, EnvironmentMath.WATER_DRAG)
                     + EnvironmentMath.fluidDragCoefficient(lavaFraction, EnvironmentMath.LAVA_DRAG));
-            double dragCoeff = AIR_DRAG + fluidDrag + foliageDragTotal;
+            double dragCoeff = spec.wingDragCoeff() + fluidDrag + foliageDragTotal;
             Vector3d drag = inverse.transform(new Vector3d(subLinear).mul(-dragCoeff * spec.forceScale() * speed * dt));
             body.applyImpulseAtPoint(new Vector3d(0, 0, 0), drag);
+        }
+        // Wing downforce (MINECRAFT-446): a genuine downward impulse, once per tick at the full dt (same
+        // cadence as air drag above), applied at each axle's own mount point rather than at the CoG so a
+        // front/rear split also produces a genuine pitch moment, not just a vertical force. The airflow
+        // speed used is the body's own forward speed (signed, but squared below so direction never
+        // matters) read AFTER every sub-step's impulses, exactly like drag above. Purely vertical
+        // (world -Y), unlike drag (which opposes the full 3D velocity vector, not just its forward
+        // component): on ordinary horizontal travel this does no work on the car's own forward motion,
+        // since a vertical force is perpendicular to a horizontal velocity -- but world-down is NOT
+        // generally perpendicular to velocity on a slope or while airborne, so on sloped/vertical travel
+        // this genuinely can add or remove vertical kinetic energy, exactly the way gravity already does;
+        // that is expected, real physics, not an injected-energy bug. Zero at zero speed, and zero for
+        // every vehicle on the roster today (both coefficients default to 0.0).
+        double airflowSpeed = subLinear.dot(carForward);
+        if (spec.frontWingDownforceCoeff() > 0.0 || spec.rearWingDownforceCoeff() > 0.0) {
+            Vector3d frontAxlePoint = new Vector3d();
+            Vector3d rearAxlePoint = new Vector3d();
+            int frontCount = 0;
+            int rearCount = 0;
+            for (double[] mount : spec.mounts()) {
+                if (mount[2] > 0) {
+                    frontAxlePoint.add(mount[0], mount[1], mount[2]);
+                    frontCount++;
+                } else {
+                    rearAxlePoint.add(mount[0], mount[1], mount[2]);
+                    rearCount++;
+                }
+            }
+            if (frontCount > 0) {
+                frontAxlePoint.div(frontCount);
+            }
+            if (rearCount > 0) {
+                rearAxlePoint.div(rearCount);
+            }
+            double frontDownforce = VehicleSpec.wingDownforceNewtons(spec.frontWingDownforceCoeff(), airflowSpeed);
+            double rearDownforce = VehicleSpec.wingDownforceNewtons(spec.rearWingDownforceCoeff(), airflowSpeed);
+            // Telemetry (MINECRAFT-446 review, comment 49019): recorded from the SAME locals the impulses
+            // below are built from, and the counter incremented at each real applyImpulseAtPoint call, so
+            // what a test reads is what the production path actually applied -- see the fields' own comment.
+            double appliedNewtons = 0.0;
+            int applications = 0;
+            if (frontDownforce > 0.0 && frontCount > 0) {
+                Vector3d impulse = inverse.transform(new Vector3d(0, -frontDownforce * spec.forceScale() * dt, 0));
+                body.applyImpulseAtPoint(frontAxlePoint, impulse);
+                appliedNewtons += frontDownforce * spec.forceScale();
+                applications++;
+            }
+            if (rearDownforce > 0.0 && rearCount > 0) {
+                Vector3d impulse = inverse.transform(new Vector3d(0, -rearDownforce * spec.forceScale() * dt, 0));
+                body.applyImpulseAtPoint(rearAxlePoint, impulse);
+                appliedNewtons += rearDownforce * spec.forceScale();
+                applications++;
+            }
+            if (applications > 0) {
+                lastAeroAirflowSpeed = airflowSpeed;
+                lastAeroDownforceNewtons = appliedNewtons;
+                lastAeroApplications = applications;
+            }
         }
         lastSlipSpeed = slipThisTick;
         lastSpinSlip = spinSlipThisTick;
@@ -815,6 +914,26 @@ final class SableCarBody {
     /** Each wheel's suspension travel as of the last tick's single raycast, metres (a copy; not live state). */
     double[] suspensionTravel() {
         return suspensionTravel.clone();
+    }
+
+    /** MINECRAFT-446 review (comment 49019): the forward airflow speed (m/s, signed) the last applied wing
+     * downforce was actually evaluated at. {@code 0.0} until some tick has actually applied aero, so a
+     * test must establish this is nonzero before trusting the two readings below. */
+    double lastAeroAirflowSpeed() {
+        return lastAeroAirflowSpeed;
+    }
+
+    /** The total downward wing force (N, front + rear, including {@code forceScale}) the last aero-applying
+     * tick actually handed to the rigid body &mdash; see {@link #lastAeroAirflowSpeed()}. */
+    double lastAeroDownforceNewtons() {
+        return lastAeroDownforceNewtons;
+    }
+
+    /** How many aero impulses the last aero-applying tick handed to {@code applyImpulseAtPoint}: one per
+     * axle with a nonzero coefficient, once per TICK regardless of {@code wheelSubSteps}. An application
+     * wrongly placed inside the sub-step loop would multiply this by the sub-step count. */
+    int lastAeroApplications() {
+        return lastAeroApplications;
     }
 
     /** Each wheel's steer angle as of the last tick it was grounded, radians (a copy; not live state). */

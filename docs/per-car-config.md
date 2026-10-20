@@ -149,20 +149,124 @@ architecture this ticket does not change — `drift_car.json` can still set
 `camberDeg`/`toeDeg` (and they will be clamped and stored), but they will be
 inert until a future ticket connects `DriftTireModel` to them.
 
+### `wing` (MINECRAFT-446): downforce and aerodynamic drag
+
+Genuine aerodynamic forces in the real rigid-body path (`SableCarBody.tick`)
+— distinct from `downforceGripPerSpeed` (MINECRAFT-184, listed under "Not
+covered by this ticket" above), which is a tire-grip multiplier with no
+downward force or moment at all, and left exactly as it is: it is a separate,
+already-shipped mechanism this ticket does not touch or supersede.
+
+| Key | Unit | Range | Notes |
+|---|---|---|---|
+| `wing.frontDownforceCoeff` | coefficient, per (m/s)^2 of FORWARD speed (see formula below) | 0.0 – 5.0 | Downward force at the front axle's own mount point. Identity/stock default `0.0` (no wing) for every existing car. |
+| `wing.rearDownforceCoeff` | coefficient, per (m/s)^2 of FORWARD speed | 0.0 – 5.0 | As `frontDownforceCoeff`, applied at the rear axle's own mount point instead. Identity/stock default `0.0`. |
+| `wing.dragCoeff` | coefficient, per (m/s)^2 of TOTAL speed | 0.0 – 5.0 | Aerodynamic drag opposing the car's own full 3D velocity vector (`subLinear.length()` in `SableCarBody.tick` — the body's total speed, not just its forward component), combined with the existing fluid/foliage drag coefficients at the exact point in `SableCarBody.tick` that already applied air drag. Stock default `0.4` for every existing car: the old hardcoded, global `AIR_DRAG` constant every vehicle shared before this field existed, now per-car configurable. |
+
+### Exact applied formulas
+
+**These coefficients are not literal newtons-per-(m/s)^2.** Review fix
+(MINECRAFT-446 comment 49064): an earlier version of this section said "N per
+(m/s)^2", which did not match what the production path applies. Every force in
+`SableCarBody.tick` — drive, brake, handbrake, drag, and now wing downforce —
+is scaled by the vehicle's own `forceScale()`, and drag additionally carries a
+low-speed dead band. Stated exactly, per tick, with `v` the body's velocity
+and `vf = v · forward` its forward component:
+
+```
+front downforce (N, world-down, at the front axle's mount point):
+    frontDownforceCoeff * vf^2 * forceScale()
+rear downforce  (N, world-down, at the rear axle's mount point):
+    rearDownforceCoeff  * vf^2 * forceScale()
+drag            (N, opposing v exactly, at the centre of mass):
+    (dragCoeff + fluidDrag + foliageDrag) * forceScale() * |v| * v
+    — and exactly zero while |v| <= SableCarBody.DRAG_SPEED_DEADBAND (0.5 m/s)
+```
+
+Consequences worth being explicit about, since both surprised a reviewer:
+
+- **`forceScale()` multiplies the configured coefficient.** It ranges from
+  `1.0` (only `car` and `drift_car`) up to `3.0` (`bus`) across the roster, so
+  the same configured coefficient produces up to 3x the force on different
+  cars. Read each car's own value from `VehicleSpec#forceScale`. This is
+  deliberate consistency with every other force in that method — notably the
+  pre-existing air drag, which was always scaled this way — not an oversight,
+  but it does mean a coefficient is a per-car-relative knob rather than an
+  absolute force figure.
+- **Drag has a 0.5 m/s dead band; downforce does not.** Below that total
+  speed no drag impulse is applied at all (pre-existing behaviour, preserved
+  byte-for-byte). Wing downforce has no dead band: it applies at any nonzero
+  forward airflow speed, and is exactly zero at a standstill only because the
+  `vf^2` term is.
+
+Both are pinned against drift by `WingAeroGameTests`: the applied-force test
+reads the production path's own recorded aero telemetry and checks it against
+`coeff * vf^2 * forceScale()` on a car whose `forceScale` is deliberately NOT
+`1.0` (so dropping the multiplication fails the test rather than passing
+unnoticed, as it would on `car`), and a separate assertion pins the documented
+`0.5` dead band against `SableCarBody.DRAG_SPEED_DEADBAND` itself.
+
+Ranges live in code as `VehicleSpecLimits.MIN_WING_DOWNFORCE_COEFF`/
+`MAX_WING_DOWNFORCE_COEFF` and `MIN_WING_DRAG_COEFF`/`MAX_WING_DRAG_COEFF`,
+clamped the same way as every other scale field in this schema (a finite
+out-of-range value is clamped, not rejected; a missing or non-finite value
+falls back to that car's stock value — `0.0`/`0.0`/`0.4`). Read and applied
+on exactly the same "once, at server start" timing as every other field in
+this schema (see "File location and timing" above) — there is no separate
+timing for this section.
+
+**Front/rear split produces a genuine pitch moment, not just a vertical
+force**: each coefficient's force is applied as an impulse at that axle's
+own mount point (averaged across its wheels), off the car's centre of mass,
+exactly like the existing per-wheel suspension/tire forces already are — a
+front-heavy wing config pitches the nose down under speed, a rear-heavy one
+pitches the tail down, the same way a real car's aero balance would.
+
+**Speed/airflow dependence**: downforce scales with the square of the car's
+own forward speed (the forward component of velocity, signed but squared, so
+reversing does not flip or cancel it); drag scales with the square of the
+car's own TOTAL speed (the full 3D velocity vector's magnitude — the same
+quantity the pre-existing global `AIR_DRAG` constant always used, unchanged
+by this ticket). Downforce is exactly zero at a standstill and stable there
+(no discontinuity, no division); drag is zero below its 0.5 m/s dead band
+rather than merely at zero — see "Exact applied formulas" above.
+
+Downforce is applied purely vertically (world-down), drag strictly opposing
+the full velocity vector. On ordinary horizontal travel, a purely vertical
+force does no work on the car's own forward motion, so downforce adds no
+energy there — but world-down is **not** generally perpendicular to velocity
+on a slope or while airborne, so on sloped or vertical travel downforce can
+genuinely add or remove vertical kinetic energy, exactly the way gravity
+already does; that is expected real physics, not an injected-energy bug.
+Drag, by contrast, always opposes the body's own velocity directly, so it
+can only remove kinetic energy, never add it, regardless of travel direction.
+
+Example, a front-heavy drift car with a modest rear wing and slightly more
+drag than stock:
+
+```json
+{
+  "wing": {
+    "frontDownforceCoeff": 1.5,
+    "rearDownforceCoeff": 0.8,
+    "dragCoeff": 0.6
+  }
+}
+```
+
 ### Reserved for downstream tasks
 
-The schema reserves five top-level keys for the sibling tasks that own those
-systems; this loader tolerates them existing in a file today (Gson ignores any
-key with no matching field) but does not read, validate or apply any of them —
-adding a field under one of these sections with no behaviour behind it would
-itself be "unused config fields," which this ticket's acceptance explicitly
-rules out. Each task adds its own fields here when it implements real
-behaviour, rather than inventing a parallel file or format:
+The schema reserves four more top-level keys for the sibling tasks that own
+those systems; this loader tolerates them existing in a file today (Gson
+ignores any key with no matching field) but does not read, validate or apply
+any of them — adding a field under one of these sections with no behaviour
+behind it would itself be "unused config fields," which this ticket's
+acceptance explicitly rules out. Each task adds its own fields here when it
+implements real behaviour, rather than inventing a parallel file or format:
 
 | Key | Owner |
 |---|---|
 | `tireKit` | MINECRAFT-445 (suspension/wheel geometry) |
-| `wing` | MINECRAFT-446 (downforce/drag) |
 | `diffuser` | MINECRAFT-447 (orientation assists) |
 | `computer` | MINECRAFT-448 (assists/auto-shift) |
 | `engine` | MINECRAFT-449 (engine limits/turbo/nitrous/ballast) |

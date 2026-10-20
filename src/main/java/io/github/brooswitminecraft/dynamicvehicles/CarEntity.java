@@ -126,6 +126,9 @@ public class CarEntity extends Entity {
     private double forcedThrottle;
     private double forcedSteer;
     private int forcedDriveTicks;
+    /** Server test support only: see {@link #debugLastThrottle()}. */
+    private double lastPhysicsThrottle;
+    private CarPhysics.Gear lastPhysicsGear = CarPhysics.Gear.DEFAULT_FORWARD;
 
     private final VehicleSpec spec;
     /** MINECRAFT-443: this car's registry id (see {@link VehicleIds}), kept alongside {@link #spec}
@@ -465,6 +468,123 @@ public class CarEntity extends Entity {
         return sableBody == null ? DrivetrainMath.IDLE_RPM : SableCompat.engineRpm(sableBody);
     }
 
+    /** Server test support only (MINECRAFT-444): the clutch torque this tick actually transmitted
+     * (N*m, positive engine -&gt; drivetrain, negative engine braking), the per-wheel contact force it
+     * amounted to (N, signed in the car's forward frame) and the engine-axis reaction torque this tick
+     * actually applied to the body (N*m) -- the real applied values from the single production call site,
+     * so an integrated test observes the production path rather than reproducing its arithmetic. */
+    double debugClutchTorque() {
+        return sableBody == null ? 0.0 : SableCompat.clutchTorque(sableBody);
+    }
+
+    /** Server test support only (MINECRAFT-444): the engine's own net output torque this tick (N*m, drag
+     * already subtracted), so a test can check the engine side's own momentum balance against the clutch
+     * exchange it was integrated with. */
+    double debugEngineOutputTorque() {
+        return sableBody == null ? 0.0 : SableCompat.engineOutputTorque(sableBody);
+    }
+
+    /** Server test support only (MINECRAFT-444 review round 2): the body's MEASURED world-space angular
+     * velocity, rad/s (x, y, z) -- the only way to establish that the engine-axis reaction is actually
+     * applied to the chassis, in the right frame and sign, rather than merely computed. */
+    double[] debugBodyAngularVelocity() {
+        return sableBody == null ? new double[] {0.0, 0.0, 0.0} : SableCompat.bodyAngularVelocity(sableBody);
+    }
+
+    /** Server test support only (MINECRAFT-444): the clutch capacity this car's own spec actually carries
+     * (N*m) -- stock, or whatever its per-car config file configured. Lets a test prove the configured
+     * value really reached the spawned entity rather than assuming the loader ran. */
+    double debugConfiguredClutchCapacity() {
+        return spec.drivetrainCoupling().clutchTorqueCapacity();
+    }
+
+    /** Server test support only (MINECRAFT-444 review round 3): the throttle and gear the last physics
+     * tick actually ran with, after the rider's input, {@link #forceDrive} and any gear selection were
+     * all applied -- so a test can audit that tick against what it really was rather than against its
+     * own schedule. */
+    double debugLastThrottle() {
+        return lastPhysicsThrottle;
+    }
+
+    CarPhysics.Gear debugLastGear() {
+        return lastPhysicsGear;
+    }
+
+    double debugClutchWheelForce() {
+        return sableBody == null ? 0.0 : SableCompat.clutchWheelForce(sableBody);
+    }
+
+    /** Server test support only (MINECRAFT-444 review round 3): the coupled solve's own lock torque, the
+     * driver's governed demand at the engine shaft (both N*m), the wheel-side speed (rad/s, signed in the
+     * engine's rotation sense) and tire reaction torque (N*m at the engine) the clutch was solved against,
+     * and the drivetrain impulse the driven wheels actually took (N*s, signed in the car's forward frame) --
+     * everything a test needs to check the realized exchange against each of its bounds, and the two
+     * shafts' books against each other, on the production path. */
+    double debugClutchLockTorque() {
+        return sableBody == null ? 0.0 : SableCompat.clutchLockTorque(sableBody);
+    }
+
+    double debugClutchDemandTorque() {
+        return sableBody == null ? 0.0 : SableCompat.clutchDemandTorque(sableBody);
+    }
+
+    double debugClutchWheelSideOmega() {
+        return sableBody == null ? 0.0 : SableCompat.clutchWheelSideOmega(sableBody);
+    }
+
+    double debugClutchWheelSideTorque() {
+        return sableBody == null ? 0.0 : SableCompat.clutchWheelSideTorque(sableBody);
+    }
+
+    double debugRealizedDriveImpulse() {
+        return sableBody == null ? 0.0 : SableCompat.realizedDriveImpulse(sableBody);
+    }
+
+    /** Server test support only (MINECRAFT-444 review round 3): the longitudinal force the driven wheels'
+     * tires delivered over the last tick (N), which the next tick's clutch solve reads as their reaction. */
+    double debugDrivenTireForce() {
+        return sableBody == null ? 0.0 : SableCompat.drivenTireForce(sableBody);
+    }
+
+    /** Server test support only (MINECRAFT-444 review round 3): per wheel, the drivetrain impulse it took
+     * this tick (N*s) and in how many of the tick's sub-steps its tire touched something. */
+    double[] debugWheelRealizedDriveImpulses() {
+        return sableBody == null ? new double[0] : SableCompat.wheelRealizedDriveImpulses(sableBody);
+    }
+
+    int[] debugWheelContactSubSteps() {
+        return sableBody == null ? new int[0] : SableCompat.wheelContactSubSteps(sableBody);
+    }
+
+    /** Server test support only: this car's own wheel radius (m) and drive-force scale, so a test can take
+     * the realized drive impulse back through the same gearing the production path used. */
+    double debugWheelRadius() {
+        return spec.wheelRadius();
+    }
+
+    double debugForceScale() {
+        return spec.forceScale();
+    }
+
+    double debugEngineReactionTorque() {
+        return sableBody == null ? 0.0 : SableCompat.engineReactionTorque(sableBody);
+    }
+
+    /** Server test support only (MINECRAFT-444): the engine's own UNCLAMPED angular speed, rad/s --
+     * {@link #debugEngineRpm()} is clamped to the idle/limiter display band, so only this can be used to
+     * check the reaction impulse against the engine's own realized angular-momentum change. */
+    double debugEngineOmega() {
+        return sableBody == null ? DrivetrainMath.rpmToOmega(DrivetrainMath.IDLE_RPM) : SableCompat.engineOmega(sableBody);
+    }
+
+    /** Server test support only (MINECRAFT-444): the engine speed the last production tick STARTED from,
+     * rad/s. Paired with {@link #debugEngineOmega()} (where it ended) this lets a test check the applied
+     * engine-axis reaction against the realized change within ONE tick, instead of differencing two
+     * external samples -- which silently covers two ticks if the sampler ever misses one. */
+    double debugPriorEngineOmega() {
+        return sableBody == null ? DrivetrainMath.rpmToOmega(DrivetrainMath.IDLE_RPM) : SableCompat.priorEngineOmega(sableBody);
+    }
+
     /** Diagnostic only (MINECRAFT-401 review, round 5 ledge-test investigation): whether any wheel had
      * a positive suspension force as of the end of the last tick -- distinguishes "genuinely airborne"
      * from "still grounded" when a fall isn't showing up as expected in velocity. */
@@ -487,6 +607,14 @@ public class CarEntity extends Entity {
      * sync-buffered one. */
     double[] debugWheelSpins() {
         return sableBody == null ? new double[0] : SableCompat.wheelSpinRates(sableBody);
+    }
+
+    /** Server test support only (MINECRAFT-444): each wheel's own drivetrain longitudinal COMMAND this
+     * tick (N), as the production path actually computed it through the clutch -- distinct from
+     * {@link #debugWheelForces()}, which is what the tire finally delivered (brake force, rolling
+     * resistance and the recovery reaction included). */
+    double[] debugWheelDriveCommands() {
+        return sableBody == null ? new double[0] : SableCompat.wheelDriveCommands(sableBody);
     }
 
     double[] debugWheelForces() {
@@ -1310,6 +1438,8 @@ public class CarEntity extends Entity {
             throttle = forcedThrottle;
             steer = forcedSteer;
         }
+        lastPhysicsThrottle = throttle;
+        lastPhysicsGear = gear;
         try {
             SableCompat.tick(sableBody, this, throttle, steer, handbrake, gear, DT);
             SableCompat.syncEntity(sableBody, this);

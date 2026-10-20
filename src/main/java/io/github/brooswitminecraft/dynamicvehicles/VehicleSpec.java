@@ -83,6 +83,29 @@ public record VehicleSpec(
          * TireTuning#handbrakeRearGripCut}, which scales the handbrake's lateral-grip cut, not its brake
          * force, and is owned by {@code CarConfig}, not this per-vehicle field. */
         double handbrakeScale,
+        /** Per-vehicle two-rate (compression/rebound) damping and bump stop (MINECRAFT-445), layered on top
+         * of {@link #dampingRate}: see {@link SuspensionTuning} for the full field list and {@link
+         * WheelMath#suspensionForce(double, double, double, double, double, double, double, double, double,
+         * double, double)} for how {@code SableCarBody} consumes it. {@link SuspensionTuning#singleRate}
+         * built from this spec's own {@link #dampingRate} for every vehicle that has not opted in &mdash;
+         * today, every vehicle on the roster &mdash; so that overload reduces to exactly this spec's
+         * existing {@link #dampingRate} behaviour and {@code SableCarBody.tick} is unchanged for them. */
+        SuspensionTuning suspensionTuning,
+        /** Per-vehicle steering geometry from the {@code tireKit} config section (MINECRAFT-445): today
+         * rear-wheel steering. {@link SteeringTuning#IDENTITY} for every vehicle that has not opted in --
+         * today, every vehicle on the roster -- which makes the rear wheels' steer angle exactly {@code
+         * 0.0}, bit for bit what {@code SableCarBody.tick} computed before this field existed. */
+        SteeringTuning steeringTuning,
+        /** Tire pressure, bar (MINECRAFT-445). {@link WheelMath#NOMINAL_TIRE_PRESSURE_BAR} for every
+         * vehicle that has not opted in -- today, every vehicle on the roster -- at which both of {@link
+         * WheelMath}'s pressure multipliers are exactly 1.0, so grip and rolling resistance are
+         * bit-for-bit what they were before this field existed. Lower than nominal buys grip and costs
+         * rolling drag; higher does the reverse. */
+        double tirePressureBar,
+        /** Per-vehicle anti-dive / anti-squat geometry (MINECRAFT-445). {@link PitchTuning#IDENTITY} for
+         * every vehicle that has not opted in -- today, every vehicle on the roster -- which applies each
+         * tire's horizontal force at the contact patch exactly as before this field existed. */
+        PitchTuning pitchTuning,
         /** Wing downforce (MINECRAFT-446): extra downward force per (m/s)^2 of forward airflow speed,
          * applied as a genuine impulse in the real rigid-body path ({@link SableCarBody#tick}) at this
          * vehicle's front/rear axle points. The APPLIED force is {@code coeff * forwardSpeed^2 *
@@ -120,32 +143,15 @@ public record VehicleSpec(
          * different value via its own wing config, so {@code SableCarBody.tick}'s drag impulse is
          * byte-for-byte unchanged for the whole roster until an operator overrides it. */
         double wingDragCoeff,
-        /** This vehicle's Diffuser KIT tuning (MINECRAFT-447/395 R02, R16-R19): roll self-righting, pitch
-         * landing help, heading alignment and trajectory alignment &mdash; four distinct arcade assists,
-         * keyed to the car's own orientation error and deliberately separate both from MINECRAFT-446's wing
-         * work (genuine applied aerodynamic forces and moments) and from {@link #downforceGripPerSpeed}
-         * (MINECRAFT-184's already-shipped speed-dependent tire-GRIP multiplier, which is not a force or
-         * moment at all). {@link DiffuserTuning#IDENTITY} (every assist disabled) for every vehicle that
-         * has not opted in &mdash; today that is every vehicle on the roster: this ticket delivers the
-         * assist math and its per-car knob, not a tuned stock rollout for any existing car. See
-         * {@link DiffuserTuning} and {@link DiffuserAssistMath} for the bounded, time-scaled math each
-         * assist uses once a car's spec turns it on. */
-        DiffuserTuning diffuserTuning) {
+        /** This vehicle's engine/clutch coupling settings (MINECRAFT-444): engine rotational inertia, peak
+         * engine torque, closed-throttle engine braking torque and clutch torque capacity. {@link
+         * DrivetrainCoupling#STOCK} for every vehicle on the roster today -- the shared stock engine
+         * hardware -- so every vehicle's coupling behaviour is byte-for-byte what it was before this field
+         * existed. Grouped into their own small type for the same reason {@link VehicleTuning} is: four
+         * related dials that are set together or not at all. See {@link DrivetrainCoupling}. */
+        DrivetrainCoupling drivetrainCoupling, DiffuserTuning diffuserTuning) {
 
-    /** Legacy drag coefficient (MINECRAFT-446): every vehicle on the roster used this single hardcoded
-     * {@code AIR_DRAG} value in {@code SableCarBody} before {@link #wingDragCoeff} existed as a per-vehicle
-     * field; every constructor below that does not take an explicit {@link #wingDragCoeff} still defaults
-     * to exactly this value, so none of them change behaviour. Package-private rather than private so
-     * {@code VehicleSpecWingTest} can assert the roster still carries THIS value rather than restating the
-     * number and silently drifting from it. */
-    static final double LEGACY_AIR_DRAG = 0.4;
-
-    /** As the full (canonical) constructor above, minus ONLY the trailing {@link #diffuserTuning}
-     * (MINECRAFT-447): exactly the field list every caller used after MINECRAFT-446 added the wing fields
-     * and before this ticket appended its own. Keeps those callers -- {@code VehicleSpecWingTest} among
-     * them -- compiling unedited, the same way every earlier ticket here added an overload rather than
-     * editing existing call sites, with {@link #diffuserTuning} defaulted to {@link
-     * DiffuserTuning#IDENTITY} (every assist disabled). */
+    /** Compatibility constructor: absent feature groups retain their identity defaults. */
     public VehicleSpec(double halfX, double halfY, double halfZ,
             double[][] mounts, double wheelRadius, double wheelWidth,
             double rideHeight, double restLength,
@@ -161,8 +167,164 @@ public record VehicleSpec(
                 massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
                 forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
                 downforceGripPerSpeed, antiRollScale, seats, vehicleTuning, handbrakeScale,
-                frontWingDownforceCoeff, rearWingDownforceCoeff, wingDragCoeff, DiffuserTuning.IDENTITY);
+                SuspensionTuning.singleRate(dampingRate), SteeringTuning.IDENTITY,
+                WheelMath.NOMINAL_TIRE_PRESSURE_BAR, PitchTuning.IDENTITY,
+                frontWingDownforceCoeff, rearWingDownforceCoeff, wingDragCoeff, DrivetrainCoupling.STOCK, DiffuserTuning.IDENTITY);
     }
+
+    /** Compatibility constructor: absent feature groups retain their identity defaults. */
+    public VehicleSpec(double halfX, double halfY, double halfZ,
+            double[][] mounts, double wheelRadius, double wheelWidth,
+            double rideHeight, double restLength,
+            double massKg, double springRate, double dampingRate, double maxSpringForce,
+            double wheelbase, double maxSpeed,
+            double forceScale, double enginePitch,
+            double seatY, double seatZ,
+            double looseGrip, double rollingScale,
+            TireTuning tireTuning, double downforceGripPerSpeed, double antiRollScale,
+            List<Seat> seats, VehicleTuning vehicleTuning, double handbrakeScale,
+            double frontWingDownforceCoeff, double rearWingDownforceCoeff, double wingDragCoeff, DrivetrainCoupling drivetrainCoupling) {
+        this(halfX, halfY, halfZ, mounts, wheelRadius, wheelWidth, rideHeight, restLength,
+                massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
+                forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
+                downforceGripPerSpeed, antiRollScale, seats, vehicleTuning, handbrakeScale,
+                SuspensionTuning.singleRate(dampingRate), SteeringTuning.IDENTITY,
+                WheelMath.NOMINAL_TIRE_PRESSURE_BAR, PitchTuning.IDENTITY,
+                frontWingDownforceCoeff, rearWingDownforceCoeff, wingDragCoeff, drivetrainCoupling, DiffuserTuning.IDENTITY);
+    }
+
+    /** Compatibility constructor: absent feature groups retain their identity defaults. */
+    public VehicleSpec(double halfX, double halfY, double halfZ,
+            double[][] mounts, double wheelRadius, double wheelWidth,
+            double rideHeight, double restLength,
+            double massKg, double springRate, double dampingRate, double maxSpringForce,
+            double wheelbase, double maxSpeed,
+            double forceScale, double enginePitch,
+            double seatY, double seatZ,
+            double looseGrip, double rollingScale,
+            TireTuning tireTuning, double downforceGripPerSpeed, double antiRollScale,
+            List<Seat> seats, VehicleTuning vehicleTuning, double handbrakeScale,
+            double frontWingDownforceCoeff, double rearWingDownforceCoeff, double wingDragCoeff, DiffuserTuning diffuserTuning) {
+        this(halfX, halfY, halfZ, mounts, wheelRadius, wheelWidth, rideHeight, restLength,
+                massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
+                forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
+                downforceGripPerSpeed, antiRollScale, seats, vehicleTuning, handbrakeScale,
+                SuspensionTuning.singleRate(dampingRate), SteeringTuning.IDENTITY,
+                WheelMath.NOMINAL_TIRE_PRESSURE_BAR, PitchTuning.IDENTITY,
+                frontWingDownforceCoeff, rearWingDownforceCoeff, wingDragCoeff, DrivetrainCoupling.STOCK, diffuserTuning);
+    }
+
+    /** Compatibility constructor: absent feature groups retain their identity defaults. */
+    public VehicleSpec(double halfX, double halfY, double halfZ,
+            double[][] mounts, double wheelRadius, double wheelWidth,
+            double rideHeight, double restLength,
+            double massKg, double springRate, double dampingRate, double maxSpringForce,
+            double wheelbase, double maxSpeed,
+            double forceScale, double enginePitch,
+            double seatY, double seatZ,
+            double looseGrip, double rollingScale,
+            TireTuning tireTuning, double downforceGripPerSpeed, double antiRollScale,
+            List<Seat> seats, VehicleTuning vehicleTuning, double handbrakeScale,
+            SuspensionTuning suspensionTuning, SteeringTuning steeringTuning, double tirePressureBar, PitchTuning pitchTuning,
+            double frontWingDownforceCoeff, double rearWingDownforceCoeff, double wingDragCoeff) {
+        this(halfX, halfY, halfZ, mounts, wheelRadius, wheelWidth, rideHeight, restLength,
+                massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
+                forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
+                downforceGripPerSpeed, antiRollScale, seats, vehicleTuning, handbrakeScale,
+                suspensionTuning, steeringTuning, tirePressureBar, pitchTuning,
+                frontWingDownforceCoeff, rearWingDownforceCoeff, wingDragCoeff, DrivetrainCoupling.STOCK, DiffuserTuning.IDENTITY);
+    }
+
+    /** Compatibility constructor: absent feature groups retain their identity defaults. */
+    public VehicleSpec(double halfX, double halfY, double halfZ,
+            double[][] mounts, double wheelRadius, double wheelWidth,
+            double rideHeight, double restLength,
+            double massKg, double springRate, double dampingRate, double maxSpringForce,
+            double wheelbase, double maxSpeed,
+            double forceScale, double enginePitch,
+            double seatY, double seatZ,
+            double looseGrip, double rollingScale,
+            TireTuning tireTuning, double downforceGripPerSpeed, double antiRollScale,
+            List<Seat> seats, VehicleTuning vehicleTuning, double handbrakeScale,
+            SuspensionTuning suspensionTuning, SteeringTuning steeringTuning, double tirePressureBar, PitchTuning pitchTuning,
+            double frontWingDownforceCoeff, double rearWingDownforceCoeff, double wingDragCoeff, DrivetrainCoupling drivetrainCoupling) {
+        this(halfX, halfY, halfZ, mounts, wheelRadius, wheelWidth, rideHeight, restLength,
+                massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
+                forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
+                downforceGripPerSpeed, antiRollScale, seats, vehicleTuning, handbrakeScale,
+                suspensionTuning, steeringTuning, tirePressureBar, pitchTuning,
+                frontWingDownforceCoeff, rearWingDownforceCoeff, wingDragCoeff, drivetrainCoupling, DiffuserTuning.IDENTITY);
+    }
+
+    /**
+     * Anti-dive and anti-squat (MINECRAFT-445): how much of a wheel's longitudinal tire force is carried
+     * into the chassis directly rather than through a moment arm about the body centre. Both are
+     * fractions, 0 meaning "no geometric resistance, full weight transfer" (today's behaviour) and 1
+     * meaning "the pitch couple is cancelled entirely".
+     *
+     * <p>Two fields rather than one because the two are genuinely separate geometries on a real car, and
+     * a car can have plenty of one and none of the other: anti-DIVE resists the nose dropping when the
+     * tires are decelerating the car, anti-SQUAT resists the tail dropping when they are driving it.
+     * {@code SableCarBody.tick} picks between them by whether this wheel's own longitudinal force is
+     * opposing or driving the car's motion, so a wheel that is braking uses anti-dive even mid-corner.
+     *
+     * @param antiDive fraction applied while this wheel's longitudinal force OPPOSES the car's motion
+     * @param antiSquat fraction applied while it DRIVES the car's motion
+     */
+    public record PitchTuning(double antiDive, double antiSquat) {
+
+        /** No geometric pitch resistance at all: tire forces act at the contact patch, full weight transfer. */
+        public static final PitchTuning IDENTITY = new PitchTuning(0.0, 0.0);
+    }
+
+    /**
+     * Per-vehicle steering geometry (MINECRAFT-445), grouped for the same reason {@link TireTuning},
+     * {@link VehicleTuning} and {@link SuspensionTuning} already are: its own physical domain, read at its
+     * own production seam. {@code SableCarBody.tick} rotates each tire's forward axis by that wheel's steer
+     * angle, so a nonzero rear ratio genuinely changes the rear tires' force directions rather than only
+     * their rendered pose.
+     *
+     * @param rearSteerRatio the fraction of the FRONT wheels' steer angle applied to the rear wheels.
+     *        {@code 0.0} is identity: rear wheels stay straight, exactly as before this field existed.
+     *        NEGATIVE is opposite-phase (rear steers against the front, tightening the turn, the classic
+     *        low-speed four-wheel-steer behaviour); POSITIVE is same-phase (rear follows the front, which
+     *        pushes the car sideways rather than rotating it as sharply).
+     */
+    public record SteeringTuning(double rearSteerRatio) {
+
+        /** No rear steering at all -- the rear axle holds exactly {@code 0.0} steer angle. */
+        public static final SteeringTuning IDENTITY = new SteeringTuning(0.0);
+    }
+
+    /** As the full (canonical) constructor above, minus the trailing {@link #suspensionTuning}
+     * (MINECRAFT-445): every existing call site keeps compiling unchanged, with {@link #suspensionTuning}
+     * defaulted to {@link SuspensionTuning#singleRate} of this spec's own {@code dampingRate}. */
+    public VehicleSpec(double halfX, double halfY, double halfZ,
+            double[][] mounts, double wheelRadius, double wheelWidth,
+            double rideHeight, double restLength,
+            double massKg, double springRate, double dampingRate, double maxSpringForce,
+            double wheelbase, double maxSpeed,
+            double forceScale, double enginePitch,
+            double seatY, double seatZ,
+            double looseGrip, double rollingScale,
+            TireTuning tireTuning, double downforceGripPerSpeed, double antiRollScale,
+            List<Seat> seats, VehicleTuning vehicleTuning, double handbrakeScale) {
+        this(halfX, halfY, halfZ, mounts, wheelRadius, wheelWidth, rideHeight, restLength,
+                massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
+                forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
+                downforceGripPerSpeed, antiRollScale, seats, vehicleTuning, handbrakeScale,
+                SuspensionTuning.singleRate(dampingRate), SteeringTuning.IDENTITY,
+                WheelMath.NOMINAL_TIRE_PRESSURE_BAR, PitchTuning.IDENTITY,
+                0.0, 0.0, LEGACY_AIR_DRAG);
+    }
+
+    /** Legacy drag coefficient (MINECRAFT-446): every vehicle on the roster used this single hardcoded
+     * {@code AIR_DRAG} value in {@code SableCarBody} before {@link #wingDragCoeff} existed as a per-vehicle
+     * field; every constructor below that does not take an explicit {@link #wingDragCoeff} still defaults
+     * to exactly this value, so none of them change behaviour. Package-private rather than private so
+     * {@code VehicleSpecWingTest} can assert the roster still carries THIS value rather than restating the
+     * number and silently drifting from it. */
+    static final double LEGACY_AIR_DRAG = 0.4;
 
     /** As the full (canonical) constructor above, minus the trailing {@link #handbrakeScale}, {@link
      * #frontWingDownforceCoeff}, {@link #rearWingDownforceCoeff} and {@link #wingDragCoeff} (MINECRAFT-443/
@@ -170,8 +332,10 @@ public record VehicleSpec(
      * calls this constructor (directly or through a shorter overload below it), with {@link
      * #handbrakeScale} defaulted to {@code 1.0} (identity), the two wing downforce coefficients defaulted
      * to {@code 0.0} (no wing, identity) and {@link #wingDragCoeff} defaulted to {@link #LEGACY_AIR_DRAG}
-     * (byte-for-byte the old global drag constant), and {@link #diffuserTuning} to {@link
-     * DiffuserTuning#IDENTITY} (MINECRAFT-447, every assist disabled). */
+     * (byte-for-byte the old global drag constant). It delegates to the {@code handbrakeScale} overload
+     * above rather than re-listing every default itself, so MINECRAFT-445's suspension/steering/pressure/
+     * pitch defaults and MINECRAFT-446's wing defaults are each stated in exactly one place -- the merge
+     * of those two tickets is precisely where re-listing them would have let one set be silently dropped. */
     public VehicleSpec(double halfX, double halfY, double halfZ,
             double[][] mounts, double wheelRadius, double wheelWidth,
             double rideHeight, double restLength,
@@ -185,8 +349,7 @@ public record VehicleSpec(
         this(halfX, halfY, halfZ, mounts, wheelRadius, wheelWidth, rideHeight, restLength,
                 massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
                 forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
-                downforceGripPerSpeed, antiRollScale, seats, vehicleTuning, 1.0,
-                0.0, 0.0, LEGACY_AIR_DRAG, DiffuserTuning.IDENTITY);
+                downforceGripPerSpeed, antiRollScale, seats, vehicleTuning, 1.0);
     }
 
     /** As the full (canonical) constructor above, minus the trailing {@link #vehicleTuning},
@@ -385,52 +548,60 @@ public record VehicleSpec(
     }
 
     /**
-     * Per-vehicle Diffuser KIT tuning (MINECRAFT-447, recovering MINECRAFT-395's R02/R16-R19 from the
-     * original "Minecraft physics update implementation plan"): four distinct, explicitly artificial
-     * (arcade) orientation assists, each independently enabled and independently bounded. {@link #IDENTITY}
-     * disables all four, which {@link DiffuserAssistMath} guarantees returns zero torque for every assist
-     * regardless of the car's orientation, velocity or inputs &mdash; the gate {@link SableCarBody#tick}
-     * uses to skip the diffuser math entirely for every vehicle that has not opted in, the same
-     * isIdentity()-gated pattern {@link TireTuning} and {@link VehicleTuning} already use.
+     * Per-vehicle two-rate (compression/rebound) damping and bump stop (MINECRAFT-445), layered on top of
+     * the existing {@link VehicleSpec#dampingRate}: {@link WheelMath#suspensionForce(double, double,
+     * double, double, double, double, double, double, double, double, double)} is the production seam that
+     * reads every field here. Grouped into its own small type for the same reason {@link TireTuning} and
+     * {@link VehicleTuning} already are: a different physical domain from either, with its own identity
+     * concept ({@link #singleRate}) rather than a universal constant, since that identity depends on this
+     * particular car's own {@link VehicleSpec#dampingRate}.
      *
-     * <p>Every {@code MaxTorque} field is a body-space torque magnitude, N*m, clamping that assist's
-     * output on BOTH sides (so it can correct equally either direction) &mdash; 0 disables that assist
-     * even if its own enabled flag is left true, matching {@code TireTuning}/{@code VehicleTuning}'s own
-     * "the identity value disables the mechanism outright" convention. Every {@code Gain} is the
-     * proportional term's own units-bearing constant (N*m per radian of error) and every {@code Damping}
-     * the derivative term's (N*m per rad/s of rate) &mdash; see {@link DiffuserAssistMath} for the exact
-     * formula each feeds.
-     *
-     * @param rollSelfRightingEnabled whether R16 is active at all for this vehicle
-     * @param rollSelfRightingMaxTorque bound on the roll-righting torque, N*m; 0 = no effect (identity)
-     * @param rollSelfRightingGain proportional gain pushing roll angle back toward upright, N*m/rad
-     * @param rollSelfRightingDamping derivative gain resisting roll rate, N*m/(rad/s)
-     * @param pitchLandingEnabled whether R17 is active at all for this vehicle
-     * @param pitchLandingMaxTorque bound on the pitch-landing torque, N*m; 0 = no effect (identity)
-     * @param pitchLandingHorizonSeconds predicted time-to-touchdown, seconds, at and beyond which this
-     *        assist has zero authority; authority ramps linearly to full as the predicted touchdown
-     *        approaches (see {@link DiffuserAssistMath#pitchLandingTorque}) &mdash; 0 = never activates
-     *        (identity)
-     * @param pitchLandingGain proportional gain leveling pitch angle, N*m/rad
-     * @param pitchLandingDamping derivative gain resisting pitch rate, N*m/(rad/s)
-     * @param headingAlignmentEnabled whether R18 is active at all for this vehicle
-     * @param headingAlignmentMaxTorque bound on the heading-alignment torque, N*m; 0 = no effect (identity)
-     * @param headingAlignmentGain proportional gain pulling heading toward its target, N*m/rad
-     * @param headingAlignmentDamping derivative gain resisting yaw rate, N*m/(rad/s)
-     * @param headingAlignmentSteerSuppression fraction of authority given up per unit of player steering
-     *        input (0..1 steer magnitude), 0..1; 1 = full player override at full steer, 0 = steering
-     *        never reduces this assist's authority &mdash; see {@link DiffuserAssistMath#headingAlignmentTorque}
-     * @param trajectoryAlignmentEnabled whether R19 is active at all for this vehicle; kept entirely
-     *        separate from {@code headingAlignment*} per MINECRAFT-395's explicit instruction not to
-     *        collapse the two into one unnamed behaviour
-     * @param trajectoryAlignmentMaxTorque bound on the trajectory-alignment torque, N*m; 0 = no effect
-     *        (identity)
-     * @param trajectoryAlignmentGain proportional gain pulling the nose toward the velocity vector, N*m/rad
-     * @param trajectoryAlignmentDamping derivative gain resisting yaw rate, N*m/(rad/s)
-     * @param trajectoryAlignmentMinSpeed horizontal speed, m/s, below which the velocity direction is too
-     *        noisy to trust as a target and this assist goes silent &mdash; see
-     *        {@link DiffuserAssistMath#trajectoryAlignmentTorque}'s own near-zero-speed handling
+     * @param fastCompressionDamping N*s/m applied to the compressing speed above {@code dampingKneeSpeed}
+     * @param slowReboundDamping N*s/m applied to the extending (rebound) speed at or below {@code
+     *        dampingKneeSpeed}
+     * @param fastReboundDamping N*s/m applied to the extending (rebound) speed above {@code
+     *        dampingKneeSpeed}
+     * @param dampingKneeSpeed m/s, the compression-rate magnitude separating "slow" from "fast" for both
+     *        compression and rebound
+     * @param bumpStopTravel metres of compression beyond which the progressive bump stop engages, on top
+     *        of the regular spring/damper force
+     * @param bumpStopRate N/m applied only to the compression past {@code bumpStopTravel}
      */
+    public record SuspensionTuning(double fastCompressionDamping, double slowReboundDamping,
+            double fastReboundDamping, double dampingKneeSpeed, double bumpStopTravel, double bumpStopRate) {
+
+        /** The {@link #dampingKneeSpeed} a car carries until it tunes one, m/s. Any value is equally
+         * correct for a car whose four damping rates are all equal ({@link #singleRate}): the slow rate
+         * applies up to the knee and the identical fast rate beyond it, so the knee's position has no
+         * observable effect at all. A plain {@code 1.0} rather than, say, {@code 0.0} so the value still
+         * reads as a sane knee speed the moment an operator overrides only one of the rates around it. */
+        public static final double DEFAULT_DAMPING_KNEE_SPEED = 1.0;
+
+        /** The {@link #bumpStopTravel} that disables the bump stop by being unreachable: a wheel's
+         * compression is bounded by its own {@code restLength}, so {@code compression > bumpStopTravel} is
+         * never true and {@link WheelMath}'s bump-stop term stays exactly zero. Paired with {@link
+         * #NO_BUMP_STOP_RATE}, which disables it a second, independent way. */
+        public static final double BUMP_STOP_DISABLED_TRAVEL = Double.MAX_VALUE;
+
+        /** The {@link #bumpStopRate} that disables the bump stop regardless of {@link #bumpStopTravel}:
+         * zero N/m past the threshold is zero extra force. */
+        public static final double NO_BUMP_STOP_RATE = 0.0;
+
+        /** Single-rate damping, no bump stop: {@code fastCompressionDamping}/{@code slowReboundDamping}/
+         * {@code fastReboundDamping} all equal {@code dampingRate} itself (the car's existing, unsplit
+         * damper rate), so {@link WheelMath}'s four-rate {@code suspensionForce} overload reduces
+         * algebraically to exactly {@code dampingRate * compressionRate} regardless of {@code
+         * dampingKneeSpeed} -- see that method's own javadoc for the reduction. The bump stop is disabled
+         * both ways ({@link #BUMP_STOP_DISABLED_TRAVEL}, {@link #NO_BUMP_STOP_RATE}). Every vehicle on the
+         * roster that has not opted into this ticket's tuning uses exactly this, built from its own stock
+         * {@code dampingRate}. */
+        public static SuspensionTuning singleRate(double dampingRate) {
+            return new SuspensionTuning(dampingRate, dampingRate, dampingRate, DEFAULT_DAMPING_KNEE_SPEED,
+                    BUMP_STOP_DISABLED_TRAVEL, NO_BUMP_STOP_RATE);
+        }
+    }
+
+    /** Independently bounded orientation assists; identity disables every assist. */
     public record DiffuserTuning(
             boolean rollSelfRightingEnabled, double rollSelfRightingMaxTorque,
             double rollSelfRightingGain, double rollSelfRightingDamping,
@@ -450,6 +621,41 @@ public record VehicleSpec(
         /** Whether this tuning is exactly {@link #IDENTITY} &mdash; the gate {@code SableCarBody.tick} uses to skip {@link DiffuserAssistMath} entirely. */
         public boolean isIdentity() {
             return this.equals(IDENTITY);
+        }
+
+    }
+
+    /**
+     * Engine/clutch coupling settings (MINECRAFT-444), the per-car face of the physical coupling this
+     * ticket implements: the engine's own rotational inertia, the peak torque it produces at full throttle,
+     * the drag it applies to itself at closed throttle (engine braking), and how much torque its clutch can
+     * transmit before it slips. {@link DrivetrainMath} and {@link GearDrive} take these as arguments rather
+     * than reading their own constants, so a per-car file can change them (see
+     * {@code docs/per-car-config.md}) without a second engine model existing anywhere.
+     *
+     * <p>Scope boundary: these four are MINECRAFT-444's own coupling parameters. The rev limiter's RPM
+     * thresholds, turbo/nitrous boost and ballast belong to MINECRAFT-449 and are deliberately NOT here --
+     * that task owns adding them through this same contract.
+     *
+     * @param engineInertia crankshaft rotational inertia about its own axis, kg*m^2
+     * @param enginePeakTorque torque at full throttle before the clutch, N*m
+     * @param engineBrakingTorque closed-throttle drag the engine applies against its own rotation, N*m
+     * @param clutchTorqueCapacity torque the clutch transmits before slipping, N*m
+     */
+
+
+    public record DrivetrainCoupling(double engineInertia, double enginePeakTorque,
+            double engineBrakingTorque, double clutchTorqueCapacity) {
+
+        /** The shared stock engine every vehicle on the roster runs: exactly {@link DrivetrainMath}'s own
+         * constants, so a vehicle carrying this is identical to how it behaved before the field existed. */
+        public static final DrivetrainCoupling STOCK = new DrivetrainCoupling(
+                DrivetrainMath.ENGINE_INERTIA, DrivetrainMath.ENGINE_PEAK_TORQUE,
+                DrivetrainMath.ENGINE_BRAKING_TORQUE, DrivetrainMath.CLUTCH_TORQUE_CAPACITY);
+
+        /** Whether this coupling is exactly the shared {@link #STOCK} engine. */
+        public boolean isStock() {
+            return this.equals(STOCK);
         }
     }
 
@@ -472,12 +678,6 @@ public record VehicleSpec(
                     new Seat(-0.5, 0.55, -1.0),
                     new Seat(0.5, 0.55, -1.0)));
 
-    /**
-     * Slightly wider, taller and longer than the car, 2200 kg. The body box bottom rides 0.65 m off the
-     * ground (the car's is 0.4), so a half slab (0.5 m) passes under it and the wheels climb on; the
-     * springs have 1.0 m of rest length for the extra travel. Spring and damper are the car's scaled to a
-     * quarter of the truck's mass, so it sags the same 0.2 m.
-     */
     /**
      * MINECRAFT-182: same 2+2 layout as {@link #CAR} (driver seat 0 unmoved at x = 0, a front passenger
      * beside it on the opposite side, two rear passengers 1.0 m back), scaled to this truck's roomier

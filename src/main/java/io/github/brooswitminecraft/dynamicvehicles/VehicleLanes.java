@@ -97,7 +97,8 @@ final class VehicleLanes {
         OPPOSING_THROTTLE,
         SUB_STEP_SPEED,
         GEAR_RATIO,
-        LIMITER_WALL;
+        LIMITER_WALL,
+        INTEGRATION_CONTACT;
 
         BlockPos origin() {
             return new BlockPos(0, SITE_Y, FIRST_SITE_Z + ordinal() * SITE_SPACING);
@@ -419,6 +420,10 @@ final class VehicleLanes {
     /** Capture before changing the global setting. Scheduled assertions and timeouts do not unwind
      * the fixture's setup stack, so restoration belongs to the test lifecycle. */
     void restoreSubStepsOnEveryOutcome() {
+        restoreSubStepsOnEveryOutcome(helper);
+    }
+
+    static void restoreSubStepsOnEveryOutcome(GameTestHelper helper) {
         int original = CarConfig.WHEEL_SUB_STEPS.get();
         helper.testInfo.addListener(new GameTestListener() {
             private boolean restored;

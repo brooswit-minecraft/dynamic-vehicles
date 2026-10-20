@@ -27,6 +27,11 @@ package io.github.brooswitminecraft.dynamicvehicles;
 public final class GearDrive {
     /** Reverse's own governed top speed, m/s -- unrelated to the forward gears' {@code maxSpeed}. */
     private static final double REVERSE_GOVERNOR_SPEED = 8.0;
+    /** Below this speed, m/s, a closed throttle contributes no drivetrain force at all (MINECRAFT-444):
+     * there is effectively nothing turning for the engine to drag against, and {@code SableCarBody.tick}'s
+     * own parked-hold brake already owns holding a standing car. Keeps engine drag from ever reading as a
+     * force on a car at rest. */
+    private static final double DRAG_STANDSTILL_SPEED = 0.5;
 
     private GearDrive() {}
 
@@ -49,6 +54,85 @@ public final class GearDrive {
         }
         double governor = Math.max(0.0, 1.0 - Math.max(0.0, forwardSpeed) / maxSpeed);
         return throttle * driveForce * forceMultiplier * forceScale * governor;
+    }
+
+    /**
+     * The force one driven wheel's contact patch feels from the clutch's own transmitted torque, N, signed
+     * in the car's own forward frame (MINECRAFT-444).
+     *
+     * <p>{@link DrivetrainMath#realizableClutchTorque} is a torque on the ENGINE's own shaft, upstream of
+     * the gearbox. An ideal gearbox conserves power, so the torque arriving at the wheel shaft is multiplied
+     * by exactly the same {@code ratio * FINAL_DRIVE} that {@link DrivetrainMath#wheelSideOmegaSigned}
+     * multiplies the wheels' speed by on the way back -- then divided by the wheel radius for a contact
+     * force, and shared across the driven wheels, because one engine's torque is split among them rather
+     * than duplicated per wheel. {@link DrivetrainMath#clutchTorqueToTotalWheelForce} is that transform,
+     * and {@link DrivetrainMath#wheelForceToClutchTorque} its exact inverse.
+     *
+     * <p>Sign: {@code clutchTorque > 0} is torque flowing engine -&gt; drivetrain (the engine driving the
+     * car in the engaged gear's own direction, hence negated for {@link CarPhysics.Gear#REVERSE});
+     * {@code clutchTorque < 0} is the drivetrain dragging the engine around, i.e. engine braking, and comes
+     * back out of here as a force opposing that gear's direction. {@link CarPhysics.Gear#NEUTRAL} is
+     * disengaged and transmits nothing in either direction.
+     */
+    public static double clutchWheelForce(double clutchTorque, double ratio, double wheelRadius,
+            int drivenWheels, CarPhysics.Gear gear, double forceScale) {
+        // No coupling argument: this converts an already-computed clutch torque through the gearing, which
+        // is the same arithmetic whatever the engine's own settings are.
+        if (gear == CarPhysics.Gear.NEUTRAL) {
+            return 0.0;
+        }
+        double gearDirection = gear == CarPhysics.Gear.REVERSE ? -1.0 : 1.0;
+        return DrivetrainMath.clutchTorqueToTotalWheelForce(clutchTorque, wheelRadius, ratio, gearDirection,
+                forceScale) / Math.max(1, drivenWheels);
+    }
+
+    /**
+     * This wheel's actual drivetrain-sourced longitudinal command, N (MINECRAFT-444): the single place the
+     * engine/clutch reaches the tire, replacing {@link #drive}'s own throttle-only force as the value a
+     * caller hands {@code WheelMath.tire}. Engine braking now propagates -- coasting in gear the clutch
+     * passes a RETARDING force even at zero throttle, where {@link #drive} returns exactly 0 -- and a
+     * slipping (capacity-limited) clutch genuinely bounds what the wheels get.
+     *
+     * <p>{@code clutchWheelForce} is this wheel's share of what the clutch OFFERED this tick:
+     * {@link DrivetrainMath#realizableClutchTorque} through the engaged gearing. Review round 3 moved every
+     * decision that used to be made here about the wheel half alone -- capping it at the driver's demand,
+     * re-signing it to the demand's direction -- into that method, ahead of the engine's integration, so
+     * this can only ever pass the offer on unchanged or withhold it; the engine is then charged for exactly
+     * what the wheels took. Round 2 re-signed it here instead: with the wheel side over-running the engine
+     * under full throttle the exchange was negative (spinning the engine UP) while the wheels were still
+     * handed a positive, driving force -- both shafts gaining energy from the one exchange.
+     *
+     * <ul>
+     * <li><b>Open throttle:</b> the offer, which {@code realizableClutchTorque} never points against the
+     * selected gear (an exchange that reads the other way is decoupled there, not flipped here); anything
+     * that still did would be withheld rather than driven.
+     * <li><b>Closed throttle or brake:</b> the offer only as a force opposing the car's ACTUAL motion,
+     * never below {@link #DRAG_STANDSTILL_SPEED}. A clutch can momentarily be driving with the throttle shut
+     * (an engine still spinning faster than the wheel side just after a shift), and the acceptance criteria
+     * are explicit that neutral and the brakes never create propulsion: a driver who has lifted off gets
+     * deceleration or nothing. Below the threshold there is nothing turning worth dragging, and
+     * {@code SableCarBody}'s own parked-hold brake already owns holding the car.
+     * </ul>
+     *
+     * <p>The two cases are told apart by the THROTTLE, not by the offer's own sign, and that distinction is
+     * load-bearing: under hard opposing throttle the driven wheels can already be turning the new way while
+     * the body still slides the old way, so a sign-based test once classified a driving exchange as engine
+     * braking and held the car in a self-sustaining stall at +0.029 m/s with the throttle pinned in
+     * {@code opposingDirectionThrottleDecelerateAndReverseInBothMirroredDirections}.
+     */
+    public static double driveThroughClutch(double throttle, double forwardSpeed, CarPhysics.Gear gear,
+            double clutchWheelForce) {
+        if (gear == CarPhysics.Gear.NEUTRAL) {
+            return 0.0;
+        }
+        if (throttle > 0.0) {
+            double gearDirection = gear == CarPhysics.Gear.REVERSE ? -1.0 : 1.0;
+            return clutchWheelForce * gearDirection > 0.0 ? clutchWheelForce : 0.0;
+        }
+        if (Math.abs(forwardSpeed) < DRAG_STANDSTILL_SPEED) {
+            return 0.0;
+        }
+        return clutchWheelForce * forwardSpeed < 0.0 ? clutchWheelForce : 0.0;
     }
 
     /**

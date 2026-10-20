@@ -58,10 +58,36 @@ Every field is optional; an absent field keeps that car's stock value.
 | `vectoringGain` | fraction | 0.0 – 1.0 | Torque-vectoring gain. |
 | `camberDeg` | degrees | -8.0 – 8.0 | Static camber. |
 | `toeDeg` | degrees | -5.0 – 5.0 | Static toe. |
+| `engineInertia` | kg·m² | 0.01 – 5.0 | MINECRAFT-444. Crankshaft rotational inertia about its own axis: how fast the engine's own speed can change for a given net torque, and the inertia the engine-axis chassis reaction is computed against. The low bound is not 0: this value is a divisor in `DrivetrainMath.engineAngularVelocity`. |
+| `enginePeakTorque` | N·m | 0.0 – 10,000.0 | MINECRAFT-444. Torque at full throttle before the clutch. This is what sets the car's actual drive force through the engaged ratio — the stock value is calibrated so top gear lands on the pre-existing tuned `DRIVE_FORCE` (see that constant's own javadoc), so changing it retunes acceleration in every gear proportionally. |
+| `engineBrakingTorque` | N·m | 0.0 – 5,000.0 | MINECRAFT-444. Closed-throttle drag the engine applies against its own rotation. Reaches the wheels through the clutch, so raising it makes coasting in gear slow the car harder; 0.0 is a freewheeling engine with no engine braking at all. |
+| `clutchTorqueCapacity` | N·m | 0.0 – 20,000.0 | MINECRAFT-444. How much torque the clutch transmits before it slips. The stock value sits above peak net engine torque, so a healthy engaged clutch is never capacity-limited; lowering it toward (or below) peak torque makes the clutch slip under load, which bounds the wheel torque the throttle can actually deliver. 0.0 is a clutch that transmits nothing (the car never drives). |
 
-Ranges live in code as `VehicleSpecLimits` (the first five) and the pre-existing
-`VehicleTuningLimits` (the last five, shared with the in-game per-entity tuning
-command).
+Ranges live in code as `VehicleSpecLimits` (the first five and the last four)
+and the pre-existing `VehicleTuningLimits` (the five `VehicleTuning` dials,
+shared with the in-game per-entity tuning command).
+
+**The four `engine*`/`clutch*` fields are MINECRAFT-444's own coupling
+parameters, not MINECRAFT-449's engine scope.** They are deliberately flat
+top-level keys rather than entries under the reserved `engine` section below:
+444 implements the physical engine/clutch coupling (inertia, clutch torque
+transfer, engine braking, engine-axis reaction) and so owns its own settings,
+while 449 keeps ownership of the rev-limit thresholds, turbo, nitrous and
+ballast and adds those under `engine` when it implements them. Every car on the
+roster ships the same stock values (`VehicleSpec.DrivetrainCoupling.STOCK`,
+i.e. `DrivetrainMath`'s own constants) — shared stock engine hardware, exactly
+as before this field existed — which is why the defaults table below has one
+identical column per field rather than per-car variation.
+
+**All four are per unit of the car's own `forceScale`.** `forceScale` already
+scales every drive force (see "Exact applied formulas" below), and it scales
+the whole engine along with it, so the drivetrain stays power-consistent: the
+power the wheels take equals the power the crank gives up. A car's real crank
+torque, engine braking, clutch capacity and crankshaft inertia (and therefore
+its engine-axis chassis reaction) are `forceScale` times the configured values.
+Its engine speed responds exactly as the configured values say, because torque
+and inertia scale together. On `car` and `drift_car` (`forceScale` 1.0) the
+configured values are literal.
 
 **`rideHeight`'s actual accepted range is narrower than 0.1 – 5.0 for every
 car**, and differs per car: `VehicleSpecLimits`' 0.1 – 5.0 is a car-agnostic
@@ -84,18 +110,18 @@ Pinned against `VehicleSpec` by `PerCarConfigDocsDefaultsTest`, which fails
 (naming the exact stale cell) if a future ticket changes one of these values
 here without updating this table.
 
-| id | rideHeight | dampingRate | antiRollScale | rollingScale | handbrakeScale | lsdLockPercent | frontTorqueSplit | vectoringGain | camberDeg | toeDeg |
-|---|---|---|---|---|---|---|---|---|---|---|
-| `car` | 0.9 | 3400.0 | 1.0 | 1.0 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 |
-| `truck` | 1.3 | 5390.0 | 1.0 | 1.0 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 |
-| `trophy_truck` | 1.6 | 2570.0 | 1.5 | 0.6 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 |
-| `drift_car` | 0.75 | 3117.0 | 1.0 | 1.0 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 |
-| `muscle_car` | 0.95 | 4816.67 | 1.0 | 1.0 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 |
-| `rock_crawler` | 1.9 | 5383.33 | 2.0 | 0.5 | 1.0 | 0.65 | 0.5 | 0.0 | 0.0 | 0.0 |
-| `monster_truck` | 2.3 | 4500.0 | 1.0 | 0.55 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 |
-| `indy_car` | 0.5 | 1841.67 | 1.0 | 1.0 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 |
-| `bus` | 1.0 | 11900.0 | 1.0 | 0.8 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 |
-| `cargo_truck` | 1.1 | 13600.0 | 1.0 | 0.7 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 |
+| id | rideHeight | dampingRate | antiRollScale | rollingScale | handbrakeScale | lsdLockPercent | frontTorqueSplit | vectoringGain | camberDeg | toeDeg | engineInertia | enginePeakTorque | engineBrakingTorque | clutchTorqueCapacity |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `car` | 0.9 | 3400.0 | 1.0 | 1.0 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 | 0.18 | 930.0 | 55.0 | 1200.0 |
+| `truck` | 1.3 | 5390.0 | 1.0 | 1.0 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 | 0.18 | 930.0 | 55.0 | 1200.0 |
+| `trophy_truck` | 1.6 | 2570.0 | 1.5 | 0.6 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 | 0.18 | 930.0 | 55.0 | 1200.0 |
+| `drift_car` | 0.75 | 3117.0 | 1.0 | 1.0 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 | 0.18 | 930.0 | 55.0 | 1200.0 |
+| `muscle_car` | 0.95 | 4816.67 | 1.0 | 1.0 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 | 0.18 | 930.0 | 55.0 | 1200.0 |
+| `rock_crawler` | 1.9 | 5383.33 | 2.0 | 0.5 | 1.0 | 0.65 | 0.5 | 0.0 | 0.0 | 0.0 | 0.18 | 930.0 | 55.0 | 1200.0 |
+| `monster_truck` | 2.3 | 4500.0 | 1.0 | 0.55 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 | 0.18 | 930.0 | 55.0 | 1200.0 |
+| `indy_car` | 0.5 | 1841.67 | 1.0 | 1.0 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 | 0.18 | 930.0 | 55.0 | 1200.0 |
+| `bus` | 1.0 | 11900.0 | 1.0 | 0.8 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 | 0.18 | 930.0 | 55.0 | 1200.0 |
+| `cargo_truck` | 1.1 | 13600.0 | 1.0 | 0.7 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 | 0.18 | 930.0 | 55.0 | 1200.0 |
 
 `rock_crawler` is the only car with a non-identity `lsdLockPercent` (0.65,
 MINECRAFT-296's limited-slip tuning); every other field at its identity value
@@ -148,6 +174,80 @@ is non-identity (today, only `drift_car`) routes cornering grip through
 architecture this ticket does not change — `drift_car.json` can still set
 `camberDeg`/`toeDeg` (and they will be clamped and stored), but they will be
 inert until a future ticket connects `DriftTireModel` to them.
+
+### `tireKit` (MINECRAFT-445): damping, bump stops, steering, pressure and pitch
+
+MINECRAFT-445 owns the `tireKit` section and is filling it slice by slice.
+**Only the fields listed below are implemented**; the rest of that ticket's
+acceptance scope (caster, roll center) is not in this section yet, and no key
+for it is read, validated or
+applied — see "Still reserved" at the end of this section.
+
+Every field is optional and nested under a single `tireKit` object. An absent
+`tireKit`, or an absent field within it, keeps that car's stock value for
+exactly the fields it did not mention, by the same rule as the flat fields
+above. Out-of-range values are clamped; non-finite values fall back to stock.
+
+The pre-existing flat `dampingRate` key keeps its meaning as that car's damper
+rate, and is now specifically its **slow-compression** rate: every field below
+defaults to `dampingRate` itself, so a car with no `tireKit` (or a car that
+only overrides `dampingRate`) still damps compression and rebound at one single
+rate, exactly as it did before this ticket. `WheelMath.suspensionForce`'s
+four-rate overload reduces algebraically to `dampingRate * compressionRate`
+whenever all four rates match, for any knee speed — pinned by
+`WheelMathSuspensionTuningTest#reducesToSingleRateForAnyKneeSpeedWhenEveryDampingRateMatches`.
+
+| Key | Unit | Range | Notes |
+|---|---|---|---|
+| `compressionDampingFast` | N·s/m | 0.0 – 40,000.0 | Damping applied to the compression speed ABOVE `dampingKneeSpeed`, on top of (not instead of) the slow rate's own contribution up to the knee — a continuous digressive curve, not a step. Defaults to `dampingRate`. |
+| `reboundDampingSlow` | N·s/m | 0.0 – 40,000.0 | Damping on the extending (rebound) stroke at or below `dampingKneeSpeed`. Defaults to `dampingRate`. |
+| `reboundDampingFast` | N·s/m | 0.0 – 40,000.0 | Damping on the extending stroke above `dampingKneeSpeed`. Defaults to `dampingRate`. |
+| `dampingKneeSpeed` | m/s | 0.0 – 10.0 | The compression-rate magnitude separating "slow" from "fast", for BOTH directions. `0.0` means every speed is "fast". Irrelevant (no observable effect) while all four rates are equal. Defaults to `SuspensionTuning.DEFAULT_DAMPING_KNEE_SPEED`. |
+| `bumpStopTravel` | metres | 0.0 – 5.0 | Compression travel beyond which the progressive bump stop engages, on top of the regular spring/damper force. Unlike `rideHeight` this needs no per-car geometry check: a value a car's own suspension can never actually reach is simply inert (the stop never engages), not degenerate. Defaults to `SuspensionTuning.BUMP_STOP_DISABLED_TRAVEL`, which is unreachable, so the stop never engages. |
+| `bumpStopRate` | N/m | 0.0 – 500,000.0 | Applied only to the compression PAST `bumpStopTravel`. `SuspensionTuning.NO_BUMP_STOP_RATE` (zero) disables the bump stop regardless of `bumpStopTravel`, and is the default. |
+| `tirePressureBar` | bar | 0.5 – 8.0 | Tire pressure. Default is `WheelMath.NOMINAL_TIRE_PRESSURE_BAR` (2.2), every stock car's value, at which both pressure multipliers are exactly 1.0 and grip/rolling resistance are bit-for-bit unchanged. **Below nominal buys grip and costs rolling drag; above nominal does the reverse** — the two effects deliberately pull opposite ways, so it is a trade-off rather than a free win. Grip responds much less than proportionally (exponent `WheelMath.TIRE_PRESSURE_GRIP_EXPONENT` = 0.3, so halving pressure is worth about +23% grip, not +100%), while rolling drag responds inversely and in full. Applied in the production tick at both `gripMu` sites and the `rollingCoefficient` site in `SableCarBody.tick`. |
+| `antiDive` | fraction | 0.0 – 1.0 | Anti-dive geometry: how much of a wheel's longitudinal force is carried into the chassis directly instead of through a moment arm about the body centre, **while that force opposes the car's motion** (braking). `0.0` (every stock car) applies the force at the contact patch, which is what makes a car dive — unchanged from before this field. `1.0` cancels the pitch couple entirely. |
+| `antiSquat` | fraction | 0.0 – 1.0 | The same, **while the wheel's force drives the car** (acceleration), resisting the tail dropping. Separate from `antiDive` because they are separate geometries on a real car; the production tick picks between them per wheel, each sub-step, by whether the longitudinal impulse that wheel actually hands the chassis — its tire force plus any wheel-spin recovery reaction — opposes or drives the motion, so a braking wheel uses `antiDive` even mid-corner. Only that longitudinal part of the tire force moves; the tire's lateral (cornering) force keeps acting where it did before these fields existed. |
+| `rearSteerRatio` | fraction | -1.0 – 1.0 | Fraction of the FRONT wheels' steer angle applied to the rear wheels. `0.0` (the default, and every stock car's value) keeps the rear axle straight — exactly what the production code did before this field existed. **Negative is opposite-phase**: the rear steers against the front, tightening the turn (classic low-speed four-wheel steering). **Positive is same-phase**: the rear follows the front, pushing the car sideways rather than rotating it as sharply. This is real physics, not a rendered pose — the angle rotates each tire's own forward axis, which is what the tire's longitudinal/lateral force directions are measured against. |
+
+Ranges live in code as `VehicleSpecLimits`' `MIN/MAX_TIRE_KIT_DAMPING`,
+`MIN/MAX_DAMPING_KNEE_SPEED`, `MIN/MAX_BUMP_STOP_TRAVEL` and
+`MIN/MAX_BUMP_STOP_RATE`; the resolved values live on
+`VehicleSpec.SuspensionTuning`, whose `singleRate(dampingRate)` factory is the
+stock (identity) value every car on the roster carries today.
+
+`rearSteerRatio` ranges live in code as `VehicleSpecLimits`'
+`MIN/MAX_REAR_STEER_RATIO`, and the resolved value on
+`VehicleSpec.SteeringTuning` (whose `IDENTITY` is the no-rear-steering value
+every car carries today).
+
+**Every existing car's stock default for this whole section is the identity
+one**: `compressionDampingFast`/`reboundDampingSlow`/`reboundDampingFast` all
+equal that car's own `dampingRate` from the table above, and the remaining three
+fields take the named defaults in the table (`DEFAULT_DAMPING_KNEE_SPEED`, which
+is inert at equal rates, plus the two that disable the bump stop),
+`rearSteerRatio` is `0.0`, `tirePressureBar` is nominal (2.2), and `antiDive`/
+`antiSquat` are both `0.0`. No car has opted into two-rate damping, a bump stop,
+rear steering, a non-nominal tire pressure or pitch resistance, so stock driving
+feel is unchanged.
+
+Example, giving the trophy truck a soft slow-compression stroke that firms up
+over fast hits, a stiffer rebound so it does not pogo on landings, and a bump
+stop near the end of its long travel:
+
+```json
+{
+  "dampingRate": 2000.0,
+  "tireKit": {
+    "compressionDampingFast": 9000.0,
+    "reboundDampingSlow": 4000.0,
+    "reboundDampingFast": 11000.0,
+    "dampingKneeSpeed": 1.2,
+    "bumpStopTravel": 0.45,
+    "bumpStopRate": 90000.0
+  }
+}
+```
 
 ### `wing` (MINECRAFT-446): downforce and aerodynamic drag
 
@@ -305,17 +405,23 @@ self-righting only, leaving the other three assists disabled:
 
 ### Reserved for downstream tasks
 
-The schema still reserves three top-level keys for the sibling tasks that own
+The schema reserves two more top-level keys for the sibling tasks that own
 those systems; this loader tolerates them existing in a file today (Gson
 ignores any key with no matching field) but does not read, validate or apply
 any of them — adding a field under one of these sections with no behaviour
-behind it would itself be "unused config fields," which this ticket's
-acceptance explicitly rules out. Each task adds its own fields here when it
-implements real behaviour, rather than inventing a parallel file or format:
+behind it would itself be "unused config fields," which MINECRAFT-443's
+acceptance explicitly rules out and both MINECRAFT-445's and MINECRAFT-446's
+repeat. Each task adds its own fields here when it implements real behaviour,
+rather than inventing a parallel file or format. The same rule applies WITHIN an
+implemented section: `tireKit`'s remaining MINECRAFT-445 fields (caster, roll
+center) appear there only as that behaviour lands.
+
+Two of the original five reserved sections are now implemented and documented
+above — `tireKit` (MINECRAFT-445) and `wing` (MINECRAFT-446). These three remain
+reserved and are still read by nothing:
 
 | Key | Owner |
 |---|---|
-| `tireKit` | MINECRAFT-445 (suspension/wheel geometry) |
 | `computer` | MINECRAFT-448 (assists/auto-shift) |
 | `engine` | MINECRAFT-449 (engine limits/turbo/nitrous/ballast) |
 

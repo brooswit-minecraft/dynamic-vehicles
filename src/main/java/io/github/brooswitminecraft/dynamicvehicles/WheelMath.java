@@ -257,6 +257,82 @@ public final class WheelMath {
     }
 
     /**
+     * MINECRAFT-445: as the single-rate overload above, but with independent damping for the compression
+     * and rebound strokes, each itself split into a "slow" rate (at or below {@code dampingKneeSpeed}) and
+     * a "fast" one beyond it, plus a progressive bump stop once compression travels past {@code
+     * bumpStopTravel}. This is a strict generalisation, not a parallel formula: when every one of
+     * {@code slowCompressionDamping}/{@code fastCompressionDamping}/{@code slowReboundDamping}/
+     * {@code fastReboundDamping} is the same value, the damping term below reduces algebraically to exactly
+     * {@code dampingRate * compressionRate} for ANY {@code dampingKneeSpeed} (see {@code
+     * WheelMathTest#fourRateSuspensionForceReducesToSingleRateWhenEveryRateMatches}) -- {@code
+     * VehicleSpec.SuspensionTuning#singleRate} builds exactly that degenerate case for every vehicle on the
+     * roster that has not opted into this ticket's tuning, so this overload changes no existing vehicle's
+     * stock feel.
+     *
+     * @param compression metres the spring is shorter than its rest length (negative: not touching)
+     * @param compressionRate m/s the spring is being squeezed (positive: compressing toward the body,
+     *        negative: extending/rebounding)
+     * @param springRate N/m
+     * @param slowCompressionDamping N*s/m applied to the compressing speed up to {@code dampingKneeSpeed}
+     * @param fastCompressionDamping N*s/m applied to the compressing speed ABOVE {@code dampingKneeSpeed},
+     *        on top of (not instead of) the slow rate's own contribution up to the knee -- a continuous,
+     *        classic digressive damper curve, not a step function
+     * @param slowReboundDamping N*s/m applied to the extending speed up to {@code dampingKneeSpeed}
+     * @param fastReboundDamping N*s/m applied to the extending speed ABOVE {@code dampingKneeSpeed}
+     * @param dampingKneeSpeed m/s, the compression-rate magnitude separating "slow" from "fast" for BOTH
+     *        directions
+     * @param maxForce N, the same spring-force cap the single-rate overload uses
+     * @param bumpStopTravel metres of compression beyond which the progressive bump stop engages, on top of
+     *        the regular spring/damper force; a value at or above the car's own maximum reachable
+     *        compression (the stock {@link VehicleSpec.SuspensionTuning#singleRate}'s {@code
+     *        Double.MAX_VALUE}) disables it entirely, since compression can never exceed it
+     * @param bumpStopRate N/m applied only to the compression PAST {@code bumpStopTravel} (0 disables it,
+     *        same effect as an unreachable {@code bumpStopTravel})
+     * @return the force the spring+damper+bump-stop assembly pushes the car up with, N (never negative)
+     */
+    public static double suspensionForce(double compression, double compressionRate, double springRate,
+            double slowCompressionDamping, double fastCompressionDamping,
+            double slowReboundDamping, double fastReboundDamping, double dampingKneeSpeed,
+            double maxForce, double bumpStopTravel, double bumpStopRate) {
+        if (!(compression > 0)) {
+            return 0.0;
+        }
+        double dampingForce = compressionRate >= 0
+                ? digressiveDamperForce(compressionRate, slowCompressionDamping, fastCompressionDamping, dampingKneeSpeed)
+                : -digressiveDamperForce(-compressionRate, slowReboundDamping, fastReboundDamping, dampingKneeSpeed);
+        double bumpStopForce = compression > bumpStopTravel ? bumpStopRate * (compression - bumpStopTravel) : 0.0;
+        double force = springRate * compression + dampingForce + bumpStopForce;
+        return Math.max(0.0, Math.min(maxForce, force));
+    }
+
+    /** One direction (compression or rebound) of {@link #suspensionForce}'s digressive damper curve: {@code
+     * slowRate * speed} up to {@code kneeSpeed}, then {@code slowRate}'s own contribution at the knee plus
+     * {@code fastRate} for the speed beyond it -- continuous at the knee by construction, so a caller never
+     * sees a force discontinuity as {@code speed} crosses it. {@code speed} is always non-negative here;
+     * {@link #suspensionForce} itself handles the compression/rebound sign split.
+     *
+     * <p>MINECRAFT-445 review fix (comment 49018): an un-split damper ({@code slowRate == fastRate}) takes
+     * the single-multiply path at EVERY speed, not just at or below the knee. The two-segment expression is
+     * algebraically equal there but not bit-equal -- {@code rate * knee + rate * (speed - knee)} rounds
+     * differently from {@code rate * speed} -- so without this guard a stock car's spawn-settling transient
+     * (which does exceed the knee) differed from the pre-ticket formula in its last bits. With the guard,
+     * every vehicle carrying {@link VehicleSpec.SuspensionTuning#singleRate} is bit-for-bit identical to
+     * that formula, pinned by {@code WheelMathSuspensionTuningTest
+     * #reducesToSingleRateBitForBitAboveTheKneeWhereTheArithmeticDiffers}.
+     *
+     * <p>No claim is made here that this rounding difference caused any particular test failure. An earlier
+     * revision of this comment blamed it for a drivetrain GameTest failure; that causation was retracted on
+     * MINECRAFT-445 (comment 49035) after CI showed the same test passing at one commit and failing at
+     * another whose production behaviour was identical. The justification for this guard is simply that
+     * "no existing car's stock feel changes" should be a mechanical fact rather than an algebraic argument. */
+    private static double digressiveDamperForce(double speed, double slowRate, double fastRate, double kneeSpeed) {
+        if (slowRate == fastRate || speed <= kneeSpeed) {
+            return slowRate * speed;
+        }
+        return slowRate * kneeSpeed + fastRate * (speed - kneeSpeed);
+    }
+
+    /**
      * MINECRAFT-443: the production seam a per-car {@code handbrakeScale} config override actually
      * reaches, extracted out of {@code SableCarBody.tick}'s handbrake branch (which calls this exact
      * method, not a reimplementation of it) so the multiplication is itself directly testable without
@@ -310,12 +386,132 @@ public final class WheelMath {
     }
 
     /**
+     * Advances a wheel that is NOT touching anything by one (sub-)step, rad/s (MINECRAFT-444 review round
+     * 3): with no tire force there is no ground reaction either, so the drivetrain's whole command turns
+     * the wheel -- the same torque balance {@link #spinRate} applies to the part of a command a tire could
+     * not deliver ({@code force * wheelRadius / wheelInertia * dt}). A brake, as in {@link #tire}, replaces
+     * the drive rather than adding to it, and it can only slow the wheel toward a stop: it never turns a
+     * wheel the other way, however long it is held.
+     *
+     * @param driveForce the drivetrain's longitudinal command for this wheel, N (ignored while braking)
+     * @param brakeForce the brake's force at this wheel, N (0 when not braking)
+     */
+    public static double freeSpinRate(double spin, double wheelRadius, double driveForce, double brakeForce,
+            double wheelInertia, double dt) {
+        if (brakeForce > 0.0) {
+            double maxChange = brakeForce * wheelRadius / wheelInertia * dt;
+            return Math.abs(spin) <= maxChange ? 0.0 : spin - Math.copySign(maxChange, spin);
+        }
+        return spin + driveForce * wheelRadius / wheelInertia * dt;
+    }
+
+    /**
      * The longitudinal slip speed this wheel's own tracked spin implies against the ground, m/s: positive
      * while the wheel spins faster than the ground (wheelspin), negative while it spins slower (lock-up),
      * exactly 0 whenever {@link #spinRate} last found the wheel gripping.
      */
     public static double slipFromSpin(double spin, double wheelRadius, double groundSpeed) {
         return spin * wheelRadius - groundSpeed;
+    }
+
+    /** MINECRAFT-445: the tire pressure (bar) every vehicle is tuned at today, and the value both
+     * pressure multipliers below return exactly 1.0 for. A car that does not configure a pressure carries
+     * this, so its grip and rolling resistance are bit-for-bit what they were before pressure existed:
+     * {@code NOMINAL / NOMINAL} is exactly 1.0, and {@code Math.pow(1.0, k)} is exactly 1.0. */
+    public static final double NOMINAL_TIRE_PRESSURE_BAR = 2.2;
+
+    /** How strongly pressure moves GRIP, as the exponent on the pressure ratio. Deliberately well under
+     * 1.0: a tire's contact patch does grow as it is deflated (more mechanical grip), but far less than
+     * proportionally, and this keeps a 2x under-inflation worth about +23% grip rather than +100%. */
+    public static final double TIRE_PRESSURE_GRIP_EXPONENT = 0.3;
+
+    /**
+     * MINECRAFT-445: the grip multiplier a tire at {@code pressureBar} gets, relative to one at {@link
+     * #NOMINAL_TIRE_PRESSURE_BAR}. Under-inflation enlarges the contact patch and raises grip; over-
+     * inflation shrinks it and lowers grip. Exactly 1.0 at nominal, so an unconfigured car is unchanged.
+     *
+     * <p>A non-positive or non-finite pressure returns 1.0 rather than a divide-by-zero or NaN: the
+     * config loader already clamps to a positive range, so this is the belt-and-braces guard that keeps
+     * a bad value from reaching the friction circle even if some future caller skips that clamp.
+     */
+    public static double tirePressureGripMultiplier(double pressureBar) {
+        if (!(pressureBar > 0) || !Double.isFinite(pressureBar)) {
+            return 1.0;
+        }
+        return Math.pow(NOMINAL_TIRE_PRESSURE_BAR / pressureBar, TIRE_PRESSURE_GRIP_EXPONENT);
+    }
+
+    /**
+     * MINECRAFT-445: the rolling-resistance multiplier a tire at {@code pressureBar} gets, relative to one
+     * at {@link #NOMINAL_TIRE_PRESSURE_BAR}. Inverse and first-order: a softer tire deforms more and
+     * costs more rolling drag, a harder one less. Exactly 1.0 at nominal.
+     *
+     * <p>The two multipliers deliberately pull in OPPOSITE directions for the same change, which is the
+     * real trade-off this field exists to expose: dropping pressure buys grip and pays for it in rolling
+     * drag, raising it does the reverse. Same non-positive/non-finite guard as the grip multiplier.
+     */
+    public static double tirePressureRollingMultiplier(double pressureBar) {
+        if (!(pressureBar > 0) || !Double.isFinite(pressureBar)) {
+            return 1.0;
+        }
+        return NOMINAL_TIRE_PRESSURE_BAR / pressureBar;
+    }
+
+    /**
+     * MINECRAFT-445: the height a wheel's HORIZONTAL tire force is applied at, blended between the contact
+     * patch and the body, to model anti-dive and anti-squat suspension geometry.
+     *
+     * <p>Why this is the right seam rather than a new force: applying a tire's longitudinal force at the
+     * contact patch is precisely what gives it a moment arm about the body's centre, and therefore what
+     * makes the car dive under braking and squat under power ({@code SableCarBody.tick}'s own comment at
+     * that call site says so: "The tire's horizontal force does too, so braking and cornering transfer
+     * weight"). Real anti-dive/anti-squat geometry works by letting the suspension links carry part of
+     * that longitudinal load into the chassis directly, which shortens exactly that moment arm. Blending
+     * the application height toward the body reproduces that, and needs no invented force term.
+     *
+     * @param contactY the wheel's contact-patch height in the body frame (what the code uses today)
+     * @param bodyY the height a force applied straight into the chassis would act at
+     * @param antiFraction 0 applies the force fully at the contact patch -- today's behaviour exactly, and
+     *        bit-for-bit so, since the blend reduces to {@code contactY} when this is 0; 1 applies it
+     *        fully at the body, cancelling the pitch couple entirely
+     * @return the height to apply this wheel's horizontal tire force at
+     */
+    public static double pitchResistApplicationHeight(double contactY, double bodyY, double antiFraction) {
+        if (antiFraction == 0.0) {
+            return contactY;
+        }
+        return contactY + (bodyY - contactY) * antiFraction;
+    }
+
+    /**
+     * MINECRAFT-445: the longitudinal impulse, N*s along the wheel's forward axis, one wheel actually hands
+     * the chassis in one sub-step -- its tire force over the sub-step plus any wheel-spin recovery reaction
+     * ({@link DrivetrainMath#recoveryReactionImpulse}, 0.0 when no recovery happened). These are exactly the
+     * two terms {@code SableCarBody.tick} accumulates along {@code forward}, so this is what decides whether
+     * that wheel is braking or driving the car.
+     *
+     * <p>PR184 review 5580581955: the tire term must be multiplied by {@code subDt} BEFORE the reaction is
+     * added. Summing the raw force (N) with the impulse (N*s) mixed units, and on a coasting, overspinning
+     * wheel -- rolling drag {@code -15} N against a {@code +3} N*s recovery at {@code subDt = 0.05} -- picked
+     * the sign of the drag (-12) although the impulse actually applied was {@code +2.25} N*s forward.
+     */
+    public static double chassisLongitudinalImpulse(double tireLongitudinalForce, double subDt,
+            double recoveryReactionImpulse) {
+        return tireLongitudinalForce * subDt + recoveryReactionImpulse;
+    }
+
+    /**
+     * MINECRAFT-445: which pitch-resisting fraction governs a wheel this sub-step. Anti-DIVE while the
+     * longitudinal impulse it actually delivers ({@link #chassisLongitudinalImpulse}) opposes the car's
+     * motion, anti-SQUAT while it drives it -- chosen per wheel, so a braking wheel uses anti-dive even
+     * mid-corner. At rest ({@code forwardSpeed == 0}) nothing can oppose motion, so it is anti-squat.
+     *
+     * @param longitudinalImpulse N*s along the wheel's forward axis, from {@link #chassisLongitudinalImpulse}
+     * @param forwardSpeed the car's own speed along its forward axis, m/s (sign gives the direction of travel)
+     */
+    public static double pitchResistFraction(double longitudinalImpulse, double forwardSpeed, double antiDive,
+            double antiSquat) {
+        return longitudinalImpulse * forwardSpeed < 0 ? antiDive : antiSquat;
     }
 
     /**

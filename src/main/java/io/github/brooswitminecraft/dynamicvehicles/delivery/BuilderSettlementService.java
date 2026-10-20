@@ -1,54 +1,25 @@
 package io.github.brooswitminecraft.dynamicvehicles.delivery;
 
-import net.minecraft.Util;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.npc.Villager;
-import net.minecraft.world.entity.npc.VillagerProfession;
-import net.minecraft.world.item.trading.MerchantOffers;
-import net.minecraft.world.level.block.Block;
-import net.minecraft.world.level.block.BedBlock;
 import net.minecraft.world.level.block.Blocks;
-import net.minecraft.world.level.block.DoorBlock;
-import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.level.block.state.properties.BedPart;
-import net.minecraft.world.level.block.state.properties.DoubleBlockHalf;
-import net.minecraft.world.phys.AABB;
 
-/** Server-side, destructive-only-after-preflight Builder settlement path. */
+/**
+ * Server-side Builder settlement anchor lookup.
+ *
+ * <p>MINECRAFT-388 review round 3, finding #1: the legacy chance-based "complete a free house"
+ * mechanic this class used to drive directly has been retired entirely - see
+ * {@link #attemptSettlement}. This class is kept only so the donation/passive triggers below have
+ * somewhere to land, and so {@code CAMPFIRE_POS_TAG} (still written by
+ * {@code BuilderCampfireHandler}) keeps a defined owner.
+ */
 public final class BuilderSettlementService {
     public static final String CAMPFIRE_POS_TAG = "dynamicvehicles.builderCampfire";
     private static final String PENDING_DONATIONS_TAG = "dynamicvehicles.pendingBuilderDonations";
     private static final int CAMPFIRE_SEARCH_RADIUS = 8;
-    private static final int BUILDING_RADIUS = (BuilderSettlementPlan.HOUSE_FOOTPRINT_WIDTH - 1) / 2;
-    private static final int BUILDING_HEIGHT = BuilderSettlementPlan.HOUSE_HEIGHT;
 
     private BuilderSettlementService() {}
-
-    /** Project-owned building variants; never resolves or places another mod's structures. */
-    private enum VillageBuilding {
-        OAK_HUT(Blocks.OAK_PLANKS, Blocks.OAK_LOG, Blocks.OAK_STAIRS),
-        SPRUCE_HUT(Blocks.SPRUCE_PLANKS, Blocks.STRIPPED_SPRUCE_LOG, Blocks.SPRUCE_STAIRS);
-
-        final net.minecraft.world.level.block.Block plank;
-        final net.minecraft.world.level.block.Block post;
-        final net.minecraft.world.level.block.Block stair;
-
-        VillageBuilding(net.minecraft.world.level.block.Block plank, net.minecraft.world.level.block.Block post,
-                net.minecraft.world.level.block.Block stair) {
-            this.plank = plank;
-            this.post = post;
-            this.stair = stair;
-        }
-
-        static VillageBuilding from(BuilderSettlementPlan.BuildingVariant variant) {
-            return switch (variant) {
-                case OAK_HUT -> OAK_HUT;
-                case SPRUCE_HUT -> SPRUCE_HUT;
-            };
-        }
-    }
 
     public static void attemptDonationSettlement(Villager villager, int tradeTier) {
         attemptSettlement(villager, BuilderSettlementPlan.donationSettlementChance(
@@ -82,59 +53,16 @@ public final class BuilderSettlementService {
         if (villager.getVillagerData().getProfession() != BuilderProfession.BUILDER.get()) return;
         BlockPos campfire = findCampfireAnchor(level, villager);
         if (campfire == null) return;
-        if (level.random.nextDouble() >= settlementChance) return;
-
-        VillageBuilding buildingVariant = VillageBuilding.from(
-                BuilderSettlementPlan.selectBuildingVariant(level.random.nextInt(VillageBuilding.values().length)));
-        // The house stands dead centre in the campfire's own chunk; only the door-facing rotation varies,
-        // tried in random order until one is safe.
-        BlockPos center = new BlockPos(BuilderSettlementPlan.chunkCenterCoordinate(campfire.getX()), campfire.getY(),
-                BuilderSettlementPlan.chunkCenterCoordinate(campfire.getZ()));
-        Direction rotation = null;
-        java.util.List<Direction> rotations = new java.util.ArrayList<>(
-                java.util.Arrays.asList(Direction.Plane.HORIZONTAL.stream().toArray(Direction[]::new)));
-        Util.shuffle(rotations, level.random);
-        for (Direction candidate : rotations) {
-            if (isInCampfireChunk(campfire, center, candidate)
-                    && isSafeBuildingSite(level, campfire, villager, center, candidate)) {
-                rotation = candidate;
-                break;
-            }
-        }
-        boolean placementIsSafe = rotation != null;
-        if (!BuilderSettlementPlan.shouldCompleteSettlement(level.getBlockState(campfire).is(Blocks.CAMPFIRE), true,
-                placementIsSafe)) return;
-
-        // The full footprint and entity volume were checked before any mutation. The centred footprint can
-        // now contain the originating campfire itself (the house is no longer offset away from it); when it
-        // does, placeBuilding already overwrites that block as part of the floor, so removing it afterwards
-        // would just punch a hole back into the finished house.
-        boolean campfireInsideFootprint = BuilderSettlementPlan.isWithinHouseFootprint(
-                center.getX(), center.getZ(), campfire.getX(), campfire.getZ());
-        placeBuilding(level, center, rotation, buildingVariant);
-        if (!campfireInsideFootprint) level.removeBlock(campfire, false);
-        // The entity-occupancy check excludes the settling villager so standing near its own campfire can
-        // never block its own house, but nothing moves it: the centred footprint can now overlap wherever
-        // it happens to be standing. Relocate it to the entrance tile, whose clearance and sturdy footing
-        // isSafeBuildingSite already validated, so it is never left entombed in a wall or floor it didn't move for.
-        BlockPos entrance = center.relative(rotation, BUILDING_RADIUS + 1);
-        // entrance.above()/above(2) are exactly the headroom isSafeBuildingSite already validated clear;
-        // gravity settles the villager onto whatever is solid below if that's lower than this.
-        villager.moveTo(entrance.getX() + 0.5D, entrance.above().getY(), entrance.getZ() + 0.5D,
-                rotation.getOpposite().toYRot(), 0.0F);
-        resetToUnemployed(villager);
-        villager.getPersistentData().remove(CAMPFIRE_POS_TAG);
-    }
-
-    /** A settled Builder retires completely, including its leveled donation offers. */
-    private static void resetToUnemployed(Villager villager) {
-        villager.setVillagerData(villager.getVillagerData()
-                .setProfession(VillagerProfession.NONE)
-                .setLevel(1));
-        villager.setVillagerXp(0);
-        villager.updateMerchantTimer = 0;
-        villager.increaseProfessionLevelOnUpdate = false;
-        villager.setOffers(new MerchantOffers());
+        // MINECRAFT-388 review round 3, finding #1: this legacy chance-based mechanic is retired
+        // ENTIRELY - it must never complete a free house, regardless of whether this exact campfire
+        // is already claimed as a town construction site. The round-2 fix (deferring only once a
+        // campfire is already town-claimed) was not enough: a chance roll completing a full house
+        // for free on an UNCLAIMED campfire, with no resource debit and no town claim at all, is
+        // itself exactly the "free/unclaimed construction" the ticket's "claimed campfire only, no
+        // free construction" rule forbids. All construction now flows exclusively through
+        // io.github.brooswitminecraft.dynamicvehicles.town.TownConstructionService's claim-gated,
+        // resource-funded path - this method deliberately does nothing beyond locating the anchor,
+        // so a donation/passive trigger has somewhere to land without ever building anything here.
     }
 
     /**
@@ -159,99 +87,5 @@ public final class BuilderSettlementService {
             }
         }
         return best;
-    }
-
-    /** The footprint and its entrance block must all lie in the campfire's chunk (AC4). */
-    private static boolean isInCampfireChunk(BlockPos campfire, BlockPos center, Direction rotation) {
-        BlockPos entrance = center.relative(rotation, BUILDING_RADIUS + 1);
-        int minX = Math.min(center.getX() - BUILDING_RADIUS, entrance.getX());
-        int maxX = Math.max(center.getX() + BUILDING_RADIUS, entrance.getX());
-        int minZ = Math.min(center.getZ() - BUILDING_RADIUS, entrance.getZ());
-        int maxZ = Math.max(center.getZ() + BUILDING_RADIUS, entrance.getZ());
-        return BuilderSettlementPlan.isWithinCampfireChunk(campfire.getX(), campfire.getZ(), minX, minZ, maxX, maxZ);
-    }
-
-    /**
-     * The centred footprint can now contain the originating campfire and the Builder standing at it
-     * (previously the fixed 4-block offset always kept the house away from both). Settlement is explicitly
-     * meant to replace that exact campfire, so it and the settling villager are excluded from the
-     * occupancy checks below; every other block and entity is still a strict blocker.
-     */
-    private static boolean isSafeBuildingSite(ServerLevel level, BlockPos campfire, Villager villager,
-            BlockPos center, Direction rotation) {
-        BlockPos entrance = center.relative(rotation, BUILDING_RADIUS + 1);
-        // The settling Builder is relocated to entrance.above() once settlement completes, free-falling
-        // the one block down to natural ground exactly like everywhere else outdoors (entrance.below() is
-        // the checked solid support). So entrance itself must stay part of that same clear, safe path out:
-        // folded into the same emptyOrCampfire check as the headroom above it, a hazard sitting right at
-        // ground level there (a lit campfire) is rejected the same way fire or lava already are by not
-        // being empty, while the ordinary open ground every other test already relies on still passes.
-        if (!level.hasChunkAt(entrance) || !isEmptyOrCampfire(level, entrance, campfire)
-                || !isEmptyOrCampfire(level, entrance.above(), campfire)
-                || !isEmptyOrCampfire(level, entrance.above(2), campfire)
-                || !isSafeLandingSupport(level, entrance.below())) return false;
-        // The entity-occupancy check below only covers the house's own footprint, not the exit path, so an
-        // unrelated entity standing in the Builder's landing spot needs its own check.
-        AABB landing = new AABB(entrance.getX(), entrance.getY(), entrance.getZ(),
-                entrance.getX() + 1, entrance.above(2).getY() + 1, entrance.getZ() + 1);
-        if (!level.getEntities(villager, landing).isEmpty()) return false;
-        AABB bounds = new AABB(center.getX() - BUILDING_RADIUS, center.getY(), center.getZ() - BUILDING_RADIUS,
-                center.getX() + BUILDING_RADIUS + 1, center.getY() + BUILDING_HEIGHT, center.getZ() + BUILDING_RADIUS + 1);
-        if (!level.getEntities(villager, bounds).isEmpty()) return false;
-        for (int x = -BUILDING_RADIUS; x <= BUILDING_RADIUS; x++) {
-            for (int z = -BUILDING_RADIUS; z <= BUILDING_RADIUS; z++) {
-                BlockPos floor = center.offset(x, 0, z);
-                if (!level.hasChunkAt(floor) || !level.getWorldBorder().isWithinBounds(floor)
-                        || !level.getBlockState(floor.below()).isFaceSturdy(level, floor.below(), Direction.UP)) return false;
-                for (int y = 0; y < BUILDING_HEIGHT; y++) {
-                    if (!isEmptyOrCampfire(level, center.offset(x, y, z), campfire)) return false;
-                }
-            }
-        }
-        return true;
-    }
-
-    private static boolean isEmptyOrCampfire(ServerLevel level, BlockPos pos, BlockPos campfire) {
-        return level.isEmptyBlock(pos) || pos.equals(campfire);
-    }
-
-    /**
-     * The relocated Builder settles onto this block via ordinary gravity, so a merely sturdy top is not
-     * enough: a magma block is sturdy but damages anything standing on it, which would otherwise pass
-     * the old sturdy-only check while still being a hazard to land on.
-     */
-    private static boolean isSafeLandingSupport(ServerLevel level, BlockPos pos) {
-        BlockState state = level.getBlockState(pos);
-        return state.isFaceSturdy(level, pos, Direction.UP) && !state.is(Blocks.MAGMA_BLOCK);
-    }
-
-    private static void placeBuilding(ServerLevel level, BlockPos center, Direction rotation, VillageBuilding buildingVariant) {
-        for (int x = -BUILDING_RADIUS; x <= BUILDING_RADIUS; x++) {
-            for (int z = -BUILDING_RADIUS; z <= BUILDING_RADIUS; z++) {
-                level.setBlock(center.offset(x, 0, z), buildingVariant.plank.defaultBlockState(), Block.UPDATE_ALL);
-                level.setBlock(center.offset(x, 3, z), buildingVariant.plank.defaultBlockState(), Block.UPDATE_ALL);
-                if (Math.abs(x) == BUILDING_RADIUS || Math.abs(z) == BUILDING_RADIUS) {
-                    for (int y = 1; y < 3; y++)
-                        level.setBlock(center.offset(x, y, z), buildingVariant.plank.defaultBlockState(), Block.UPDATE_ALL);
-                }
-            }
-        }
-        for (int x : new int[] {-BUILDING_RADIUS, BUILDING_RADIUS})
-            for (int z : new int[] {-BUILDING_RADIUS, BUILDING_RADIUS})
-                for (int y = 1; y < 3; y++)
-                    level.setBlock(center.offset(x, y, z), buildingVariant.post.defaultBlockState(), Block.UPDATE_ALL);
-
-        BlockPos doorway = center.relative(rotation, BUILDING_RADIUS);
-        level.setBlock(doorway.above(), Blocks.OAK_DOOR.defaultBlockState()
-                .setValue(DoorBlock.FACING, rotation).setValue(DoorBlock.HALF, DoubleBlockHalf.LOWER), Block.UPDATE_ALL);
-        level.setBlock(doorway.above(2), Blocks.OAK_DOOR.defaultBlockState()
-                .setValue(DoorBlock.FACING, rotation).setValue(DoorBlock.HALF, DoubleBlockHalf.UPPER), Block.UPDATE_ALL);
-
-        BlockPos bedFoot = center.relative(rotation.getOpposite());
-        level.setBlock(bedFoot.above(), Blocks.RED_BED.defaultBlockState()
-                .setValue(BedBlock.FACING, rotation).setValue(BedBlock.PART, BedPart.FOOT), Block.UPDATE_ALL);
-        level.setBlock(bedFoot.relative(rotation).above(), Blocks.RED_BED.defaultBlockState()
-                .setValue(BedBlock.FACING, rotation).setValue(BedBlock.PART, BedPart.HEAD), Block.UPDATE_ALL);
-        level.setBlock(center.relative(rotation.getClockWise()).above(), Blocks.BARREL.defaultBlockState(), Block.UPDATE_ALL);
     }
 }

@@ -3,6 +3,7 @@ package io.github.brooswitminecraft.dynamicvehicles;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -30,6 +31,27 @@ class VehicleSpecOverridesTest {
         VehicleSpecOverrides.load(Path.of(System.getProperty("java.io.tmpdir"), "dynamicvehicles-no-such-config-dir"));
     }
 
+    @Test
+    void combinedFeatureOverridesRetainEveryAcceptedGroup(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", """
+                {"engineInertia":0.4,"clutchTorqueCapacity":800,
+                 "tireKit":{"rearSteerRatio":-0.3,"tirePressureBar":1.5,"antiDive":0.4,"antiSquat":0.2,"reboundDampingFast":6000},
+                 "wing":{"frontDownforceCoeff":2.0},
+                 "diffuser":{"rollSelfRightingEnabled":true,"rollSelfRightingMaxTorque":100}}
+                """);
+        VehicleSpecOverrides.load(configDir);
+        VehicleSpec spec = VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR);
+        assertEquals(0.4, spec.drivetrainCoupling().engineInertia(), 1e-9);
+        assertEquals(800.0, spec.drivetrainCoupling().clutchTorqueCapacity(), 1e-9);
+        assertEquals(-0.3, spec.steeringTuning().rearSteerRatio(), 1e-9);
+        assertEquals(1.5, spec.tirePressureBar(), 1e-9);
+        assertEquals(6000.0, spec.suspensionTuning().fastReboundDamping(), 1e-9);
+        assertEquals(0.4, spec.pitchTuning().antiDive(), 1e-9);
+        assertEquals(0.2, spec.pitchTuning().antiSquat(), 1e-9);
+        assertEquals(2.0, spec.frontWingDownforceCoeff(), 1e-9);
+        assertTrue(spec.diffuserTuning().rollSelfRightingEnabled());
+        assertEquals(100.0, spec.diffuserTuning().rollSelfRightingMaxTorque(), 1e-9);
+    }
     @Test
     void beforeLoadIsCalledResolveReturnsTheExactStockInstance() {
         assertSame(VehicleSpec.CAR, VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR));
@@ -96,6 +118,53 @@ class VehicleSpecOverridesTest {
         // -3.0 is out of VehicleSpecLimits' range -- clamped, not rejected outright.
         assertEquals(VehicleSpecLimits.MIN_HANDBRAKE_SCALE, resolved.handbrakeScale());
         assertEquals(VehicleSpec.TRUCK.rideHeight(), resolved.rideHeight());
+    }
+
+    /** MINECRAFT-444: the engine/clutch coupling fields follow the identical per-field contract as every
+     * other field in this schema -- a set field is applied (clamped if out of range), an absent one keeps
+     * the car's stock value, and a non-finite one falls back to stock rather than leaking NaN into the
+     * engine integration (where it would divide straight into engine speed). */
+    @Test
+    void engineAndClutchCouplingFieldsOverrideClampAndFallBackLikeEveryOtherField(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", "{\"engineInertia\": 0.4, \"enginePeakTorque\": 99999.0,"
+                + " \"clutchTorqueCapacity\": -5.0}");
+
+        VehicleSpecOverrides.load(configDir);
+        VehicleSpec resolved = VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR);
+        VehicleSpec.DrivetrainCoupling coupling = resolved.drivetrainCoupling();
+
+        assertEquals(0.4, coupling.engineInertia(), 1e-9, "an in-range engineInertia must be applied as given");
+        assertEquals(VehicleSpecLimits.MAX_ENGINE_PEAK_TORQUE, coupling.enginePeakTorque(), 1e-9,
+                "an out-of-range enginePeakTorque must be clamped, not rejected");
+        assertEquals(VehicleSpecLimits.MIN_CLUTCH_TORQUE_CAPACITY, coupling.clutchTorqueCapacity(), 1e-9,
+                "a negative clutchTorqueCapacity must clamp to the floor");
+        assertEquals(VehicleSpec.CAR.drivetrainCoupling().engineBrakingTorque(), coupling.engineBrakingTorque(), 1e-9,
+                "a field the file never mentioned must keep its stock value");
+        assertEquals(VehicleSpec.CAR.rideHeight(), resolved.rideHeight(), 1e-9,
+                "the coupling fields must not disturb any other field");
+    }
+
+    @Test
+    void aNonFiniteCouplingFieldFallsBackToStockRatherThanLeakingNaN(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", "{\"engineInertia\": NaN}");
+
+        VehicleSpecOverrides.load(configDir);
+        VehicleSpec.DrivetrainCoupling coupling =
+                VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR).drivetrainCoupling();
+
+        assertEquals(VehicleSpec.CAR.drivetrainCoupling().engineInertia(), coupling.engineInertia(), 1e-9);
+    }
+
+    @Test
+    void everyStockCarShipsTheSharedStockCoupling() {
+        // Shared stock engine hardware: this is what makes the whole feature identity-preserving for a
+        // server with no per-car files at all.
+        for (VehicleSpec spec : new VehicleSpec[] {VehicleSpec.CAR, VehicleSpec.TRUCK, VehicleSpec.TROPHY,
+                VehicleSpec.DRIFT, VehicleSpec.MUSCLE, VehicleSpec.ROCK_CRAWLER, VehicleSpec.MONSTER_TRUCK,
+                VehicleSpec.INDY, VehicleSpec.BUS, VehicleSpec.CARGO_TRUCK}) {
+            assertTrue(spec.drivetrainCoupling().isStock(),
+                    "every roster vehicle must ship the shared stock engine/clutch coupling");
+        }
     }
 
     /** MINECRAFT-443 review fix (comment 48913): VehicleSpecLimits' global 0.1 m floor is inside its own
@@ -284,6 +353,197 @@ class VehicleSpecOverridesTest {
         VehicleSpec resolved = VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR);
 
         assertEquals(VehicleSpec.CAR.wingDragCoeff(), resolved.wingDragCoeff());
+    }
+
+    /** Past {@link VehicleSpecLimits#MAX_TIRE_KIT_DAMPING}, so the loader must clamp rather than reject. */
+    private static final double OVER_MAX_DAMPING = VehicleSpecLimits.MAX_TIRE_KIT_DAMPING * 10;
+    /** In-range tireKit values, written into the file and asserted back out of the resolved spec, so the
+     * JSON and its expectation can never drift apart. */
+    private static final double REQUESTED_SLOW_REBOUND_DAMPING = 500.0;
+    private static final double REQUESTED_BUMP_STOP_TRAVEL = 0.1;
+    private static final double REQUESTED_BUMP_STOP_RATE = 60_000.0;
+    /** An in-range flat dampingRate override, distinct from every roster car's own stock rate. */
+    private static final double REQUESTED_DAMPING_RATE = 5_000.0;
+    /** JSON parses this as a Double but it is not finite -- the realistic corrupt-number shape, since JSON
+     * has no NaN/Infinity literal. */
+    private static final String NON_FINITE_JSON_NUMBER = "1e400";
+
+    @Test
+    void tireKitOverridesOnlyTheFieldsItSetsAndClampsThem(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", """
+                {
+                  "tireKit": {
+                    "compressionDampingFast": %s,
+                    "reboundDampingSlow": %s,
+                    "bumpStopTravel": %s,
+                    "bumpStopRate": %s
+                  }
+                }
+                """.formatted(OVER_MAX_DAMPING, REQUESTED_SLOW_REBOUND_DAMPING, REQUESTED_BUMP_STOP_TRAVEL,
+                        REQUESTED_BUMP_STOP_RATE));
+
+        VehicleSpecOverrides.load(configDir);
+        VehicleSpec.SuspensionTuning tuning = VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR).suspensionTuning();
+
+        // OVER_MAX_DAMPING is out of VehicleSpecLimits' range -- clamped, not rejected outright.
+        assertEquals(VehicleSpecLimits.MAX_TIRE_KIT_DAMPING, tuning.fastCompressionDamping());
+        assertEquals(REQUESTED_SLOW_REBOUND_DAMPING, tuning.slowReboundDamping());
+        assertEquals(REQUESTED_BUMP_STOP_TRAVEL, tuning.bumpStopTravel());
+        assertEquals(REQUESTED_BUMP_STOP_RATE, tuning.bumpStopRate());
+        // Fields the tireKit section did not mention keep the stock car's own value.
+        assertEquals(VehicleSpec.CAR.suspensionTuning().fastReboundDamping(), tuning.fastReboundDamping());
+        assertEquals(VehicleSpec.CAR.suspensionTuning().dampingKneeSpeed(), tuning.dampingKneeSpeed());
+    }
+
+    @Test
+    void anAbsentTireKitSectionKeepsTheStockSuspensionTuningInstance(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", "{\"rideHeight\": 1.0}");
+
+        VehicleSpecOverrides.load(configDir);
+
+        assertSame(VehicleSpec.CAR.suspensionTuning(),
+                VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR).suspensionTuning());
+    }
+
+    @Test
+    void overridingDampingRateWithNoTireKitSectionStillActsAsSingleRate(@TempDir Path configDir) throws IOException {
+        // A file that only sets the flat dampingRate (no tireKit at all) must still behave as single-rate
+        // damping at its NEW dampingRate, not the stock car's old one.
+        writeCarsFile(configDir, "car", "{\"dampingRate\": %s}".formatted(REQUESTED_DAMPING_RATE));
+
+        VehicleSpecOverrides.load(configDir);
+        VehicleSpec resolved = VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR);
+
+        assertEquals(REQUESTED_DAMPING_RATE, resolved.dampingRate());
+        assertEquals(VehicleSpec.SuspensionTuning.singleRate(REQUESTED_DAMPING_RATE), resolved.suspensionTuning());
+    }
+
+    @Test
+    void nonFiniteTireKitFieldsFallBackToTheStockValue(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car",
+                "{\"tireKit\": {\"bumpStopRate\": %s}}".formatted(NON_FINITE_JSON_NUMBER));
+
+        VehicleSpecOverrides.load(configDir);
+        VehicleSpec resolved = VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR);
+
+        assertEquals(VehicleSpec.CAR.suspensionTuning().bumpStopRate(), resolved.suspensionTuning().bumpStopRate());
+    }
+
+    /** An in-range opposite-phase rear-steer request, written into the file and asserted back out. */
+    private static final double REQUESTED_REAR_STEER_RATIO = -0.25;
+
+    @Test
+    void rearSteerRatioOverridesAndClampsThroughTheTireKitSection(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car",
+                "{\"tireKit\": {\"rearSteerRatio\": %s}}".formatted(REQUESTED_REAR_STEER_RATIO));
+
+        VehicleSpecOverrides.load(configDir);
+        VehicleSpec resolved = VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR);
+
+        assertEquals(REQUESTED_REAR_STEER_RATIO, resolved.steeringTuning().rearSteerRatio());
+        // Nothing else in the tireKit section was mentioned, so the suspension side keeps its stock
+        // VALUES. Deliberately not assertSame: a present tireKit section rebuilds the suspension record
+        // from its own per-field stock fallbacks, so the instance is equal but new. Instance identity is
+        // only contractual when the section is ABSENT entirely -- see
+        // anAbsentTireKitSectionKeepsTheStockSuspensionTuningInstance, which pins that case.
+        assertEquals(VehicleSpec.CAR.suspensionTuning(), resolved.suspensionTuning());
+    }
+
+    @Test
+    void anOutOfRangeRearSteerRatioIsClampedNotRejected(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", "{\"tireKit\": {\"rearSteerRatio\": -9.0}}");
+
+        VehicleSpecOverrides.load(configDir);
+
+        assertEquals(VehicleSpecLimits.MIN_REAR_STEER_RATIO,
+                VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR).steeringTuning().rearSteerRatio());
+    }
+
+    @Test
+    void aTireKitWithoutRearSteerKeepsTheStockSteeringInstance(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", "{\"tireKit\": {\"bumpStopRate\": 1000.0}}");
+
+        VehicleSpecOverrides.load(configDir);
+
+        assertSame(VehicleSpec.CAR.steeringTuning(),
+                VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR).steeringTuning());
+    }
+
+    @Test
+    void aNonFiniteRearSteerRatioFallsBackToStock(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car",
+                "{\"tireKit\": {\"rearSteerRatio\": %s}}".formatted(NON_FINITE_JSON_NUMBER));
+
+        VehicleSpecOverrides.load(configDir);
+
+        assertEquals(VehicleSpec.CAR.steeringTuning().rearSteerRatio(),
+                VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR).steeringTuning().rearSteerRatio());
+    }
+
+    @Test
+    void tirePressureOverridesAndClampsThroughTheTireKitSection(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", "{\"tireKit\": {\"tirePressureBar\": 1.1}}");
+
+        VehicleSpecOverrides.load(configDir);
+
+        assertEquals(1.1, VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR).tirePressureBar());
+    }
+
+    @Test
+    void anOutOfRangeTirePressureIsClampedIntoTheSafeRange(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", "{\"tireKit\": {\"tirePressureBar\": 0.0}}");
+
+        VehicleSpecOverrides.load(configDir);
+
+        // 0.0 would divide by zero in both pressure multipliers; the loader must clamp it to the floor.
+        assertEquals(VehicleSpecLimits.MIN_TIRE_PRESSURE_BAR,
+                VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR).tirePressureBar());
+    }
+
+    @Test
+    void aTireKitWithoutTirePressureKeepsTheStockNominalPressure(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", "{\"tireKit\": {\"rearSteerRatio\": -0.1}}");
+
+        VehicleSpecOverrides.load(configDir);
+
+        assertEquals(VehicleSpec.CAR.tirePressureBar(),
+                VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR).tirePressureBar());
+    }
+
+    @Test
+    void antiDiveAndAntiSquatOverrideIndependentlyAndClamp(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", "{\"tireKit\": {\"antiDive\": 0.6, \"antiSquat\": 9.0}}");
+
+        VehicleSpecOverrides.load(configDir);
+        VehicleSpec.PitchTuning pitch =
+                VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR).pitchTuning();
+
+        assertEquals(0.6, pitch.antiDive());
+        // 9.0 is past the range -- clamped, not rejected, same as every other field in this format.
+        assertEquals(VehicleSpecLimits.MAX_PITCH_RESIST, pitch.antiSquat());
+    }
+
+    @Test
+    void settingOnlyAntiDiveLeavesAntiSquatAtStock(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", "{\"tireKit\": {\"antiDive\": 0.4}}");
+
+        VehicleSpecOverrides.load(configDir);
+        VehicleSpec.PitchTuning pitch =
+                VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR).pitchTuning();
+
+        assertEquals(0.4, pitch.antiDive());
+        assertEquals(VehicleSpec.CAR.pitchTuning().antiSquat(), pitch.antiSquat());
+    }
+
+    @Test
+    void aTireKitMentioningNeitherPitchFieldKeepsTheStockPitchInstance(@TempDir Path configDir)
+            throws IOException {
+        writeCarsFile(configDir, "car", "{\"tireKit\": {\"tirePressureBar\": 2.0}}");
+
+        VehicleSpecOverrides.load(configDir);
+
+        assertSame(VehicleSpec.CAR.pitchTuning(),
+                VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR).pitchTuning());
     }
 
     @Test

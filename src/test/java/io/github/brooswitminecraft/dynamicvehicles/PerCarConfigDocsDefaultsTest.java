@@ -20,6 +20,14 @@ class PerCarConfigDocsDefaultsTest {
              * 0.0/0.0/0.4 -- no wing, and the old global air-drag constant unchanged. */
             double frontDownforceCoeff, double rearDownforceCoeff, double dragCoeff) {}
 
+    /** MINECRAFT-444's own four coupling columns. Every car on the roster ships the same shared stock
+     * engine, so these are one expected row rather than ten -- but they are still pinned against
+     * {@link VehicleSpec} per car, so a future per-car engine would fail here rather than drift. */
+    private static final double DOC_ENGINE_INERTIA = 0.18;
+    private static final double DOC_ENGINE_PEAK_TORQUE = 930.0;
+    private static final double DOC_ENGINE_BRAKING_TORQUE = 55.0;
+    private static final double DOC_CLUTCH_TORQUE_CAPACITY = 1200.0;
+
     @Test
     void everyDocumentedCarDefaultMatchesItsVehicleSpec() {
         assertRow("car", VehicleSpec.CAR, new Expected(0.9, 3400.0, 1.0, 1.0, 1.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.4));
@@ -34,8 +42,71 @@ class PerCarConfigDocsDefaultsTest {
         assertRow("cargo_truck", VehicleSpec.CARGO_TRUCK, new Expected(1.1, 13600.0, 1.0, 0.7, 1.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.4));
     }
 
+    /**
+     * MINECRAFT-445: the {@code tireKit} section's documented claim that every car on the roster still
+     * ships identity (single-rate, no bump stop) suspension tuning, so adding two-rate damping and bump
+     * stops changed no existing car's stock feel. A future ticket that genuinely tunes one of these cars
+     * is expected to fail this and update both the doc and this list.
+     */
+    @Test
+    void everyCarStillShipsSingleRateDampingAndNoBumpStop() {
+        for (VehicleSpec spec : new VehicleSpec[] {VehicleSpec.CAR, VehicleSpec.TRUCK, VehicleSpec.TROPHY,
+                VehicleSpec.DRIFT, VehicleSpec.MUSCLE, VehicleSpec.ROCK_CRAWLER, VehicleSpec.MONSTER_TRUCK,
+                VehicleSpec.INDY, VehicleSpec.BUS, VehicleSpec.CARGO_TRUCK}) {
+            assertEquals(VehicleSpec.SuspensionTuning.singleRate(spec.dampingRate()), spec.suspensionTuning(),
+                    "suspensionTuning must still be singleRate(dampingRate) (docs/per-car-config.md, tireKit)");
+        }
+    }
+
+    /**
+     * MINECRAFT-445: the {@code tireKit} section's documented claim that no car on the roster steers its
+     * rear wheels, so adding rear steering changed no existing car's handling. A rear ratio of exactly
+     * 0.0 makes the rear wheels' steer angle exactly 0.0 -- bit for bit the literal the production code
+     * used before the field existed.
+     */
+    @Test
+    void everyCarStillShipsWithoutRearSteering() {
+        for (VehicleSpec spec : new VehicleSpec[] {VehicleSpec.CAR, VehicleSpec.TRUCK, VehicleSpec.TROPHY,
+                VehicleSpec.DRIFT, VehicleSpec.MUSCLE, VehicleSpec.ROCK_CRAWLER, VehicleSpec.MONSTER_TRUCK,
+                VehicleSpec.INDY, VehicleSpec.BUS, VehicleSpec.CARGO_TRUCK}) {
+            assertEquals(VehicleSpec.SteeringTuning.IDENTITY, spec.steeringTuning(),
+                    "steeringTuning must still be IDENTITY (docs/per-car-config.md, tireKit)");
+            assertEquals(0.0, spec.steeringTuning().rearSteerRatio(),
+                    "a roster car gained rear steering without the docs table being updated");
+        }
+    }
+
+    /** MINECRAFT-445: no roster car configures a tire pressure, so every one sits at nominal, where both
+     * pressure multipliers are exactly 1.0 and grip/rolling resistance are unchanged. */
+    @Test
+    void everyCarStillShipsAtNominalTirePressure() {
+        for (VehicleSpec spec : new VehicleSpec[] {VehicleSpec.CAR, VehicleSpec.TRUCK, VehicleSpec.TROPHY,
+                VehicleSpec.DRIFT, VehicleSpec.MUSCLE, VehicleSpec.ROCK_CRAWLER, VehicleSpec.MONSTER_TRUCK,
+                VehicleSpec.INDY, VehicleSpec.BUS, VehicleSpec.CARGO_TRUCK}) {
+            assertEquals(WheelMath.NOMINAL_TIRE_PRESSURE_BAR, spec.tirePressureBar(),
+                    "a roster car gained a non-nominal tire pressure without the docs table being updated");
+        }
+    }
+
+    /** MINECRAFT-445: no roster car configures anti-dive or anti-squat, so every one still applies its
+     * tire forces at the contact patch and pitches exactly as it did. */
+    @Test
+    void everyCarStillShipsWithoutAntiDiveOrAntiSquat() {
+        for (VehicleSpec spec : new VehicleSpec[] {VehicleSpec.CAR, VehicleSpec.TRUCK, VehicleSpec.TROPHY,
+                VehicleSpec.DRIFT, VehicleSpec.MUSCLE, VehicleSpec.ROCK_CRAWLER, VehicleSpec.MONSTER_TRUCK,
+                VehicleSpec.INDY, VehicleSpec.BUS, VehicleSpec.CARGO_TRUCK}) {
+            assertEquals(VehicleSpec.PitchTuning.IDENTITY, spec.pitchTuning(),
+                    "pitchTuning must still be IDENTITY (docs/per-car-config.md, tireKit)");
+        }
+    }
+
     private static void assertRow(String id, VehicleSpec spec, Expected expected) {
         VehicleSpec.VehicleTuning tuning = spec.vehicleTuning();
+        VehicleSpec.DrivetrainCoupling coupling = spec.drivetrainCoupling();
+        assertEquals(DOC_ENGINE_INERTIA, coupling.engineInertia(), 1e-9, id + ".engineInertia (docs/per-car-config.md)");
+        assertEquals(DOC_ENGINE_PEAK_TORQUE, coupling.enginePeakTorque(), 1e-9, id + ".enginePeakTorque (docs/per-car-config.md)");
+        assertEquals(DOC_ENGINE_BRAKING_TORQUE, coupling.engineBrakingTorque(), 1e-9, id + ".engineBrakingTorque (docs/per-car-config.md)");
+        assertEquals(DOC_CLUTCH_TORQUE_CAPACITY, coupling.clutchTorqueCapacity(), 1e-9, id + ".clutchTorqueCapacity (docs/per-car-config.md)");
         assertEquals(expected.rideHeight(), spec.rideHeight(), 1e-9, id + ".rideHeight (docs/per-car-config.md)");
         assertEquals(expected.dampingRate(), spec.dampingRate(), 1e-9, id + ".dampingRate (docs/per-car-config.md)");
         assertEquals(expected.antiRollScale(), spec.antiRollScale(), 1e-9, id + ".antiRollScale (docs/per-car-config.md)");

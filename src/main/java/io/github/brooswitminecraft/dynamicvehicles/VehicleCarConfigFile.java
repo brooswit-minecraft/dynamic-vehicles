@@ -2,14 +2,8 @@ package io.github.brooswitminecraft.dynamicvehicles;
 
 /**
  * The JSON shape of one {@code config/dynamicvehicles/cars/<id>.json} file (MINECRAFT-443). Every field is
- * a boxed {@code Double}/{@code Boolean} so it can be absent (left {@code null} by Gson) &mdash; an absent
- * field means "keep this car's stock default", not zero/false. Gson silently ignores any JSON key with no
- * matching field here, which is how a still-reserved-but-not-yet-implemented top-level section stays
- * parseable without exposing nonfunctional settings: {@code tireKit} (MINECRAFT-445), {@code computer}
- * (MINECRAFT-448) and {@code engine} (MINECRAFT-449) each belong to that task, which adds its own field(s)
- * to its own section here when it implements real behaviour &mdash; none of those three is read or
- * round-tripped by this loader today. Two sections ARE implemented: {@code wing} (MINECRAFT-446) via
- * {@link Wing}, and {@code diffuser} (MINECRAFT-447) via {@link Diffuser}.
+ * Optional fields retain stock defaults when absent. tireKit, wing and diffuser are implemented;
+ * computer and engine remain reserved for their owning tasks.
  *
  * <p>See {@code docs/per-car-config.md} for the full schema, units, ranges and defaults.
  */
@@ -24,6 +18,39 @@ final class VehicleCarConfigFile {
     Double vectoringGain;
     Double camberDeg;
     Double toeDeg;
+    TireKit tireKit;
+
+    /**
+     * MINECRAFT-445: two-rate (compression/rebound) damping and bump stop, layered on top of the existing
+     * {@code dampingRate} field above (which this section treats as the car's slow-compression rate,
+     * unchanged). Every field here is itself optional, same "absent means stock" rule as the flat fields
+     * above &mdash; an absent {@code tireKit} section, or a {@code tireKit} missing some of these fields,
+     * keeps this car's stock {@link VehicleSpec.SuspensionTuning} for exactly the fields it did not mention.
+     * See {@code docs/per-car-config.md} for units/ranges/defaults.
+     */
+    static final class TireKit {
+        Double compressionDampingFast;
+        Double reboundDampingSlow;
+        Double reboundDampingFast;
+        Double dampingKneeSpeed;
+        Double bumpStopTravel;
+        Double bumpStopRate;
+        Double rearSteerRatio;
+        Double tirePressureBar;
+        Double antiDive;
+        Double antiSquat;
+    }
+
+    // Engine/clutch coupling (MINECRAFT-444). Deliberately flat top-level fields, like every field above,
+    // and deliberately NOT inside the reserved `engine` section: that section stays MINECRAFT-449's own
+    // (rev-limit thresholds, turbo, nitrous, ballast). These four are the coupling parameters
+    // MINECRAFT-444 itself implements -- see docs/per-car-config.md for the boundary.
+    Double engineInertia;
+    Double enginePeakTorque;
+    Double engineBrakingTorque;
+    Double clutchTorqueCapacity;
+
+
     /** The {@code "diffuser": { ... }} nested object (MINECRAFT-447), absent ({@code null}) entirely if the
      * file has no such key at all &mdash; every field within it is independently optional the same way the
      * top-level fields are. */

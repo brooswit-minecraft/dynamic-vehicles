@@ -2,6 +2,9 @@ package io.github.brooswitminecraft.dynamicvehicles;
 
 import io.github.brooswitminecraft.dynamicterrain.Erosion;
 import io.github.brooswitminecraft.dynamicterrain.SlipMath;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import net.minecraft.core.BlockPos;
@@ -30,6 +33,35 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 @GameTestHolder(DynamicVehiclesMod.MODID)
 @PrefixGameTestTemplate(false)
 public final class CarDrivetrainGameTests {
+    /** One server tick, seconds -- the same dt {@code CarEntity} hands {@code SableCarBody.tick} (its own
+     * private {@code DT}), named here so these tests' torque/inertia bounds read as "per tick" rather than
+     * repeating the literal. */
+    private static final double TICK_DT = 1.0 / 20.0;
+    /** How close to {@link DrivetrainMath#CLUTCH_TORQUE_CAPACITY} counts as saturated, and how far past it
+     * counts as a violation, N*m -- a floating-point slack, not a behavioural allowance. */
+    private static final double CLUTCH_SATURATION_TOLERANCE = 1e-6;
+    /** Slack on the reaction-impulse identity, N*m -- same role: this identity is exact arithmetic. */
+    private static final double REACTION_IDENTITY_TOLERANCE = 1e-6;
+    /** Slack on "no wheel receives more than the clutch transmitted", N -- the per-wheel force and the
+     * transmitted bound are both read from the same tick's own production state, so this is floating-point
+     * slack only. */
+    private static final double WHEEL_FORCE_BOUND_TOLERANCE = 1e-6;
+    /** A clutch capacity far below the stock engine's own output (930 - 55 N*m), so it genuinely saturates
+     * at full throttle -- see {@code aLowConfiguredClutchCapacitySaturatesTheExchangeAndLimitsTheCar}. */
+    private static final double LOW_CLUTCH_CAPACITY = 60.0;
+    /** Slack on the two-shaft exchange balance, N*m: this identity is exact arithmetic. */
+    private static final double EXCHANGE_BALANCE_TOLERANCE = 1e-6;
+    /** Slack on the signed realized-impulse books (a wheel's own drive impulse against its share of the
+     * clutch exchange, and the shares summing to the whole), N*s: exact arithmetic, floating-point only. */
+    private static final double IMPULSE_IDENTITY_TOLERANCE = 1e-6;
+    /** Slack on the clutch's own torque bounds and the wheel-to-engine transform, N*m: exact arithmetic. */
+    private static final double TORQUE_IDENTITY_TOLERANCE = 1e-6;
+    /** Slack on "the clutch never creates energy" within one tick, J: exact arithmetic. */
+    private static final double ENERGY_IDENTITY_TOLERANCE = 1e-6;
+    /** How much measured body rotation about the engine's own axis counts as a real response, rad/s --
+     * small, because the suspension and ground contact resist it, but far above numerical noise. */
+    private static final double ENGINE_AXIS_RESPONSE_FLOOR = 1e-4;
+
     private CarDrivetrainGameTests() {}
 
     /** Review P1/core ticket ask: D1's own extra torque multiplier must show up as a real, measurably
@@ -85,7 +117,7 @@ public final class CarDrivetrainGameTests {
             helper.assertTrue(riderD1.startRiding(carD1), "mock player failed to board the D1 car");
             Player riderD5 = helper.makeMockPlayer(GameType.CREATIVE);
             helper.assertTrue(riderD5.startRiding(carD5), "mock player failed to board the D5 car");
-            helper.startSequence().thenIdle(SETTLE_TICKS).thenWaitUntil(() -> {
+            helper.startSequence().thenIdle(GEAR_RATIO_SETTLE_TICKS).thenWaitUntil(() -> {
                 // Gated on HORIZONTAL speed, not debugSpeed(). debugSpeed() is the body's full 3D velocity
                 // magnitude and it does not converge to zero: measured on CI, both cars sat at exactly
                 // 0.28257137537002563 after 80 settling ticks -- identical to every digit, so an irreducible
@@ -132,7 +164,7 @@ public final class CarDrivetrainGameTests {
 
     /** Ticks the cars are left at zero throttle before anything is measured. Longer than the original 60:
      * the gate below is far tighter now, and a car needs the time to actually get there. */
-    private static final int SETTLE_TICKS = 80;
+    private static final int GEAR_RATIO_SETTLE_TICKS = 80;
 
     /** How slow a car must be HORIZONTALLY (m/s) to count as settled before throttle is applied. 15x
      * tighter than the 1.5 of full 3D speed this test used to accept, and tight relative to the speeds the
@@ -319,6 +351,7 @@ public final class CarDrivetrainGameTests {
         double[] worstWheelSpinDeltaContactSpeed = {0.0};
         double[] worstWheelSpinDeltaForce = {0.0};
         double[] worstRpmConsistencyGap = {0.0};
+        double[] previousEngineRpm = {Double.NaN};
         for (long tick = 1; tick <= 50; tick++) {
             helper.runAfterDelay(tick, () -> {
                 // Review, round 5 (second pass): clientEngineRpmFraction() reads DATA_RPM, which
@@ -356,16 +389,28 @@ public final class CarDrivetrainGameTests {
                 // range "inconsistency" that had nothing to do with the drivetrain itself.
                 double[] wheelSpins = car.debugWheelSpins();
                 int wheelCount = Math.min(wheelSpins.length, previousWheelSpin.length);
+                // MINECRAFT-444: debugEngineRpm() is no longer a pure, instantaneous function of the prior
+                // wheel spin and gear ratio -- the engine now carries its OWN rotational inertia
+                // (DrivetrainMath.engineAngularVelocity), coupled to the wheel side only through a
+                // torque-limited clutch (DrivetrainMath.clutchTorque), exactly the genuine gap this ticket
+                // closes. Re-deriving "expectedRpm" from wheel spin alone (the old assertion here) would
+                // now be WRONG on a pinned, wheelspinning wall-launch like this one on purpose: the clutch
+                // can legitimately be slipping, so engine RPM and wheel-implied RPM are expected to diverge,
+                // not stay identical. What must still hold -- the same "faithful, internally consistent,
+                // not an independent value that could snap/reset out of step with the model" property the
+                // original round-5 review asked for -- is that debugEngineRpm() itself can only change as
+                // fast as the engine's own finite inertia and the engine/clutch torque bounds allow in one
+                // tick, the same kind of physically-bounded-rate check the wheelSpin delta below already
+                // makes, now applied to the engine side's own now-finite state instead of to an
+                // instantaneous snap that no longer exists to compare against.
                 if (haveWheelPrevious[0]) {
-                    double priorWheelSpinAvg = 0.0;
-                    for (int wheel = 0; wheel < wheelCount; wheel++) {
-                        priorWheelSpinAvg += Math.abs(previousWheelSpin[wheel]);
-                    }
-                    priorWheelSpinAvg /= Math.max(1, wheelCount);
-                    double expectedRpm = DrivetrainMath.clampRpm(DrivetrainMath.rawRpm(priorWheelSpinAvg, car.debugGearRatio()));
-                    double gap = Math.abs(car.debugEngineRpm() - expectedRpm);
+                    double worstCaseOmegaDeltaPerTick = (DrivetrainMath.ENGINE_PEAK_TORQUE + DrivetrainMath.CLUTCH_TORQUE_CAPACITY)
+                            / DrivetrainMath.ENGINE_INERTIA * TICK_DT;
+                    double maxRpmDeltaPerTick = DrivetrainMath.omegaToRpm(worstCaseOmegaDeltaPerTick);
+                    double gap = Math.abs(car.debugEngineRpm() - previousEngineRpm[0]) - maxRpmDeltaPerTick;
                     worstRpmConsistencyGap[0] = Math.max(worstRpmConsistencyGap[0], gap);
                 }
+                previousEngineRpm[0] = car.debugEngineRpm();
                 // Review, round 5: the actual WHEEL's own spin (not only the engine-side proxy) must also
                 // recover gradually -- DrivetrainMath.boundedSpinTowardSnap's own fix, observed here
                 // directly rather than through the client-sync accessor other tests use for rendering.
@@ -388,7 +433,7 @@ public final class CarDrivetrainGameTests {
         }
         helper.runAfterDelay(55L, () -> {
             helper.assertTrue(worstRpmConsistencyGap[0] < 1e-6,
-                    "debugEngineRpm() diverged from what DrivetrainMath itself computes from this tick's own wheel spin and gear ratio -- not internally consistent: worst gap="
+                    "debugEngineRpm() changed, in a single tick, by more than the engine's own finite inertia/torque/clutch-capacity bound allows -- not internally consistent: worst excess over the bound="
                             + worstRpmConsistencyGap[0] + " RPM");
             // Review, round 6 corrected what this bound was derived FROM, twice over:
             // 1) Round 5's own comment multiplied a single full-tick-dt estimate by up to 4
@@ -442,13 +487,18 @@ public final class CarDrivetrainGameTests {
         VehicleLanes.build(helper, VehicleLanes.Site.NON_SHIFTER, lanes -> {
             CarEntity car = lanes.spawn(DynamicVehiclesMod.CAR.get(), VehicleLanes.spawnPoint(VehicleLanes.FIRST_LANE_X));
             car.setYRot(0.0f);
-            lanes.assertStaysOnLane(car, VehicleLanes.FIRST_LANE_X, VehicleLanes.allWheels(Blocks.GRASS_BLOCK), LANE_WEAR,
+            lanes.assertStaysOnLane(car, VehicleLanes.FIRST_LANE_X, VehicleLanes.allWheels(Blocks.GRASS_BLOCK), VehicleLanes.Wear.ANY_STAGE,
                     2L, 119L, "car");
             // Deliberately never call selectGear: this is the exact state a keyboard/gamepad driver who has
             // never touched the reverse key is in.
             Player rider = helper.makeMockPlayer(GameType.CREATIVE);
             helper.assertTrue(rider.startRiding(car), "mock player failed to board the car");
             rider.zza = 1.0f;
+            // Mock players have no input packets: vanilla decays zza each tick. Reapply the
+            // held accelerator so this actually exercises the promised sustained throttle.
+            for (int t = 1; t < 120; t++) {
+                helper.runAfterDelay(t, () -> rider.zza = 1.0f);
+            }
             helper.runAfterDelay(120L, () -> {
                 helper.assertTrue(car.debugAutomaticGearIndex() > 0,
                         "a non-shifter driver's default gear stayed pinned at index 0 (first gear) under sustained throttle instead of shifting up: index="
@@ -664,6 +714,12 @@ public final class CarDrivetrainGameTests {
         }
 
         CarEntity[] carRef = new CarEntity[1];
+        // MINECRAFT-445 diagnostic accumulators (49254) -- see their use in the sampling step below.
+        boolean[] bodyEverExisted = {false};
+        boolean[] everTouched = {false};
+        boolean[] rampPresentAtFirstSample = {false};
+        Vec3[] firstSamplePos = {null};
+        Vec3[] lastSamplePos = {null};
         Runnable cleanup = () -> {
             if (carRef[0] != null) {
                 carRef[0].discard();
@@ -760,6 +816,23 @@ public final class CarDrivetrainGameTests {
                             firstUngroundedTick[0] = sampleTick;
                         }
                     }
+                    // MINECRAFT-445 diagnostic (ticket comment 49254): when this fixture's own setup gate
+                    // fails with "never built forward speed", the message alone cannot distinguish a car
+                    // that never ticked, from one whose rig had been removed under it, from one that simply
+                    // never gripped. These four are the state that tells them apart, recorded as they were
+                    // DURING the window rather than re-read afterwards (by then the rig may be cleaned up).
+                    if (car.sableBody() != null) {
+                        bodyEverExisted[0] = true;
+                    }
+                    if (car.debugTouching()) {
+                        everTouched[0] = true;
+                    }
+                    if (sampleTick == 1) {
+                        firstSamplePos[0] = car.position();
+                        rampPresentAtFirstSample[0] =
+                                !level.getBlockState(new BlockPos(originX, originY - 1, originZ)).isAir();
+                    }
+                    lastSamplePos[0] = car.position();
                 })
                 .thenExecute(() -> {
                     CarEntity car = carRef[0];
@@ -772,7 +845,20 @@ public final class CarDrivetrainGameTests {
                             "car speed diverged after driving off a ledge: " + finalSpeed);
                     helper.assertTrue(peakForwardVelocity[0] > 1.0,
                             "car never actually built real forward speed under its own drive -- test setup invalid: peak forward velocity="
-                                    + peakForwardVelocity[0]);
+                                    + peakForwardVelocity[0]
+                                    // MINECRAFT-445 diagnostic (49254): which of the candidate causes it was.
+                                    + " [rig origin=(" + originX + "," + originY + "," + originZ + ")"
+                                    + " firstSamplePos=" + firstSamplePos[0]
+                                    + " lastSamplePos=" + lastSamplePos[0]
+                                    + " samples=" + sampleTickCount[0]
+                                    + " bodyEverExisted=" + bodyEverExisted[0]
+                                    + " everTouchedGround=" + everTouched[0]
+                                    + " rampPresentAtFirstSample=" + rampPresentAtFirstSample[0]
+                                    + " rampPresentNow=" + !level.getBlockState(
+                                            new BlockPos(originX, originY - 1, originZ)).isAir()
+                                    + " originChunkStillForced=" + level.getForcedChunks().contains(
+                                            new ChunkPos(originX >> 4, originZ >> 4).toLong())
+                                    + "]");
                     double traveled = car.getZ() - startZ[0];
                     helper.assertTrue(minVerticalVelocity[0] < -2.0,
                             "car never showed a real falling (negative Y velocity) at any point -- the ledge drop never actually left the ground: worst Y velocity="
@@ -874,12 +960,21 @@ public final class CarDrivetrainGameTests {
                     // more real time to reverse a multi-m/s roll than the round-2 version of this test
                     // allowed for.
                     helper.runAfterDelay(250L, () -> {
+                        // These two cars are spawned 10 blocks apart in Z and spend the
+                        // pre-switch phase driving TOWARD each other, so "never reversed" has two very
+                        // different causes -- no opposing force reaching the tire, or the two cars simply
+                        // meeting and pinning each other. Report enough to tell them apart rather than
+                        // leaving the next reader to guess (both cars' own velocity AND their separation).
+                        String evidence = " [forwardFirst v=" + forwardVelocity(forwardFirst) + " z="
+                                + forwardFirst.getZ() + ", reverseFirst v=" + forwardVelocity(reverseFirst)
+                                + " z=" + reverseFirst.getZ() + ", separation="
+                                + Math.abs(forwardFirst.getZ() - reverseFirst.getZ()) + " blocks]";
                         helper.assertTrue(forwardVelocity(forwardFirst) < 0.0,
                                 "forward-first car never actually reversed direction under sustained opposing throttle: "
-                                        + forwardVelocity(forwardFirst));
+                                        + forwardVelocity(forwardFirst) + evidence);
                         helper.assertTrue(forwardVelocity(reverseFirst) > 0.0,
                                 "reverse-first car never actually went forward under sustained opposing throttle: "
-                                        + forwardVelocity(reverseFirst));
+                                        + forwardVelocity(reverseFirst) + evidence);
                         helper.succeed();
                     });
                 });
@@ -930,7 +1025,7 @@ public final class CarDrivetrainGameTests {
                 carOneStep.setYRot(0.0f);
                 carOneStep.selectGear(CarPhysics.Gear.D1);
                 lanes.assertStaysOnLane(carOneStep, VehicleLanes.FIRST_LANE_X, VehicleLanes.allWheels(Blocks.GRASS_BLOCK),
-                        LANE_WEAR, 2L, 29L, "1-substep car");
+                        VehicleLanes.Wear.ANY_STAGE, 2L, 29L, "1-substep car");
                 Player riderOneStep = helper.makeMockPlayer(GameType.CREATIVE);
                 helper.assertTrue(riderOneStep.startRiding(carOneStep), "mock player failed to board the 1-substep car");
                 riderOneStep.zza = 1.0f;
@@ -952,7 +1047,7 @@ public final class CarDrivetrainGameTests {
             carFourStep.setYRot(0.0f);
             carFourStep.selectGear(CarPhysics.Gear.D1);
             lanes.assertStaysOnLane(carFourStep, VehicleLanes.THIRD_LANE_X, VehicleLanes.allWheels(Blocks.GRASS_BLOCK),
-                    LANE_WEAR, 2L, 29L, "4-substep car");
+                    VehicleLanes.Wear.ANY_STAGE, 2L, 29L, "4-substep car");
             Player riderFourStep = helper.makeMockPlayer(GameType.CREATIVE);
             helper.assertTrue(riderFourStep.startRiding(carFourStep), "mock player failed to board the 4-substep car");
             riderFourStep.zza = 1.0f;
@@ -1092,7 +1187,7 @@ public final class CarDrivetrainGameTests {
                                 // is that divided by subDt to read as a FORCE (N) - at wheelSubSteps=1,
                                 // subDt == this tick's own dt (1/20 s, CarEntity.DT), so this test must
                                 // divide by that same dt to compare force-to-force, not impulse-to-force.
-                                double expectedReaction = -deltaSpin * WheelMath.WHEEL_INERTIA / (CarGeometry.WHEEL_RADIUS * (1.0 / 20.0));
+                                double expectedReaction = -deltaSpin * WheelMath.WHEEL_INERTIA / (CarGeometry.WHEEL_RADIUS * TICK_DT);
                                 helper.assertTrue(Math.abs(reactions[wheel] - expectedReaction) < 1.0,
                                         "wheel " + wheel + " at tick " + thisTick
                                                 + ": the real reaction force did not match the momentum/Newton's-third-law identity for this tick's own actual spin change -- missing, duplicated or mis-signed application: reaction="
@@ -1170,6 +1265,1326 @@ public final class CarDrivetrainGameTests {
         } catch (RuntimeException e) {
             CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
             throw e;
+        }
+    }
+
+    // =====================================================================================================
+    // MINECRAFT-444 review round 3. Every test from here on that needs a car to actually DRIVE runs on its
+    // own Lane at fixed near-origin coordinates (see Lane for why: GameTest's own far-coordinate placement
+    // is what left the stock car of aLowConfiguredClutchCapacitySaturatesTheExchangeAndLimitsTheCar lifted,
+    // out of contact and at 0.074 m/s in CI run 39369148498), drives its cars only once they have settled on
+    // their own suspension (Lane#startWhenSettled), and audits the clutch exchange tick by tick with
+    // ExchangeBooks. Each test's steps form one GameTestSequence started from the test method's own top
+    // level: sequences are ticked from GameTestInfo's own sequence list, never runAtTickTimeMap, so no step
+    // can hit the round-14 server crash a nested runAfterDelay registration causes -- the reason
+    // carRecoversCleanlyAfterDrivingOffALedgeAndLanding uses the same API.
+    // =====================================================================================================
+
+    /** One lane index per test, so tests that share a batch never share space. */
+    private static final int LANE_ENGINE_BRAKING = 0;
+    private static final int LANE_LOW_CLUTCH_CAPACITY = 1;
+    private static final int LANE_REACTION_SIGN = 2;
+    private static final int LANE_REACTION_FRAME = 3;
+    private static final int LANE_BOOKS_LAUNCH = 4;
+    private static final int LANE_BOOKS_SHIFTS = 5;
+    private static final int LANE_BOOKS_OPPOSED = 6;
+    private static final int LANE_MIRRORED_LOAD = 7;
+    private static final int LANE_AIRBORNE = 8;
+    private static final int LANE_PARTIAL = 9;
+    /** Ticks a freshly built lane idles before its cars are spawned -- vanilla's own
+     * {@code GameTestInfo#ticksToWaitForChunkLoading}, which carRecoversCleanlyAfterDrivingOffALedgeAndLanding
+     * also idles before spawning onto its own forced chunks. */
+    private static final int LANE_READY_TICKS = 20;
+    /** Ticks of its OWN a spawned car settles on its suspension, throttle shut, before a test drives it --
+     * counted on the car's own {@code tickCount}, not the test's clock; see {@link Lane#startWhenSettled}. */
+    private static final int SETTLE_TICKS = 30;
+    /** Speed below which a car counts as settled before it is driven, m/s -- the same bound
+     * d1ReachesAHigherSpeedThanD5OverTheSameShortWindow uses. */
+    private static final double SETTLED_SPEED = 1.5;
+    /** How far a wheel's own surface speed may differ from its ground speed once it counts as recovered
+     * onto the ground, m/s. */
+    private static final double RECOVERED_SPIN_SLIP = 1.0;
+
+    /**
+     * MINECRAFT-444 review round 1, finding 1 (engine braking must actually propagate through the
+     * drivetrain): two identical cars are accelerated in D1 side by side, then the throttle is released on
+     * both and ONE is put in NEUTRAL. The geared car's clutch is still connected, so the wheels turn the
+     * engine against its own drag and the drivetrain retards the car; the neutral car is declutched and can
+     * only lose speed to rolling resistance and air drag. The geared car must therefore decelerate
+     * measurably harder -- the production evidence that the clutch reaches the WHEELS, not merely the
+     * engine's own RPM. Also asserts the real production clutch values' own signs while coasting, read
+     * from the single call site: negative clutch torque (drivetrain -&gt; engine) and a retarding (negative,
+     * i.e. rearward in a forward gear) per-wheel force for the geared car, exactly zero for the neutral one.
+     *
+     * <p>Both measurements are taken while both cars are still above the parked-hold speed
+     * ({@code SableCarBody}'s own {@code throttle == 0 && |forwardSpeed| < 1.5} branch applies the service
+     * brake), so what is compared is drivetrain drag, never that hold.
+     *
+     * <p>Review round 3: runs on its own {@link Lane}. Local reruns on GameTest's far-coordinate structure
+     * placement left one of the two identical cars at 0.06 m/s after the whole 90-tick drive (and, in
+     * another run, both at 0.68 m/s) -- the far-coordinate class {@link Lane} documents -- and the geared
+     * car's 90-tick drive carries it well past the 24-block template, into whatever test sits next to it.
+     * Same drive, same coast, same assertions.
+     */
+    @GameTest(template = "settlement_test", timeoutTicks = 300)
+    public static void engineBrakingInGearDeceleratesACoastingCarHarderThanNeutralDoes(GameTestHelper helper) {
+        Lane lane = Lane.build(helper, LANE_ENGINE_BRAKING, 110);
+        CarEntity[] cars = new CarEntity[2];
+        Player[] riders = new Player[2];
+        double[] speedAtRelease = {0.0, 0.0};
+        double[] worstGearedClutchTorqueWhileCoasting = {0.0};
+        double[] worstGearedClutchForceWhileCoasting = {0.0};
+        double[] worstNeutralClutchForceWhileCoasting = {0.0};
+        lane.startWhenSettled(() -> {
+                    cars[0] = lane.spawnCar("geared car", -3.0, 0.0, 0.0f, CarPhysics.Gear.D1);
+                    cars[1] = lane.spawnCar("neutral car", 3.0, 0.0, 0.0f, CarPhysics.Gear.D1);
+                    riders[0] = lane.board(cars[0]);
+                    riders[1] = lane.board(cars[1]);
+                })
+                .thenExecute(() -> {
+                    riders[0].zza = 1.0f;
+                    riders[1].zza = 1.0f;
+                })
+                .thenIdle(90)
+                .thenExecute(() -> {
+                    // Both cars have been driven identically up to here; now cut throttle and declutch one.
+                    riders[0].zza = 0.0f;
+                    riders[1].zza = 0.0f;
+                    cars[1].selectGear(CarPhysics.Gear.NEUTRAL);
+                    speedAtRelease[0] = cars[0].debugSpeed();
+                    speedAtRelease[1] = cars[1].debugSpeed();
+                    helper.assertTrue(speedAtRelease[0] > 4.0 && speedAtRelease[1] > 4.0,
+                            "test setup invalid -- a car never reached a coast-down speed well above the parked-hold threshold: geared="
+                                    + speedAtRelease[0] + " neutral=" + speedAtRelease[1]);
+                    helper.assertTrue(Math.abs(speedAtRelease[0] - speedAtRelease[1]) < speedAtRelease[0] * 0.25,
+                            "test setup invalid -- the two cars did not start coasting from comparable speeds: geared="
+                                    + speedAtRelease[0] + " neutral=" + speedAtRelease[1]);
+                })
+                .thenIdle(1)
+                .thenExecuteFor(20, () -> {
+                    worstGearedClutchTorqueWhileCoasting[0] =
+                            Math.min(worstGearedClutchTorqueWhileCoasting[0], cars[0].debugClutchTorque());
+                    worstGearedClutchForceWhileCoasting[0] =
+                            Math.min(worstGearedClutchForceWhileCoasting[0], cars[0].debugClutchWheelForce());
+                    worstNeutralClutchForceWhileCoasting[0] = Math.max(worstNeutralClutchForceWhileCoasting[0],
+                            Math.abs(cars[1].debugClutchWheelForce()));
+                })
+                .thenExecute(() -> {
+                    lane.assertOnLane(cars[0], "geared car");
+                    lane.assertOnLane(cars[1], "neutral car");
+                    double gearedLost = speedAtRelease[0] - cars[0].debugSpeed();
+                    double neutralLost = speedAtRelease[1] - cars[1].debugSpeed();
+                    helper.assertTrue(cars[0].debugSpeed() > 1.5,
+                            "test setup invalid -- the geared car dropped into the parked-hold branch during the measured window, so this compares the service brake, not engine braking: speed="
+                                    + cars[0].debugSpeed());
+                    helper.assertTrue(worstGearedClutchTorqueWhileCoasting[0] < 0.0,
+                            "coasting in gear never produced a negative (drivetrain -> engine) clutch torque on the production path: worst="
+                                    + worstGearedClutchTorqueWhileCoasting[0] + " N*m");
+                    helper.assertTrue(worstGearedClutchForceWhileCoasting[0] < 0.0,
+                            "the coasting clutch torque never reached the wheels as a retarding force: worst per-wheel force="
+                                    + worstGearedClutchForceWhileCoasting[0] + " N");
+                    helper.assertTrue(worstNeutralClutchForceWhileCoasting[0] == 0.0,
+                            "NEUTRAL is disengaged and must transmit no wheel force in either direction, but the production path applied up to "
+                                    + worstNeutralClutchForceWhileCoasting[0] + " N");
+                    helper.assertTrue(gearedLost > neutralLost * 1.15,
+                            "coasting in gear did not decelerate the car measurably harder than coasting declutched -- engine braking is not propagating through the drivetrain: geared lost "
+                                    + gearedLost + " m/s, neutral lost " + neutralLost + " m/s");
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * MINECRAFT-444 review round 2, finding 2 (a capacity regression must actually exercise the wheel-side
+     * capacity). Round 1's version could not: it marked saturation from the engine's own sync telemetry
+     * while bounding wheel commands by a different, transmitted quantity, and stock capacity (1200 N*m)
+     * sits above anything the stock engine's own output (930 - 55) can demand, so nothing was ever
+     * genuinely saturated on the side being checked.
+     *
+     * <p>This configures a genuinely LOW clutch capacity through the real per-car config path
+     * ({@code VehicleSpecOverrides.load}, the same loader a server uses -- see
+     * {@code docs/per-car-config.md}), then asserts on the real production exchange: it saturates at that
+     * configured capacity, the wheel command it produces is bounded by exactly that saturated exchange
+     * through the gearing, and -- the resulting response -- the car accelerates far less over the same
+     * window than an identical car whose clutch can carry the engine's output. A clutch that could not
+     * actually limit the wheels would show the two cars accelerating alike.
+     *
+     * <p>Runs in its own batch and restores the override table on every exit path, for the same reason the
+     * sub-step fixtures do: {@code VehicleSpecOverrides}' table is process-global, so nothing else may be
+     * ticking a car while it is mutated. (Each car's spec is resolved once, when it is constructed, so the
+     * limited car keeps its low capacity after the table is restored.)
+     *
+     * <p>Review round 3 (CI run 39369148498 on bb9f4f6): the STOCK car finished at 0.0745 m/s against the
+     * limited car's 0.764 -- the fixture failed, not the coupling. That run's own telemetry shows the stock
+     * car lifted 0.85 m within ten ticks of throttle onset, pitched 9 degrees, every wheel's tire telemetry
+     * frozen (out of contact) from then on: the far-coordinate class {@link Lane} documents (GameTest had
+     * placed it at 12841326, 6885596). Local reruns reproduced it at multi-million coordinates on that head
+     * (stock 3.13 vs limited 2.40; 1.02 vs 0.85) and, separately, on this round's physics before this move
+     * (stock 0.59 and 0.42). Now on its own {@link Lane}, with the fixture established explicitly rather
+     * than assumed: both cars settled with every wheel on the ground before the throttle, and both still
+     * on their own lane at the end. Same window, same thresholds.
+     */
+    @GameTest(template = "settlement_test", timeoutTicks = 260, batch = "carDrivetrainLowClutchCapacityIsolated")
+    public static void aLowConfiguredClutchCapacitySaturatesTheExchangeAndLimitsTheCar(GameTestHelper helper) {
+        Path configDir;
+        try {
+            configDir = Files.createTempDirectory("mc444-low-capacity-config");
+            Path carsDir = configDir.resolve("dynamicvehicles").resolve("cars");
+            Files.createDirectories(carsDir);
+            Files.writeString(carsDir.resolve("car.json"),
+                    "{\"clutchTorqueCapacity\": " + LOW_CLUTCH_CAPACITY + "}");
+        } catch (IOException e) {
+            throw new AssertionError("could not write the per-car config fixture for this test", e);
+        }
+        Path stockConfigDir = configDir.resolve("empty-so-every-car-is-stock");
+        Lane lane = Lane.build(helper, LANE_LOW_CLUTCH_CAPACITY, 70);
+        lane.alsoOnCleanup(() -> VehicleSpecOverrides.load(stockConfigDir));
+        CarEntity[] cars = new CarEntity[2]; // limited, reference
+        Player[] riders = new Player[2];
+        boolean[] everSaturatedAtTheConfiguredCapacity = {false};
+        double[] worstCommandOverExchange = {0.0};
+        lane.startWhenSettled(() -> {
+                    // The limited car is spawned while the override is loaded; the reference car after it is
+                    // cleared, so the two differ in exactly one configured value.
+                    VehicleSpecOverrides.load(configDir);
+                    try {
+                        cars[0] = lane.spawnCar("limited car", -3.0, 0.0, 0.0f, CarPhysics.Gear.D1);
+                    } finally {
+                        VehicleSpecOverrides.load(stockConfigDir);
+                    }
+                    helper.assertTrue(cars[0].debugConfiguredClutchCapacity() == LOW_CLUTCH_CAPACITY,
+                            "test setup invalid -- the low clutch capacity never reached the spawned car's own spec: "
+                                    + cars[0].debugConfiguredClutchCapacity());
+                    cars[1] = lane.spawnCar("reference car", 3.0, 0.0, 0.0f, CarPhysics.Gear.D1);
+                    helper.assertTrue(cars[1].debugConfiguredClutchCapacity() == DrivetrainMath.CLUTCH_TORQUE_CAPACITY,
+                            "test setup invalid -- the reference car did not come back to the stock capacity: "
+                                    + cars[1].debugConfiguredClutchCapacity());
+                    riders[0] = lane.board(cars[0]);
+                    riders[1] = lane.board(cars[1]);
+                })
+                .thenExecute(() -> {
+                    riders[0].zza = 1.0f;
+                    riders[1].zza = 1.0f;
+                })
+                .thenIdle(1)
+                .thenExecuteFor(60, () -> {
+                    double exchange = Math.abs(cars[0].debugClutchTorque());
+                    helper.assertTrue(exchange <= LOW_CLUTCH_CAPACITY + CLUTCH_SATURATION_TOLERANCE,
+                            "the exchange exceeded this car's own CONFIGURED capacity: " + exchange + " > "
+                                    + LOW_CLUTCH_CAPACITY + " N*m");
+                    if (exchange >= LOW_CLUTCH_CAPACITY - CLUTCH_SATURATION_TOLERANCE) {
+                        everSaturatedAtTheConfiguredCapacity[0] = true;
+                    }
+                    double exchangeBound = Math.abs(cars[0].debugClutchWheelForce());
+                    for (double command : cars[0].debugWheelDriveCommands()) {
+                        worstCommandOverExchange[0] = Math.max(worstCommandOverExchange[0],
+                                Math.abs(command) - exchangeBound);
+                    }
+                })
+                .thenIdle(4)
+                .thenExecute(() -> {
+                    lane.assertOnLane(cars[0], "limited car");
+                    lane.assertOnLane(cars[1], "reference car");
+                    helper.assertTrue(everSaturatedAtTheConfiguredCapacity[0],
+                            "test setup invalid -- the configured " + LOW_CLUTCH_CAPACITY
+                                    + " N*m capacity never actually saturated at full throttle, so nothing above was exercised");
+                    helper.assertTrue(worstCommandOverExchange[0] <= WHEEL_FORCE_BOUND_TOLERANCE,
+                            "a wheel was commanded more than the saturated exchange could transmit, by "
+                                    + worstCommandOverExchange[0] + " N");
+                    // The resulting response: a clutch that cannot carry the engine's output must actually
+                    // hold the car back, not merely report a bounded number.
+                    helper.assertTrue(cars[1].debugSpeed() > cars[0].debugSpeed() * 2.0,
+                            "a clutch limited to " + LOW_CLUTCH_CAPACITY
+                                    + " N*m did not measurably limit the car: limited=" + cars[0].debugSpeed()
+                                    + " m/s vs stock-capacity reference=" + cars[1].debugSpeed() + " m/s");
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * MINECRAFT-444 review round 1, finding 2 (the chassis reaction must match the engine's own realized
+     * momentum change, including across the zero floor) plus the acceptance criterion that selecting
+     * reverse must not flip the engine torque axis. Observes the REAL per-tick reaction torque the
+     * production tick handed the body against the engine's own realized angular-speed change -- the
+     * reaction's defining identity, checked against the applied value rather than a reproduction of the
+     * formula -- and compares the reaction's sign between a car accelerating in D1 and one accelerating in
+     * REVERSE: the crankshaft spins the same way in both, so the reaction must too. Review round 3: on its
+     * own {@link Lane}, the reversing car starting far enough down it to back up without leaving it.
+     */
+    @GameTest(template = "settlement_test", timeoutTicks = 240)
+    public static void engineAxisReactionMatchesRealizedEngineMomentumAndDoesNotFlipInReverse(GameTestHelper helper) {
+        Lane lane = Lane.build(helper, LANE_REACTION_SIGN, 60);
+        CarEntity[] cars = new CarEntity[2]; // forward (D1), reverse (REVERSE)
+        String[] names = {"forward (D1)", "reverse (REVERSE)"};
+        Player[] riders = new Player[2];
+        double[] worstIdentityGap = {0.0, 0.0};
+        boolean[] everAccelerated = {false, false};
+        boolean[] everReactedWrongWayWhileAccelerating = {false, false};
+        lane.startWhenSettled(() -> {
+                    cars[0] = lane.spawnCar(names[0] + " car", -3.0, 4.0, 0.0f, CarPhysics.Gear.D1);
+                    cars[1] = lane.spawnCar(names[1] + " car", 3.0, 40.0, 0.0f, CarPhysics.Gear.REVERSE);
+                    riders[0] = lane.board(cars[0]);
+                    riders[1] = lane.board(cars[1]);
+                })
+                .thenExecute(() -> {
+                    riders[0].zza = 1.0f;
+                    riders[1].zza = 1.0f;
+                })
+                .thenIdle(1)
+                .thenExecuteFor(50, () -> {
+                    // Each car is checked against ITSELF, tick by tick: the reaction must equal that car's
+                    // own realized engine momentum change, and must be negative on exactly the ticks where
+                    // that car's own engine sped up. Comparing the two cars' reactions to each other at the
+                    // same tick would prove nothing -- their engines are in different states at any given
+                    // moment, so a difference there is ordinary, not an axis flip. The gear-independence
+                    // claim is that BOTH cars obey the same sign rule about their own rotation, which is
+                    // what these two parallel checks establish.
+                    for (int index = 0; index < cars.length; index++) {
+                        CarEntity car = cars[index];
+                        double omega = car.debugEngineOmega();
+                        double priorOmega = car.debugPriorEngineOmega();
+                        double reaction = car.debugEngineReactionTorque();
+                        double expectedReaction = -(omega - priorOmega) * DrivetrainMath.ENGINE_INERTIA / TICK_DT;
+                        worstIdentityGap[index] = Math.max(worstIdentityGap[index],
+                                Math.abs(reaction - expectedReaction));
+                        if (omega > priorOmega) {
+                            everAccelerated[index] = true;
+                            if (reaction > 0.0) {
+                                everReactedWrongWayWhileAccelerating[index] = true;
+                            }
+                        }
+                    }
+                })
+                .thenIdle(4)
+                .thenExecute(() -> {
+                    for (int index = 0; index < names.length; index++) {
+                        lane.assertOnLane(cars[index], names[index] + " car");
+                        helper.assertTrue(worstIdentityGap[index] < REACTION_IDENTITY_TOLERANCE,
+                                "the " + names[index] + " car's applied engine-axis reaction diverged from its own realized angular-momentum change by "
+                                        + worstIdentityGap[index] + " N*m -- an unmatched chassis impulse");
+                        helper.assertTrue(everAccelerated[index],
+                                "test setup invalid -- the " + names[index] + " car's engine never actually sped up, so the sign rule below was never exercised");
+                        helper.assertTrue(!everReactedWrongWayWhileAccelerating[index],
+                                "the " + names[index]
+                                        + " car reacted POSITIVELY on a tick its own engine sped up -- the reaction must track the engine's own rotation in both gears alike, so selecting reverse cannot flip the engine torque axis");
+                    }
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * MINECRAFT-444 review round 1 (tick/substep consistency of the new production path), round 2 finding
+     * 3: this mutates the process-global {@code WHEEL_SUB_STEPS}, so like every other sub-step fixture in
+     * this file it declares its OWN batch -- one batch runs at a time, so no other test's car is ticking
+     * while the global is changed -- and restores it on every exit path including a thrown assertion. The
+     * engine and
+     * clutch are integrated ONCE per tick at the tick's own dt, deliberately -- unlike the wheel loop, they
+     * are not re-integrated per sub-step (see {@code SableCarBody}'s own engine/clutch block), so changing
+     * {@code wheelSubSteps} must not change whether their invariants hold. Runs the same pinned
+     * full-throttle launch at {@code wheelSubSteps} 1 and 4 and asserts, at both, that the reaction impulse
+     * still exactly matches the engine's own realized momentum change and the clutch still never exceeds
+     * its own capacity -- the two properties a per-sub-step re-integration would have broken by applying
+     * either N times or at the wrong dt.
+     */
+    @GameTest(template = "settlement_test", timeoutTicks = 160, batch = "carDrivetrainEngineClutchSubStepIsolated")
+    public static void engineAndClutchInvariantsHoldAtEverySubStepCount(GameTestHelper helper) {
+        helper.setBlock(new BlockPos(5, 2, 5), Blocks.STONE);
+        helper.setBlock(new BlockPos(5, 3, 5), Blocks.AIR);
+        for (int dx = 4; dx <= 6; dx++) {
+            for (int dy = 2; dy <= 5; dy++) {
+                helper.setBlock(new BlockPos(dx, dy, 7), Blocks.STONE);
+            }
+        }
+        int originalSubSteps = CarConfig.WHEEL_SUB_STEPS.get();
+        try {
+            CarConfig.WHEEL_SUB_STEPS.set(1);
+            CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
+            car.setYRot(0.0f);
+            car.selectGear(CarPhysics.Gear.D1);
+            Player rider = helper.makeMockPlayer(GameType.CREATIVE);
+            helper.assertTrue(rider.startRiding(car), "mock player failed to board the car");
+            rider.zza = 1.0f;
+            double[] worstIdentityGap = {0.0, 0.0};
+            double[] worstClutchTorque = {0.0, 0.0};
+            for (long tick = 1; tick <= 100; tick++) {
+                long thisTick = tick;
+                helper.runAfterDelay(tick, () -> {
+                    try {
+                        if (thisTick == 50L) {
+                            CarConfig.WHEEL_SUB_STEPS.set(4);
+                            return;
+                        }
+                        int phase = thisTick < 50L ? 0 : 1;
+                        double expectedReaction = -(car.debugEngineOmega() - car.debugPriorEngineOmega())
+                                * DrivetrainMath.ENGINE_INERTIA / TICK_DT;
+                        worstIdentityGap[phase] = Math.max(worstIdentityGap[phase],
+                                Math.abs(car.debugEngineReactionTorque() - expectedReaction));
+                        worstClutchTorque[phase] = Math.max(worstClutchTorque[phase], Math.abs(car.debugClutchTorque()));
+                    } catch (RuntimeException e) {
+                        CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
+                        throw e;
+                    }
+                });
+            }
+            helper.runAfterDelay(105L, () -> {
+                CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
+                for (int phase = 0; phase < 2; phase++) {
+                    int subSteps = phase == 0 ? 1 : 4;
+                    helper.assertTrue(worstIdentityGap[phase] < REACTION_IDENTITY_TOLERANCE,
+                            "at wheelSubSteps=" + subSteps + " the applied engine-axis reaction diverged from the engine's own realized momentum change by "
+                                    + worstIdentityGap[phase] + " N*m");
+                    helper.assertTrue(worstClutchTorque[phase] <= DrivetrainMath.CLUTCH_TORQUE_CAPACITY + CLUTCH_SATURATION_TOLERANCE,
+                            "at wheelSubSteps=" + subSteps + " the clutch transmitted more than its own capacity: "
+                                    + worstClutchTorque[phase] + " N*m");
+                    helper.assertTrue(worstClutchTorque[phase] > 0.0,
+                            "test setup invalid at wheelSubSteps=" + subSteps + " -- the clutch never transmitted anything, so nothing above was exercised");
+                }
+                helper.succeed();
+            });
+        } catch (RuntimeException e) {
+            CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
+            throw e;
+        }
+    }
+
+    /**
+     * MINECRAFT-444 review round 3, replacing round 2's balance test, whose wheel check bounded only
+     * {@code |command| - |exchange|} -- an opposite-signed or entirely absent transfer passed it. The
+     * clutch's books are now audited SIGNED, every tick, by {@link ExchangeBooks} (see it for each
+     * check): the impulse the wheels actually took equals the realized exchange through the gearing, the
+     * engine's own momentum change equals what it was charged for, the exchange never flips or exceeds the
+     * solve's lock torque, the clutch never creates energy, and neither throttle state ever drives the car
+     * the wrong way.
+     *
+     * <p>This run covers a hard D1 launch (wheelspin: tires not delivering what was commanded), the rev
+     * limiter (D1 at full throttle reaches it well within the window) and a closed-throttle coast in gear
+     * (engine braking: a negative exchange), each asserted to have actually happened.
+     */
+    @GameTest(template = "settlement_test", timeoutTicks = 280)
+    public static void theRealizedClutchExchangeBalancesSignedThroughALaunchTheLimiterAndACoast(GameTestHelper helper) {
+        Lane lane = Lane.build(helper, LANE_BOOKS_LAUNCH, 110);
+        CarEntity[] car = new CarEntity[1];
+        ExchangeBooks[] books = new ExchangeBooks[1];
+        boolean[] sawSlip = {false};
+        boolean[] sawLimiter = {false};
+        lane.startWhenSettled(() -> {
+                    car[0] = lane.spawnCar("D1 car", 0.0, 0.0, 0.0f, CarPhysics.Gear.D1);
+                    lane.board(car[0]);
+                    books[0] = new ExchangeBooks(car[0], "D1 car");
+                })
+                // 60 ticks of full throttle, then the rider's own shut throttle for a 30-tick coast in gear.
+                .thenExecute(() -> car[0].forceDrive(1.0, 0.0, 60))
+                .thenIdle(1)
+                .thenExecuteFor(90, () -> {
+                    books[0].sample();
+                    double[] commands = car[0].debugWheelDriveCommands();
+                    double[] forces = car[0].debugWheelForces();
+                    for (int wheel = 0; wheel < Math.min(commands.length, forces.length); wheel++) {
+                        if (Math.abs(commands[wheel]) > 1.0 && Math.abs(commands[wheel] - forces[wheel]) > 1.0) {
+                            sawSlip[0] = true;
+                        }
+                    }
+                    if (car[0].debugEngineRpm() >= DrivetrainMath.LIMITER_RPM - DrivetrainMath.LIMITER_TAPER_RPM) {
+                        sawLimiter[0] = true;
+                    }
+                })
+                .thenExecute(() -> {
+                    lane.assertOnLane(car[0], "D1 car");
+                    books[0].assertBalanced(helper);
+                    helper.assertTrue(books[0].drivingTicks > 0 && books[0].brakingTicks > 0 && sawSlip[0] && sawLimiter[0],
+                            "test setup invalid -- the launch, the limiter and the coast must all actually happen in this window: driving="
+                                    + books[0].drivingTicks + " engine-braking=" + books[0].brakingTicks + " slip=" + sawSlip[0]
+                                    + " limiter=" + sawLimiter[0]);
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * MINECRAFT-444 review round 3: the same signed books (see {@link ExchangeBooks}) through gear SHIFTS --
+     * AUTOMATIC under sustained full throttle upshifts with the engine ahead of the new, slower wheel side,
+     * which is exactly when an engine that was not charged for what the wheels took would show up, and then
+     * the brakes bring it back down through a downshift. Both shifts are asserted to have happened.
+     */
+    @GameTest(template = "settlement_test", timeoutTicks = 300)
+    public static void theRealizedClutchExchangeBalancesSignedThroughAutomaticShifts(GameTestHelper helper) {
+        Lane lane = Lane.build(helper, LANE_BOOKS_SHIFTS, 140);
+        CarEntity[] car = new CarEntity[1];
+        ExchangeBooks[] books = new ExchangeBooks[1];
+        int[] tick = {0};
+        int[] previousGearIndex = {-1};
+        int[] upshifts = {0};
+        int[] downshifts = {0};
+        lane.startWhenSettled(() -> {
+                    car[0] = lane.spawnCar("AUTOMATIC car", 0.0, 0.0, 0.0f, CarPhysics.Gear.AUTOMATIC);
+                    lane.board(car[0]);
+                    books[0] = new ExchangeBooks(car[0], "AUTOMATIC car");
+                })
+                .thenExecute(() -> car[0].forceDrive(1.0, 0.0, 70))
+                .thenIdle(1)
+                .thenExecuteFor(110, () -> {
+                    books[0].sample();
+                    int index = car[0].debugAutomaticGearIndex();
+                    if (previousGearIndex[0] >= 0 && index > previousGearIndex[0]) {
+                        upshifts[0]++;
+                    } else if (previousGearIndex[0] >= 0 && index < previousGearIndex[0]) {
+                        downshifts[0]++;
+                    }
+                    previousGearIndex[0] = index;
+                    if (++tick[0] == 70) {
+                        // The throttle's 70 ticks are done (the last one was just audited): brake for the rest.
+                        car[0].forceDrive(-1.0, 0.0, 40);
+                    }
+                })
+                .thenExecute(() -> {
+                    lane.assertOnLane(car[0], "AUTOMATIC car");
+                    books[0].assertBalanced(helper);
+                    helper.assertTrue(upshifts[0] > 0 && downshifts[0] > 0 && books[0].drivingTicks > 0,
+                            "test setup invalid -- the automatic must both upshift under throttle and downshift under braking in this window: upshifts="
+                                    + upshifts[0] + " downshifts=" + downshifts[0] + " driving=" + books[0].drivingTicks);
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * MINECRAFT-444 review round 3: the same signed books (see {@link ExchangeBooks}) through OPPOSED
+     * rolling and the GOVERNOR. Built up to speed in D1, then REVERSE at full throttle while still rolling
+     * forward: the wheel side turns against the gear, the clutch slips at the driver's demand and
+     * decelerates the car -- the case round 2 handled by re-signing the wheel half alone -- until it stops
+     * and reverses, and then reverses on up to REVERSE's own governed speed (8 m/s), where the governor
+     * cuts the demand. Each regime is asserted to have happened.
+     */
+    @GameTest(template = "settlement_test", timeoutTicks = 340)
+    public static void theRealizedClutchExchangeBalancesSignedThroughOpposedRollingAndTheReverseGovernor(GameTestHelper helper) {
+        Lane lane = Lane.build(helper, LANE_BOOKS_OPPOSED, 90);
+        CarEntity[] car = new CarEntity[1];
+        ExchangeBooks[] books = new ExchangeBooks[1];
+        int[] tick = {0};
+        int[] opposedTicks = {0};
+        int[] governedTicks = {0};
+        boolean[] reversed = {false};
+        lane.startWhenSettled(() -> {
+                    car[0] = lane.spawnCar("D1-then-REVERSE car", 0.0, 30.0, 0.0f, CarPhysics.Gear.D1);
+                    lane.board(car[0]);
+                    books[0] = new ExchangeBooks(car[0], "D1-then-REVERSE car");
+                })
+                .thenExecute(() -> car[0].forceDrive(1.0, 0.0, 25))
+                .thenIdle(1)
+                .thenExecuteFor(155, () -> {
+                    books[0].sample();
+                    boolean inReverse = car[0].debugLastGear() == CarPhysics.Gear.REVERSE;
+                    double velocity = forwardVelocity(car[0]);
+                    if (inReverse && car[0].debugClutchWheelSideOmega() < 0.0 && car[0].debugClutchTorque() > 0.0) {
+                        opposedTicks[0]++;
+                    }
+                    if (inReverse && velocity < -1.0) {
+                        reversed[0] = true;
+                    }
+                    if (inReverse && velocity < -4.0) {
+                        governedTicks[0]++;
+                    }
+                    if (++tick[0] == 25) {
+                        // D1's 25 ticks are done (the last one was just audited): REVERSE, still rolling forward.
+                        helper.assertTrue(velocity > 3.0,
+                                "test setup invalid -- the car was not rolling forward when REVERSE was selected: " + velocity);
+                        car[0].selectGear(CarPhysics.Gear.REVERSE);
+                        car[0].forceDrive(1.0, 0.0, 130);
+                    }
+                })
+                .thenExecute(() -> {
+                    lane.assertOnLane(car[0], "D1-then-REVERSE car");
+                    books[0].assertBalanced(helper);
+                    helper.assertTrue(opposedTicks[0] > 0 && reversed[0] && governedTicks[0] >= 5,
+                            "test setup invalid -- opposed rolling, the reversal and REVERSE's governor (beyond half its 8 m/s) must all happen in this window: opposed="
+                                    + opposedTicks[0] + " reversed=" + reversed[0] + " governed=" + governedTicks[0]
+                                    + " final velocity=" + forwardVelocity(car[0]));
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * MINECRAFT-444 review round 3, finding 2: the tires' load on the clutch must be transformed with the
+     * SAME signed gearing as the wheel side's speed. The unsigned version was right in a forward gear and
+     * exactly backwards in REVERSE (a tire delivering -4000 N while reversing read as +103.47 N*m of load at
+     * the engine, i.e. helping it). Two cars launch side by side, one in D1 and one in REVERSE: on every
+     * tick a car's tires delivered drive in its own gear's direction, the load the production solve then
+     * read must RESIST its engine -- negative in both gears, mirrored -- and must be exactly that delivered
+     * force through the signed transform, nothing stale.
+     */
+    @GameTest(template = "settlement_test", timeoutTicks = 220)
+    public static void theTireLoadOnTheClutchIsMirroredBetweenForwardAndReverseOnTheProductionPath(GameTestHelper helper) {
+        Lane lane = Lane.build(helper, LANE_MIRRORED_LOAD, 60);
+        CarEntity[] cars = new CarEntity[2]; // forward (D1), reverse (REVERSE)
+        String[] names = {"D1", "REVERSE"};
+        double[] directions = {1.0, -1.0};
+        double[] previousDelivered = {Double.NaN, Double.NaN};
+        int[] resistingTicks = {0, 0};
+        int[] wrongSignTicks = {0, 0};
+        double[] worstTransformGap = {0.0, 0.0};
+        lane.startWhenSettled(() -> {
+                    cars[0] = lane.spawnCar(names[0] + " car", -3.0, 4.0, 0.0f, CarPhysics.Gear.D1);
+                    cars[1] = lane.spawnCar(names[1] + " car", 3.0, 40.0, 0.0f, CarPhysics.Gear.REVERSE);
+                    lane.board(cars[0]);
+                    lane.board(cars[1]);
+                })
+                .thenExecute(() -> {
+                    cars[0].forceDrive(1.0, 0.0, 40);
+                    cars[1].forceDrive(1.0, 0.0, 40);
+                })
+                .thenIdle(1)
+                .thenExecuteFor(40, () -> {
+                    for (int index = 0; index < cars.length; index++) {
+                        CarEntity car = cars[index];
+                        double load = car.debugClutchWheelSideTorque();
+                        double delivered = previousDelivered[index];
+                        if (!Double.isNaN(delivered)) {
+                            // What the solve read this tick is last tick's delivered force through the signed
+                            // transform -- the same one the wheels' own drive goes out by.
+                            double expected = DrivetrainMath.wheelSideTorqueAtEngine(delivered, car.debugWheelRadius(),
+                                    car.debugGearRatio(), directions[index], car.debugForceScale());
+                            worstTransformGap[index] = Math.max(worstTransformGap[index], Math.abs(load - expected));
+                            if (delivered * directions[index] > 1.0) {
+                                if (load < 0.0) {
+                                    resistingTicks[index]++;
+                                } else {
+                                    wrongSignTicks[index]++;
+                                }
+                            }
+                        }
+                        previousDelivered[index] = car.debugDrivenTireForce();
+                    }
+                })
+                .thenExecute(() -> {
+                    for (int index = 0; index < cars.length; index++) {
+                        lane.assertOnLane(cars[index], names[index] + " car");
+                        helper.assertTrue(worstTransformGap[index] < TORQUE_IDENTITY_TOLERANCE,
+                                "the " + names[index] + " car's clutch load was not last tick's delivered tire force through the signed gearing: off by "
+                                        + worstTransformGap[index] + " N*m");
+                        helper.assertTrue(wrongSignTicks[index] == 0,
+                                "the " + names[index] + " car's tires were delivering drive in its own gear's direction on "
+                                        + wrongSignTicks[index] + " ticks while the clutch read their load as HELPING the engine -- the load is not mirrored between the two gears");
+                        helper.assertTrue(resistingTicks[index] >= 10,
+                                "test setup invalid -- the " + names[index] + " car's tires barely delivered drive in its own direction (" + resistingTicks[index]
+                                        + " ticks), so the mirrored load was never exercised");
+                    }
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * MINECRAFT-444 review round 3, finding 3 (contact loss): driving off a 3-block drop at full throttle.
+     * While the car is airborne -- every tire out of contact in every sub-step of a tick -- the driven
+     * wheels must keep turning by exactly what the drivetrain hands them (each wheel's own spin change,
+     * times its inertia over its radius, equals the impulse it took: round 2 froze the spin there while the
+     * engine went on exchanging torque with it), and the clutch must read NO tire load (round 2 kept
+     * solving against the last grounded tick's force). The signed {@link ExchangeBooks} hold through launch,
+     * flight and landing; and after landing every wheel recovers onto the ground (its surface speed back
+     * within {@link #RECOVERED_SPIN_SLIP} of the ground's), with the car carrying on forward -- the
+     * existing ground recovery, intact.
+     *
+     * <p>The throttle is shut the moment the car is first fully airborne, so for the rest of the flight
+     * the engine's own drag brakes the free wheels through the clutch: a real exchange with them on every
+     * airborne tick. Held open, there is nothing to exchange up there -- the first local run of this test
+     * left the ground with its wheelspinning front wheels already turning faster than the engine at its
+     * limiter (spins 98.6/114.5/39.1/39.1 rad/s, 6500 rpm), so the driver's demand was cut to zero and an
+     * open throttle never lets the clutch pass a negative transfer; all 13 airborne ticks exchanged nothing.
+     */
+    @GameTest(template = "settlement_test", timeoutTicks = 320)
+    public static void airborneDrivenWheelsKeepTurningAndTheClutchSeesNoStaleTireLoad(GameTestHelper helper) {
+        Lane lane = Lane.build(helper, LANE_AIRBORNE, 150);
+        int dropAt = 22;
+        int dropDepth = 3;
+        int window = 120;
+        lane.dropFloor(dropAt, dropDepth);
+        CarEntity[] car = new CarEntity[1];
+        ExchangeBooks[] books = new ExchangeBooks[1];
+        int[] tick = {0};
+        double[][] previousSpins = {null};
+        boolean[] previousTickAirborne = {false};
+        int[] airborneTicks = {0};
+        int[] drivenAirborneTicks = {0};
+        double[] worstAirborneWheelBooks = {0.0};
+        double[] worstStaleLoad = {0.0};
+        int[] throttleShutAt = {-1};
+        int[] landedAt = {-1};
+        boolean[] recovered = {false};
+        double[] velocityAtRecovery = {Double.NaN};
+        lane.startWhenSettled(() -> {
+                    car[0] = lane.spawnCar("car driven off the drop", 0.0, 2.0, 0.0f, CarPhysics.Gear.D2);
+                    lane.board(car[0]);
+                    books[0] = new ExchangeBooks(car[0], "car driven off the drop");
+                })
+                .thenExecute(() -> car[0].forceDrive(1.0, 0.0, window))
+                .thenIdle(1)
+                .thenExecuteFor(window, () -> {
+                    int t = ++tick[0];
+                    CarEntity c = car[0];
+                    books[0].sample();
+                    int[] contact = c.debugWheelContactSubSteps();
+                    boolean airborne = !c.debugTouching();
+                    for (int count : contact) {
+                        airborne &= count == 0;
+                    }
+                    double[] spins = c.debugWheelSpins();
+                    double[] taken = c.debugWheelRealizedDriveImpulses();
+                    if (airborne) {
+                        airborneTicks[0]++;
+                        if (previousSpins[0] != null) {
+                            // Each free wheel's measured angular momentum includes its drive AND brake impulses.
+                            // Closing throttle below 1.5 m/s activates the existing parked brake (150 N*s/tick).
+                            for (int wheel = 0; wheel < spins.length; wheel++) {
+                                double momentumChange = (spins[wheel] - previousSpins[0][wheel]) * WheelMath.WHEEL_INERTIA
+                                        / c.debugWheelRadius();
+                                worstAirborneWheelBooks[0] = Math.max(worstAirborneWheelBooks[0],
+                                        Math.abs(momentumChange - taken[wheel]
+                                                - ((SableCarBody) c.sableBody()).wheelBrakeAngularImpulses()[wheel] / c.debugWheelRadius()));
+                            }
+                        }
+                        if (Math.abs(c.debugRealizedDriveImpulse()) > 1e-3) {
+                            drivenAirborneTicks[0]++;
+                        }
+                        if (previousTickAirborne[0]) {
+                            worstStaleLoad[0] = Math.max(worstStaleLoad[0], Math.abs(c.debugClutchWheelSideTorque()));
+                        }
+                        if (throttleShutAt[0] < 0) {
+                            // First fully airborne tick: shut the throttle for the rest of the run, so the
+                            // engine brakes the free wheels through the clutch in flight, and recovery onto
+                            // the ground is what the window observes after landing rather than a fresh wheelspin.
+                            throttleShutAt[0] = t;
+                            c.forceDrive(0.0, 0.0, window - t);
+                        }
+                    } else if (airborneTicks[0] > 0 && landedAt[0] < 0) {
+                        landedAt[0] = t;
+                    }
+                    if (landedAt[0] >= 0 && !recovered[0] && t > landedAt[0] + 1) {
+                        double[] contactSpeeds = c.debugWheelContactSpeeds();
+                        boolean allRecovered = true;
+                        for (int wheel = 0; wheel < spins.length; wheel++) {
+                            allRecovered &= contact[wheel] > 0
+                                    && Math.abs(spins[wheel] * c.debugWheelRadius() - contactSpeeds[wheel]) < RECOVERED_SPIN_SLIP;
+                        }
+                        if (allRecovered) {
+                            recovered[0] = true;
+                            velocityAtRecovery[0] = forwardVelocity(c);
+                        }
+                    }
+                    previousSpins[0] = spins;
+                    previousTickAirborne[0] = airborne;
+                })
+                .thenExecute(() -> {
+                    lane.assertOnLane(car[0], "car driven off the drop");
+                    books[0].assertBalanced(helper);
+                    helper.assertTrue(airborneTicks[0] >= 5 && drivenAirborneTicks[0] >= 3,
+                            "test setup invalid -- the car must actually fly, with the drivetrain turning its free wheels: airborne ticks="
+                                    + airborneTicks[0] + " driven airborne ticks=" + drivenAirborneTicks[0]);
+                    helper.assertTrue(worstAirborneWheelBooks[0] < IMPULSE_IDENTITY_TOLERANCE,
+                            "an airborne wheel's spin did not change by exactly the drivetrain impulse it took (frozen or double-counted): off by "
+                                    + worstAirborneWheelBooks[0] + " N*s");
+                    helper.assertTrue(worstStaleLoad[0] == 0.0,
+                            "the clutch was solved against a tire load while every tire had been off the ground for a whole tick: "
+                                    + worstStaleLoad[0] + " N*m");
+                    helper.assertTrue(landedAt[0] >= 0 && recovered[0],
+                            "the car never recovered onto the ground after landing (landed at tick " + landedAt[0] + ", recovered=" + recovered[0]
+                                    + ") -- ground recovery broken by the airborne path");
+                    helper.assertTrue(velocityAtRecovery[0] > 1.0,
+                            "the car did not carry on forward after landing: velocity when its wheels recovered=" + velocityAtRecovery[0]);
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * MINECRAFT-444 review round 3, finding 3 (partial unloading): a short slot under the left wheel track,
+     * so first the front-left and then the rear-left tire lose contact on their own while the other three
+     * keep driving. On every tick a single driven wheel is off the ground for the whole tick, its own spin
+     * must change by exactly the drivetrain impulse it took (not freeze), every wheel's share must sum to
+     * the realized exchange, and the signed {@link ExchangeBooks} must hold; the grounded wheels must keep
+     * the car going, and once the car is past the slot, with the throttle shut, every wheel must recover
+     * onto the ground.
+     */
+    @GameTest(template = "settlement_test", timeoutTicks = 300)
+    public static void aPartiallyUnloadedDrivenWheelKeepsTurningWithoutBreakingTheBooksOrGroundRecovery(GameTestHelper helper) {
+        Lane lane = Lane.build(helper, LANE_PARTIAL, 110);
+        int slotFrom = 16;
+        int slotTo = 18;
+        int window = 110;
+        // The car spawns at the lane's centre line, so its left (-x) wheels run 0.8 m left of it: over the
+        // block column one left of the lane's origin column.
+        lane.cutSlot(-1, slotFrom, slotTo, 3);
+        CarEntity[] car = new CarEntity[1];
+        ExchangeBooks[] books = new ExchangeBooks[1];
+        int[] tick = {0};
+        double[][] previousSpins = {null};
+        int[] partialTicks = {0};
+        int[] drivenPartialTicks = {0};
+        double[] worstUnloadedWheelBooks = {0.0};
+        double[] worstShareSum = {0.0};
+        double[] slowestWhilePartial = {Double.MAX_VALUE};
+        int[] pastSlotAt = {-1};
+        boolean[] recovered = {false};
+        lane.startWhenSettled(() -> {
+                    car[0] = lane.spawnCar("car crossing the slot", 0.0, 2.0, 0.0f, CarPhysics.Gear.D2);
+                    lane.board(car[0]);
+                    books[0] = new ExchangeBooks(car[0], "car crossing the slot");
+                })
+                .thenExecute(() -> car[0].forceDrive(0.3, 0.0, window))
+                .thenIdle(1)
+                .thenExecuteFor(window, () -> {
+                    int t = ++tick[0];
+                    CarEntity c = car[0];
+                    books[0].sample();
+                    int[] contact = c.debugWheelContactSubSteps();
+                    double[] spins = c.debugWheelSpins();
+                    double[] taken = c.debugWheelRealizedDriveImpulses();
+                    double shareSum = 0.0;
+                    for (double share : taken) {
+                        shareSum += share;
+                    }
+                    worstShareSum[0] = Math.max(worstShareSum[0], Math.abs(shareSum - c.debugRealizedDriveImpulse()));
+                    int unloaded = 0;
+                    int fullyGrounded = 0;
+                    for (int count : contact) {
+                        if (count == 0) {
+                            unloaded++;
+                        } else {
+                            fullyGrounded++;
+                        }
+                    }
+                    if (unloaded > 0 && fullyGrounded > 0 && pastSlotAt[0] < 0) {
+                        partialTicks[0]++;
+                        slowestWhilePartial[0] = Math.min(slowestWhilePartial[0], forwardVelocity(c));
+                        if (previousSpins[0] != null) {
+                            for (int wheel = 0; wheel < spins.length; wheel++) {
+                                if (contact[wheel] == 0) {
+                                    double momentumChange = (spins[wheel] - previousSpins[0][wheel]) * WheelMath.WHEEL_INERTIA
+                                            / c.debugWheelRadius();
+                                    worstUnloadedWheelBooks[0] = Math.max(worstUnloadedWheelBooks[0],
+                                            Math.abs(momentumChange - taken[wheel]
+                                                - ((SableCarBody) c.sableBody()).wheelBrakeAngularImpulses()[wheel] / c.debugWheelRadius()));
+                                    if (Math.abs(taken[wheel]) > 1e-3) {
+                                        drivenPartialTicks[0]++;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (pastSlotAt[0] < 0 && partialTicks[0] > 0 && c.getZ() - Lane.START_Z > slotTo + 4.0) {
+                        // Every wheel is past the slot: shut the throttle and watch recovery onto the ground.
+                        pastSlotAt[0] = t;
+                        c.forceDrive(0.0, 0.0, window - t);
+                    }
+                    if (pastSlotAt[0] >= 0 && !recovered[0] && t > pastSlotAt[0] + 1) {
+                        double[] contactSpeeds = c.debugWheelContactSpeeds();
+                        boolean allRecovered = true;
+                        for (int wheel = 0; wheel < spins.length; wheel++) {
+                            allRecovered &= contact[wheel] > 0
+                                    && Math.abs(spins[wheel] * c.debugWheelRadius() - contactSpeeds[wheel]) < RECOVERED_SPIN_SLIP;
+                        }
+                        recovered[0] = allRecovered;
+                    }
+                    previousSpins[0] = spins;
+                })
+                .thenExecute(() -> {
+                    lane.assertOnLane(car[0], "car crossing the slot");
+                    books[0].assertBalanced(helper);
+                    helper.assertTrue(partialTicks[0] >= 2 && drivenPartialTicks[0] >= 1,
+                            "test setup invalid -- a driven wheel must actually lose contact on its own while the others drive: partial ticks="
+                                    + partialTicks[0] + " with the unloaded wheel driven=" + drivenPartialTicks[0]);
+                    helper.assertTrue(worstUnloadedWheelBooks[0] < IMPULSE_IDENTITY_TOLERANCE,
+                            "an unloaded wheel's spin did not change by exactly the drivetrain impulse it took: off by "
+                                    + worstUnloadedWheelBooks[0] + " N*s");
+                    helper.assertTrue(worstShareSum[0] < IMPULSE_IDENTITY_TOLERANCE,
+                            "the wheels' own shares did not add up to the realized exchange: off by " + worstShareSum[0] + " N*s");
+                    helper.assertTrue(slowestWhilePartial[0] > 2.0,
+                            "the grounded wheels did not keep the car going while one wheel was unloaded: slowest=" + slowestWhilePartial[0] + " m/s");
+                    helper.assertTrue(pastSlotAt[0] >= 0 && recovered[0],
+                            "the car never recovered onto the ground after the slot (past it at tick " + pastSlotAt[0] + ", recovered="
+                                    + recovered[0] + ") -- ground recovery broken by the unloaded-wheel path");
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * MINECRAFT-444 review round 2, finding 3: the reaction's scalar telemetry cannot show that the
+     * impulse is actually APPLIED to the body, in the right frame, with the right sign -- removing the
+     * {@code applyAngularImpulse} call, or applying it about the wrong axis, would leave every scalar
+     * assertion passing. This observes the body's own MEASURED world-space angular velocity instead.
+     *
+     * <p>The car is deliberately yawed 50 degrees, which is what makes the frame observable: the engine's
+     * spin axis is the car's OWN forward axis, so at that yaw a correctly body-framed impulse shows up
+     * spread across world X and Z in the ratio the yaw implies, while a world-framed (or wrongly-axised)
+     * application would not. The test projects the measured angular velocity onto the car's own forward
+     * axis, derived from its yaw, and requires the engine-axis component to respond with the sign the
+     * engine's own acceleration implies and to dominate the component across that axis.
+     *
+     * <p>NEUTRAL with the throttle blipped is used so the engine accelerates hard with no clutch load and
+     * no drive force: the only thing that can roll the chassis about its own forward axis here is the
+     * engine-axis reaction itself. Review round 3: on its own {@link Lane} -- a local rerun on GameTest's
+     * far-coordinate placement measured more rotation ACROSS the axis (0.109 rad/s) than about it (0.050),
+     * the far-coordinate class {@link Lane} documents.
+     */
+    @GameTest(template = "settlement_test", timeoutTicks = 220)
+    public static void theEngineAxisReactionActuallyRollsTheChassisAboutTheCarsOwnForwardAxis(GameTestHelper helper) {
+        Lane lane = Lane.build(helper, LANE_REACTION_FRAME, 16);
+        float yawDegrees = 50.0f;
+        CarEntity[] car = new CarEntity[1];
+        Player[] rider = new Player[1];
+        // The car's own forward axis in world space for this yaw -- the same convention
+        // SableCarBody.orientationOf uses (+Z faces where the entity faces).
+        double yaw = Math.toRadians(yawDegrees);
+        double forwardX = -Math.sin(yaw);
+        double forwardZ = Math.cos(yaw);
+        double rightX = Math.cos(yaw);
+        double rightZ = Math.sin(yaw);
+        double[] bestEngineAxisResponse = {0.0};
+        double[] crossAxisAtBest = {0.0};
+        double[] reactionAtBest = {0.0};
+        lane.startWhenSettled(() -> {
+                    car[0] = lane.spawnCar("yawed car", 0.0, 6.0, yawDegrees, CarPhysics.Gear.NEUTRAL);
+                    rider[0] = lane.board(car[0]);
+                })
+                .thenExecute(() -> rider[0].zza = 1.0f) // free-rev in neutral: engine accelerates, nothing drives the wheels
+                .thenIdle(1)
+                .thenExecuteFor(40, () -> {
+                    double reaction = car[0].debugEngineReactionTorque();
+                    double[] angular = car[0].debugBodyAngularVelocity();
+                    double aboutEngineAxis = angular[0] * forwardX + angular[2] * forwardZ;
+                    double aboutCrossAxis = angular[0] * rightX + angular[2] * rightZ;
+                    // Keep the sample where the body's roll about its own forward axis is largest, with
+                    // the reaction and cross-axis reading from that same tick for the failure message.
+                    if (Math.abs(aboutEngineAxis) > Math.abs(bestEngineAxisResponse[0])) {
+                        bestEngineAxisResponse[0] = aboutEngineAxis;
+                        crossAxisAtBest[0] = aboutCrossAxis;
+                        reactionAtBest[0] = reaction;
+                    }
+                })
+                .thenIdle(4)
+                .thenExecute(() -> {
+                    lane.assertOnLane(car[0], "yawed car");
+                    helper.assertTrue(Math.abs(bestEngineAxisResponse[0]) > ENGINE_AXIS_RESPONSE_FLOOR,
+                            "revving the engine in neutral produced no measurable chassis rotation about the car's own forward axis ("
+                                    + bestEngineAxisResponse[0] + " rad/s) -- the engine-axis reaction is not reaching the body");
+                    helper.assertTrue(reactionAtBest[0] != 0.0,
+                            "test setup invalid -- no engine-axis reaction torque was being applied at the sample with the largest response");
+                    helper.assertTrue(Math.signum(bestEngineAxisResponse[0]) == Math.signum(reactionAtBest[0]),
+                            "the chassis rolled the OPPOSITE way to the engine-axis reaction being applied: response="
+                                    + bestEngineAxisResponse[0] + " rad/s, reaction=" + reactionAtBest[0] + " N*m");
+                    helper.assertTrue(Math.abs(bestEngineAxisResponse[0]) > Math.abs(crossAxisAtBest[0]),
+                            "the chassis rotation was not predominantly about the car's OWN forward axis at yaw "
+                                    + yawDegrees + " degrees -- engine axis=" + bestEngineAxisResponse[0]
+                                    + " rad/s vs across it=" + crossAxisAtBest[0]
+                                    + " rad/s, so the impulse is being applied in the wrong frame");
+                })
+                .thenSucceed();
+    }
+
+    /** The car's own forward speed, m/s, signed: its velocity projected onto the direction it faces. */
+    private static double ownForwardVelocity(CarEntity car) {
+        Vec3 v = car.getDeltaMovement();
+        double yaw = Math.toRadians(car.getYRot());
+        return (-Math.sin(yaw) * v.x + Math.cos(yaw) * v.z) * 20.0;
+    }
+
+    /**
+     * MINECRAFT-444 review round 3: a flat stone lane at fixed, small, absolute coordinates, for every
+     * MINECRAFT-444 test whose assertions depend on a car actually driving.
+     *
+     * <p>{@code GameTestServer#startTests} places every structure at a random absolute coordinate anywhere
+     * in +/-14,999,992 (vanilla, hardcoded), and Sable/Rapier's broad phase is float32, whose resolution
+     * out there is about a metre. carRecoversCleanlyAfterDrivingOffALedgeAndLanding and
+     * {@code NewVehicleGameTests}' fixed-coordinate rig record how this repository already met it; review
+     * of bb9f4f6 met it again on this PR's own tests (see aLowConfiguredClutchCapacitySaturatesTheExchangeAndLimitsTheCar),
+     * and local reruns at multi-million coordinates reproduced the same "one car of an identical pair barely
+     * moves" result on main's own d1ReachesAHigherSpeedThanD5OverTheSameShortWindow and
+     * limiterCapsWheelspinInsteadOfLettingItGrowWithoutBoundAgainstAWall too. A lane here sits where float32
+     * still resolves millimetres.
+     *
+     * <p>Each test has its own lane (its own X, {@link #SPACING} apart), so tests sharing a batch never
+     * share space; each lane is longer than its test's whole run, and every test asserts each of its cars
+     * is still on its own lane at the end ({@link #assertOnLane}), so no car ever drives into anything
+     * else. Everything a lane changed -- blocks (each one's prior state captured before the first write),
+     * chunk tickets (only the ones it added), the cars it spawned -- is undone on every outcome: pass,
+     * fail, timeout, a rerun, or a throw during its own synchronous setup.
+     */
+    private static final class Lane {
+        /** The floor blocks sit at this Y; cars stand on them at {@code FLOOR_Y + 1}. */
+        static final int FLOOR_Y = 99;
+        /** Every lane starts here on Z: small enough for float32, clear of the ledge rig (Z 20,000) and
+         * {@code NewVehicleGameTests}' rigs (Z 2,000 - 2,200). */
+        static final int START_Z = 40_000;
+        static final int SPACING = 64;
+        static final int HALF_WIDTH = 6;
+        /** Floor behind a car spawned at {@code dz} 0, well past its own rear body edge (HALF_Z 1.5). */
+        static final int REAR_MARGIN = 6;
+        /** Air cleared above the floor -- a whole car body and then some. */
+        static final int CLEAR_HEIGHT = 4;
+
+        private final GameTestHelper helper;
+        private final ServerLevel level;
+        final int originX;
+        final int length;
+        private final List<BlockPos> touched = new ArrayList<>();
+        private final List<BlockState> priorStates = new ArrayList<>();
+        private final List<ChunkPos> ticketsAdded = new ArrayList<>();
+        private final List<CarEntity> cars = new ArrayList<>();
+        private final List<String> carNames = new ArrayList<>();
+        private final List<Runnable> extraCleanup = new ArrayList<>();
+
+        private Lane(GameTestHelper helper, int index, int length) {
+            this.helper = helper;
+            this.level = helper.getLevel();
+            this.originX = SPACING * (index + 1);
+            this.length = length;
+        }
+
+        /** Builds lane {@code index} ({@code length} blocks of floor ahead of {@code dz} 0) and registers its
+         * cleanup for every outcome -- undoing whatever was already done if the build itself throws. */
+        static Lane build(GameTestHelper helper, int index, int length) {
+            Lane lane = new Lane(helper, index, length);
+            try {
+                lane.forceChunks();
+                for (int x = lane.originX - HALF_WIDTH; x <= lane.originX + HALF_WIDTH; x++) {
+                    for (int z = START_Z - REAR_MARGIN; z <= START_Z + length; z++) {
+                        lane.place(x, FLOOR_Y, z, Blocks.STONE.defaultBlockState());
+                        for (int y = FLOOR_Y + 1; y <= FLOOR_Y + CLEAR_HEIGHT; y++) {
+                            lane.place(x, y, z, Blocks.AIR.defaultBlockState());
+                        }
+                    }
+                }
+            } catch (Throwable t) {
+                lane.cleanup();
+                throw t;
+            }
+            lane.registerCleanup();
+            return lane;
+        }
+
+        private void forceChunks() {
+            for (int cx = (originX - HALF_WIDTH) >> 4; cx <= (originX + HALF_WIDTH) >> 4; cx++) {
+                for (int cz = (START_Z - REAR_MARGIN) >> 4; cz <= (START_Z + length) >> 4; cz++) {
+                    ChunkPos chunk = new ChunkPos(cx, cz);
+                    if (!level.getForcedChunks().contains(chunk.toLong())) {
+                        level.setChunkForced(cx, cz, true);
+                        ticketsAdded.add(chunk);
+                    }
+                }
+            }
+        }
+
+        private void place(int x, int y, int z, BlockState state) {
+            BlockPos pos = new BlockPos(x, y, z);
+            touched.add(pos);
+            priorStates.add(level.getBlockState(pos));
+            level.setBlock(pos, state, 3);
+        }
+
+        /** Drops the floor by {@code depth} blocks from {@code fromDz} to the lane's end: a ledge. */
+        void dropFloor(int fromDz, int depth) {
+            for (int x = originX - HALF_WIDTH; x <= originX + HALF_WIDTH; x++) {
+                for (int z = START_Z + fromDz; z <= START_Z + length; z++) {
+                    for (int y = FLOOR_Y - depth + 1; y <= FLOOR_Y; y++) {
+                        place(x, y, z, Blocks.AIR.defaultBlockState());
+                    }
+                    place(x, FLOOR_Y - depth, z, Blocks.STONE.defaultBlockState());
+                }
+            }
+        }
+
+        /** Removes the floor of one block column ({@code dx} from the lane's origin column), from {@code
+         * fromDz} to {@code toDz}, {@code depth} blocks deep: a slot one wheel track wide. */
+        void cutSlot(int dx, int fromDz, int toDz, int depth) {
+            for (int z = START_Z + fromDz; z <= START_Z + toDz; z++) {
+                for (int y = FLOOR_Y - depth + 1; y <= FLOOR_Y; y++) {
+                    place(originX + dx, y, z, Blocks.AIR.defaultBlockState());
+                }
+            }
+        }
+
+        /** Spawns a car (called {@code name} in failure messages) standing on the floor at ({@code dx},
+         * {@code dz}) from the lane's origin, facing {@code yaw} degrees, in {@code gear}. */
+        CarEntity spawnCar(String name, double dx, double dz, float yaw, CarPhysics.Gear gear) {
+            CarEntity car = DynamicVehiclesMod.CAR.get().create(level);
+            helper.assertTrue(car != null, "car entity failed to construct");
+            car.moveTo(originX + dx + 0.5, FLOOR_Y + 1, START_Z + dz + 0.5, yaw, 0.0f);
+            level.addFreshEntity(car);
+            cars.add(car);
+            carNames.add(name);
+            car.selectGear(gear);
+            return car;
+        }
+
+        /** Boards a mock rider -- without one, CarEntity resets the gear to its default every tick. */
+        Player board(CarEntity car) {
+            Player rider = helper.makeMockPlayer(GameType.CREATIVE);
+            rider.setPos(car.getX(), car.getY(), car.getZ());
+            helper.assertTrue(rider.startRiding(car), "mock player failed to board the car");
+            return rider;
+        }
+
+        /**
+         * Starts this lane's test as one {@link GameTestSequence}: idles {@code LANE_READY_TICKS}, runs
+         * {@code spawn} (which spawns and boards this lane's cars), waits until every car it spawned has
+         * run {@code SETTLE_TICKS} ticks of its OWN, then asserts each has settled with every wheel on the
+         * floor ({@link #assertSettledAndGrounded}). The caller chains the test's own steps onto the result.
+         *
+         * <p>Counted on each car's own {@code tickCount} rather than on the test's clock because a car on a
+         * freshly forced chunk is not ticked at all -- and {@code CarEntity} only creates its rigid body on
+         * its first tick -- until that chunk becomes entity-ticking, which a fixed wait cannot bound: one
+         * local run had a car that had still not settled 30 test ticks after it was spawned (still at its
+         * spawn X/Z, 0.33 m below its resting height, moving at 1.8 m/s), as if its physics had only just
+         * started. The wait itself is bounded by the test's own timeout, which then fails with this wait's
+         * message.
+         */
+        GameTestSequence startWhenSettled(Runnable spawn) {
+            return helper.startSequence()
+                    .thenIdle(LANE_READY_TICKS)
+                    .thenExecute(spawn)
+                    .thenWaitUntil(() -> {
+                        for (int i = 0; i < cars.size(); i++) {
+                            helper.assertTrue(cars.get(i).tickCount >= SETTLE_TICKS,
+                                    "test setup invalid -- the " + carNames.get(i) + " has run only " + cars.get(i).tickCount
+                                            + " of its own " + SETTLE_TICKS + " settling ticks: its chunk never became entity-ticking in time");
+                        }
+                    })
+                    .thenExecute(() -> {
+                        for (int i = 0; i < cars.size(); i++) {
+                            assertSettledAndGrounded(cars.get(i), carNames.get(i));
+                        }
+                    });
+        }
+
+        /** The fixture, established rather than assumed before a car is driven: it has settled to a
+         * near-standstill on its own suspension, with every wheel's tire on the floor. */
+        void assertSettledAndGrounded(CarEntity car, String name) {
+            int[] contact = car.debugWheelContactSubSteps();
+            boolean allWheelsDown = contact.length > 0;
+            for (int count : contact) {
+                allWheelsDown &= count > 0;
+            }
+            helper.assertTrue(car.debugSpeed() < SETTLED_SPEED && allWheelsDown,
+                    "test setup invalid -- the " + name + " had not settled with every wheel on the floor before it was driven: speed="
+                            + car.debugSpeed() + " wheel contact sub-steps=" + java.util.Arrays.toString(contact)
+                            + " at (" + car.getX() + ", " + car.getY() + ", " + car.getZ() + ")");
+        }
+
+        /** Asserts the car is still over this lane's own floor -- it never drove off it into anything else. */
+        void assertOnLane(CarEntity car, String name) {
+            double dx = car.getX() - (originX + 0.5);
+            double dz = car.getZ() - START_Z;
+            helper.assertTrue(Math.abs(dx) < HALF_WIDTH - 1.0 && dz > -REAR_MARGIN + 2.0 && dz < length - 2.0
+                            && car.getY() > FLOOR_Y - 5,
+                    "test setup invalid -- the " + name + " left its own lane: at (dx " + dx + ", y " + car.getY() + ", dz " + dz
+                            + ") of a lane " + length + " blocks long");
+        }
+
+        void alsoOnCleanup(Runnable cleanup) {
+            extraCleanup.add(cleanup);
+        }
+
+        void cleanup() {
+            for (CarEntity car : cars) {
+                if (car.isAlive()) {
+                    car.discard();
+                }
+            }
+            cars.clear();
+            carNames.clear();
+            // Newest first, so a block written twice ends up back at its FIRST captured state.
+            for (int i = touched.size() - 1; i >= 0; i--) {
+                level.setBlock(touched.get(i), priorStates.get(i), 3);
+            }
+            touched.clear();
+            priorStates.clear();
+            for (ChunkPos chunk : ticketsAdded) {
+                level.setChunkForced(chunk.x, chunk.z, false);
+            }
+            ticketsAdded.clear();
+            for (Runnable extra : extraCleanup) {
+                extra.run();
+            }
+            extraCleanup.clear();
+        }
+
+        private void registerCleanup() {
+            helper.testInfo.addListener(new GameTestListener() {
+                @Override
+                public void testStructureLoaded(GameTestInfo info) {}
+
+                @Override
+                public void testPassed(GameTestInfo info, GameTestRunner runner) {
+                    cleanup();
+                }
+
+                @Override
+                public void testFailed(GameTestInfo info, GameTestRunner runner) {
+                    cleanup();
+                }
+
+                @Override
+                public void testAddedForRerun(GameTestInfo info, GameTestInfo retry, GameTestRunner runner) {
+                    cleanup();
+                }
+            });
+        }
+    }
+
+    /**
+     * MINECRAFT-444 review round 3: one car's clutch exchange, audited tick by tick on the production path
+     * -- every check signed, and against what each shaft actually did rather than against a reproduction
+     * of the arithmetic that produced it. Each tick is audited against the throttle and gear it actually
+     * ran with ({@code CarEntity#debugLastThrottle}/{@code debugLastGear}), never against the test's own
+     * schedule, so a phase boundary can never be misattributed.
+     *
+     * <ul>
+     * <li><b>Wheel books.</b> The drivetrain impulse the driven wheels actually took this tick (summed over
+     * wheels and sub-steps, airborne wheels included, nothing where a brake replaced the drive) equals the
+     * realized exchange through this tick's own signed gearing. Signed: a transfer of the wrong sign, or
+     * none at all against a nonzero one, fails it.
+     * <li><b>Engine books.</b> The engine's own realized angular-momentum change equals its output less
+     * that same exchange, times dt (except on a tick its zero floor clamped).
+     * <li><b>Never past the solve.</b> The exchange lies between zero and the coupled solve's own lock
+     * torque: it can shrink that answer, never flip or exceed it.
+     * <li><b>No energy from the clutch.</b> {@code exchange * (engine speed after - wheel-side speed) * dt},
+     * the work a friction clutch turns into heat this tick, is never negative: the clutch never hands the
+     * wheel side energy the engine did not give up, which is exactly what round 2's sign flip did.
+     * <li><b>Direction.</b> Open throttle: the wheels' impulse never points against the selected gear.
+     * Closed throttle: it never points along the car's own motion (no unintended propulsion), checked
+     * above {@link #DIRECTION_CHECK_SPEED} since the per-sub-step rule it summarises may see the car
+     * cross zero within a tick.
+     * <li><b>Finite.</b> Nothing above is ever NaN or infinite.
+     * </ul>
+     */
+    static final class ExchangeBooks {
+        private static final double DIRECTION_CHECK_SPEED = 1.0;
+
+        private final CarEntity car;
+        private final String name;
+        double worstWheelBooks;
+        double worstEngineBooks;
+        double worstLockExcess;
+        double worstEnergyCreated;
+        double worstWrongWayImpulse;
+        boolean nonFinite;
+        String firstProblem;
+        int samples;
+        int drivingTicks;
+        int brakingTicks;
+        int decoupledTicks;
+
+        ExchangeBooks(CarEntity car, String name) {
+            this.car = car;
+            this.name = name;
+        }
+
+        /** Audits the tick the car just ran. */
+        void sample() {
+            samples++;
+            double gearDirection = car.debugLastGear() == CarPhysics.Gear.REVERSE ? -1.0 : 1.0;
+            boolean throttleOpen = car.debugLastThrottle() > 0.0;
+            double impulse = car.debugRealizedDriveImpulse();
+            double transfer = car.debugClutchTorque();
+            double lock = car.debugClutchLockTorque();
+            double engineTorque = car.debugEngineOutputTorque();
+            double priorOmega = car.debugPriorEngineOmega();
+            double omega = car.debugEngineOmega();
+            double wheelSideOmega = car.debugClutchWheelSideOmega();
+            double ratio = car.debugGearRatio();
+            double velocity = ownForwardVelocity(car);
+            double[] values = {impulse, transfer, lock, engineTorque, priorOmega, omega, wheelSideOmega, ratio, velocity};
+            for (double value : values) {
+                if (!Double.isFinite(value)) {
+                    nonFinite = true;
+                    note("non-finite value in " + java.util.Arrays.toString(values));
+                    return;
+                }
+            }
+            double expectedImpulse = DrivetrainMath.clutchTorqueToTotalWheelForce(transfer, car.debugWheelRadius(), ratio,
+                    gearDirection, car.debugForceScale()) * TICK_DT;
+            double wheelGap = Math.abs(impulse - expectedImpulse);
+            worstWheelBooks = Math.max(worstWheelBooks, wheelGap);
+            if (wheelGap >= IMPULSE_IDENTITY_TOLERANCE) {
+                note("wheel books: impulse " + impulse + " vs exchange through the gearing " + expectedImpulse);
+            }
+            double unfloored = priorOmega + (engineTorque - transfer) / DrivetrainMath.ENGINE_INERTIA * TICK_DT;
+            if (!(omega == 0.0 && unfloored < 0.0)) {
+                double engineGap = Math.abs((omega - priorOmega) * DrivetrainMath.ENGINE_INERTIA
+                        - (engineTorque - transfer) * TICK_DT);
+                worstEngineBooks = Math.max(worstEngineBooks, engineGap);
+                if (engineGap >= EXCHANGE_BALANCE_TOLERANCE) {
+                    note("engine books: momentum change off by " + engineGap);
+                }
+            }
+            SableCarBody body = (SableCarBody) car.sableBody();
+            double lockExcess = 0.0;
+            double[] limits = body.stepClutchLimits();
+            double[] transfers = body.stepClutchTransfers();
+            for (int step = 0; step < limits.length; step++) {
+                lockExcess = Math.max(lockExcess, limits[step] >= 0.0
+                        ? Math.max(-transfers[step], transfers[step] - limits[step])
+                        : Math.max(transfers[step], limits[step] - transfers[step]));
+            }
+            worstLockExcess = Math.max(worstLockExcess, lockExcess);
+            if (lockExcess >= TORQUE_IDENTITY_TOLERANCE) {
+                note("exchange " + transfer + " outside [0, lock " + lock + "]");
+            }
+            double[] beforeSpins = body.priorWheelSpinRates();
+            double[] afterSpins = body.wheelSpinRates();
+            double energyDelta = 0.5 * DrivetrainMath.ENGINE_INERTIA * (omega * omega - priorOmega * priorOmega);
+            double measuredMomentum = DrivetrainMath.ENGINE_INERTIA * (omega - priorOmega);
+            double gearing = ratio * DrivetrainMath.FINAL_DRIVE * gearDirection;
+            for (int wheel = 0; wheel < beforeSpins.length; wheel++) {
+                energyDelta += 0.5 * WheelMath.WHEEL_INERTIA
+                        * (afterSpins[wheel] * afterSpins[wheel] - beforeSpins[wheel] * beforeSpins[wheel]) / car.debugForceScale();
+                measuredMomentum += WheelMath.WHEEL_INERTIA * (afterSpins[wheel] - beforeSpins[wheel]) / (gearing * car.debugForceScale());
+            }
+            double stopImpulse = body.engineStopImpulse();
+            double externalImpulse = engineTorque * TICK_DT + stopImpulse;
+            double energyCreated = energyDelta - body.engineExternalWork()
+                    - body.wheelExternalWork() / car.debugForceScale();
+            double measuredGap = Math.abs(measuredMomentum - externalImpulse
+                    - body.wheelExternalAngularImpulse() / (gearing * car.debugForceScale()));
+            worstWheelBooks = Math.max(worstWheelBooks, measuredGap);
+            worstEnergyCreated = Math.max(worstEnergyCreated, energyCreated);
+            if (energyCreated >= ENERGY_IDENTITY_TOLERANCE || measuredGap >= IMPULSE_IDENTITY_TOLERANCE) {
+                note("measured shaft energy gain=" + energyCreated + " J, momentum gap=" + measuredGap);
+            }
+            double wrongWay = throttleOpen
+                    ? -impulse * gearDirection
+                    : (Math.abs(velocity) > DIRECTION_CHECK_SPEED ? impulse * Math.signum(velocity) : 0.0);
+            worstWrongWayImpulse = Math.max(worstWrongWayImpulse, wrongWay);
+            if (wrongWay >= IMPULSE_IDENTITY_TOLERANCE) {
+                note((throttleOpen ? "open throttle drove against the gear: " : "closed throttle drove along the motion: ")
+                        + "impulse " + impulse + ", velocity " + velocity);
+            }
+            if (transfer > TORQUE_IDENTITY_TOLERANCE) {
+                drivingTicks++;
+            } else if (transfer < -TORQUE_IDENTITY_TOLERANCE) {
+                brakingTicks++;
+            } else if (Math.abs(lock) > 1.0) {
+                decoupledTicks++;
+            }
+        }
+
+        private void note(String problem) {
+            if (firstProblem == null) {
+                firstProblem = "sample " + samples + ": " + problem;
+            }
+        }
+
+        void assertBalanced(GameTestHelper helper) {
+            String where = " [" + name + ", " + samples + " ticks audited, first problem: " + firstProblem + "]";
+            helper.assertTrue(samples > 0, "test setup invalid -- nothing was audited" + where);
+            helper.assertTrue(!nonFinite, "the clutch exchange went non-finite" + where);
+            helper.assertTrue(worstWheelBooks < IMPULSE_IDENTITY_TOLERANCE,
+                    "the wheels did not take exactly the realized exchange through the signed gearing: worst gap "
+                            + worstWheelBooks + " N*s" + where);
+            helper.assertTrue(worstEngineBooks < EXCHANGE_BALANCE_TOLERANCE,
+                    "the engine's own momentum change did not match the exchange it was charged for: worst gap "
+                            + worstEngineBooks + " N*m*s" + where);
+            helper.assertTrue(worstLockExcess < TORQUE_IDENTITY_TOLERANCE,
+                    "the realized exchange flipped or exceeded the coupled solve's own lock torque by " + worstLockExcess
+                            + " N*m" + where);
+            helper.assertTrue(worstEnergyCreated < ENERGY_IDENTITY_TOLERANCE,
+                    "the clutch created energy: " + worstEnergyCreated + " J in one tick" + where);
+            helper.assertTrue(worstWrongWayImpulse < IMPULSE_IDENTITY_TOLERANCE,
+                    "the drivetrain pushed the car the wrong way for its throttle by " + worstWrongWayImpulse + " N*s" + where);
         }
     }
 }

@@ -1,0 +1,143 @@
+package io.github.brooswitminecraft.dynamicvehicles.town;
+
+/**
+ * Every tunable Dynamic Towns constant in one place, per MINECRAFT-388's "resolve/document as
+ * implementation owner" instruction (same pattern as MINECRAFT-395). Each value is a deliberate,
+ * documented implementation choice, not a guess buried where it's hard to find; see the
+ * MINECRAFT-388 PR description's "Design choices made" section for the one-line rationale index.
+ */
+public final class TownConstants {
+    private TownConstants() {}
+
+    /** Zoning parcel size: one zoning decision per 16x16 column block, aligned to chunk size so a
+     *  parcel never straddles a chunk boundary. Declared early since other constants below
+     *  (the minor branch spacing) are defined in terms of it. */
+    public static final int PARCEL_SIZE_BLOCKS = 16;
+
+    /**
+     * {@code delivery.RegionCoord} (the type MINECRAFT-388 says to reuse) has NO fixed block
+     * size of its own: its granularity is the live vanilla village {@code RandomSpreadStructurePlacement}'s
+     * {@code spacing()}, which can differ by dimension/datapack and is only knowable by asking a
+     * loaded {@code ServerLevel} (see {@code VillagePlacementService.toRegion}). Town planning
+     * needs a fixed, world-independent size to be pure and unit-testable (determinism tests,
+     * negative-coordinate tests, edge-agreement tests — none of which can depend on a live level).
+     * This is the one genuinely open decision flagged in the PR's "Remaining open decisions"
+     * section: a second, DynamicTowns-only region size, deliberately distinct from both
+     * {@code delivery.RegionCoord}'s variable structure-placement spacing and
+     * {@code pathfinder.PathfinderRegion.SIZE_BLOCKS} (512). 384 blocks (24 chunks) is chosen as a
+     * size comfortably larger than a vanilla village's own footprint while staying small enough
+     * that road edge points and zoning read as deliberate, not sparse.
+     */
+    public static final int REGION_SIZE_BLOCKS = 384;
+
+    /** Road width in blocks for the two region-crossing thoroughfares (N-S and E-W). */
+    public static final int MAJOR_ROAD_WIDTH = 5;
+    /** Road width in blocks for minor roads branching off a thoroughfare into a zone. */
+    public static final int MINOR_ROAD_WIDTH = 3;
+    /** Maximum rise per block a road may interpolate before the plan calls for a retaining step. */
+    public static final int MAX_ROAD_GRADE_PERCENT = 20;
+    /** At 20%, a one-block rise needs at least this many blocks of horizontal travel (100 / 20 = 5)
+     *  to stay within grade; {@link TownRoadPlanner} clamps consecutive interpolated road cells to
+     *  this step. */
+    public static final int ROAD_GRADE_RUN_PER_RISE_BLOCK = 100 / MAX_ROAD_GRADE_PERCENT;
+    /** Bound on the agreed per-edge road height offset (blocks) two neighbouring regions commit to
+     *  at their shared boundary, independent of either region's own town-centre height. */
+    public static final int ROAD_EDGE_HEIGHT_OFFSET_RANGE = 6;
+    /** A fixed, seed-independent base (vanilla overworld sea level) the edge height offset above
+     *  is added to. Deliberately NOT derived from either neighbouring region's own (possibly very
+     *  different) town-centre reference height: two regions must agree on where their shared
+     *  boundary's road sits regardless of how their own local terrain happens to differ, and only
+     *  an absolute, call-independent base guarantees that. */
+    public static final int ROAD_EDGE_BASE_HEIGHT = 64;
+    /** Road construction pacing, mirroring {@link #CONSTRUCTION_COST_PER_BLOCK}/
+     *  {@link #CONSTRUCTION_BLOCKS_PER_TICK}: one road-surface cell costs this many STONE credits,
+     *  and at most this many road cells are placed per site per construction tick. */
+    public static final int ROAD_COST_PER_BLOCK = 1;
+    public static final int ROAD_BLOCKS_PER_TICK = 4;
+    /** [Review round 4, finding #4] How many cells a road cell's own support fill will dig DOWN
+     *  looking for real solid ground before giving up, so a route crossing a shallow valley/gap
+     *  does not leave the surface floating over open air - bounded so a pathological column (a
+     *  deep ravine, a cave) cannot make this dig all the way toward the void. */
+    public static final int ROAD_SUPPORT_FILL_MAX_DEPTH = 8;
+    /** [Review round 2, finding #4] How far apart along a major thoroughfare minor branch roads
+     *  are spawned, and how far each branch runs perpendicular into the zoned area on either side. */
+    public static final int MINOR_BRANCH_INTERVAL_BLOCKS = PARCEL_SIZE_BLOCKS * 2;
+    public static final int MINOR_BRANCH_LENGTH_BLOCKS = PARCEL_SIZE_BLOCKS;
+
+    /** Residential : commercial : industrial footprint ratio, residential-heavy since every
+     *  villager needs housing but only some need a workplace. */
+    public static final int RESIDENTIAL_ZONE_SHARE = 5;
+    public static final int COMMERCIAL_ZONE_SHARE = 3;
+    public static final int INDUSTRIAL_ZONE_SHARE = 2;
+
+    /** The storehouse is a single fixed 7x7 template with 3 roof-height variations selected
+     *  deterministically from the region's own seed, so neighbouring towns don't all look identical
+     *  without needing an actual template catalog (explicitly out of scope per the ticket). */
+    public static final int STOREHOUSE_FOOTPRINT_WIDTH = 7;
+    public static final int STOREHOUSE_VARIATIONS = 3;
+
+    // --- Donation conversion rates: category credit per single donated item, more processed
+    // material contributing more. Mirrors BuilderDonationTrades' tiering (oak_log < cobblestone <
+    // sandstone < bricks < quartz_block) but generalized to town categories rather than a single
+    // narrow chance roll.
+    public static final int DONATION_DIRT_STONE_CREDIT = 1;
+    public static final int DONATION_COBBLESTONE_STONE_CREDIT = 2;
+    public static final int DONATION_STONE_BRICKS_STONE_CREDIT = 4;
+    public static final int DONATION_SMOOTH_STONE_STONE_CREDIT = 4;
+    public static final int DONATION_CHISELED_STONE_BRICKS_STONE_CREDIT = 6;
+    public static final int DONATION_OAK_LOG_WOOD_CREDIT = 2;
+    public static final int DONATION_OAK_PLANKS_WOOD_CREDIT = 1;
+    public static final int DONATION_WHEAT_FOOD_CREDIT = 1;
+    public static final int DONATION_BREAD_FOOD_CREDIT = 3;
+    public static final int DONATION_CARROT_FOOD_CREDIT = 1;
+
+    // --- Clearing/leveling return rates: fraction of a full donation credit, since clearing is
+    // incidental salvage rather than a deliberate contribution.
+    public static final int CLEARING_STONE_RETURN = 1;
+    public static final int CLEARING_WOOD_RETURN = 1;
+    /** Dirt returns a SMALL amount of stone (per the ticket), not a full stone credit. */
+    public static final int CLEARING_DIRT_STONE_RETURN = 1;
+    public static final int CLEARING_DIRT_BLOCKS_PER_STONE_CREDIT = 4;
+    /** Leaves return a SMALL amount of wood. */
+    public static final int CLEARING_LEAVES_WOOD_RETURN = 1;
+    public static final int CLEARING_LEAVES_BLOCKS_PER_WOOD_CREDIT = 8;
+
+    /**
+     * Passive production tick interval and trickle amounts. Reuses
+     * {@code BuilderSettlementPlan.PASSIVE_CHECK_INTERVAL_TICKS} semantics (a ten-second
+     * elapsed-time gate, not a catch-up loop) scaled up to a per-minute town-wide trickle so a
+     * town with no donations at all still slowly grows: one credit of each category per minute
+     * per claimed, employed villager in the town, capped so an enormous town can't runaway-produce.
+     */
+    public static final long PASSIVE_PRODUCTION_INTERVAL_TICKS = 1200L; // one Minecraft minute
+    public static final int PASSIVE_PRODUCTION_PER_WORKER = 1;
+    public static final int PASSIVE_PRODUCTION_WORKER_CAP = 12;
+
+    /** Construction pacing: one planned block consumes this many category-resource credits, and
+     *  at most this many blocks are placed per construction tick, so a well-stocked town still
+     *  builds visibly rather than instantly, while an empty store stops cold with no partial charge. */
+    public static final int CONSTRUCTION_COST_PER_BLOCK = 1;
+    public static final int CONSTRUCTION_BLOCKS_PER_TICK = 4;
+    public static final long CONSTRUCTION_TICK_INTERVAL_TICKS = 20L; // one second
+
+    /**
+     * MINECRAFT-388/455: how often {@code TownResidentAllocationHandler} reconciles every town
+     * resident (not only a construction site's own claimant) against the town's own vacant,
+     * already-built beds/workplaces - the same per-minute cadence as passive production, since this
+     * is an ongoing background reconciliation, not something that needs to react within the same
+     * tick a fixture frees up.
+     *
+     * <p>[Review round 18, finding #1] The search radius alone is NOT what keeps a resident's match
+     * inside its own town: {@code TownPlan}'s own town centre is randomized WITHIN its region, never
+     * fixed at the geometric centre, so a radius of merely half {@link #REGION_SIZE_BLOCKS} can both
+     * reach past the region's own edge into a NEIGHBOURING one and still fail to reach that SAME
+     * region's own far corner from an off-centre town centre. The radius here is sized generously
+     * enough (comfortably past the full region's own diagonal, {@code REGION_SIZE_BLOCKS * sqrt(2)})
+     * to reach every corner of the region from ANY town centre that could fall within it; the caller
+     * is responsible for then filtering candidates to the EXACT founded region itself (see
+     * {@code TownResidentAllocationHandler}'s own region-membership predicate), which is what
+     * actually excludes a neighbouring region's content.
+     */
+    public static final long RESIDENT_ALLOCATION_INTERVAL_TICKS = 1200L; // one Minecraft minute
+    public static final int RESIDENT_ALLOCATION_SEARCH_RADIUS = REGION_SIZE_BLOCKS * 2;
+}

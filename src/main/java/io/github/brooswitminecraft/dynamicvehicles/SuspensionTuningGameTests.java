@@ -3,6 +3,9 @@ package io.github.brooswitminecraft.dynamicvehicles;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.gametest.framework.GameTestInfo;
+import net.minecraft.gametest.framework.GameTestListener;
+import net.minecraft.gametest.framework.GameTestRunner;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.gametest.GameTestHolder;
@@ -11,6 +14,7 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.function.Supplier;
 
 /**
  * MINECRAFT-445 review fix (comment 49018): production evidence that an ENABLED, CONFIGURED {@code
@@ -42,6 +46,17 @@ import java.nio.file.Path;
  * unrelated tests. Batches run one at a time, so a batch per test is what actually removes the race. The
  * pre-existing {@code VehicleSpecOverridesGameTests} never hit this only because it configures {@code
  * truck}/{@code rock_crawler}, which no other test spawns.
+ *
+ * <p><b>Every delayed callback here is registered from the test body itself, never from inside another
+ * callback.</b> This is the crash class {@code CarDrivetrainGameTests}' ledge rig already documents
+ * (MINECRAFT-442 round 14): vanilla's {@code GameTestInfo#tickInternal} runs a test's body before it starts
+ * iterating its {@code runAtTickTimeMap}, but runs every scheduled callback from INSIDE that iteration, and
+ * fastutil's open-hash map has no fail-fast check -- a callback that registers dozens of further samplers
+ * rehashes the map under the live iterator. The two anti-dive fixtures below did exactly that, and
+ * reproduced the same {@code "this.wrapped" is null} server crash locally; short of crashing, the same
+ * corruption can drop a scheduled sampler or assertion, or run one twice. A car that only exists from some
+ * later tick is therefore sampled through a holder its own spawn callback fills, rather than by scheduling
+ * its sampler late.
  */
 @GameTestHolder(DynamicVehiclesMod.MODID)
 @PrefixGameTestTemplate(false)
@@ -68,11 +83,14 @@ public final class SuspensionTuningGameTests {
     /** MINECRAFT-445 review fix (PR184 #issuecomment-6282714154): the configured car's SETTLED MEAN
      * compression (see {@link #aConfiguredBumpStopLimitsPeakCompressionVersusTheStockControl}'s own
      * javadoc for the switch from a drop's peak to a steady-state mean) must come out at most this
-     * fraction of the stock control's. The analytical equilibrium ratio is ~0.36 (0.0538 m against
-     * 0.15 m); this is tighter than the 0.7 the old drop-based version used (and which still failed CI at
-     * an observed 0.775, the first failure in five prior runs) because a settled mean has far less
-     * run-to-run variance than a drop's impact peak -- real margin on both sides of the analytical value,
-     * rather than a bound chosen loose purely to tolerate transient noise. */
+     * fraction of the stock control's. The analytical equilibrium ratio at this fixture's own moderate
+     * {@link #MAX_BUMP_STOP_RATE_FOR_THIS_TEST} is ~0.52 (0.0782 m against 0.15 m: {@code (m*g/4 +
+     * bumpStopRate * travel) / (springRate + bumpStopRate)}); the ~0.36 an earlier revision quoted was the
+     * schema-ceiling stop's figure, which this fixture no longer uses. This is tighter than the 0.7 the old
+     * drop-based version used (and which still failed CI at an observed 0.775, the first failure in five
+     * prior runs) because a settled mean has far less run-to-run variance than a drop's impact peak; it
+     * leaves the analytical value about 0.08 of headroom while still failing a stop that carries no load,
+     * whose ratio would be 1.0. */
     private static final double MAX_CONFIGURED_TO_STOCK_TRAVEL_RATIO = 0.6;
 
     /** Every {@code tireKit} field at the extreme end of its {@link VehicleSpecLimits} range at once: the
@@ -189,7 +207,9 @@ public final class SuspensionTuningGameTests {
         SupportedMean stockMean = supportedMeanCompressionOverWindow(helper, stock, LATE_WINDOW_START, LATE_WINDOW_TICKS);
         SupportedMean configuredMean = supportedMeanCompressionOverWindow(helper, configured, LATE_WINDOW_START, LATE_WINDOW_TICKS);
 
-        helper.runAfterDelay(LATE_WINDOW_START + LATE_WINDOW_TICKS, () -> {
+        // One tick after the last sample: callbacks due on the same tick run in hash order, so an assertion
+        // on the window's own last tick could run before that tick's sampler and see one tick short.
+        helper.runAtTickTime(LATE_WINDOW_START + LATE_WINDOW_TICKS + 1, () -> {
             helper.assertTrue(configured.spec().suspensionTuning().bumpStopRate() == MAX_BUMP_STOP_RATE_FOR_THIS_TEST,
                     "the configured car did not actually receive the tireKit override at construction: "
                             + configured.spec().suspensionTuning());
@@ -207,10 +227,11 @@ public final class SuspensionTuningGameTests {
             helper.assertTrue(configuredMean.unsupportedTick < 0,
                     "the configured car lost contact on at least one wheel during the late sampling window, "
                             + "so it was not stably supported: " + configuredMean.unsupportedDetail);
-            helper.assertTrue(stockMean.samples > 0 && configuredMean.samples > 0,
-                    "a car was never sampled during the late window -- its Sable body did not exist on any "
-                            + "sampled tick: stock samples=" + stockMean.samples + " configured samples="
-                            + configuredMean.samples);
+            // The FULL window, not merely "some" samples (PR184 review 5580581955): a mean over a handful of
+            // ticks is not the settled value this fixture claims to compare.
+            helper.assertTrue(stockMean.ticks == LATE_WINDOW_TICKS && configuredMean.ticks == LATE_WINDOW_TICKS,
+                    "a car was not sampled on every tick of the late window: stock ticks=" + stockMean.ticks
+                            + " configured ticks=" + configuredMean.ticks + " of " + LATE_WINDOW_TICKS);
 
             double stockMeanTravel = stockMean.sum / stockMean.samples;
             double configuredMeanTravel = configuredMean.sum / configuredMean.samples;
@@ -257,7 +278,8 @@ public final class SuspensionTuningGameTests {
     /** Samples every wheel's compression on each tick of the window and keeps the running MEAN across all
      * four wheels and all sampled ticks, but -- unlike a plain mean -- records the FIRST tick (and wheel
      * reading) where any wheel was not in contact, so a car that was not stably supported for the whole
-     * window is diagnosable by name rather than silently folded into an average. */
+     * window is diagnosable by name rather than silently folded into an average. A tick on which the car has
+     * no Sable body at all counts as unsupported too: nothing was holding it up that this could observe. */
     private static SupportedMean supportedMeanCompressionOverWindow(GameTestHelper helper, CarEntity car,
             long fromTick, long windowTicks) {
         SupportedMean mean = new SupportedMean();
@@ -265,8 +287,13 @@ public final class SuspensionTuningGameTests {
             long sampleTick = tick;
             helper.runAtTickTime(sampleTick, () -> {
                 if (car.sableBody() == null) {
+                    if (mean.unsupportedTick < 0) {
+                        mean.unsupportedTick = sampleTick;
+                        mean.unsupportedDetail = "tick=" + sampleTick + " the car had no Sable body";
+                    }
                     return;
                 }
+                mean.ticks++;
                 double[] travel = SableCompat.wheelTravel(car.sableBody());
                 for (int wheel = 0; wheel < travel.length; wheel++) {
                     double t = travel[wheel];
@@ -291,6 +318,8 @@ public final class SuspensionTuningGameTests {
     private static final class SupportedMean {
         double sum = 0.0;
         int samples = 0;
+        /** Ticks on which the car had a body to sample. */
+        long ticks = 0;
         boolean allFinite = true;
         /** The first sampled tick any wheel was not in contact, or -1 if every sampled wheel on every
          * sampled tick was. */
@@ -372,13 +401,13 @@ public final class SuspensionTuningGameTests {
         // four wheels, failing a precondition that was only ever meant to establish "this car can see the
         // ground". Sampling instead makes each side's claim the stronger one: the control must find contact
         // at SOME point, and the airborne car must find it at NO point.
-        PeakCompression groundedPeak = peakCompressionOverDrop(helper, grounded, 0L);
+        PeakCompression groundedPeak = peakCompressionOverDrop(helper, () -> grounded, 0L);
         // The airborne car is sampled over a SHORTER window than the grounded control, and that asymmetry
         // is the fix for the last CI failure here rather than an oversight: with the full 50-tick window
         // the car fell clean through the cleared column and landed on the template floor underneath it
         // (peak=0.284, blockBelow=stone), so the test was measuring a landing it had itself arranged. The
         // window now ends well before the car can cross even the deepened pit -- see AIRBORNE_SAMPLE_TICKS.
-        PeakCompression airbornePeak = peakCompressionOverWindow(helper, airborne, 0L, AIRBORNE_SAMPLE_TICKS);
+        PeakCompression airbornePeak = peakCompressionOverWindow(helper, () -> airborne, 0L, AIRBORNE_SAMPLE_TICKS);
 
         helper.runAfterDelay(MEASURE_TICK, () -> {
             helper.assertTrue(!airborne.isRemoved(),
@@ -414,38 +443,45 @@ public final class SuspensionTuningGameTests {
      * <p>{@code CarConfig.WHEEL_SUB_STEPS} is a global, live-reloadable setting, so this follows the same
      * two rules {@code CarDrivetrainGameTests}' own sub-step test established: its OWN {@code batch} (one
      * batch runs at a time, so no other test's car is ticking while the global is changed), and a restore
-     * that is guaranteed on every path, including a thrown assertion.
+     * that is guaranteed on every path, including a thrown assertion AND a timeout -- the latter only a
+     * terminal {@link GameTestListener} can see (PR184 review, butchr at 42bf198), since by the time the
+     * framework times a test out every stack frame below, and its {@code catch}, is long gone.
      */
     @GameTest(template = "settlement_test", timeoutTicks = 300, batch = "suspensionTuningSubStepIsolated")
     public static void aConfiguredBumpStopAllowsTheSamePeakCompressionAtOneAndFourSubSteps(GameTestHelper helper) {
         int originalSubSteps = CarConfig.WHEEL_SUB_STEPS.get();
+        Runnable restore = () -> CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
+        // Registered BEFORE the first mutation; idempotent, so the earlier catch-based restores stay harmless.
+        runOnEveryTerminalOutcome(helper, restore);
         try {
             pad(helper, 5);
             pad(helper, 15);
             CarConfig.WHEEL_SUB_STEPS.set(1);
             CarEntity oneStep = spawnWithOverride(helper, LOAD_BEARING_BUMP_STOP,
                     new BlockPos(5, 3 + DROP_BLOCKS, 5));
-            PeakCompression oneStepPeak = peakCompressionOverDrop(helper, oneStep, 0L);
-            helper.runAfterDelay(MEASURE_TICK,
-                    () -> compareFourSubStepsAndRestore(helper, originalSubSteps, oneStepPeak));
-        } catch (RuntimeException e) {
-            CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
-            throw e;
-        }
-    }
+            PeakCompression oneStepPeak = peakCompressionOverDrop(helper, () -> oneStep, 0L);
+            // The four-step car cannot exist until MEASURE_TICK (the setting is global, so the two cars
+            // cannot tick at once), but its sampler is still registered here -- see this class's javadoc --
+            // and reads it through this holder, which the spawn callback fills.
+            CarEntity[] fourStep = new CarEntity[1];
+            PeakCompression fourStepPeak = peakCompressionOverDrop(helper, () -> fourStep[0], MEASURE_TICK);
 
-    private static void compareFourSubStepsAndRestore(GameTestHelper helper, int originalSubSteps,
-            PeakCompression oneStepPeak) {
-        try {
-            CarConfig.WHEEL_SUB_STEPS.set(4);
-            CarEntity fourStep = spawnWithOverride(helper, LOAD_BEARING_BUMP_STOP,
-                    new BlockPos(5, 3 + DROP_BLOCKS, 15));
-            PeakCompression fourStepPeak = peakCompressionOverDrop(helper, fourStep, MEASURE_TICK);
-            // Delay measured from NOW (this callback already runs at MEASURE_TICK), so the second car gets
-            // the same full sampling window the first one did before anything is compared.
-            helper.runAfterDelay(MEASURE_TICK, () -> {
+            helper.runAtTickTime(MEASURE_TICK, () -> {
                 try {
-                    CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
+                    CarConfig.WHEEL_SUB_STEPS.set(4);
+                    fourStep[0] = spawnWithOverride(helper, LOAD_BEARING_BUMP_STOP,
+                            new BlockPos(5, 3 + DROP_BLOCKS, 15));
+                } catch (RuntimeException e) {
+                    restore.run();
+                    throw e;
+                }
+            });
+
+            // MEASURE_TICK after the second car appeared, so it gets the same full sampling window the
+            // first one did before anything is compared.
+            helper.runAtTickTime(2 * MEASURE_TICK, () -> {
+                try {
+                    restore.run();
                     helper.assertTrue(oneStepPeak.deepest > 0.0 && fourStepPeak.deepest > 0.0,
                             "a sub-step car never touched the ground during its drop, so there is nothing to "
                                     + "compare: 1-step=" + oneStepPeak.deepest + " 4-step=" + fourStepPeak.deepest);
@@ -455,14 +491,39 @@ public final class SuspensionTuningGameTests {
                                     + oneStepPeak.deepest + " 4-step=" + fourStepPeak.deepest + " ratio=" + ratio);
                     helper.succeed();
                 } catch (RuntimeException e) {
-                    CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
+                    restore.run();
                     throw e;
                 }
             });
         } catch (RuntimeException e) {
-            CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
+            restore.run();
             throw e;
         }
+    }
+
+    /** Runs {@code action} on whichever terminal outcome this test reaches -- pass, fail (a timeout
+     * included) or rerun -- the same listener {@code CarDrivetrainGameTests}' ledge rig uses for its own
+     * cleanup. {@code action} must be idempotent: a test that also restores early will run it twice. */
+    private static void runOnEveryTerminalOutcome(GameTestHelper helper, Runnable action) {
+        helper.testInfo.addListener(new GameTestListener() {
+            @Override
+            public void testStructureLoaded(GameTestInfo info) {}
+
+            @Override
+            public void testPassed(GameTestInfo info, GameTestRunner runner) {
+                action.run();
+            }
+
+            @Override
+            public void testFailed(GameTestInfo info, GameTestRunner runner) {
+                action.run();
+            }
+
+            @Override
+            public void testAddedForRerun(GameTestInfo info, GameTestInfo retry, GameTestRunner runner) {
+                action.run();
+            }
+        });
     }
 
 
@@ -571,8 +632,11 @@ public final class SuspensionTuningGameTests {
         // Spin both up under identical throttle, then release it: the comparison happens while coasting.
         stock.forceDrive(GENTLE_THROTTLE, 0.0, (int) SPIN_UP_TICKS);
         soft.forceDrive(GENTLE_THROTTLE, 0.0, (int) SPIN_UP_TICKS);
+        // Entry speeds, captured by the first callback for the second; both registered here, at the top
+        // level -- see this class's javadoc.
+        double[] entry = new double[2];
 
-        helper.runAfterDelay(SPIN_UP_TICKS, () -> {
+        helper.runAtTickTime(SPIN_UP_TICKS, () -> {
             helper.assertTrue(soft.spec().tirePressureBar() == VehicleSpecLimits.MIN_TIRE_PRESSURE_BAR,
                     "the soft-tire car did not receive the tirePressureBar override at construction: "
                             + soft.spec().tirePressureBar());
@@ -580,29 +644,31 @@ public final class SuspensionTuningGameTests {
                     "the control car was not at nominal pressure -- an override leaked into it: "
                             + stock.spec().tirePressureBar());
 
-            double stockEntry = horizontalSpeed(stock);
-            double softEntry = horizontalSpeed(soft);
+            entry[0] = horizontalSpeed(stock);
+            entry[1] = horizontalSpeed(soft);
             // Setup gate: a comparison between two cars that never moved would be vacuous, the same
             // failure mode this suite's own rolling-resistance fixtures guard against.
-            helper.assertTrue(stockEntry > MIN_MEANINGFUL_CRUISE_SPEED && softEntry > MIN_MEANINGFUL_CRUISE_SPEED,
+            helper.assertTrue(entry[0] > MIN_MEANINGFUL_CRUISE_SPEED && entry[1] > MIN_MEANINGFUL_CRUISE_SPEED,
                     "test setup never got both cars rolling before the coast, so there would be no speed "
-                            + "loss to compare: stock=" + stockEntry + " soft=" + softEntry);
+                            + "loss to compare: stock=" + entry[0] + " soft=" + entry[1]);
+        });
 
-            helper.runAfterDelay(COAST_TICKS, () -> {
-                // Speed LOST while coasting, each car measured against its own entry speed, so a small
-                // difference in how fast they got up to speed cannot be mistaken for the drag difference.
-                double stockLoss = stockEntry - horizontalSpeed(stock);
-                double softLoss = softEntry - horizontalSpeed(soft);
-                helper.assertTrue(stockLoss > 0.0,
-                        "the stock control did not slow down at all while coasting, so this comparison "
-                                + "would be vacuous: entry=" + stockEntry + " now=" + horizontalSpeed(stock));
-                helper.assertTrue(softLoss > stockLoss,
-                        "a car on soft tires must lose MORE speed while coasting than a matched stock "
-                                + "control -- its pressure rolling multiplier may not be reaching the real "
-                                + "tire force: stockLoss=" + stockLoss + " softLoss=" + softLoss
-                                + " (entry speeds stock=" + stockEntry + " soft=" + softEntry + ")");
-                helper.succeed();
-            });
+        helper.runAtTickTime(SPIN_UP_TICKS + COAST_TICKS, () -> {
+            double stockEntry = entry[0];
+            double softEntry = entry[1];
+            // Speed LOST while coasting, each car measured against its own entry speed, so a small
+            // difference in how fast they got up to speed cannot be mistaken for the drag difference.
+            double stockLoss = stockEntry - horizontalSpeed(stock);
+            double softLoss = softEntry - horizontalSpeed(soft);
+            helper.assertTrue(stockLoss > 0.0,
+                    "the stock control did not slow down at all while coasting, so this comparison "
+                            + "would be vacuous: entry=" + stockEntry + " now=" + horizontalSpeed(stock));
+            helper.assertTrue(softLoss > stockLoss,
+                    "a car on soft tires must lose MORE speed while coasting than a matched stock "
+                            + "control -- its pressure rolling multiplier may not be reaching the real "
+                            + "tire force: stockLoss=" + stockLoss + " softLoss=" + softLoss
+                            + " (entry speeds stock=" + stockEntry + " soft=" + softEntry + ")");
+            helper.succeed();
         });
     }
 
@@ -642,8 +708,11 @@ public final class SuspensionTuningGameTests {
         CarEntity configured = spawnWithOverride(helper, FULL_ANTI_DIVE, new BlockPos(5, 3, 15));
         stock.forceDrive(GENTLE_THROTTLE, 0.0, (int) ACCELERATE_TICKS);
         configured.forceDrive(GENTLE_THROTTLE, 0.0, (int) ACCELERATE_TICKS);
+        // Registered here, not inside the tick-ACCELERATE_TICKS callback -- see this class's javadoc.
+        PeakDive stockDive = peakDiveOverBraking(helper, stock, ACCELERATE_TICKS);
+        PeakDive configuredDive = peakDiveOverBraking(helper, configured, ACCELERATE_TICKS);
 
-        helper.runAfterDelay(ACCELERATE_TICKS, () -> {
+        helper.runAtTickTime(ACCELERATE_TICKS, () -> {
             helper.assertTrue(configured.spec().pitchTuning().antiDive() == VehicleSpecLimits.MAX_PITCH_RESIST,
                     "the configured car did not receive the antiDive override at construction: "
                             + configured.spec().pitchTuning());
@@ -656,24 +725,23 @@ public final class SuspensionTuningGameTests {
             // Brake hard: negative throttle is brake-only, the same input CarDrivetrainGameTests uses.
             stock.forceDrive(-1.0, 0.0, (int) BRAKE_TICKS);
             configured.forceDrive(-1.0, 0.0, (int) BRAKE_TICKS);
-            PeakDive stockDive = peakDiveOverBraking(helper, stock, ACCELERATE_TICKS);
-            PeakDive configuredDive = peakDiveOverBraking(helper, configured, ACCELERATE_TICKS);
+        });
 
-            helper.runAfterDelay(BRAKE_TICKS, () -> {
-                helper.assertTrue(stockDive.peak > Double.NEGATIVE_INFINITY
-                                && configuredDive.peak > Double.NEGATIVE_INFINITY,
-                        "a car was never sampled during the braking window -- its Sable body did not exist "
-                                + "on any sampled tick: stock=" + stockDive.peak + " configured="
-                                + configuredDive.peak);
-                helper.assertTrue(stockDive.peak > 0.0,
-                        "the stock control never dived at all under braking, so this comparison would be "
-                                + "vacuous: peak=" + stockDive.peak + " " + where(stock));
-                helper.assertTrue(configuredDive.peak < stockDive.peak,
-                        "full anti-dive geometry must reduce the front-to-rear compression gap under braking "
-                                + "-- its application-height blend may not be reaching the real tire impulse: "
-                                + "stock=" + stockDive.peak + " configured=" + configuredDive.peak);
-                helper.succeed();
-            });
+        // One tick after the last sample, so the comparison cannot run ahead of that tick's own sampler.
+        helper.runAtTickTime(ACCELERATE_TICKS + BRAKE_TICKS + 1, () -> {
+            helper.assertTrue(stockDive.peak > Double.NEGATIVE_INFINITY
+                            && configuredDive.peak > Double.NEGATIVE_INFINITY,
+                    "a car was never sampled during the braking window -- its Sable body did not exist "
+                            + "on any sampled tick: stock=" + stockDive.peak + " configured="
+                            + configuredDive.peak);
+            helper.assertTrue(stockDive.peak > 0.0,
+                    "the stock control never dived at all under braking, so this comparison would be "
+                            + "vacuous: peak=" + stockDive.peak + " " + where(stock));
+            helper.assertTrue(configuredDive.peak < stockDive.peak,
+                    "full anti-dive geometry must reduce the front-to-rear compression gap under braking "
+                            + "-- its application-height blend may not be reaching the real tire impulse: "
+                            + "stock=" + stockDive.peak + " configured=" + configuredDive.peak);
+            helper.succeed();
         });
     }
 
@@ -728,112 +796,211 @@ public final class SuspensionTuningGameTests {
      * cornering for any car that configured pitch resistance -- a claim this ticket never made and never
      * tested. This fixture brakes AND steers at once (so both the longitudinal and lateral tire forces this
      * fixture is supposed to tell apart are actually present simultaneously) and asserts the LEFT-RIGHT
-     * (roll) compression gap is materially UNCHANGED by full anti-dive, even though {@link
-     * #fullAntiDiveDivesLessUnderBrakingThanTheStockControl} already proves the FRONT-REAR (dive) gap is
-     * reduced by the same configuration. Same peak-over-window technique as that fixture, for the same
-     * reason: it removes any dependence on which tick is sampled.
+     * (roll) compression gap is materially UNCHANGED by full anti-dive, while the FRONT-REAR (dive) gap in
+     * the same manoeuvre is materially reduced -- the second half is what keeps the first from passing
+     * vacuously on a car whose anti-dive never engaged.
+     *
+     * <p>PR184 review 5580581955 -- the manoeuvre's own premise, corrected. The first version of this
+     * fixture braked at FULL brake (3000 N a wheel, about 1 g) at FULL lock, which puts every tire on its
+     * friction limit, so each axle's lateral force is capped by its normal load -- and moving normal load
+     * between the axles under braking is exactly what anti-dive does. Per-tick telemetry from a local
+     * reproduction (stock 0.258, configured 0.104, ratio 0.405): as the stock car dived its rear friction
+     * limit fell from 3339 N to 1014 N within four ticks, its rear wheels locked and it oversteered into
+     * about 11.4 kN of total lateral force, while the anti-dive car kept its rear loaded and rolling and
+     * cornered on about 6.2 kN. The roll gap followed that force, not where it was applied, and whether
+     * the stock car locked up varied from run to run: the same code read 0.405 in one local run and 1.11
+     * in the next. That fixture could not tell the defect it was written for from the fix.
+     *
+     * <p>So this manoeuvre stays inside the friction circle: a light brake at moderate lock from a modest
+     * speed, where a tire's lateral force is set by its slip velocity rather than capped by its load, so
+     * both cars corner on the same lateral force and a roll difference can only come from where that
+     * force acts. Like-for-like is CHECKED rather than assumed -- the two cars' mean total lateral force
+     * must agree, or this fails saying so instead of misreporting a roll leak. Roll is compared as the
+     * window's MEAN left-right gap rather than one tick's peak, which is the steadier of the two across
+     * placements. Checked against the defect itself: with the blend applied to the lateral impulse as well
+     * (the pre-fix behaviour), this manoeuvre measured a roll ratio of 0.09; with the shipped split,
+     * 1.01..1.10 across every placement tried.
+     *
+     * <p>The two cars run side by side on a stone floor covering the whole template, and the manoeuvre is
+     * short enough (about 15 m forward and 3 m sideways) to finish on it, so it is the same flat surface
+     * wherever the harness places the test. That matters: the harness picks a random spot up to 15 million
+     * blocks out, and at most of those a car's world position barely changes even at speed (float32
+     * precision), while near the origin the cars genuinely drive that far. Both were tried locally, the
+     * near-origin case on a temporary rig.
      */
     @GameTest(template = "settlement_test", timeoutTicks = 300, batch = "suspensionTuningAntiDiveRollIsolated")
     public static void fullAntiDiveDoesNotChangeRollTransferWhileCorneringUnderBraking(GameTestHelper helper) {
-        pad(helper, 5);
-        pad(helper, 15);
-        CarEntity stock = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
-        CarEntity configured = spawnWithOverride(helper, FULL_ANTI_DIVE, new BlockPos(5, 3, 15));
-        stock.forceDrive(GENTLE_THROTTLE, 0.0, (int) ACCELERATE_TICKS);
-        configured.forceDrive(GENTLE_THROTTLE, 0.0, (int) ACCELERATE_TICKS);
+        for (int x = 0; x <= TEMPLATE_MAX; x++) {
+            for (int z = 0; z <= TEMPLATE_MAX; z++) {
+                helper.setBlock(new BlockPos(x, 2, z), Blocks.STONE);
+            }
+        }
+        CarEntity stock = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 3));
+        CarEntity configured = spawnWithOverride(helper, FULL_ANTI_DIVE, new BlockPos(16, 3, 3));
+        stock.forceDrive(GENTLE_THROTTLE, 0.0, (int) CORNER_SPIN_UP_TICKS);
+        configured.forceDrive(GENTLE_THROTTLE, 0.0, (int) CORNER_SPIN_UP_TICKS);
+        // Registered here, not inside the tick-CORNER_SPIN_UP_TICKS callback -- see this class's javadoc.
+        CorneringResponse stockResponse = sampleCornering(helper, stock, CORNER_SPIN_UP_TICKS);
+        CorneringResponse configuredResponse = sampleCornering(helper, configured, CORNER_SPIN_UP_TICKS);
 
-        helper.runAfterDelay(ACCELERATE_TICKS, () -> {
+        helper.runAtTickTime(CORNER_SPIN_UP_TICKS, () -> {
             helper.assertTrue(configured.spec().pitchTuning().antiDive() == VehicleSpecLimits.MAX_PITCH_RESIST,
                     "the configured car did not receive the antiDive override at construction: "
                             + configured.spec().pitchTuning());
+            helper.assertTrue(stock.spec().pitchTuning().equals(VehicleSpec.PitchTuning.IDENTITY),
+                    "the control car was not stock -- an override leaked into it: " + stock.spec().pitchTuning());
             helper.assertTrue(horizontalSpeed(stock) > MIN_MEANINGFUL_CRUISE_SPEED,
                     "test setup never got the stock control moving before the brake+steer window: "
                             + horizontalSpeed(stock) + " " + where(stock));
+            stock.forceDrive(-CORNER_BRAKE, CORNER_STEER, (int) CORNER_TICKS);
+            configured.forceDrive(-CORNER_BRAKE, CORNER_STEER, (int) CORNER_TICKS);
+        });
 
-            // Brake AND steer at once: full lock, brake-only throttle, same per-input conventions the
-            // dive-only fixture and CarDrivetrainGameTests already use.
-            stock.forceDrive(-1.0, 1.0, (int) BRAKE_TICKS);
-            configured.forceDrive(-1.0, 1.0, (int) BRAKE_TICKS);
-            PeakRoll stockRoll = peakRollOverBraking(helper, stock, ACCELERATE_TICKS);
-            PeakRoll configuredRoll = peakRollOverBraking(helper, configured, ACCELERATE_TICKS);
-
-            helper.runAfterDelay(BRAKE_TICKS, () -> {
-                helper.assertTrue(stockRoll.peak > Double.NEGATIVE_INFINITY
-                                && configuredRoll.peak > Double.NEGATIVE_INFINITY,
-                        "a car was never sampled during the brake+steer window -- its Sable body did not "
-                                + "exist on any sampled tick: stock=" + stockRoll.peak + " configured="
-                                + configuredRoll.peak);
-                helper.assertTrue(Math.abs(stockRoll.peak) > MIN_MEANINGFUL_ROLL_GAP,
-                        "the stock control never showed a meaningful left-right compression gap while "
-                                + "cornering, so this comparison would be vacuous: peak=" + stockRoll.peak
-                                + " " + where(stock));
-                double ratio = configuredRoll.peak / stockRoll.peak;
-                helper.assertTrue(ratio > MIN_UNCHANGED_ROLL_RATIO && ratio < MAX_UNCHANGED_ROLL_RATIO,
-                        "full anti-dive geometry changed the left-right (roll) compression gap while "
-                                + "cornering under braking -- its application-height blend may be reaching "
-                                + "the LATERAL tire force as well as the longitudinal one it is documented "
-                                + "to affect: stock=" + stockRoll.peak + " configured=" + configuredRoll.peak
-                                + " ratio=" + ratio);
-                helper.succeed();
-            });
+        // One tick after the last sample, so the comparison cannot run ahead of that tick's own sampler.
+        helper.runAtTickTime(CORNER_SPIN_UP_TICKS + CORNER_TICKS + 1, () -> {
+            helper.assertTrue(stockResponse.ticks == CORNER_TICKS && configuredResponse.ticks == CORNER_TICKS,
+                    "a car was not sampled on every tick of the brake+steer window: stock ticks="
+                            + stockResponse.ticks + " configured ticks=" + configuredResponse.ticks + " of "
+                            + CORNER_TICKS);
+            helper.assertTrue(Math.abs(stockResponse.meanRoll()) > MIN_MEANINGFUL_ROLL_GAP,
+                    "the stock control never showed a meaningful left-right compression gap while "
+                            + "cornering, so this comparison would be vacuous: mean=" + stockResponse.meanRoll()
+                            + " " + where(stock));
+            helper.assertTrue(configuredResponse.peakDive < stockResponse.peakDive * MAX_ANTI_DIVE_TO_STOCK_DIVE_RATIO,
+                    "full anti-dive did not materially reduce dive in this manoeuvre, so its roll comparison "
+                            + "would say nothing about anti-dive: stock dive=" + stockResponse.peakDive
+                            + " configured dive=" + configuredResponse.peakDive);
+            double rollRatio = configuredResponse.meanRoll() / stockResponse.meanRoll();
+            double lateralRatio = configuredResponse.meanLateralForce() / stockResponse.meanLateralForce();
+            helper.assertTrue(rollRatio > MIN_UNCHANGED_ROLL_RATIO && rollRatio < MAX_UNCHANGED_ROLL_RATIO,
+                    "full anti-dive geometry changed the left-right (roll) compression gap while "
+                            + "cornering under braking -- its application-height blend may be reaching "
+                            + "the LATERAL tire force as well as the longitudinal one it is documented "
+                            + "to affect: stock=" + stockResponse.meanRoll() + " configured="
+                            + configuredResponse.meanRoll() + " ratio=" + rollRatio + " (mean lateral force "
+                            + "stock=" + stockResponse.meanLateralForce() + " configured="
+                            + configuredResponse.meanLateralForce() + ")");
+            helper.assertTrue(lateralRatio > MIN_MATCHED_LATERAL_RATIO && lateralRatio < MAX_MATCHED_LATERAL_RATIO,
+                    "the two cars did not corner on the same lateral force, so their roll gaps are not "
+                            + "like-for-like and this manoeuvre has left the friction circle it relies on: "
+                            + "mean lateral force stock=" + stockResponse.meanLateralForce() + " configured="
+                            + configuredResponse.meanLateralForce() + " ratio=" + lateralRatio);
+            helper.succeed();
         });
     }
 
-    /** Samples the left-minus-right mean spring compression every tick of the brake+steer window and keeps
-     * the PEAK MAGNITUDE (not signed peak: the gap can legitimately point either way depending on which
-     * side loads up under a given steer direction, and what matters here is how big it gets, not its
-     * sign). Left/right is decided the way production decides it ({@code mounts()[wheel][0] < 0.0}). */
-    private static PeakRoll peakRollOverBraking(GameTestHelper helper, CarEntity car, long fromTick) {
-        PeakRoll roll = new PeakRoll();
-        for (long tick = fromTick + 1; tick <= fromTick + BRAKE_TICKS; tick++) {
+    /** Samples, every tick of the brake+steer window, the front-minus-rear (dive) and left-minus-right
+     * (roll) mean spring compression and the car's total lateral tire force. Front/rear and left/right are
+     * decided the way production decides them ({@code mounts()[wheel][2] > 0}, {@code mounts()[wheel][0] <
+     * 0.0}). */
+    private static CorneringResponse sampleCornering(GameTestHelper helper, CarEntity car, long fromTick) {
+        CorneringResponse response = new CorneringResponse();
+        for (long tick = fromTick + 1; tick <= fromTick + CORNER_TICKS; tick++) {
             helper.runAtTickTime(tick, () -> {
                 if (car.sableBody() == null) {
                     return;
                 }
                 double[] travel = SableCompat.wheelTravel(car.sableBody());
+                double[] lateralForces = SableCompat.wheelLateralForces(car.sableBody());
                 double[][] mounts = car.spec().mounts();
-                double leftSum = 0.0;
-                double rightSum = 0.0;
+                double front = 0.0;
+                double rear = 0.0;
+                double left = 0.0;
+                double right = 0.0;
+                int frontCount = 0;
                 int leftCount = 0;
-                int rightCount = 0;
+                double totalLateral = 0.0;
                 for (int wheel = 0; wheel < travel.length; wheel++) {
+                    if (mounts[wheel][2] > 0) {
+                        front += travel[wheel];
+                        frontCount++;
+                    } else {
+                        rear += travel[wheel];
+                    }
                     if (mounts[wheel][0] < 0.0) {
-                        leftSum += travel[wheel];
+                        left += travel[wheel];
                         leftCount++;
                     } else {
-                        rightSum += travel[wheel];
-                        rightCount++;
+                        right += travel[wheel];
                     }
+                    totalLateral += lateralForces[wheel];
                 }
-                if (leftCount > 0 && rightCount > 0) {
-                    double gap = leftSum / leftCount - rightSum / rightCount;
-                    if (Math.abs(gap) > Math.abs(roll.peak) || roll.peak == Double.NEGATIVE_INFINITY) {
-                        roll.peak = gap;
-                    }
+                int rearCount = travel.length - frontCount;
+                int rightCount = travel.length - leftCount;
+                if (frontCount == 0 || rearCount == 0 || leftCount == 0 || rightCount == 0) {
+                    return;
                 }
+                response.ticks++;
+                response.peakDive = Math.max(response.peakDive, front / frontCount - rear / rearCount);
+                response.rollSum += left / leftCount - right / rightCount;
+                response.lateralForceSum += Math.abs(totalLateral);
             });
         }
-        return roll;
+        return response;
     }
 
-    /** Mutable accumulator for {@link #peakRollOverBraking}; holds the SIGNED gap at the tick of largest
-     * magnitude, so the stock-vs-configured ratio below compares like with like rather than two peaks that
-     * could have landed on opposite signs. */
-    private static final class PeakRoll {
-        double peak = Double.NEGATIVE_INFINITY;
+    /** Mutable accumulator for {@link #sampleCornering}. The roll gap is summed SIGNED, so the
+     * stock-vs-configured ratio of the means compares like with like. */
+    private static final class CorneringResponse {
+        double peakDive = Double.NEGATIVE_INFINITY;
+        double rollSum = 0.0;
+        double lateralForceSum = 0.0;
+        long ticks = 0;
+
+        /** Mean left-minus-right compression gap over the sampled ticks, m. */
+        double meanRoll() {
+            return ticks == 0 ? 0.0 : rollSum / ticks;
+        }
+
+        /** Mean magnitude of the car's summed per-wheel lateral tire force over the sampled ticks, N. */
+        double meanLateralForce() {
+            return ticks == 0 ? 0.0 : lateralForceSum / ticks;
+        }
     }
 
-    /** The stock control's own peak left-right gap must exceed this (metres) for the ratio comparison to
-     * be meaningful rather than dividing two near-zero numbers. */
+    /** The stock control's own mean left-right gap must exceed this (metres) for the ratio comparison to
+     * be meaningful rather than dividing two near-zero numbers. It measures about 0.03. */
     private static final double MIN_MEANINGFUL_ROLL_GAP = 0.01;
 
-    /** The configured-to-stock roll-gap ratio must fall inside this band for anti-dive to count as having
-     * left cornering roll transfer alone. Wide enough to absorb ordinary run-to-run variation in a dynamic
-     * brake+steer manoeuvre, tight enough to catch the actual defect this fixture was written against (the
-     * pre-fix code raised the lateral application height by a FULL anti-dive fraction, which is not a
-     * small effect). */
-    private static final double MIN_UNCHANGED_ROLL_RATIO = 0.5;
-    private static final double MAX_UNCHANGED_ROLL_RATIO = 1.5;
+    /** The configured-to-stock mean roll-gap ratio must fall inside this band for anti-dive to count as
+     * having left cornering roll transfer alone. Tighter than the 0.5..1.5 the full-brake version of this
+     * fixture used, because inside the friction circle the two cars corner on the same lateral force: the
+     * shipped split measured 1.01..1.10 across every placement tried, the pre-fix code (blend applied to
+     * the lateral impulse too) 0.09. */
+    private static final double MIN_UNCHANGED_ROLL_RATIO = 0.8;
+    private static final double MAX_UNCHANGED_ROLL_RATIO = 1.25;
+
+    /** Full anti-dive must take at least a quarter off the stock control's peak dive gap in the cornering
+     * manoeuvre, or anti-dive was not active enough there for "roll unchanged" to mean anything; a car
+     * whose anti-dive never engaged would read 1.0. Measured 0.01..0.53: the steered front tires' cornering
+     * force has a rearward component that still pitches the car, and anti-dive deliberately leaves the
+     * lateral force alone. */
+    private static final double MAX_ANTI_DIVE_TO_STOCK_DIVE_RATIO = 0.75;
+
+    /** The configured-to-stock ratio of mean total lateral force the cornering manoeuvre must stay inside
+     * for its two cars to count as like-for-like. It measures 0.99..1.02; the full-brake version that
+     * saturated every tire had the anti-dive car cornering on about 6.2 kN against the stock car's
+     * 11.4 kN. */
+    private static final double MIN_MATCHED_LATERAL_RATIO = 0.85;
+    private static final double MAX_MATCHED_LATERAL_RATIO = 1.15;
+
+    /** Ticks of {@link #GENTLE_THROTTLE} before the cornering manoeuvre: about 8 m/s, reached in about
+     * 6 m, so the manoeuvre starts well inside the floor. */
+    private static final long CORNER_SPIN_UP_TICKS = 30L;
+
+    /** Ticks of the brake+steer window. */
+    private static final long CORNER_TICKS = 30L;
+
+    /** A fifth of full brake (600 N a wheel, about 0.2 g): enough to dive measurably, far from the 1 g
+     * that locked the stock car's unloaded rear in this fixture's first version. */
+    private static final double CORNER_BRAKE = 0.2;
+
+    /** About a third of this car's speed-limited lock at the manoeuvre's speed: a real cornering load that
+     * leaves every tire inside its friction circle alongside {@link #CORNER_BRAKE}. */
+    private static final double CORNER_STEER = 0.35;
+
+    /** Highest block coordinate inside {@code settlement_test}'s 24x24 footprint. */
+    private static final int TEMPLATE_MAX = 23;
 
     /** Full anti-dive and nothing else, so any difference against the control is that geometry alone. */
     private static final String FULL_ANTI_DIVE = """
@@ -926,19 +1093,24 @@ public final class SuspensionTuningGameTests {
      * car reading {@code [0.229, 0.103, 0.0, 0.0]} and another {@code [0.0, 0.0, -0.087, -0.086]} while
      * rolling, with real contact on only one axle). Taking a peak across the whole window also removes any
      * dependence on which single tick the comparison lands on.
+     *
+     * <p>{@code car} is read on every sampled tick rather than once, so a car that only spawns at {@code
+     * fromTick} can still have its sampler registered from the test body -- see this class's javadoc.
      */
-    private static PeakCompression peakCompressionOverDrop(GameTestHelper helper, CarEntity car, long fromTick) {
+    private static PeakCompression peakCompressionOverDrop(GameTestHelper helper, Supplier<CarEntity> car,
+            long fromTick) {
         return peakCompressionOverWindow(helper, car, fromTick, SAMPLE_WINDOW_TICKS);
     }
 
     /** As {@link #peakCompressionOverDrop}, for a caller that needs its own window length -- the airborne
      * case, whose window must end before its car can fall far enough to find anything to land on. */
-    private static PeakCompression peakCompressionOverWindow(GameTestHelper helper, CarEntity car,
+    private static PeakCompression peakCompressionOverWindow(GameTestHelper helper, Supplier<CarEntity> carRef,
             long fromTick, long windowTicks) {
         PeakCompression peak = new PeakCompression();
         for (long tick = fromTick + 1; tick <= fromTick + windowTicks; tick++) {
             helper.runAtTickTime(tick, () -> {
-                if (car.sableBody() == null) {
+                CarEntity car = carRef.get();
+                if (car == null || car.sableBody() == null) {
                     return;
                 }
                 for (double travel : SableCompat.wheelTravel(car.sableBody())) {

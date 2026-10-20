@@ -238,28 +238,32 @@ public final class SuspensionTuningGameTests {
         }
         CarEntity airborne = spawnWithOverride(helper, EXTREME_TIRE_KIT, new BlockPos(5, 6, 15));
 
+        // Both sides are judged over a WINDOW, not at one instant. CI caught why that matters: checked at a
+        // single tick, the grounded control was mid-bounce after its drop and read a uniform -0.165 on all
+        // four wheels, failing a precondition that was only ever meant to establish "this car can see the
+        // ground". Sampling instead makes each side's claim the stronger one: the control must find contact
+        // at SOME point, and the airborne car must find it at NO point.
+        PeakCompression groundedPeak = peakCompressionOverDrop(helper, grounded, 0L);
+        PeakCompression airbornePeak = peakCompressionOverDrop(helper, airborne, 0L);
+
         helper.runAfterDelay(MEASURE_TICK, () -> {
             helper.assertTrue(!airborne.isRemoved(),
                     "the configured car over the open pit was removed while falling with no ground under it");
-            // The control only has to prove the ground IS detected here, so ANY wheel in contact suffices.
-            // Requiring all four was wrong and CI said so: a real car on real ground does not keep every
-            // wheel loaded at every instant (one round reported [0.229, 0.103, 0.0, 0.0] while rolling).
-            // The claim under test -- an ungrounded car manufactures no contact force -- is asserted at full
-            // strength below, on every wheel, and is not weakened by this precondition.
-            double[] groundedTravel = SableCompat.wheelTravel(grounded.sableBody());
-            boolean anyContact = false;
-            for (double travel : groundedTravel) {
-                anyContact |= travel > 0.0;
-            }
-            helper.assertTrue(anyContact, "the grounded control never detected the ground under it at all, so "
-                    + "the airborne comparison would be vacuous: " + where(grounded));
-            double[] airborneTravel = SableCompat.wheelTravel(airborne.sableBody());
-            for (int wheel = 0; wheel < airborneTravel.length; wheel++) {
-                helper.assertTrue(airborneTravel[wheel] == 0.0,
-                        "wheel " + wheel + " of a tireKit-configured car over an open pit reported nonzero "
-                                + "suspension travel (must read fully extended/ungrounded, exactly 0.0): "
-                                + airborneTravel[wheel]);
-            }
+            helper.assertTrue(groundedPeak.allFinite && airbornePeak.allFinite,
+                    "a wheel reported non-finite compression during the window");
+
+            helper.assertTrue(groundedPeak.deepest > 0.0,
+                    "the grounded control never detected the ground under it at any point, so the airborne "
+                            + "comparison would be vacuous: peak=" + groundedPeak.deepest + " " + where(grounded));
+
+            // The claim under test, at full strength: over the whole window, no wheel of the configured car
+            // over an open pit ever reported positive compression. 0.0 is the production code's own
+            // fully-extended/ungrounded sentinel, so a peak of exactly 0.0 means no bump stop or rebound
+            // rate ever manufactured contact where there was no ground.
+            helper.assertTrue(airbornePeak.deepest == 0.0,
+                    "a tireKit-configured car over an open pit reported contact at some point during the "
+                            + "window (every wheel must stay at the fully-extended 0.0 sentinel): peak="
+                            + airbornePeak.deepest + " " + where(airborne));
             helper.succeed();
         });
     }

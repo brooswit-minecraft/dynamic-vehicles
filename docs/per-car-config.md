@@ -179,6 +179,7 @@ whenever all four rates match, for any knee speed — pinned by
 | `dampingKneeSpeed` | m/s | 0.0 – 10.0 | The compression-rate magnitude separating "slow" from "fast", for BOTH directions. `0.0` means every speed is "fast". Irrelevant (no observable effect) while all four rates are equal. Defaults to `SuspensionTuning.DEFAULT_DAMPING_KNEE_SPEED`. |
 | `bumpStopTravel` | metres | 0.0 – 5.0 | Compression travel beyond which the progressive bump stop engages, on top of the regular spring/damper force. Unlike `rideHeight` this needs no per-car geometry check: a value a car's own suspension can never actually reach is simply inert (the stop never engages), not degenerate. Defaults to `SuspensionTuning.BUMP_STOP_DISABLED_TRAVEL`, which is unreachable, so the stop never engages. |
 | `bumpStopRate` | N/m | 0.0 – 500,000.0 | Applied only to the compression PAST `bumpStopTravel`. `SuspensionTuning.NO_BUMP_STOP_RATE` (zero) disables the bump stop regardless of `bumpStopTravel`, and is the default. |
+| `rearSteerRatio` | fraction | -1.0 – 1.0 | Fraction of the FRONT wheels' steer angle applied to the rear wheels. `0.0` (the default, and every stock car's value) keeps the rear axle straight — exactly what the production code did before this field existed. **Negative is opposite-phase**: the rear steers against the front, tightening the turn (classic low-speed four-wheel steering). **Positive is same-phase**: the rear follows the front, pushing the car sideways rather than rotating it as sharply. This is real physics, not a rendered pose — the angle rotates each tire's own forward axis, which is what the tire's longitudinal/lateral force directions are measured against. |
 
 Ranges live in code as `VehicleSpecLimits`' `MIN/MAX_TIRE_KIT_DAMPING`,
 `MIN/MAX_DAMPING_KNEE_SPEED`, `MIN/MAX_BUMP_STOP_TRAVEL` and
@@ -186,12 +187,18 @@ Ranges live in code as `VehicleSpecLimits`' `MIN/MAX_TIRE_KIT_DAMPING`,
 `VehicleSpec.SuspensionTuning`, whose `singleRate(dampingRate)` factory is the
 stock (identity) value every car on the roster carries today.
 
+`rearSteerRatio` ranges live in code as `VehicleSpecLimits`'
+`MIN/MAX_REAR_STEER_RATIO`, and the resolved value on
+`VehicleSpec.SteeringTuning` (whose `IDENTITY` is the no-rear-steering value
+every car carries today).
+
 **Every existing car's stock default for this whole section is the identity
 one**: `compressionDampingFast`/`reboundDampingSlow`/`reboundDampingFast` all
 equal that car's own `dampingRate` from the table above, and the remaining three
 fields take the named defaults in the table (`DEFAULT_DAMPING_KNEE_SPEED`, which
-is inert at equal rates, plus the two that disable the bump stop). No car has
-opted into two-rate damping or a bump stop, so stock driving feel is unchanged.
+is inert at equal rates, plus the two that disable the bump stop), and
+`rearSteerRatio` is `0.0`. No car has opted into two-rate damping, a bump stop
+or rear steering, so stock driving feel is unchanged.
 
 Example, giving the trophy truck a soft slow-compression stroke that firms up
 over fast hits, a stiffer rebound so it does not pogo on landings, and a bump
@@ -221,8 +228,9 @@ behind it would be "unused config fields," which MINECRAFT-443's acceptance
 explicitly rules out and MINECRAFT-445's repeats. Each task adds its own fields
 here when it implements real behaviour, rather than inventing a parallel file
 or format. The same rule applies within `tireKit` above: its remaining
-MINECRAFT-445 fields (caster, roll center, anti-dive/anti-squat, tire pressure,
-rear steering) appear there only as that behaviour lands.
+MINECRAFT-445 fields (caster, roll center, anti-dive/anti-squat, tire pressure)
+appear there only as that behaviour lands. Rear steering has now landed and is
+documented in the table above.
 
 | Key | Owner |
 |---|---|

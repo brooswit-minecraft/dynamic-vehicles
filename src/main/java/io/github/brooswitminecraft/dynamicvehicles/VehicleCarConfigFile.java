@@ -41,5 +41,6 @@ final class VehicleCarConfigFile {
         Double dampingKneeSpeed;
         Double bumpStopTravel;
         Double bumpStopRate;
+        Double rearSteerRatio;
     }
 }

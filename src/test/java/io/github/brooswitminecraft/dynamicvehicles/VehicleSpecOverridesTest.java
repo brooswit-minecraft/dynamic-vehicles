@@ -244,6 +244,57 @@ class VehicleSpecOverridesTest {
         assertEquals(VehicleSpec.CAR.suspensionTuning().bumpStopRate(), resolved.suspensionTuning().bumpStopRate());
     }
 
+    /** An in-range opposite-phase rear-steer request, written into the file and asserted back out. */
+    private static final double REQUESTED_REAR_STEER_RATIO = -0.25;
+
+    @Test
+    void rearSteerRatioOverridesAndClampsThroughTheTireKitSection(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car",
+                "{\"tireKit\": {\"rearSteerRatio\": %s}}".formatted(REQUESTED_REAR_STEER_RATIO));
+
+        VehicleSpecOverrides.load(configDir);
+        VehicleSpec resolved = VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR);
+
+        assertEquals(REQUESTED_REAR_STEER_RATIO, resolved.steeringTuning().rearSteerRatio());
+        // Nothing else in the tireKit section was mentioned, so the suspension side keeps its stock
+        // VALUES. Deliberately not assertSame: a present tireKit section rebuilds the suspension record
+        // from its own per-field stock fallbacks, so the instance is equal but new. Instance identity is
+        // only contractual when the section is ABSENT entirely -- see
+        // anAbsentTireKitSectionKeepsTheStockSuspensionTuningInstance, which pins that case.
+        assertEquals(VehicleSpec.CAR.suspensionTuning(), resolved.suspensionTuning());
+    }
+
+    @Test
+    void anOutOfRangeRearSteerRatioIsClampedNotRejected(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", "{\"tireKit\": {\"rearSteerRatio\": -9.0}}");
+
+        VehicleSpecOverrides.load(configDir);
+
+        assertEquals(VehicleSpecLimits.MIN_REAR_STEER_RATIO,
+                VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR).steeringTuning().rearSteerRatio());
+    }
+
+    @Test
+    void aTireKitWithoutRearSteerKeepsTheStockSteeringInstance(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", "{\"tireKit\": {\"bumpStopRate\": 1000.0}}");
+
+        VehicleSpecOverrides.load(configDir);
+
+        assertSame(VehicleSpec.CAR.steeringTuning(),
+                VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR).steeringTuning());
+    }
+
+    @Test
+    void aNonFiniteRearSteerRatioFallsBackToStock(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car",
+                "{\"tireKit\": {\"rearSteerRatio\": %s}}".formatted(NON_FINITE_JSON_NUMBER));
+
+        VehicleSpecOverrides.load(configDir);
+
+        assertEquals(VehicleSpec.CAR.steeringTuning().rearSteerRatio(),
+                VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR).steeringTuning().rearSteerRatio());
+    }
+
     @Test
     void oneCorruptFileDoesNotAffectAnotherCarsValidFile(@TempDir Path configDir) throws IOException {
         writeCarsFile(configDir, "car", "{ not valid json");

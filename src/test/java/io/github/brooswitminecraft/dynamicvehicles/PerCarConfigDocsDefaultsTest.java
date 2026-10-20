@@ -47,6 +47,24 @@ class PerCarConfigDocsDefaultsTest {
         }
     }
 
+    /**
+     * MINECRAFT-445: the {@code tireKit} section's documented claim that no car on the roster steers its
+     * rear wheels, so adding rear steering changed no existing car's handling. A rear ratio of exactly
+     * 0.0 makes the rear wheels' steer angle exactly 0.0 -- bit for bit the literal the production code
+     * used before the field existed.
+     */
+    @Test
+    void everyCarStillShipsWithoutRearSteering() {
+        for (VehicleSpec spec : new VehicleSpec[] {VehicleSpec.CAR, VehicleSpec.TRUCK, VehicleSpec.TROPHY,
+                VehicleSpec.DRIFT, VehicleSpec.MUSCLE, VehicleSpec.ROCK_CRAWLER, VehicleSpec.MONSTER_TRUCK,
+                VehicleSpec.INDY, VehicleSpec.BUS, VehicleSpec.CARGO_TRUCK}) {
+            assertEquals(VehicleSpec.SteeringTuning.IDENTITY, spec.steeringTuning(),
+                    "steeringTuning must still be IDENTITY (docs/per-car-config.md, tireKit)");
+            assertEquals(0.0, spec.steeringTuning().rearSteerRatio(),
+                    "a roster car gained rear steering without the docs table being updated");
+        }
+    }
+
     private static void assertRow(String id, VehicleSpec spec, Expected expected) {
         VehicleSpec.VehicleTuning tuning = spec.vehicleTuning();
         assertEquals(expected.rideHeight(), spec.rideHeight(), 1e-9, id + ".rideHeight (docs/per-car-config.md)");

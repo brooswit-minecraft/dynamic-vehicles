@@ -200,6 +200,7 @@ final class VehicleSpecOverrides {
         VehicleSpec.VehicleTuning vehicleTuning = VehicleTuningLimits.clamp(requestedTuning, stockTuning);
 
         VehicleSpec.SuspensionTuning suspensionTuning = applyTireKit(file.tireKit, stock, dampingRate);
+        VehicleSpec.SteeringTuning steeringTuning = applySteering(file.tireKit, stock);
 
         return new VehicleSpec(stock.halfX(), stock.halfY(), stock.halfZ(),
                 stock.mounts(), stock.wheelRadius(), stock.wheelWidth(),
@@ -210,7 +211,24 @@ final class VehicleSpecOverrides {
                 stock.seatY(), stock.seatZ(),
                 stock.looseGrip(), rollingScale,
                 stock.tireTuning(), stock.downforceGripPerSpeed(), antiRollScale,
-                stock.seats(), vehicleTuning, handbrakeScale, suspensionTuning);
+                stock.seats(), vehicleTuning, handbrakeScale, suspensionTuning, steeringTuning);
+    }
+
+    /**
+     * MINECRAFT-445: the {@code tireKit} section's steering geometry (today, rear-wheel steering), clamped
+     * into {@link VehicleSpecLimits}' range exactly like every other field here. An absent {@code tireKit}
+     * section, or one that does not mention {@code rearSteerRatio}, keeps this car's stock {@link
+     * VehicleSpec.SteeringTuning} -- object identity included, so a car with no steering override is the
+     * same instance it always was.
+     */
+    private static VehicleSpec.SteeringTuning applySteering(VehicleCarConfigFile.TireKit tireKit,
+            VehicleSpec stock) {
+        if (tireKit == null || tireKit.rearSteerRatio == null) {
+            return stock.steeringTuning();
+        }
+        return new VehicleSpec.SteeringTuning(VehicleSpecLimits.clamp(tireKit.rearSteerRatio,
+                VehicleSpecLimits.MIN_REAR_STEER_RATIO, VehicleSpecLimits.MAX_REAR_STEER_RATIO,
+                stock.steeringTuning().rearSteerRatio()));
     }
 
     /**

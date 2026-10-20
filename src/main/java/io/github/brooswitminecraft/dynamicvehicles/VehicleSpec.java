@@ -90,7 +90,31 @@ public record VehicleSpec(
          * built from this spec's own {@link #dampingRate} for every vehicle that has not opted in &mdash;
          * today, every vehicle on the roster &mdash; so that overload reduces to exactly this spec's
          * existing {@link #dampingRate} behaviour and {@code SableCarBody.tick} is unchanged for them. */
-        SuspensionTuning suspensionTuning) {
+        SuspensionTuning suspensionTuning,
+        /** Per-vehicle steering geometry from the {@code tireKit} config section (MINECRAFT-445): today
+         * rear-wheel steering. {@link SteeringTuning#IDENTITY} for every vehicle that has not opted in --
+         * today, every vehicle on the roster -- which makes the rear wheels' steer angle exactly {@code
+         * 0.0}, bit for bit what {@code SableCarBody.tick} computed before this field existed. */
+        SteeringTuning steeringTuning) {
+
+    /**
+     * Per-vehicle steering geometry (MINECRAFT-445), grouped for the same reason {@link TireTuning},
+     * {@link VehicleTuning} and {@link SuspensionTuning} already are: its own physical domain, read at its
+     * own production seam. {@code SableCarBody.tick} rotates each tire's forward axis by that wheel's steer
+     * angle, so a nonzero rear ratio genuinely changes the rear tires' force directions rather than only
+     * their rendered pose.
+     *
+     * @param rearSteerRatio the fraction of the FRONT wheels' steer angle applied to the rear wheels.
+     *        {@code 0.0} is identity: rear wheels stay straight, exactly as before this field existed.
+     *        NEGATIVE is opposite-phase (rear steers against the front, tightening the turn, the classic
+     *        low-speed four-wheel-steer behaviour); POSITIVE is same-phase (rear follows the front, which
+     *        pushes the car sideways rather than rotating it as sharply).
+     */
+    public record SteeringTuning(double rearSteerRatio) {
+
+        /** No rear steering at all -- the rear axle holds exactly {@code 0.0} steer angle. */
+        public static final SteeringTuning IDENTITY = new SteeringTuning(0.0);
+    }
 
     /** As the full (canonical) constructor above, minus the trailing {@link #suspensionTuning}
      * (MINECRAFT-445): every existing call site keeps compiling unchanged, with {@link #suspensionTuning}
@@ -109,7 +133,7 @@ public record VehicleSpec(
                 massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
                 forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
                 downforceGripPerSpeed, antiRollScale, seats, vehicleTuning, handbrakeScale,
-                SuspensionTuning.singleRate(dampingRate));
+                SuspensionTuning.singleRate(dampingRate), SteeringTuning.IDENTITY);
     }
 
     /** As the full (canonical) constructor above, minus the trailing {@link #handbrakeScale} (MINECRAFT-443)

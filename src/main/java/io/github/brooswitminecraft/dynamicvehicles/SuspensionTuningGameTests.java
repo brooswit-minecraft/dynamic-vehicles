@@ -107,6 +107,24 @@ public final class SuspensionTuningGameTests {
      * used to catch a blow-up, never to assert a particular speed. */
     private static final double MAX_SANE_DRIVEN_SPEED = 40.0;
 
+    /** The rear-steer ratio the fixture below configures and then verifies in the production tick. */
+    private static final double REAR_STEER_RATIO = -0.25;
+
+    /** Opposite-phase rear steering and nothing else: the rear wheels turn against the fronts at a quarter
+     * of their angle. Chosen negative (opposite phase) because that is the configuration with a clear,
+     * checkable sign relationship against the front angle. */
+    private static final String OPPOSITE_PHASE_REAR_STEER = """
+            {"tireKit": {"rearSteerRatio": %s}}
+            """.formatted(REAR_STEER_RATIO);
+
+    /** Steering input held while the rear-steer angles are read: full lock, so the front angle is as large
+     * as this car's own speed-dependent limit allows and the rear share of it is unambiguous. */
+    private static final double FULL_STEER = 1.0;
+
+    /** Tolerance for comparing a published steer angle against the ratio times the front angle, radians.
+     * Tight: this is one multiplication in production, not an integrated physical quantity. */
+    private static final double STEER_ANGLE_TOLERANCE = 1e-9;
+
     /** A load-bearing bump stop and nothing else, so a difference against the stock control can only come
      * from the bump-stop term itself (damping is zero at rest either way). */
     private static final String LOAD_BEARING_BUMP_STOP = """
@@ -347,6 +365,72 @@ public final class SuspensionTuningGameTests {
                 + " travel=" + java.util.Arrays.toString(SableCompat.wheelTravel(car.sableBody()))
                 + " restLength=" + car.spec().restLength()
                 + " blockBelow=" + below + " " + car.level().getBlockState(below) + "]";
+    }
+
+    /**
+     * Rear steering, through the production tick: a configured car's REAR wheels must be steered by exactly
+     * the configured fraction of its front wheels' angle, with the opposite sign for a negative ratio,
+     * while a matched stock control keeps its rear wheels at exactly 0.0.
+     *
+     * <p>Observable chosen deliberately after the earlier fixtures in this class cost several CI rounds to
+     * get right: {@code steerAngle} is the one per-wheel value {@code SableCarBody.tick} publishes for
+     * EVERY wheel every sub-step, above its own force and raycast guards, because (its own comment)
+     * "steer angle is a pure function of front/steer/forwardSpeed/spec, with no dependence on ground
+     * contact". So this reads a value that does not depend on contact, wheel load, bounce, or whether the
+     * rigid body is awake -- none of the things that made the suspension fixtures hard. It is still real
+     * production physics rather than telemetry: that same angle rotates the tire's forward axis, which is
+     * what {@code vLong}/{@code vLat} and therefore the tire's force directions are measured against.
+     */
+    @GameTest(template = "settlement_test", timeoutTicks = 200, batch = "suspensionTuningRearSteerIsolated")
+    public static void aConfiguredRearSteerRatioSteersTheRearWheelsInProduction(GameTestHelper helper) {
+        pad(helper, 5);
+        pad(helper, 15);
+        CarEntity stock = driving(helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5)));
+        CarEntity configured = driving(spawnWithOverride(helper, OPPOSITE_PHASE_REAR_STEER,
+                new BlockPos(5, 3, 15)));
+        stock.forceDrive(GENTLE_THROTTLE, FULL_STEER, DRIVE_TICKS);
+        configured.forceDrive(GENTLE_THROTTLE, FULL_STEER, DRIVE_TICKS);
+
+        helper.runAfterDelay(MEASURE_TICK, () -> {
+            helper.assertTrue(configured.spec().steeringTuning().rearSteerRatio() == REAR_STEER_RATIO,
+                    "the configured car did not receive the rearSteerRatio override at construction: "
+                            + configured.spec().steeringTuning());
+            helper.assertTrue(stock.spec().steeringTuning().equals(VehicleSpec.SteeringTuning.IDENTITY),
+                    "the control car was not stock -- an override leaked into it: "
+                            + stock.spec().steeringTuning());
+
+            assertRearSteerMatchesRatio(helper, configured, REAR_STEER_RATIO, "configured car");
+            // The control proves the effect is the override's, not something every car now does.
+            assertRearSteerMatchesRatio(helper, stock, 0.0, "stock control");
+            helper.succeed();
+        });
+    }
+
+    /** Checks every wheel's published steer angle against this car's own front angle: front wheels carry
+     * the front angle itself, rear wheels exactly {@code ratio} times it. Front/rear is decided the same
+     * way production decides it -- {@code mounts()[wheel][2] > 0} -- rather than by assuming an index
+     * order. Requires a nonzero front angle first, so a car that happened not to be steering at all
+     * cannot pass this vacuously with zeros on both axles. */
+    private static void assertRearSteerMatchesRatio(GameTestHelper helper, CarEntity car, double ratio,
+            String what) {
+        double[] angles = SableCompat.wheelSteerAngles(car.sableBody());
+        double[][] mounts = car.spec().mounts();
+        double frontAngle = 0.0;
+        for (int wheel = 0; wheel < angles.length; wheel++) {
+            if (mounts[wheel][2] > 0) {
+                frontAngle = angles[wheel];
+            }
+        }
+        helper.assertTrue(Math.abs(frontAngle) > STEER_ANGLE_TOLERANCE,
+                what + " was not steering at all, so its rear-steer ratio is not observable here: front="
+                        + frontAngle + " angles=" + java.util.Arrays.toString(angles));
+        for (int wheel = 0; wheel < angles.length; wheel++) {
+            double expected = mounts[wheel][2] > 0 ? frontAngle : frontAngle * ratio;
+            helper.assertTrue(Math.abs(angles[wheel] - expected) < STEER_ANGLE_TOLERANCE,
+                    what + " wheel " + wheel + (mounts[wheel][2] > 0 ? " (front)" : " (rear)")
+                            + " steer angle did not match the configured ratio " + ratio + ": expected "
+                            + expected + " got " + angles[wheel] + " front=" + frontAngle);
+        }
     }
 
     /** A flat stone pad under a spawn point at y = 2, under a spawn at y = 3 -- the same arrangement

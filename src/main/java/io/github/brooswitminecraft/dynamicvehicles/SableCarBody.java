@@ -409,8 +409,16 @@ final class SableCarBody {
                 // sub-step, ahead of both guards. See the steerAngle field's own comment for the contract.
                 double[] mount = spec.mounts()[wheel];
                 boolean front = mount[2] > 0;
-                double wheelSteerAngle = front ? steer * WheelMath.maxSteerAngle(forwardSpeed, WheelMath.BASE_FRICTION,
-                        spec.wheelbase(), CarPhysics.MAX_STEER) : 0.0;
+                // MINECRAFT-445: the rear axle takes its own configured share of the front angle. The
+                // ratio is 0.0 for every vehicle that has not opted in, so this is bit-for-bit the
+                // `: 0.0` the rear wheels got before rear steering existed. A nonzero ratio is real
+                // physics, not just a rendered pose: this angle rotates the tire's own forward axis
+                // below, which is what vLong/vLat -- and therefore the tire's force directions -- are
+                // measured against.
+                double frontSteerAngle = steer * WheelMath.maxSteerAngle(forwardSpeed, WheelMath.BASE_FRICTION,
+                        spec.wheelbase(), CarPhysics.MAX_STEER);
+                double wheelSteerAngle = front ? frontSteerAngle
+                        : frontSteerAngle * spec.steeringTuning().rearSteerRatio();
                 this.steerAngle[wheel] = wheelSteerAngle;
 
                 BlockHitResult hit = wheelHits[wheel];

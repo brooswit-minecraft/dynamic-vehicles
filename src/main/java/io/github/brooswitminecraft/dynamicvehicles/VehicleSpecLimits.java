@@ -61,6 +61,13 @@ final class VehicleSpecLimits {
     static final double MIN_BUMP_STOP_RATE = 0.0;
     static final double MAX_BUMP_STOP_RATE = 500_000.0;
 
+    /** MINECRAFT-445: the fraction of front steer angle applied to the rear wheels. Bounded at +/-1.0 --
+     * a magnitude of 1.0 already means the rear wheels turn as hard as the fronts, and anything beyond that
+     * is not a steering geometry any real car has. Negative is opposite-phase, positive same-phase; see
+     * {@code VehicleSpec.SteeringTuning#rearSteerRatio}. */
+    static final double MIN_REAR_STEER_RATIO = -1.0;
+    static final double MAX_REAR_STEER_RATIO = 1.0;
+
     private VehicleSpecLimits() {}
 
     /** A non-finite value falls back to {@code fallback} so malformed config can never leak NaN/Infinity

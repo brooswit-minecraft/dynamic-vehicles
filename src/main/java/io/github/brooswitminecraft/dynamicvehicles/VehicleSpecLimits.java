@@ -54,6 +54,19 @@ final class VehicleSpecLimits {
     static final double MIN_CLUTCH_TORQUE_CAPACITY = 0.0;
     static final double MAX_CLUTCH_TORQUE_CAPACITY = 20_000.0;
 
+    /** Wing downforce coefficient (MINECRAFT-446), N per (m/s)^2 applied at one axle. Identity is 0.0 (no
+     * wing at all, the whole roster today); generous headroom above the roster's own existing 0.4 N/(m/s)^2
+     * global air-drag constant, since a real wing's downforce coefficient is routinely several times its
+     * own drag coefficient. Negative has no sensible meaning for a downforce-only field. */
+    static final double MIN_WING_DOWNFORCE_COEFF = 0.0;
+    static final double MAX_WING_DOWNFORCE_COEFF = 5.0;
+
+    /** Per-vehicle aerodynamic drag coefficient (MINECRAFT-446), N per (m/s)^2. Identity/stock default is
+     * 0.4 (the roster's own pre-existing hardcoded {@code AIR_DRAG} constant, same for every vehicle until
+     * an operator overrides it). Negative has no sensible meaning (drag always opposes motion). */
+    static final double MIN_WING_DRAG_COEFF = 0.0;
+    static final double MAX_WING_DRAG_COEFF = 5.0;
+
     private VehicleSpecLimits() {}
 
     /** A non-finite value falls back to {@code fallback} so malformed config can never leak NaN/Infinity

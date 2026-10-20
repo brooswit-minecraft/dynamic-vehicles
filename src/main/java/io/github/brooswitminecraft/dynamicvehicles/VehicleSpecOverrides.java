@@ -12,12 +12,14 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Per-car config files (MINECRAFT-443): {@code config/dynamicvehicles/cars/<id>.json} overrides a subset
- * of a stock {@link VehicleSpec}'s already-implemented tuning fields &mdash; ride height, damping rate,
- * anti-roll scale, rolling-resistance scale, handbrake-strength scale, and the five
- * {@link VehicleSpec.VehicleTuning} dials (LSD lock, front/rear torque split, torque-vectoring gain,
- * camber, toe), plus the four {@link VehicleSpec.DrivetrainCoupling} engine/clutch coupling dials
- * (MINECRAFT-444: engine inertia, peak torque, engine braking torque, clutch torque capacity). Everything else about a car (geometry, mass, seats, drive force, top speed, tire/downforce
+ * Per-car config files (MINECRAFT-443, wing fields MINECRAFT-446, engine/clutch coupling MINECRAFT-444):
+ * {@code config/dynamicvehicles/cars/<id>.json} overrides a subset of a stock {@link VehicleSpec}'s
+ * already-implemented tuning fields &mdash; ride height, damping rate, anti-roll scale, rolling-resistance
+ * scale, handbrake-strength scale, the five {@link VehicleSpec.VehicleTuning} dials (LSD lock, front/rear
+ * torque split, torque-vectoring gain, camber, toe), (MINECRAFT-446) the {@code wing} section's front/
+ * rear downforce coefficients and drag coefficient, and (MINECRAFT-444) the four
+ * {@link VehicleSpec.DrivetrainCoupling} engine/clutch coupling dials (engine inertia, peak torque, engine
+ * braking torque, clutch torque capacity). Everything else about a car (geometry, mass, seats, drive force, top speed, tire/downforce
  * tuning) is not file-configurable by this ticket; see {@code docs/per-car-config.md} for the full
  * rationale and schema.
  *
@@ -191,6 +193,23 @@ final class VehicleSpecOverrides {
                 : VehicleSpecLimits.clamp(file.handbrakeScale, VehicleSpecLimits.MIN_HANDBRAKE_SCALE,
                         VehicleSpecLimits.MAX_HANDBRAKE_SCALE, stock.handbrakeScale());
 
+        // Wing downforce/drag (MINECRAFT-446): file.wing itself (not just its individual fields) can be
+        // absent -- an omitted "wing" key entirely -- which must behave exactly like one present with every
+        // field absent, i.e. every wing field keeps this car's stock value.
+        VehicleCarConfigFile.Wing wing = file.wing;
+        Double frontDownforceField = wing == null ? null : wing.frontDownforceCoeff;
+        Double rearDownforceField = wing == null ? null : wing.rearDownforceCoeff;
+        Double dragField = wing == null ? null : wing.dragCoeff;
+        double frontWingDownforceCoeff = frontDownforceField == null ? stock.frontWingDownforceCoeff()
+                : VehicleSpecLimits.clamp(frontDownforceField, VehicleSpecLimits.MIN_WING_DOWNFORCE_COEFF,
+                        VehicleSpecLimits.MAX_WING_DOWNFORCE_COEFF, stock.frontWingDownforceCoeff());
+        double rearWingDownforceCoeff = rearDownforceField == null ? stock.rearWingDownforceCoeff()
+                : VehicleSpecLimits.clamp(rearDownforceField, VehicleSpecLimits.MIN_WING_DOWNFORCE_COEFF,
+                        VehicleSpecLimits.MAX_WING_DOWNFORCE_COEFF, stock.rearWingDownforceCoeff());
+        double wingDragCoeff = dragField == null ? stock.wingDragCoeff()
+                : VehicleSpecLimits.clamp(dragField, VehicleSpecLimits.MIN_WING_DRAG_COEFF,
+                        VehicleSpecLimits.MAX_WING_DRAG_COEFF, stock.wingDragCoeff());
+
         VehicleSpec.VehicleTuning stockTuning = stock.vehicleTuning();
         VehicleSpec.VehicleTuning requestedTuning = new VehicleSpec.VehicleTuning(
                 file.lsdLockPercent == null ? stockTuning.lsdLockPercent() : file.lsdLockPercent,
@@ -226,6 +245,7 @@ final class VehicleSpecOverrides {
                 stock.seatY(), stock.seatZ(),
                 stock.looseGrip(), rollingScale,
                 stock.tireTuning(), stock.downforceGripPerSpeed(), antiRollScale,
-                stock.seats(), vehicleTuning, handbrakeScale, drivetrainCoupling);
+                stock.seats(), vehicleTuning, handbrakeScale,
+                frontWingDownforceCoeff, rearWingDownforceCoeff, wingDragCoeff, drivetrainCoupling);
     }
 }

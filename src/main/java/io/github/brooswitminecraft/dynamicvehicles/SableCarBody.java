@@ -926,9 +926,20 @@ final class SableCarBody {
             lastGroundedYawDeg = currentYawDeg;
         }
 
+        // MINECRAFT-447 review fix (steep-surface acceptance case): DiffuserAssistMath.rollSelfRightingTorque's
+        // own javadoc already documents the intended contract -- "an assist that only makes sense while
+        // airborne (recovering from a rollover) is gated by the caller checking contact state before
+        // calling this" -- but this call site never did. A car resting on a steep natural slope carries a
+        // real, PERMANENT bank angle that is correct for that slope, not a rollover; without this gate the
+        // assist would apply continuous torque trying to roll the car back to world-upright, fighting the
+        // ground it is correctly resting on. Gating here, not inside the pure function, matches every other
+        // assist's own convention (R17 self-gates on a NaN time-to-touchdown while grounded; R18 self-gates
+        // because lastGroundedYawDeg tracks the current yaw every grounded tick) rather than special-casing
+        // roll's math for a condition the caller already computes.
         double rollAngleRad = Math.atan2(right.y, up.y);
         double rollRateRadPerSec = angular.dot(carForward);
-        double rollTorque = DiffuserAssistMath.rollSelfRightingTorque(rollAngleRad, rollRateRadPerSec, diffuser);
+        double rollTorque = touching ? 0.0
+                : DiffuserAssistMath.rollSelfRightingTorque(rollAngleRad, rollRateRadPerSec, diffuser);
 
         // MINECRAFT-447 review fix (PR #180 comment 6278664198): pitchAngleRad here is a MEASURED angle
         // (asin(forward.y), positive = nose up), but the torque below is applied about the PHYSICAL
@@ -1212,6 +1223,13 @@ final class SableCarBody {
     /** The body's speed, m/s. */
     double speed() {
         return body.getLinearVelocity(new Vector3d()).length();
+    }
+
+    /** Server test support only (MINECRAFT-447 steep-surface regression): R16's own last-applied torque,
+     * same value {@code describe()} reports under {@code diffuserRoll}, exposed directly rather than
+     * parsed back out of that debug string. */
+    double lastDiffuserRollTorque() {
+        return lastDiffuserRollTorque;
     }
 
     /** Diagnostic only (MINECRAFT-401 review, round 5): whether any wheel had a positive suspension

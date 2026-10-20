@@ -422,6 +422,11 @@ public class CarEntity extends Entity {
         return sableBody == null ? -1 : SableCompat.automaticGearIndex(sableBody);
     }
 
+    /** Server test support only (MINECRAFT-447 steep-surface regression): R16's own last-applied torque. */
+    double debugDiffuserRollTorque() {
+        return sableBody == null ? 0.0 : SableCompat.lastDiffuserRollTorque(sableBody);
+    }
+
     /** Server-authoritative speed, m/s -- unlike {@link #clientSpeed()}, which is only ever updated
      * inside this entity's client-side tick branch and so always reads 0 from a server-side test. */
     double debugSpeed() {

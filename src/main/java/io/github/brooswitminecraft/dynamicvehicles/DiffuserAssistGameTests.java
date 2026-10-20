@@ -865,6 +865,75 @@ public final class DiffuserAssistGameTests {
         });
     }
 
+    /** A one-block step under half the car's own track width (wheel mounts at x=+-0.8, see
+     * {@code CarGeometry}), spanning the whole wheelbase in z: low on one side, high on the other. The
+     * resulting static bank angle, atan(1 block / ~1.6 m track) ~= 32 degrees, is steep and permanent --
+     * exactly the "steep surface" case, not a transient tilt suspension alone would absorb. */
+    /** The X coordinate of the step itself: everything left of this is low, everything at or right of it
+     * is high. The car spawns straddling it. */
+    private static final int STEEP_SEAM_X = 5;
+    private static final int STEEP_LOW_Y = 2;
+    private static final int STEEP_HIGH_Y = 3;
+    /** Wide margin on each side of the seam, not just enough to cover the stationary wheel footprint: a
+     * narrower first version occasionally missed both platforms during landing (observed directly --
+     * "not touching" at the end of the settle window run to run, inconsistent with the ~13-tick landing
+     * time a 2-block drop implies, which points at a bounce/skid off a narrow platform's edge rather than
+     * a timing margin). */
+    private static final int STEEP_PLATFORM_HALF_SPAN = 4;
+    private static final int STEEP_SPAWN_Z = 4;
+    private static final BlockPos STEEP_SPAWN = new BlockPos(STEEP_SEAM_X, 6, STEEP_SPAWN_Z);
+    /** Long enough for suspension to settle the car onto the step before anything is measured, with real
+     * margin beyond the ~15-25 ticks a clean landing actually takes. */
+    private static final long STEEP_SETTLE_TICKS = 80L;
+
+    /** A single clean seam at {@link #STEEP_SEAM_X}: one block per (x, z), never two at the same x, so
+     * there is no risk of one platform's own placement silently overwriting or stacking on the other's. */
+    private static void buildSteepStep(GameTestHelper helper) {
+        for (int x = STEEP_SEAM_X - STEEP_PLATFORM_HALF_SPAN; x < STEEP_SEAM_X + STEEP_PLATFORM_HALF_SPAN; x++) {
+            int y = x < STEEP_SEAM_X ? STEEP_LOW_Y : STEEP_HIGH_Y;
+            for (int dz = -STEEP_PLATFORM_HALF_SPAN; dz <= STEEP_PLATFORM_HALF_SPAN; dz++) {
+                helper.setBlock(new BlockPos(x, y, STEEP_SPAWN_Z + dz), Blocks.STONE);
+            }
+        }
+    }
+
+    /** Steep-surface acceptance case (MINECRAFT-447 review fix): roll self-righting must NOT fight a car
+     * correctly resting on a steep natural slope. {@code rollSelfRightingTorque}'s own javadoc already
+     * documents this ("an assist that only makes sense while airborne... gated by the caller checking
+     * contact state"), but {@code SableCarBody.applyDiffuserAssists} never actually gated its call on
+     * {@code touching} -- found while covering this exact acceptance case, not asserted from the source.
+     *
+     * <p>A car settled on the step built by {@link #buildSteepStep} carries a real, large, PERMANENT bank
+     * angle (confirmed non-trivial by the sanity check below) that is correct for that slope, not a
+     * rollover to recover from. With the gate, the real {@code diffuserRoll} telemetry this ticket's own
+     * acceptance criteria calls for must read exactly zero while the car is resting there, regardless of
+     * how large that bank angle is -- the direct, production-path proof that the assist is inactive,
+     * stronger than inferring it from the car simply not moving further. */
+    @GameTest(template = TEMPLATE, timeoutTicks = INVERTED_TIMEOUT_TICKS)
+    public static void rollSelfRightingDoesNotFightACarRestingOnASteepSlope(GameTestHelper helper) {
+        buildSteepStep(helper);
+        CarEntity car = spawnCarWithCleanup(helper, STEEP_SPAWN);
+        // The step is built along world/relative X, so the car's own local left/right (its wheel mounts'
+        // x-axis) must actually be aligned with that -- a car's default spawn yaw is not guaranteed to be
+        // 0 (CarDrivetrainGameTests' own D1/D5 fixture sets this explicitly for the same reason). Without
+        // it an earlier version of this fixture measured roll=0.0 for the entire window: the car's real
+        // bank was there, just not about the axis this formula reads, because its local x did not line up
+        // with the step's.
+        car.setYRot(0.0f);
+        car.setDiffuserTuningForTest(rollOnly(ASSIST_MAX_TORQUE, ASSIST_GAIN, ASSIST_DAMPING));
+        helper.runAfterDelay(STEEP_SETTLE_TICKS, () -> {
+            helper.assertTrue(car.isTouchingGroundForTest(),
+                    "fixture needs the car actually settled on the steep step before asserting anything");
+            double roll = rollAngleRad(car);
+            helper.assertTrue(Math.abs(roll) > MIN_START_TILT_RAD,
+                    "sanity: the step did not actually produce a real static bank angle, roll=" + roll);
+            helper.assertTrue(car.debugDiffuserRollTorque() == 0.0,
+                    "roll self-righting must be inactive for a car resting on a steep slope, but it applied "
+                            + car.debugDiffuserRollTorque() + " N*m against a " + roll + " rad bank angle");
+            helper.succeed();
+        });
+    }
+
     /** Telemetry (open item from the ticket's own acceptance criteria): {@code SableCarBody.describe()}'s
      * debug line (logged every 20 ticks by {@code CarEntity.tickSable}, the same line every other car's
      * debug logging already goes through) must report each Diffuser KIT assist's own last-applied torque

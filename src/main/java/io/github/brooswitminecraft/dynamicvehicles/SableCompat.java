@@ -74,6 +74,10 @@ final class SableCompat {
         return ((SableCarBody) body).gearRatio();
     }
 
+    static double lastDiffuserRollTorque(Object body) {
+        return ((SableCarBody) body).lastDiffuserRollTorque();
+    }
+
     static double speed(Object body) {
         return ((SableCarBody) body).speed();
     }

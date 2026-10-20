@@ -310,6 +310,26 @@ public final class WheelMath {
     }
 
     /**
+     * Advances a wheel that is NOT touching anything by one (sub-)step, rad/s (MINECRAFT-444 review round
+     * 3): with no tire force there is no ground reaction either, so the drivetrain's whole command turns
+     * the wheel -- the same torque balance {@link #spinRate} applies to the part of a command a tire could
+     * not deliver ({@code force * wheelRadius / wheelInertia * dt}). A brake, as in {@link #tire}, replaces
+     * the drive rather than adding to it, and it can only slow the wheel toward a stop: it never turns a
+     * wheel the other way, however long it is held.
+     *
+     * @param driveForce the drivetrain's longitudinal command for this wheel, N (ignored while braking)
+     * @param brakeForce the brake's force at this wheel, N (0 when not braking)
+     */
+    public static double freeSpinRate(double spin, double wheelRadius, double driveForce, double brakeForce,
+            double wheelInertia, double dt) {
+        if (brakeForce > 0.0) {
+            double maxChange = brakeForce * wheelRadius / wheelInertia * dt;
+            return Math.abs(spin) <= maxChange ? 0.0 : spin - Math.copySign(maxChange, spin);
+        }
+        return spin + driveForce * wheelRadius / wheelInertia * dt;
+    }
+
+    /**
      * The longitudinal slip speed this wheel's own tracked spin implies against the ground, m/s: positive
      * while the wheel spins faster than the ground (wheelspin), negative while it spins slower (lock-up),
      * exactly 0 whenever {@link #spinRate} last found the wheel gripping.

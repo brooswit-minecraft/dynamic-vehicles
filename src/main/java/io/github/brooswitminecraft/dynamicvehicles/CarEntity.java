@@ -126,6 +126,9 @@ public class CarEntity extends Entity {
     private double forcedThrottle;
     private double forcedSteer;
     private int forcedDriveTicks;
+    /** Server test support only: see {@link #debugLastThrottle()}. */
+    private double lastPhysicsThrottle;
+    private CarPhysics.Gear lastPhysicsGear = CarPhysics.Gear.DEFAULT_FORWARD;
 
     private final VehicleSpec spec;
     /** MINECRAFT-443: this car's registry id (see {@link VehicleIds}), kept alongside {@link #spec}
@@ -432,8 +435,72 @@ public class CarEntity extends Entity {
         return spec.drivetrainCoupling().clutchTorqueCapacity();
     }
 
+    /** Server test support only (MINECRAFT-444 review round 3): the throttle and gear the last physics
+     * tick actually ran with, after the rider's input, {@link #forceDrive} and any gear selection were
+     * all applied -- so a test can audit that tick against what it really was rather than against its
+     * own schedule. */
+    double debugLastThrottle() {
+        return lastPhysicsThrottle;
+    }
+
+    CarPhysics.Gear debugLastGear() {
+        return lastPhysicsGear;
+    }
+
     double debugClutchWheelForce() {
         return sableBody == null ? 0.0 : SableCompat.clutchWheelForce(sableBody);
+    }
+
+    /** Server test support only (MINECRAFT-444 review round 3): the coupled solve's own lock torque, the
+     * driver's governed demand at the engine shaft (both N*m), the wheel-side speed (rad/s, signed in the
+     * engine's rotation sense) and tire reaction torque (N*m at the engine) the clutch was solved against,
+     * and the drivetrain impulse the driven wheels actually took (N*s, signed in the car's forward frame) --
+     * everything a test needs to check the realized exchange against each of its bounds, and the two
+     * shafts' books against each other, on the production path. */
+    double debugClutchLockTorque() {
+        return sableBody == null ? 0.0 : SableCompat.clutchLockTorque(sableBody);
+    }
+
+    double debugClutchDemandTorque() {
+        return sableBody == null ? 0.0 : SableCompat.clutchDemandTorque(sableBody);
+    }
+
+    double debugClutchWheelSideOmega() {
+        return sableBody == null ? 0.0 : SableCompat.clutchWheelSideOmega(sableBody);
+    }
+
+    double debugClutchWheelSideTorque() {
+        return sableBody == null ? 0.0 : SableCompat.clutchWheelSideTorque(sableBody);
+    }
+
+    double debugRealizedDriveImpulse() {
+        return sableBody == null ? 0.0 : SableCompat.realizedDriveImpulse(sableBody);
+    }
+
+    /** Server test support only (MINECRAFT-444 review round 3): the longitudinal force the driven wheels'
+     * tires delivered over the last tick (N), which the next tick's clutch solve reads as their reaction. */
+    double debugDrivenTireForce() {
+        return sableBody == null ? 0.0 : SableCompat.drivenTireForce(sableBody);
+    }
+
+    /** Server test support only (MINECRAFT-444 review round 3): per wheel, the drivetrain impulse it took
+     * this tick (N*s) and in how many of the tick's sub-steps its tire touched something. */
+    double[] debugWheelRealizedDriveImpulses() {
+        return sableBody == null ? new double[0] : SableCompat.wheelRealizedDriveImpulses(sableBody);
+    }
+
+    int[] debugWheelContactSubSteps() {
+        return sableBody == null ? new int[0] : SableCompat.wheelContactSubSteps(sableBody);
+    }
+
+    /** Server test support only: this car's own wheel radius (m) and drive-force scale, so a test can take
+     * the realized drive impulse back through the same gearing the production path used. */
+    double debugWheelRadius() {
+        return spec.wheelRadius();
+    }
+
+    double debugForceScale() {
+        return spec.forceScale();
     }
 
     double debugEngineReactionTorque() {
@@ -1308,6 +1375,8 @@ public class CarEntity extends Entity {
             throttle = forcedThrottle;
             steer = forcedSteer;
         }
+        lastPhysicsThrottle = throttle;
+        lastPhysicsGear = gear;
         try {
             SableCompat.tick(sableBody, this, throttle, steer, handbrake, gear, DT);
             SableCompat.syncEntity(sableBody, this);

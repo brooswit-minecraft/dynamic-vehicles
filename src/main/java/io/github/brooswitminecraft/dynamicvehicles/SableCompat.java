@@ -79,6 +79,45 @@ final class SableCompat {
         return ((SableCarBody) body).clutchWheelForce();
     }
 
+    /** The coupled solve's lock torque; see {@link SableCarBody#clutchLockTorque()}. */
+    static double clutchLockTorque(Object body) {
+        return ((SableCarBody) body).clutchLockTorque();
+    }
+
+    /** The driver's governed demand at the engine; see {@link SableCarBody#clutchDemandTorque()}. */
+    static double clutchDemandTorque(Object body) {
+        return ((SableCarBody) body).clutchDemandTorque();
+    }
+
+    /** The wheel side the clutch was solved against; see {@link SableCarBody#clutchWheelSideOmega()}. */
+    static double clutchWheelSideOmega(Object body) {
+        return ((SableCarBody) body).clutchWheelSideOmega();
+    }
+
+    static double clutchWheelSideTorque(Object body) {
+        return ((SableCarBody) body).clutchWheelSideTorque();
+    }
+
+    /** The drivetrain impulse the wheels actually took; see {@link SableCarBody#realizedDriveImpulse()}. */
+    static double realizedDriveImpulse(Object body) {
+        return ((SableCarBody) body).realizedDriveImpulse();
+    }
+
+    /** The tires' delivered force the next solve will read; see {@link SableCarBody#drivenTireForce()}. */
+    static double drivenTireForce(Object body) {
+        return ((SableCarBody) body).drivenTireForce();
+    }
+
+    /** Per wheel, the same; see {@link SableCarBody#wheelRealizedDriveImpulses()}. */
+    static double[] wheelRealizedDriveImpulses(Object body) {
+        return ((SableCarBody) body).wheelRealizedDriveImpulses();
+    }
+
+    /** Per wheel, how many sub-steps its tire touched something; see {@link SableCarBody#wheelContactSubSteps()}. */
+    static int[] wheelContactSubSteps(Object body) {
+        return ((SableCarBody) body).wheelContactSubSteps();
+    }
+
     static double engineReactionTorque(Object body) {
         return ((SableCarBody) body).engineReactionTorque();
     }

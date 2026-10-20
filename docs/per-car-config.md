@@ -79,6 +79,16 @@ i.e. `DrivetrainMath`'s own constants) — shared stock engine hardware, exactly
 as before this field existed — which is why the defaults table below has one
 identical column per field rather than per-car variation.
 
+**All four are per unit of the car's own `forceScale`.** `forceScale` already
+scales every drive force (see "Exact applied formulas" below), and it scales
+the whole engine along with it, so the drivetrain stays power-consistent: the
+power the wheels take equals the power the crank gives up. A car's real crank
+torque, engine braking, clutch capacity and crankshaft inertia (and therefore
+its engine-axis chassis reaction) are `forceScale` times the configured values.
+Its engine speed responds exactly as the configured values say, because torque
+and inertia scale together. On `car` and `drift_car` (`forceScale` 1.0) the
+configured values are literal.
+
 **`rideHeight`'s actual accepted range is narrower than 0.1 – 5.0 for every
 car**, and differs per car: `VehicleSpecLimits`' 0.1 – 5.0 is a car-agnostic
 outer bound, but a value inside it can still be physically unusable for a

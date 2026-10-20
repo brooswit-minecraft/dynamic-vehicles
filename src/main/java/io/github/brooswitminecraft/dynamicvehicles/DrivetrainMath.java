@@ -318,6 +318,45 @@ public final class DrivetrainMath {
     }
 
     /**
+     * Engine-shaft torque -&gt; the TOTAL longitudinal force it puts on the driven wheels' contact patches,
+     * N, signed in the car's own forward frame (MINECRAFT-444 review round 3). Through the engaged gearing
+     * ({@code ratio * FINAL_DRIVE}), the wheel radius, the engaged gear's own direction (REVERSE turns the
+     * wheels backwards for the same engine rotation) and the vehicle's {@code forceScale}, which scales
+     * drive force here exactly as it already does in {@link GearDrive#drive}.
+     *
+     * <p>{@link #wheelForceToClutchTorque} is its exact inverse, and {@link #wheelSideOmegaSigned} is the
+     * matching speed transform, so for an ideal (lossless) gearbox the power agrees on both sides:
+     * {@code totalForce * wheelSpin * wheelRadius == forceScale * torque * wheelSideOmegaSigned}. That is
+     * the sense in which every engine-side torque in this class is "per unit forceScale": a vehicle's
+     * forceScale scales its whole engine (torque, rotating inertia, clutch and drag alike), so its actual
+     * crank torque is {@code forceScale} times the value these methods carry. Every stock car on which the
+     * drivetrain tests run has a forceScale of exactly 1.0.
+     */
+    public static double clutchTorqueToTotalWheelForce(double torque, double wheelRadius, double ratio,
+            double gearDirection, double forceScale) {
+        if (!(wheelRadius > 0.0)) {
+            return 0.0;
+        }
+        return torque * ratio * FINAL_DRIVE * gearDirection * forceScale / wheelRadius;
+    }
+
+    /**
+     * The exact inverse of {@link #clutchTorqueToTotalWheelForce}: the engine-shaft torque (per unit
+     * forceScale, positive = the engine driving the drivetrain in the engaged gear's own direction) that a
+     * TOTAL driven-wheel longitudinal force signed in the car's forward frame amounts to. Used to turn the
+     * wheel commands a tick actually applied back into the one torque the engine is charged for, and the
+     * driver's governed demand into the torque the engine is asked for.
+     */
+    public static double wheelForceToClutchTorque(double totalWheelForce, double wheelRadius, double ratio,
+            double gearDirection, double forceScale) {
+        double gearing = ratio * FINAL_DRIVE;
+        if (!(gearing != 0.0) || !(forceScale > 0.0)) {
+            return 0.0;
+        }
+        return totalWheelForce * wheelRadius * gearDirection / (gearing * forceScale);
+    }
+
+    /**
      * The clutch's other shaft's inertia as the engine sees it, kg*m^2 -- the second inertia in
      * {@link #clutchExchangeTorque}'s solve, and the one place the chain
      * engine -&gt; clutch -&gt; wheel rotation -&gt; tire -&gt; car mass decides how far along itself it
@@ -340,20 +379,25 @@ public final class DrivetrainMath {
      * 17.09 m/s at one step per tick vs 16.08 converged; D5 16.47 vs 16.41), which is why this needs no
      * sub-stepping, no change to {@code wheelSubSteps} and no damping knob.
      *
+     * <p>Divided by {@code forceScale} because the solve runs in the same per-unit-forceScale terms as
+     * every engine-side torque here (see {@link #clutchTorqueToTotalWheelForce}): a vehicle whose engine
+     * is {@code forceScale} times the stock one turns {@code forceScale} times the stock inertia, so the
+     * load it sees, per unit of that engine, is this much. Exactly the old value at a forceScale of 1.0.
+     *
      * @param contactHolding whether the driven wheels' contact constraint held through the previous step
      *        (every grounded driven wheel delivered what was commanded of it)
      */
     public static double clutchLoadInertia(double massKg, double wheelRadius, int drivenWheels,
-            double wheelInertia, double ratio, boolean contactHolding) {
+            double wheelInertia, double ratio, boolean contactHolding, double forceScale) {
         double gearing = ratio * FINAL_DRIVE;
-        if (!(gearing != 0.0) || !(wheelRadius > 0.0)) {
+        if (!(gearing != 0.0) || !(wheelRadius > 0.0) || !(forceScale > 0.0)) {
             return 0.0;
         }
         double wheelsOwn = reflectedWheelInertia(drivenWheels, wheelInertia, ratio);
         if (!contactHolding) {
-            return wheelsOwn;
+            return wheelsOwn / forceScale;
         }
-        return wheelsOwn + massKg * wheelRadius * wheelRadius / (gearing * gearing);
+        return (wheelsOwn + massKg * wheelRadius * wheelRadius / (gearing * gearing)) / forceScale;
     }
 
     /**
@@ -361,23 +405,29 @@ public final class DrivetrainMath {
      * the external load on the clutch's other shaft, and the link through which the car's mass is felt
      * without ever appearing as an inertia in the coupling itself.
      *
-     * <p>Negative while the tire resists a forward drive (its reaction to the traction force it is
+     * <p>Negative while the tire resists the engine's own drive (its reaction to the traction force it is
      * delivering), which is what makes the locked case come out right: with the wheels not accelerating,
      * {@link #clutchExchangeTorque}'s solve reduces to passing essentially the engine's whole output to
      * the road, while during a slip -- where the delivered force, and so this torque, is small -- the
-     * exchange is correspondingly smaller and the wheels spin up instead. Taken from the delivered
-     * longitudinal force of the previous (sub-)step, the same one-tick-lagged snapshot convention
-     * {@code SableCarBody} already uses for {@code drivenWheelSpin} and the gear ratio.
+     * exchange is correspondingly smaller and the wheels spin up instead. Taken from the longitudinal force
+     * the tires actually delivered over the previous tick, the same one-tick-lagged snapshot convention
+     * {@code SableCarBody} already uses for {@code drivenWheelSpin} and the gear ratio -- and only from
+     * tires that were actually touching something, so a wheel that has left the ground contributes no
+     * reaction at all rather than its last grounded one.
      *
-     * @param totalWheelForce the sum of the driven wheels' own delivered longitudinal forces, N, signed in
-     *        the car's forward frame
+     * <p>Review round 3: this is the reaction to {@link #wheelForceToClutchTorque}, so it carries the
+     * engaged gear's direction exactly as {@link #wheelSideOmegaSigned} carries it for speed. The earlier
+     * version divided by the (always positive) gearing only, which is right for a forward gear and exactly
+     * backwards in REVERSE: a tire delivering -4000 N while reversing (r 0.35, ratio 3.3) resists the
+     * engine, so it must read -103.47 N*m here, not +103.47.
+     *
+     * @param totalWheelForce the driven wheels' delivered longitudinal force over the last tick, N, signed
+     *        in the car's forward frame
+     * @param gearDirection +1 for a forward gear, -1 for REVERSE
      */
-    public static double wheelSideTorqueAtEngine(double totalWheelForce, double wheelRadius, double ratio) {
-        double gearing = ratio * FINAL_DRIVE;
-        if (!(gearing != 0.0)) {
-            return 0.0;
-        }
-        return -totalWheelForce * wheelRadius / gearing;
+    public static double wheelSideTorqueAtEngine(double totalWheelForce, double wheelRadius, double ratio,
+            double gearDirection, double forceScale) {
+        return -wheelForceToClutchTorque(totalWheelForce, wheelRadius, ratio, gearDirection, forceScale);
     }
 
     /**
@@ -478,6 +528,114 @@ public final class DrivetrainMath {
     }
 
     /**
+     * The engine's own net output torque while its clutch is ENGAGED, N*m (MINECRAFT-444 review round 3):
+     * {@link #engineOutputTorque}, except that the engine is asked for no more torque than the driver's
+     * governed demand needs it to put through the clutch.
+     *
+     * <p>The driver's demand ({@link GearDrive#drive}, taken back through the gearing to the engine shaft
+     * as {@code demandTorque}) is what has always set how hard the wheels are pushed: its ratio scaling,
+     * its governor near top speed, REVERSE's own much weaker force and the rev limiter. Round 2 applied that
+     * ceiling to the WHEEL half of the exchange only, after the engine had been integrated against the
+     * whole of it -- the wheels were cut, the engine was not, and the difference simply vanished. Charging
+     * the engine for exactly what the wheels took (as {@code SableCarBody} now does) fixes the bookkeeping,
+     * but on its own would leave the engine making torque nothing downstream takes: in REVERSE, whose
+     * demand is about a sixth of the engine's output, it would race to the limiter within a few ticks. So
+     * the cut is made where a drive-by-wire throttle makes it, at the engine: it is asked for
+     * {@code demandTorque} plus whatever its own drag will eat, and never for more than it can make. In
+     * steady driving that hands the clutch exactly the governed demand -- the same wheel force as before in
+     * every gear at every throttle -- with both shafts agreeing on it.
+     *
+     * <p>When the engine is turning faster than the wheel side (just after an upshift, or while still
+     * rolling against the gear just selected) it is asked for correspondingly LESS, down to nothing, so it
+     * sheds that surplus into the clutch's own load within the step instead of holding it -- what a
+     * rev-matching throttle does, and what keeps a clutch passing the demand from slipping at a constant
+     * offset forever. It is never asked for less than zero: a closed throttle is the engine's own drag, not
+     * a brake.
+     *
+     * @param demandTorque the driver's governed demand at the engine shaft, N*m (0 with the throttle shut)
+     * @param wheelSideOmega {@link #wheelSideOmegaSigned}: what the engine would be turning at with the
+     *        clutch locked. A wheel side turning against the gear counts as 0, the slowest a non-reversing
+     *        engine can go.
+     */
+    public static double engagedEngineTorque(double throttle, double engineRawRpm, double engineOmega,
+            double demandTorque, double wheelSideOmega, double dt, VehicleSpec.DrivetrainCoupling coupling) {
+        double drag = engineOmega > 0.0 ? coupling.engineBrakingTorque() : 0.0;
+        double available = engineDriveTorque(throttle, engineRawRpm, coupling.enginePeakTorque());
+        double surplus = dt > 0.0
+                ? coupling.engineInertia() * Math.max(0.0, engineOmega - Math.max(0.0, wheelSideOmega)) / dt
+                : 0.0;
+        double asked = Math.max(0.0, Math.max(0.0, demandTorque) + drag - surplus);
+        return Math.min(available, asked) - drag;
+    }
+
+    /**
+     * How much of {@link #clutchExchangeTorque}'s lock torque the clutch can actually pass this step, N*m,
+     * in the same sign convention (MINECRAFT-444 review round 3, finding 1).
+     *
+     * <p>{@code clutchExchangeTorque} answers "what would lock these two shafts together this step"; this
+     * answers "what can a friction clutch, driven by this driver, really transmit", and it is the ONLY
+     * torque either shaft is ever loaded with. Round 2 integrated the engine against the lock torque and
+     * then let {@code GearDrive.driveThroughClutch} re-sign, cap or drop what the wheels got: with the
+     * engine at 400 rad/s, the wheel side at 800, full throttle and no tire reaction (D1, wheels' own
+     * inertia 0.02203 kg*m^2) the lock torque is -61.6 N*m, so the engine was spun UP to 660 rad/s while the
+     * wheels were handed +649.6 N each -- both shafts gained energy. Every one of those decisions is made
+     * here instead, before either shaft moves, and each can only shrink the lock torque toward zero, never
+     * flip it or exceed it:
+     *
+     * <ul>
+     * <li><b>Never past the other shaft.</b> A friction clutch drags the faster shaft down and the slower
+     * one up; it cannot push the engine past the speed of the shaft it is slipping against.
+     * {@code catchUp} is the transfer that would leave the engine exactly level with the wheel side at the
+     * end of the step were the wheel side to stand still, so a positive transfer is capped by it (an engine
+     * that starts BEHIND must first catch up on its own torque, and only what is left over after that can
+     * be passed on -- in the case above, nothing) and a negative one floored by it. A wheel side turning
+     * against the gear is the exception: the engine stops at zero before it could reach it, so there is no
+     * speed to overshoot, and the engine merely anchors -- passive however hard it pulls.
+     * <li><b>Open throttle: drive, or nothing.</b> A driver on the accelerator is asking the drivetrain to
+     * push the car in the selected gear's direction, so the transfer is never negative here -- an exchange
+     * that reads the other way (the wheel side over-running the engine) is a slipping clutch that has not
+     * caught up yet, and the engine is left to catch up on its own torque rather than being spun up by the
+     * wheels while they are simultaneously driven (the decoupling round 2 lacked). Nor is it ever more
+     * than the driver's governed {@code demandTorque}, the ceiling every gear's ratio scaling, governor,
+     * REVERSE force and limiter have always set.
+     * <li><b>Closed throttle: engine braking only.</b> The transfer is left as the lock torque within the
+     * two bounds above; whether it may reach the tire at all (it must oppose the car's actual motion, and
+     * nothing below a standstill threshold) is decided per sub-step by
+     * {@code GearDrive.driveThroughClutch}, and the engine is charged for whatever the wheels actually
+     * took, so that decision stays an exchange too.
+     * </ul>
+     *
+     * @param engineTorque {@link #engagedEngineTorque} for this step
+     * @param demandTorque the driver's governed demand at the engine shaft, N*m
+     * @param throttleOpen whether the accelerator (not the brake) is pressed
+     */
+    public static double realizableClutchTorque(double lockTorque, double engineOmega, double wheelSideOmega,
+            double engineTorque, double demandTorque, boolean throttleOpen, double dt,
+            VehicleSpec.DrivetrainCoupling coupling) {
+        if (!(dt > 0.0)) {
+            return 0.0;
+        }
+        double catchUp = engineTorque + coupling.engineInertia() * (engineOmega - wheelSideOmega) / dt;
+        if (lockTorque > 0.0) {
+            double ceiling;
+            if (wheelSideOmega < 0.0) {
+                ceiling = throttleOpen ? demandTorque : lockTorque;
+            } else {
+                ceiling = Math.max(0.0, catchUp);
+                if (throttleOpen) {
+                    ceiling = Math.min(ceiling, demandTorque);
+                }
+            }
+            return Math.max(0.0, Math.min(lockTorque, ceiling));
+        }
+        if (lockTorque < 0.0 && !throttleOpen) {
+            double floor = wheelSideOmega < 0.0 ? 0.0 : Math.min(0.0, catchUp);
+            return Math.max(lockTorque, floor);
+        }
+        return 0.0;
+    }
+
+    /**
      * Advances the engine's own angular speed one (sub-)step, rad/s: its own net output
      * ({@link #engineOutputTorque}, drag already subtracted) less the torque the clutch is exchanging with
      * the drivetrain -- the SAME {@link #clutchExchangeTorque} value the wheels receive, which is what
@@ -519,12 +677,17 @@ public final class DrivetrainMath {
      * the engine's own realized rotation (MINECRAFT-444 acceptance: "selecting reverse must not flip the
      * engine torque axis").
      *
+     * <p>Scaled by {@code forceScale} because that is the engine's actual size: every engine-side value in
+     * this class is per unit forceScale (see {@link #clutchTorqueToTotalWheelForce}), so a vehicle's real
+     * crankshaft carries {@code forceScale} times {@code engineInertia}. Exactly the old value at a
+     * forceScale of 1.0, which every stock car on the drivetrain tests has.
+     *
      * @param priorOmega the engine's speed coming into this step, rad/s
      * @param nextOmega {@link #engineAngularVelocity}'s own result for this same step -- the REALIZED
      *        speed, after its floor, not a target
      */
     public static double engineReactionTorque(double priorOmega, double nextOmega, double dt,
-            VehicleSpec.DrivetrainCoupling coupling) {
-        return -(nextOmega - priorOmega) * coupling.engineInertia() / dt;
+            VehicleSpec.DrivetrainCoupling coupling, double forceScale) {
+        return -(nextOmega - priorOmega) * coupling.engineInertia() * forceScale / dt;
     }
 }

@@ -3,6 +3,7 @@ package io.github.brooswitminecraft.dynamicvehicles;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
@@ -21,26 +22,30 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
  * raycast against a real block through a real {@code Surfaces.at} call: a {@code @GameTest}, following the
  * established pattern in {@link EnvironmentGameTests} and {@link CarFireDamageGameTests}.
  *
- * <p>None of these rely on net world-position displacement -- see {@link CarFireDamageGameTests}'
- * {@code burningContinuesAfterLeavingLava} javadoc for the documented, pre-existing Sable/GameTest
- * {@code forceDrive} bug (near-zero net position travel regardless of ticks) this ticket's own brief asked
- * to route around. Velocity/telemetry read through {@link CarEntity#sableBody()} -- a one-line
- * package-private getter added for this ticket, the narrow adapter the reviewer pre-approved -- is used
- * instead throughout.
+ * <p>Every car here drives on its own full-length lane of a {@link VehicleLanes} site, and {@link
+ * VehicleLanes#assertStaysOnLane} checks on every tick of the measured window that each of its wheels' own
+ * raycasts is hitting the material that wheel is meant to be on. That is what makes a speed comparison a
+ * comparison of materials. These fixtures used to sit nose to tail in one lane of {@code settlement_test} on
+ * 5x5 pads, on the assumption -- from a Sable/GameTest {@code forceDrive} "near-zero net position travel"
+ * observation, see {@link CarFireDamageGameTests}' {@code burningContinuesAfterLeavingLava} javadoc -- that a
+ * car does not really move. That holds only when GameTest happens to place the structure millions of blocks
+ * out, where Sable's single-precision position rounds the car back in place every step (see {@link
+ * VehicleLanes}). Wherever it lands with fine precision the car really travels: traced, the stone car crossed
+ * off its pad onto grass at tick 20, drove over the sand car's pad, and rear-ended the sand car, which had
+ * already stopped against the template's barrier wall at z=24 -- which is what PR #180's red CI run measured.
+ * Velocity is still read through {@link CarEntity#getDeltaMovement()} and the {@link CarEntity#sableBody()}
+ * adapter.
  *
- * <p>Floors here are filled as a 5x5 patch ({@link #fillFloor}) under each car's spawn point, not a single
- * block the way {@link CarFireDamageGameTests}/{@link EnvironmentGameTests} do it: those tests only need
- * SOME solid ground under the car (for a lava/fire/fluid check unrelated to which exact block a wheel
- * contacts), so one block is enough. These tests instead need to know EXACTLY which real block every one
- * of the car's four wheels (mount offsets &plusmn;0.8 m in x, &plusmn;1.2 m in z -- {@code
- * CarGeometry.MOUNTS}) is touching -- a single block at the spawn point does not cover that whole
- * footprint. A first draft used single-block floors and measured nearly identical (sometimes even
- * reversed) cruise speeds between a "stone" car and a "sand" car, because most of each car's wheels were
- * actually landing on the test template's own default terrain outside that one placed block, not on the
- * intended material at all -- confirmed with a throwaway diagnostic {@code @GameTest} that logged {@code
- * Surfaces.at}'s real result for each placed block directly (stone: grip 0.95/rollingResistance 0.02;
- * sand: grip 0.45/rollingResistance 0.16, deformability 0.87 -- exactly as expected), proving the surface
- * math itself was never the problem, only this test's own floor coverage.
+ * <p>A lane is wider than the car's track for the reason the old 5x5 pads were not single blocks: these
+ * tests need to know EXACTLY which real block every one of the car's four wheels (mount offsets &plusmn;0.8 m
+ * in x, &plusmn;1.2 m in z -- {@code CarGeometry.MOUNTS}) is touching. A first draft of these tests used
+ * single-block floors and measured nearly identical (sometimes even reversed) cruise speeds between a
+ * "stone" car and a "sand" car, because most of each car's wheels were landing on the template's own
+ * terrain -- confirmed with a throwaway diagnostic {@code @GameTest} that logged {@code Surfaces.at}'s real
+ * result for each placed block directly (stone: grip 0.95/rollingResistance 0.02; sand: grip
+ * 0.45/rollingResistance 0.16, deformability 0.87 -- exactly as expected), proving the surface math itself
+ * was never the problem, only floor coverage. The per-tick lane check now enforces that for the whole
+ * window rather than only at spawn.
  *
  * <p>These compare sustained GENTLE-throttle cruise speed, not a hard-throttle coast-down -- see the
  * {@code GENTLE_THROTTLE} javadoc for why: a harder throttle and/or a coast-down delta each introduced
@@ -64,24 +69,24 @@ public final class RollingResistanceGameTests {
      * two cars' cruise speeds by several m/s, not just a momentary difference. */
     private static final int DRIVE_TICKS = 100;
 
+    /** Ticks after spawn before a car's own Sable body exists and its wheels have found the lane; the
+     * per-tick lane check starts here. */
+    private static final long SETTLE_TICKS = 2L;
+    /** These fixtures compare surfaces, so a lane may only show wear that leaves it the same surface. */
+    private static final VehicleLanes.Wear LANE_WEAR = VehicleLanes.Wear.SAME_SURFACE;
+
+    /** Each car's own lane: never shared, so no two cars here can ever meet. */
+    private static final int STONE_LANE_X = VehicleLanes.FIRST_LANE_X;
+    private static final int SAND_LANE_X = VehicleLanes.SECOND_LANE_X;
+    private static final int THIRD_CAR_LANE_X = VehicleLanes.THIRD_LANE_X;
+    private static final int SLAB_LANE_X = VehicleLanes.FIRST_LANE_X;
+
     /** Horizontal ground speed, m/s -- {@code CarEntity}'s own published {@code getDeltaMovement()}
      * (blocks/tick), the same quantity its private {@code horizontalSpeed()} computes for sound/telemetry,
      * read here rather than reimplemented against any internal state. */
     private static double horizontalSpeed(CarEntity car) {
         Vec3 v = car.getDeltaMovement();
         return Math.hypot(v.x, v.z) * 20.0;
-    }
-
-    /** Fills a 5x5 patch (centred on {@code cx, cz}, one layer at {@code y}) with {@code state} -- wide
-     * enough to cover every one of a spawned car's four wheel contact points (mount offsets &plusmn;0.8 m
-     * x, &plusmn;1.2 m z) with margin, so a wheel's real raycast cannot land on the test template's own
-     * default terrain outside the material under test (see this class's own javadoc). */
-    private static void fillFloor(GameTestHelper helper, int cx, int y, int cz, BlockState state) {
-        for (int dx = -2; dx <= 2; dx++) {
-            for (int dz = -2; dz <= 2; dz++) {
-                helper.setBlock(new BlockPos(cx + dx, y, cz + dz), state);
-            }
-        }
     }
 
     /**
@@ -95,35 +100,41 @@ public final class RollingResistanceGameTests {
      * real wiring bug in HOW the raycast resolves (wrong block, stale cache) would show up here as both
      * ending up at the same speed regardless of which floor they are actually on.
      */
-    @GameTest(template = "settlement_test", timeoutTicks = 300)
+    @GameTest(template = "settlement_test", timeoutTicks = 300 + VehicleLanes.CHUNK_LOAD_ALLOWANCE)
     public static void sustainedThrottleReachesHigherSpeedOnStoneThanOnSand(GameTestHelper helper) {
-        fillFloor(helper, 5, 2, 5, Blocks.STONE.defaultBlockState());
-        fillFloor(helper, 5, 2, 15, Blocks.SAND.defaultBlockState());
+        VehicleLanes.build(helper, VehicleLanes.Site.STONE_VS_SAND, lanes -> {
+            lanes.layLane(STONE_LANE_X, Blocks.STONE.defaultBlockState());
+            lanes.layLane(SAND_LANE_X, Blocks.SAND.defaultBlockState());
 
-        CarEntity onStone = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
-        CarEntity onSand = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 15));
+            CarEntity onStone = lanes.spawn(DynamicVehiclesMod.CAR.get(), VehicleLanes.spawnPoint(STONE_LANE_X));
+            CarEntity onSand = lanes.spawn(DynamicVehiclesMod.CAR.get(), VehicleLanes.spawnPoint(SAND_LANE_X));
 
-        onStone.forceDrive(GENTLE_THROTTLE, 0.0, DRIVE_TICKS);
-        onSand.forceDrive(GENTLE_THROTTLE, 0.0, DRIVE_TICKS);
-        helper.runAfterDelay((long) DRIVE_TICKS, () -> {
-            double stoneSpeed = horizontalSpeed(onStone);
-            double sandSpeed = horizontalSpeed(onSand);
-            helper.assertTrue(!Double.isNaN(stoneSpeed) && !Double.isNaN(sandSpeed),
-                    "sustained throttle produced a NaN speed: stone=" + stoneSpeed + " sand=" + sandSpeed);
-            helper.assertTrue(stoneSpeed > 0.5, "test setup never got the car on stone moving: " + stoneSpeed);
-            helper.assertTrue(stoneSpeed > sandSpeed,
-                    "the same sustained gentle throttle must reach a higher cruise speed on real stone than "
-                            + "on real sand (sand's own higher rollingResistance must hold it back more): "
-                            + "stoneSpeed=" + stoneSpeed + " sandSpeed=" + sandSpeed);
-            helper.succeed();
+            onStone.forceDrive(GENTLE_THROTTLE, 0.0, DRIVE_TICKS);
+            onSand.forceDrive(GENTLE_THROTTLE, 0.0, DRIVE_TICKS);
+            lanes.assertStaysOnLane(onStone, STONE_LANE_X, VehicleLanes.allWheels(Blocks.STONE), LANE_WEAR,
+                    SETTLE_TICKS, DRIVE_TICKS - 1L, "stone car");
+            lanes.assertStaysOnLane(onSand, SAND_LANE_X, VehicleLanes.allWheels(Blocks.SAND), LANE_WEAR,
+                    SETTLE_TICKS, DRIVE_TICKS - 1L, "sand car");
+            helper.runAfterDelay((long) DRIVE_TICKS, () -> {
+                double stoneSpeed = horizontalSpeed(onStone);
+                double sandSpeed = horizontalSpeed(onSand);
+                helper.assertTrue(!Double.isNaN(stoneSpeed) && !Double.isNaN(sandSpeed),
+                        "sustained throttle produced a NaN speed: stone=" + stoneSpeed + " sand=" + sandSpeed);
+                helper.assertTrue(stoneSpeed > 0.5, "test setup never got the car on stone moving: " + stoneSpeed);
+                helper.assertTrue(stoneSpeed > sandSpeed,
+                        "the same sustained gentle throttle must reach a higher cruise speed on real stone than "
+                                + "on real sand (sand's own higher rollingResistance must hold it back more): "
+                                + "stoneSpeed=" + stoneSpeed + " sandSpeed=" + sandSpeed);
+                helper.succeed();
+            });
         });
     }
 
     /**
      * AC2 (multiple grounded wheels on mixed materials, aggregated): three identical cars under the same
      * sustained gentle throttle -- one entirely on {@code Blocks.STONE}, one entirely on {@code
-     * Blocks.SAND}, and a third straddling a real material boundary (its two front wheels, {@code
-     * CarGeometry.MOUNTS} indices 0/1, over stone; its two rear wheels, indices 2/3, over sand). Each
+     * Blocks.SAND}, and a third straddling a real material boundary (its two x = -0.8 wheels, {@code
+     * CarGeometry.MOUNTS} indices 0/2, over stone; its two x = +0.8 wheels, indices 1/3, over sand). Each
      * wheel's own raycast must land on its own real block and feed {@code Surfaces.at}'s result into that
      * wheel's own {@code WheelMath.tire} call independently (the per-wheel loop in {@code
      * SableCarBody.tick}), so the straddling car's cruise speed must land strictly between the two
@@ -132,50 +143,58 @@ public final class RollingResistanceGameTests {
      * not). A bug that collapsed every wheel onto one shared surface (e.g. a stale cache keyed wrong, or
      * every wheel reading wheel 0's hit) would instead make the straddling car match one of the pure cases
      * exactly, not land between them.
+     *
+     * <p>The boundary runs along the lane, splitting the car's left wheels from its right ones. This rig
+     * used to split front from rear instead, which only holds while the car stands still: a car that really
+     * drives puts its rear wheels on whatever its front wheels just crossed, so within a couple of metres
+     * every wheel was on stone. A left/right split is the one layout that keeps each wheel on one material
+     * for the whole drive, so a bug collapsing every wheel onto one surface still shows up as the mixed car
+     * matching a pure one. Uneven drag yaws a car on such a lane toward its sand side, so all three cars
+     * are driven straight by the same lane-keeping driver, and the per-tick lane check holds each wheel pair
+     * on its own material for the whole window.
      */
-    @GameTest(template = "settlement_test", timeoutTicks = 300)
+    @GameTest(template = "settlement_test", timeoutTicks = 300 + VehicleLanes.CHUNK_LOAD_ALLOWANCE)
     public static void mixedMaterialWheelsAggregatePerWheelSurfaces(GameTestHelper helper) {
-        fillFloor(helper, 5, 2, 5, Blocks.STONE.defaultBlockState());
-        fillFloor(helper, 5, 2, 13, Blocks.SAND.defaultBlockState());
-        int cx = 5;
-        int cz = 20;
-        BlockState stone = Blocks.STONE.defaultBlockState();
-        BlockState sand = Blocks.SAND.defaultBlockState();
-        for (int dx = -2; dx <= 2; dx++) {
-            // Front wheels (local z = +1.2) land at z in [cz, cz+1]; rear wheels (local z = -1.2) land at
-            // z in [cz-2, cz-1] -- see this test's own spawn point below. A few extra rows of margin on
-            // each side cover any settling drift without crossing the boundary.
-            for (int dz = 0; dz <= 3; dz++) {
-                helper.setBlock(new BlockPos(cx + dx, 2, cz + dz), stone);
-            }
-            for (int dz = -3; dz <= -1; dz++) {
-                helper.setBlock(new BlockPos(cx + dx, 2, cz + dz), sand);
-            }
-        }
+        VehicleLanes.build(helper, VehicleLanes.Site.MIXED_MATERIALS, lanes -> {
+            BlockState stone = Blocks.STONE.defaultBlockState();
+            BlockState sand = Blocks.SAND.defaultBlockState();
+            lanes.layLane(STONE_LANE_X, stone);
+            lanes.layLane(SAND_LANE_X, sand);
+            lanes.layLane(THIRD_CAR_LANE_X, stone, sand);
 
-        CarEntity onStone = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
-        CarEntity onSand = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 13));
-        CarEntity mixed = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(cx, 3, cz));
+            CarEntity onStone = lanes.spawn(DynamicVehiclesMod.CAR.get(), VehicleLanes.spawnPoint(STONE_LANE_X));
+            CarEntity onSand = lanes.spawn(DynamicVehiclesMod.CAR.get(), VehicleLanes.spawnPoint(SAND_LANE_X));
+            CarEntity mixed = lanes.spawn(DynamicVehiclesMod.CAR.get(), VehicleLanes.spawnPoint(THIRD_CAR_LANE_X));
 
-        onStone.forceDrive(GENTLE_THROTTLE, 0.0, DRIVE_TICKS);
-        onSand.forceDrive(GENTLE_THROTTLE, 0.0, DRIVE_TICKS);
-        mixed.forceDrive(GENTLE_THROTTLE, 0.0, DRIVE_TICKS);
-        helper.runAfterDelay((long) DRIVE_TICKS, () -> {
-            double stoneSpeed = horizontalSpeed(onStone);
-            double sandSpeed = horizontalSpeed(onSand);
-            double mixedSpeed = horizontalSpeed(mixed);
-            helper.assertTrue(!Double.isNaN(stoneSpeed) && !Double.isNaN(sandSpeed) && !Double.isNaN(mixedSpeed),
-                    "sustained throttle produced a NaN speed: stone=" + stoneSpeed + " sand=" + sandSpeed
-                            + " mixed=" + mixedSpeed);
-            helper.assertTrue(mixedSpeed < stoneSpeed,
-                    "a car with its rear wheels on real sand must reach a lower cruise speed than a car "
-                            + "entirely on stone -- its sand-side wheels may not be contributing their own "
-                            + "real resistance: stoneSpeed=" + stoneSpeed + " mixedSpeed=" + mixedSpeed);
-            helper.assertTrue(mixedSpeed > sandSpeed,
-                    "a car with its front wheels on real stone must reach a higher cruise speed than a car "
-                            + "entirely on sand -- its stone-side wheels may not be contributing their own "
-                            + "real resistance: sandSpeed=" + sandSpeed + " mixedSpeed=" + mixedSpeed);
-            helper.succeed();
+            // All three get the same lane-keeping driver (see VehicleLanes.driveAlongLane): the mixed car needs
+            // one to stay on its seam, and the single-material cars get identical treatment, which asks them
+            // for essentially no steering.
+            lanes.driveAlongLane(onStone, STONE_LANE_X, GENTLE_THROTTLE, DRIVE_TICKS);
+            lanes.driveAlongLane(onSand, SAND_LANE_X, GENTLE_THROTTLE, DRIVE_TICKS);
+            lanes.driveAlongLane(mixed, THIRD_CAR_LANE_X, GENTLE_THROTTLE, DRIVE_TICKS);
+            lanes.assertStaysOnLane(onStone, STONE_LANE_X, VehicleLanes.allWheels(Blocks.STONE), LANE_WEAR,
+                    SETTLE_TICKS, DRIVE_TICKS - 1L, "stone car");
+            lanes.assertStaysOnLane(onSand, SAND_LANE_X, VehicleLanes.allWheels(Blocks.SAND), LANE_WEAR,
+                    SETTLE_TICKS, DRIVE_TICKS - 1L, "sand car");
+            lanes.assertStaysOnLane(mixed, THIRD_CAR_LANE_X, new Block[] {Blocks.STONE, Blocks.SAND, Blocks.STONE, Blocks.SAND},
+                    LANE_WEAR, SETTLE_TICKS, DRIVE_TICKS - 1L, "mixed car");
+            helper.runAfterDelay((long) DRIVE_TICKS, () -> {
+                double stoneSpeed = horizontalSpeed(onStone);
+                double sandSpeed = horizontalSpeed(onSand);
+                double mixedSpeed = horizontalSpeed(mixed);
+                helper.assertTrue(!Double.isNaN(stoneSpeed) && !Double.isNaN(sandSpeed) && !Double.isNaN(mixedSpeed),
+                        "sustained throttle produced a NaN speed: stone=" + stoneSpeed + " sand=" + sandSpeed
+                                + " mixed=" + mixedSpeed);
+                helper.assertTrue(mixedSpeed < stoneSpeed,
+                        "a car with its x=+0.8 wheels on real sand must reach a lower cruise speed than a car "
+                                + "entirely on stone -- its sand-side wheels may not be contributing their own "
+                                + "real resistance: stoneSpeed=" + stoneSpeed + " mixedSpeed=" + mixedSpeed);
+                helper.assertTrue(mixedSpeed > sandSpeed,
+                        "a car with its x=-0.8 wheels on real stone must reach a higher cruise speed than a car "
+                                + "entirely on sand -- its stone-side wheels may not be contributing their own "
+                                + "real resistance: sandSpeed=" + sandSpeed + " mixedSpeed=" + mixedSpeed);
+                helper.succeed();
+            });
         });
     }
 
@@ -189,28 +208,38 @@ public final class RollingResistanceGameTests {
      * higher cruise speed than sustained throttle on bare sand. A regression that resolved the buried block
      * instead of the one actually hit would make the two cruise speeds converge.
      */
-    @GameTest(template = "settlement_test", timeoutTicks = 300)
+    @GameTest(template = "settlement_test", timeoutTicks = 300 + VehicleLanes.CHUNK_LOAD_ALLOWANCE)
     public static void slabOverBuriedSandResolvesTheSlabsOwnMaterialNotTheBuriedBlock(GameTestHelper helper) {
-        fillFloor(helper, 5, 1, 5, Blocks.SAND.defaultBlockState());
-        fillFloor(helper, 5, 2, 5, Blocks.STONE_SLAB.defaultBlockState());
-        fillFloor(helper, 5, 2, 15, Blocks.SAND.defaultBlockState());
+        VehicleLanes.build(helper, VehicleLanes.Site.SLAB_OVER_SAND, lanes -> {
+            BlockState sand = Blocks.SAND.defaultBlockState();
+            BlockState slab = Blocks.STONE_SLAB.defaultBlockState();
+            lanes.layLane(SLAB_LANE_X, VehicleLanes.FLOOR_Y - 1, sand, sand);
+            lanes.layLane(SLAB_LANE_X, slab);
+            lanes.layLane(SAND_LANE_X, sand);
 
-        CarEntity onSlab = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
-        CarEntity onBareSand = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 15));
+            CarEntity onSlab = lanes.spawn(DynamicVehiclesMod.CAR.get(), VehicleLanes.spawnPoint(SLAB_LANE_X));
+            CarEntity onBareSand = lanes.spawn(DynamicVehiclesMod.CAR.get(), VehicleLanes.spawnPoint(SAND_LANE_X));
 
-        onSlab.forceDrive(GENTLE_THROTTLE, 0.0, DRIVE_TICKS);
-        onBareSand.forceDrive(GENTLE_THROTTLE, 0.0, DRIVE_TICKS);
-        helper.runAfterDelay((long) DRIVE_TICKS, () -> {
-            double slabSpeed = horizontalSpeed(onSlab);
-            double sandSpeed = horizontalSpeed(onBareSand);
-            helper.assertTrue(!Double.isNaN(slabSpeed) && !Double.isNaN(sandSpeed),
-                    "sustained throttle produced a NaN speed: slab=" + slabSpeed + " sand=" + sandSpeed);
-            helper.assertTrue(slabSpeed > 0.5, "test setup never got the car on the slab moving: " + slabSpeed);
-            helper.assertTrue(slabSpeed > sandSpeed,
-                    "a car on a stone slab over buried sand must reach a higher cruise speed (behaving like "
-                            + "stone), not be held back like the buried sand underneath it: slabSpeed=" + slabSpeed
-                            + " sandSpeed=" + sandSpeed);
-            helper.succeed();
+            onSlab.forceDrive(GENTLE_THROTTLE, 0.0, DRIVE_TICKS);
+            onBareSand.forceDrive(GENTLE_THROTTLE, 0.0, DRIVE_TICKS);
+            // Every wheel's raycast must be stopping at the slab itself, never the buried sand: AC3's own claim,
+            // now checked on every tick of the window rather than inferred from the cruise speed alone.
+            lanes.assertStaysOnLane(onSlab, SLAB_LANE_X, VehicleLanes.allWheels(Blocks.STONE_SLAB), LANE_WEAR,
+                    SETTLE_TICKS, DRIVE_TICKS - 1L, "slab car");
+            lanes.assertStaysOnLane(onBareSand, SAND_LANE_X, VehicleLanes.allWheels(Blocks.SAND), LANE_WEAR,
+                    SETTLE_TICKS, DRIVE_TICKS - 1L, "bare-sand car");
+            helper.runAfterDelay((long) DRIVE_TICKS, () -> {
+                double slabSpeed = horizontalSpeed(onSlab);
+                double sandSpeed = horizontalSpeed(onBareSand);
+                helper.assertTrue(!Double.isNaN(slabSpeed) && !Double.isNaN(sandSpeed),
+                        "sustained throttle produced a NaN speed: slab=" + slabSpeed + " sand=" + sandSpeed);
+                helper.assertTrue(slabSpeed > 0.5, "test setup never got the car on the slab moving: " + slabSpeed);
+                helper.assertTrue(slabSpeed > sandSpeed,
+                        "a car on a stone slab over buried sand must reach a higher cruise speed (behaving like "
+                                + "stone), not be held back like the buried sand underneath it: slabSpeed=" + slabSpeed
+                                + " sandSpeed=" + sandSpeed);
+                helper.succeed();
+            });
         });
     }
 
@@ -222,6 +251,14 @@ public final class RollingResistanceGameTests {
      * so a long fall would eventually inflate drag on the airborne car for a reason that has nothing to do
      * with terrain rolling resistance (an unwanted confound, not the regression this test is for). */
     private static final int AIRBORNE_COAST_TICKS = 10;
+    private static final int GROUNDED_LANE_X = VehicleLanes.FIRST_LANE_X;
+    private static final int AIRBORNE_LANE_X = VehicleLanes.THIRD_LANE_X;
+    /** The pit around the airborne car: 3 blocks either side of its lane's centre line, 3 behind it, and 12
+     * ahead -- the ~10 m/s it carries into the window covers about 5 m in those 10 ticks, plus its own
+     * 1.5 m half-length, with room to spare. */
+    private static final int PIT_HALF_WIDTH = 3;
+    private static final int PIT_BEHIND = 3;
+    private static final int PIT_AHEAD = 12;
 
     /**
      * AC4 (raycast miss / lost contact): every wheel of one car is suspended over a cleared-out pit deeper
@@ -244,74 +281,90 @@ public final class RollingResistanceGameTests {
      * whole time, rather than against a hand-derived expected number. Both cars still feel the same
      * surface-independent air drag once moving; only the grounded control should ALSO feel real terrain
      * rolling resistance on top of that, so it must lose strictly more speed over the same short window.
+     *
+     * <p>The pit opens under wherever the airborne car has really got to when the window starts -- about 19
+     * m down its lane -- and runs far enough ahead of it to cover the distance it covers during the window.
+     * The old fixture dug the pit at the spawn point, so wherever the car really drove it was never over the
+     * pit at all, and the grounded control had by then rear-ended it with its own rear wheels over the freshly
+     * dug hole.
      */
-    @GameTest(template = "settlement_test", timeoutTicks = 150)
+    @GameTest(template = "settlement_test", timeoutTicks = 150 + VehicleLanes.CHUNK_LOAD_ALLOWANCE)
     public static void airborneWheelsOverAPitGetNoTerrainRollingDrag(GameTestHelper helper) {
-        fillFloor(helper, 5, 2, 5, Blocks.SAND.defaultBlockState());
-        fillFloor(helper, 5, 2, 15, Blocks.SAND.defaultBlockState());
+        VehicleLanes.build(helper, VehicleLanes.Site.AIRBORNE_OVER_PIT, lanes -> {
+            lanes.layLane(GROUNDED_LANE_X, Blocks.SAND.defaultBlockState());
+            lanes.layLane(AIRBORNE_LANE_X, Blocks.SAND.defaultBlockState());
 
-        CarEntity grounded = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
-        CarEntity airborne = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 15));
+            CarEntity grounded = lanes.spawn(DynamicVehiclesMod.CAR.get(), VehicleLanes.spawnPoint(GROUNDED_LANE_X));
+            CarEntity airborne = lanes.spawn(DynamicVehiclesMod.CAR.get(), VehicleLanes.spawnPoint(AIRBORNE_LANE_X));
 
-        grounded.forceDrive(1.0, 0.0, LIFTOFF_ACCEL_TICKS);
-        airborne.forceDrive(1.0, 0.0, LIFTOFF_ACCEL_TICKS);
-        helper.runAfterDelay((long) LIFTOFF_ACCEL_TICKS, () -> {
-            helper.assertTrue(grounded.sableBody() != null && airborne.sableBody() != null,
-                    "a car's Sable body was never created during the liftoff acceleration phase");
-            double groundedSpeedBefore = horizontalSpeed(grounded);
-            double airborneSpeedBefore = horizontalSpeed(airborne);
-            helper.assertTrue(groundedSpeedBefore > 0.05 && airborneSpeedBefore > 0.05,
-                    "test setup never got either car moving above WheelMath.tire's own rolling dead zone "
-                            + "before the airborne car lost contact -- a test at vLong == 0 would be vacuous: "
-                            + "grounded=" + groundedSpeedBefore + " airborne=" + airborneSpeedBefore);
-            for (double travel : SableCompat.wheelTravel(grounded.sableBody())) {
-                helper.assertTrue(travel > 0.0, "the grounded control was not actually touching the ground "
-                        + "right before the comparison window: suspensionTravel=" + travel);
-            }
+            grounded.forceDrive(1.0, 0.0, LIFTOFF_ACCEL_TICKS);
+            airborne.forceDrive(1.0, 0.0, LIFTOFF_ACCEL_TICKS);
+            // The grounded control stays on its sand lane through the comparison window as well: that is what
+            // makes it the matched control. The airborne car only needs its lane until the pit opens.
+            lanes.assertStaysOnLane(grounded, GROUNDED_LANE_X, VehicleLanes.allWheels(Blocks.SAND), LANE_WEAR,
+                    SETTLE_TICKS, LIFTOFF_ACCEL_TICKS + AIRBORNE_COAST_TICKS - 1L, "grounded control");
+            lanes.assertStaysOnLane(airborne, AIRBORNE_LANE_X, VehicleLanes.allWheels(Blocks.SAND), LANE_WEAR,
+                    SETTLE_TICKS, LIFTOFF_ACCEL_TICKS - 1L, "car about to go airborne");
+            helper.runAfterDelay((long) LIFTOFF_ACCEL_TICKS, () -> {
+                helper.assertTrue(grounded.sableBody() != null && airborne.sableBody() != null,
+                        "a car's Sable body was never created during the liftoff acceleration phase");
+                double groundedSpeedBefore = horizontalSpeed(grounded);
+                double airborneSpeedBefore = horizontalSpeed(airborne);
+                helper.assertTrue(groundedSpeedBefore > 0.05 && airborneSpeedBefore > 0.05,
+                        "test setup never got either car moving above WheelMath.tire's own rolling dead zone "
+                                + "before the airborne car lost contact -- a test at vLong == 0 would be vacuous: "
+                                + "grounded=" + groundedSpeedBefore + " airborne=" + airborneSpeedBefore);
+                for (double travel : SableCompat.wheelTravel(grounded.sableBody())) {
+                    helper.assertTrue(travel > 0.0, "the grounded control was not actually touching the ground "
+                            + "right before the comparison window: suspensionTravel=" + travel);
+                }
 
-            // The airborne car loses its ground the instant the comparison window starts; the grounded
-            // control's real sand floor is untouched. Clear a pit well wider than the car's own
-            // track/wheelbase (CarGeometry: halfX 0.95, halfZ 1.5) and the full template height (y 0..7),
-            // so every wheel's raycast -- at most restLength + 0.25 = 0.9 m -- finds nothing below it.
-            for (int dx = -3; dx <= 3; dx++) {
-                for (int dz = -3; dz <= 3; dz++) {
-                    for (int y = 0; y <= 7; y++) {
-                        helper.setBlock(new BlockPos(5 + dx, y, 15 + dz), Blocks.AIR);
+                // The airborne car loses its ground the instant the comparison window starts; the grounded
+                // control's real sand floor is untouched. Clear a pit well wider than the car's own
+                // track/wheelbase (CarGeometry: halfX 0.95, halfZ 1.5), through the floor and the air above it
+                // (y 0..7), so every wheel's raycast -- at most restLength + 0.25 = 0.9 m -- finds nothing below
+                // it, starting behind the car and running far enough ahead for the whole window.
+                int pitCentreZ = (int) Math.floor(lanes.relativeZ(airborne));
+                for (int dx = -PIT_HALF_WIDTH; dx <= PIT_HALF_WIDTH; dx++) {
+                    for (int dz = -PIT_BEHIND; dz <= PIT_AHEAD; dz++) {
+                        for (int y = 0; y <= 7; y++) {
+                            lanes.setBlock(new BlockPos(AIRBORNE_LANE_X + dx, y, pitCentreZ + dz), Blocks.AIR.defaultBlockState());
+                        }
                     }
                 }
-            }
-            grounded.forceDrive(0.0, 0.0, AIRBORNE_COAST_TICKS);
-            airborne.forceDrive(0.0, 0.0, AIRBORNE_COAST_TICKS);
-            helper.runAfterDelay((long) AIRBORNE_COAST_TICKS, () -> {
-                helper.assertTrue(!airborne.isRemoved(), "the airborne car crashed/was removed while falling "
-                        + "with no ground under it");
-                double[] groundedTravel = SableCompat.wheelTravel(grounded.sableBody());
-                double[] airborneTravel = SableCompat.wheelTravel(airborne.sableBody());
-                for (double travel : groundedTravel) {
-                    helper.assertTrue(travel > 0.0,
-                            "the grounded control stopped touching the ground during the comparison window "
-                                    + "(not a valid matched control any more): suspensionTravel=" + travel);
-                }
-                for (int wheel = 0; wheel < airborneTravel.length; wheel++) {
-                    helper.assertTrue(airborneTravel[wheel] == 0.0,
-                            "wheel " + wheel + " over the open pit reported nonzero suspension travel (should "
-                                    + "read fully extended/ungrounded, 0.0): " + airborneTravel[wheel]);
-                }
+                grounded.forceDrive(0.0, 0.0, AIRBORNE_COAST_TICKS);
+                airborne.forceDrive(0.0, 0.0, AIRBORNE_COAST_TICKS);
+                helper.runAfterDelay((long) AIRBORNE_COAST_TICKS, () -> {
+                    helper.assertTrue(!airborne.isRemoved(), "the airborne car crashed/was removed while falling "
+                            + "with no ground under it");
+                    double[] groundedTravel = SableCompat.wheelTravel(grounded.sableBody());
+                    double[] airborneTravel = SableCompat.wheelTravel(airborne.sableBody());
+                    for (double travel : groundedTravel) {
+                        helper.assertTrue(travel > 0.0,
+                                "the grounded control stopped touching the ground during the comparison window "
+                                        + "(not a valid matched control any more): suspensionTravel=" + travel);
+                    }
+                    for (int wheel = 0; wheel < airborneTravel.length; wheel++) {
+                        helper.assertTrue(airborneTravel[wheel] == 0.0,
+                                "wheel " + wheel + " over the open pit reported nonzero suspension travel (should "
+                                        + "read fully extended/ungrounded, 0.0): " + airborneTravel[wheel]);
+                    }
 
-                double groundedSpeedAfter = horizontalSpeed(grounded);
-                double airborneSpeedAfter = horizontalSpeed(airborne);
-                helper.assertTrue(!Double.isNaN(groundedSpeedAfter) && !Double.isNaN(airborneSpeedAfter),
-                        "the comparison window produced a NaN speed: grounded=" + groundedSpeedAfter
-                                + " airborne=" + airborneSpeedAfter);
-                double groundedLoss = groundedSpeedBefore - groundedSpeedAfter;
-                double airborneLoss = airborneSpeedBefore - airborneSpeedAfter;
-                helper.assertTrue(groundedLoss > airborneLoss,
-                        "a car that stayed grounded on real sand must lose MORE horizontal speed over this "
-                                + "window than a matched car at the same starting speed that lost ground contact "
-                                + "-- the grounded car alone should feel real terrain rolling resistance on top "
-                                + "of the same surface-independent air drag both feel: groundedLoss=" + groundedLoss
-                                + " airborneLoss=" + airborneLoss);
-                helper.succeed();
+                    double groundedSpeedAfter = horizontalSpeed(grounded);
+                    double airborneSpeedAfter = horizontalSpeed(airborne);
+                    helper.assertTrue(!Double.isNaN(groundedSpeedAfter) && !Double.isNaN(airborneSpeedAfter),
+                            "the comparison window produced a NaN speed: grounded=" + groundedSpeedAfter
+                                    + " airborne=" + airborneSpeedAfter);
+                    double groundedLoss = groundedSpeedBefore - groundedSpeedAfter;
+                    double airborneLoss = airborneSpeedBefore - airborneSpeedAfter;
+                    helper.assertTrue(groundedLoss > airborneLoss,
+                            "a car that stayed grounded on real sand must lose MORE horizontal speed over this "
+                                    + "window than a matched car at the same starting speed that lost ground contact "
+                                    + "-- the grounded car alone should feel real terrain rolling resistance on top "
+                                    + "of the same surface-independent air drag both feel: groundedLoss=" + groundedLoss
+                                    + " airborneLoss=" + airborneLoss);
+                    helper.succeed();
+                });
             });
         });
     }

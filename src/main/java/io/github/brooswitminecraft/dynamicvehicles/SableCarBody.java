@@ -1141,6 +1141,13 @@ final class SableCarBody {
         return suspensionTravel.clone();
     }
 
+    /** Server test support: the block each wheel's own raycast hit on the last tick, {@code null} for a
+     * miss -- the same per-wheel contact {@code Surfaces.at} resolves that wheel's material from. A copy,
+     * not live state. */
+    BlockPos[] wheelContactBlocks() {
+        return lastContactBlockPos.clone();
+    }
+
     /** MINECRAFT-446 review (comment 49019): the forward airflow speed (m/s, signed) the last applied wing
      * downforce was actually evaluated at. {@code 0.0} until some tick has actually applied aero, so a
      * test must establish this is nonzero before trusting the two readings below. */

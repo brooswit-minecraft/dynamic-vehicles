@@ -337,27 +337,39 @@ public final class CarDrivetrainGameTests {
         });
     }
 
+    /** The driving fixtures below are about the drivetrain, not the surface, and launch at full throttle,
+     * which wears their grass lanes where they launch and where they reverse; a lane may show any of that wear
+     * short of being worn through (see {@link VehicleLanes.Wear}). */
+    private static final VehicleLanes.Wear LANE_WEAR = VehicleLanes.Wear.ANY_STAGE;
+
     /** Review P2: keyboard/gamepad (which can only ever select {@link CarPhysics.Gear#DEFAULT_FORWARD} or
      * reverse -- never an individual manual gear) must not be silently pinned in D1 forever now that D1's
      * ratio multiplies drive force. The default policy is {@link CarPhysics.Gear#AUTOMATIC}, so a
      * non-shifter driver who never calls {@code selectGear} must still shift up out of D1 under sustained
      * throttle. */
-    @GameTest(template = "settlement_test", timeoutTicks = 140)
+    @GameTest(template = "settlement_test", timeoutTicks = 140 + VehicleLanes.CHUNK_LOAD_ALLOWANCE)
     public static void nonShifterDefaultShiftsOutOfFirstGearInsteadOfStayingPinnedThere(GameTestHelper helper) {
-        helper.setBlock(new BlockPos(5, 2, 5), Blocks.STONE);
-        helper.setBlock(new BlockPos(5, 3, 5), Blocks.AIR);
-        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
-        car.setYRot(0.0f);
-        // Deliberately never call selectGear: this is the exact state a keyboard/gamepad driver who has
-        // never touched the reverse key is in.
-        Player rider = helper.makeMockPlayer(GameType.CREATIVE);
-        helper.assertTrue(rider.startRiding(car), "mock player failed to board the car");
-        rider.zza = 1.0f;
-        helper.runAfterDelay(120L, () -> {
-            helper.assertTrue(car.debugAutomaticGearIndex() > 0,
-                    "a non-shifter driver's default gear stayed pinned at index 0 (first gear) under sustained throttle instead of shifting up: index="
-                            + car.debugAutomaticGearIndex());
-            helper.succeed();
+        // Its own full-length lane (see VehicleLanes): 120 ticks of throttle carry this car ~57 m. On
+        // settlement_test, wherever GameTest's placement let it really move, it hit the barrier wall at z=24 at
+        // ~10.7 m/s around tick 57 and sat against it, back in first gear, by the time of the check. The lane
+        // is the floor's own grass -- the surface this car's wheels were always really on (the single stone
+        // block the old rig placed sat under the car's centre, between its wheels).
+        VehicleLanes.build(helper, VehicleLanes.Site.NON_SHIFTER, lanes -> {
+            CarEntity car = lanes.spawn(DynamicVehiclesMod.CAR.get(), VehicleLanes.spawnPoint(VehicleLanes.FIRST_LANE_X));
+            car.setYRot(0.0f);
+            lanes.assertStaysOnLane(car, VehicleLanes.FIRST_LANE_X, VehicleLanes.allWheels(Blocks.GRASS_BLOCK), LANE_WEAR,
+                    2L, 119L, "car");
+            // Deliberately never call selectGear: this is the exact state a keyboard/gamepad driver who has
+            // never touched the reverse key is in.
+            Player rider = helper.makeMockPlayer(GameType.CREATIVE);
+            helper.assertTrue(rider.startRiding(car), "mock player failed to board the car");
+            rider.zza = 1.0f;
+            helper.runAfterDelay(120L, () -> {
+                helper.assertTrue(car.debugAutomaticGearIndex() > 0,
+                        "a non-shifter driver's default gear stayed pinned at index 0 (first gear) under sustained throttle instead of shifting up: index="
+                                + car.debugAutomaticGearIndex());
+                helper.succeed();
+            });
         });
     }
 
@@ -710,17 +722,34 @@ public final class CarDrivetrainGameTests {
      * (no instantaneous flip -- the chassis still has to coast down first) but MUST have gone negative by
      * well into the window (the opposing-direction force actually overcomes the roll eventually). The
      * mirror does the same starting in REVERSE and switching to D1. */
-    @GameTest(template = "settlement_test", timeoutTicks = 340)
+    @GameTest(template = "settlement_test", timeoutTicks = 340 + VehicleLanes.CHUNK_LOAD_ALLOWANCE)
     public static void opposingDirectionThrottleDecelerateAndReverseInBothMirroredDirections(GameTestHelper helper) {
-        helper.setBlock(new BlockPos(5, 2, 5), Blocks.STONE);
-        helper.setBlock(new BlockPos(5, 3, 5), Blocks.AIR);
-        helper.setBlock(new BlockPos(5, 2, 15), Blocks.STONE);
-        helper.setBlock(new BlockPos(5, 3, 15), Blocks.AIR);
-        CarEntity forwardFirst = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
+        // Each car on its own full-length lane (see VehicleLanes). These two used to sit ten blocks apart in
+        // one lane of settlement_test, both facing +z, and were driven TOWARD each other, one forward and one
+        // in reverse: wherever GameTest's placement let them really move, the forward-first car's nose met
+        // the reverse-first car's tail around tick 50 -- right at the gear switch -- and the collision, not
+        // the drivetrain, set the sign of the next tick's velocity. The reverse-first car backs up ~4.5 m
+        // and then, in D1, drives ~86 m, so it starts further along. The lanes are the floor's own grass,
+        // the surface these cars' wheels were always really on (the stone blocks the old rig placed sat under
+        // each car's centre, between its wheels). That matters here: on a stone lane the forward-first car,
+        // wheels rolling at ground speed, was still doing 4.6 m/s forward after the full 250 ticks of reverse
+        // throttle.
+        VehicleLanes.build(helper, VehicleLanes.Site.OPPOSING_THROTTLE,
+                lanes -> runOpposingDirectionThrottle(helper, lanes));
+    }
+
+    private static void runOpposingDirectionThrottle(GameTestHelper helper, VehicleLanes lanes) {
+        CarEntity forwardFirst = lanes.spawn(DynamicVehiclesMod.CAR.get(),
+                VehicleLanes.spawnPoint(VehicleLanes.FIRST_LANE_X));
         forwardFirst.setYRot(0.0f);
         forwardFirst.selectGear(CarPhysics.Gear.D1);
-        CarEntity reverseFirst = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 15));
+        CarEntity reverseFirst = lanes.spawn(DynamicVehiclesMod.CAR.get(),
+                VehicleLanes.spawnPoint(VehicleLanes.THIRD_LANE_X, REVERSE_FIRST_SPAWN_Z));
         reverseFirst.setYRot(0.0f);
+        lanes.assertStaysOnLane(forwardFirst, VehicleLanes.FIRST_LANE_X, VehicleLanes.allWheels(Blocks.GRASS_BLOCK),
+                LANE_WEAR, 2L, 310L, "forward-first car");
+        lanes.assertStaysOnLane(reverseFirst, VehicleLanes.THIRD_LANE_X, VehicleLanes.allWheels(Blocks.GRASS_BLOCK),
+                LANE_WEAR, 2L, 310L, "reverse-first car");
         reverseFirst.selectGear(CarPhysics.Gear.REVERSE);
         Player riderForwardFirst = helper.makeMockPlayer(GameType.CREATIVE);
         helper.assertTrue(riderForwardFirst.startRiding(forwardFirst), "mock player failed to board the forward-first car");
@@ -773,6 +802,9 @@ public final class CarDrivetrainGameTests {
         });
     }
 
+    /** Far enough along its lane that the reverse-first car's initial ~4.5 m back-up stays on it. */
+    private static final int REVERSE_FIRST_SPAWN_Z = 12;
+
     /** The car's own signed forward velocity, m/s: at the yaw this file always spawns at (0 degrees), the
      * car faces world +Z ({@code SableCarBody.orientationOf}'s own identity-at-zero convention), so the
      * world +Z component of its real (not client-smoothed) velocity already IS the forward component. */
@@ -797,35 +829,44 @@ public final class CarDrivetrainGameTests {
      * player boarding, which this test cannot control) is wrapped so a thrown assertion still restores
      * {@code originalSubSteps} before propagating, rather than leaving the global mutated into whatever
      * batch happens to run next. */
-    @GameTest(template = "settlement_test", timeoutTicks = 100, batch = "carDrivetrainSubStepIsolated")
+    @GameTest(template = "settlement_test", timeoutTicks = 100 + VehicleLanes.CHUNK_LOAD_ALLOWANCE, batch = "carDrivetrainSubStepIsolated")
     public static void wheelSubStepCountDoesNotMateriallyChangeReachedSpeedAfterAFixedWindow(GameTestHelper helper) {
-        int originalSubSteps = CarConfig.WHEEL_SUB_STEPS.get();
-        helper.setBlock(new BlockPos(5, 2, 5), Blocks.STONE);
-        helper.setBlock(new BlockPos(5, 3, 5), Blocks.AIR);
-        helper.setBlock(new BlockPos(5, 2, 15), Blocks.STONE);
-        helper.setBlock(new BlockPos(5, 3, 15), Blocks.AIR);
-        try {
-            CarConfig.WHEEL_SUB_STEPS.set(1);
-            CarEntity carOneStep = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
-            carOneStep.setYRot(0.0f);
-            carOneStep.selectGear(CarPhysics.Gear.D1);
-            Player riderOneStep = helper.makeMockPlayer(GameType.CREATIVE);
-            helper.assertTrue(riderOneStep.startRiding(carOneStep), "mock player failed to board the 1-substep car");
-            riderOneStep.zza = 1.0f;
-            helper.runAfterDelay(30L, () -> runSecondLegAndRestoreOnAnyFailure(helper, originalSubSteps, carOneStep));
-        } catch (RuntimeException e) {
-            CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
-            throw e;
-        }
+        // Each leg's car on its own grass lane (see VehicleLanes). The two used to start ten blocks apart in
+        // one lane of settlement_test, and wherever GameTest's placement let them really move, the 4-substep
+        // car (spawned at z 15.5) reached the barrier wall at z=24 right at its 30-tick reading, with the
+        // still-driven 1-substep car 0.7 m behind it: whether the reading caught it before the wall was chance.
+        VehicleLanes.build(helper, VehicleLanes.Site.SUB_STEP_SPEED, lanes -> {
+            int originalSubSteps = CarConfig.WHEEL_SUB_STEPS.get();
+            try {
+                CarConfig.WHEEL_SUB_STEPS.set(1);
+                CarEntity carOneStep = lanes.spawn(DynamicVehiclesMod.CAR.get(),
+                        VehicleLanes.spawnPoint(VehicleLanes.FIRST_LANE_X));
+                carOneStep.setYRot(0.0f);
+                carOneStep.selectGear(CarPhysics.Gear.D1);
+                lanes.assertStaysOnLane(carOneStep, VehicleLanes.FIRST_LANE_X, VehicleLanes.allWheels(Blocks.GRASS_BLOCK),
+                        LANE_WEAR, 2L, 29L, "1-substep car");
+                Player riderOneStep = helper.makeMockPlayer(GameType.CREATIVE);
+                helper.assertTrue(riderOneStep.startRiding(carOneStep), "mock player failed to board the 1-substep car");
+                riderOneStep.zza = 1.0f;
+                helper.runAfterDelay(30L, () -> runSecondLegAndRestoreOnAnyFailure(helper, lanes, originalSubSteps, carOneStep));
+            } catch (RuntimeException e) {
+                CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
+                throw e;
+            }
+        });
     }
 
-    private static void runSecondLegAndRestoreOnAnyFailure(GameTestHelper helper, int originalSubSteps, CarEntity carOneStep) {
+    private static void runSecondLegAndRestoreOnAnyFailure(GameTestHelper helper, VehicleLanes lanes, int originalSubSteps,
+            CarEntity carOneStep) {
         try {
             double speedAtOneStep = carOneStep.debugSpeed();
             CarConfig.WHEEL_SUB_STEPS.set(4);
-            CarEntity carFourStep = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 15));
+            CarEntity carFourStep = lanes.spawn(DynamicVehiclesMod.CAR.get(),
+                    VehicleLanes.spawnPoint(VehicleLanes.THIRD_LANE_X));
             carFourStep.setYRot(0.0f);
             carFourStep.selectGear(CarPhysics.Gear.D1);
+            lanes.assertStaysOnLane(carFourStep, VehicleLanes.THIRD_LANE_X, VehicleLanes.allWheels(Blocks.GRASS_BLOCK),
+                    LANE_WEAR, 2L, 29L, "4-substep car");
             Player riderFourStep = helper.makeMockPlayer(GameType.CREATIVE);
             helper.assertTrue(riderFourStep.startRiding(carFourStep), "mock player failed to board the 4-substep car");
             riderFourStep.zza = 1.0f;

@@ -91,6 +91,11 @@ final class SableCompat {
         return ((SableCarBody) body).suspensionTravel();
     }
 
+    /** The block each wheel's raycast hit on the last tick ({@code null} for a miss), for GameTests. */
+    static net.minecraft.core.BlockPos[] wheelContactBlocks(Object body) {
+        return ((SableCarBody) body).wheelContactBlocks();
+    }
+
     static double[] wheelSteerAngles(Object body) {
         return ((SableCarBody) body).steerAngles();
     }

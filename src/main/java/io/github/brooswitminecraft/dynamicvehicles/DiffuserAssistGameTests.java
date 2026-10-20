@@ -592,6 +592,154 @@ public final class DiffuserAssistGameTests {
         assertRollReturnsTowardUpright(helper, -START_TILT_RAD);
     }
 
+    /** Downward speed (m/s) seeded to make time-to-touchdown SHORT and deterministic, rather than waiting
+     * for gravity to produce some particular fall speed at some particular tick -- the exact dependence on
+     * landing timing that sank this ticket's earlier R17 attempts. */
+    private static final double FAST_FALL_SPEED = 40.0;
+    /** Horizon comfortably longer than the fast-fall case's own time-to-touchdown, so that case gets real
+     * authority. The drop here is only about 7 m (measured, not assumed: these fixtures spawn near Y=-49.5
+     * and the ground under them sits near Y=-56.6), so at {@link #FAST_FALL_SPEED} the estimate is roughly
+     * 0.18 s -- well inside this. */
+    private static final double LONG_HORIZON_SECONDS = 1.0;
+    /** Horizon short enough that NO fall this fixture can produce reaches it: gravity alone needs about
+     * 140 m/s over a 7 m drop to bring the estimate under this, which 15 ticks cannot approach. Picked this
+     * way deliberately -- an earlier attempt used 1.0 s and the car simply fell close enough to the ground
+     * for the ramp to engage late in the window, which is the assist working correctly, not a gate. */
+    private static final double SHORT_HORIZON_SECONDS = 0.05;
+    /** Short enough that the strong-authority case is sampled before it can overshoot through level: at
+     * full authority this assist is meant to be decisive, so "did it move toward level" has to be read
+     * before it arrives, not after. */
+    private static final long PITCH_RAMP_OBSERVE_TICKS = 3L;
+    /** Window for the gated case: long enough that an un-gated assist would visibly move the pitch, short
+     * enough that the car is unambiguously still falling. The fixture also asserts it is still airborne at
+     * the moment of measurement, because an earlier version ran 15 ticks, the car reached the ground, and
+     * its SUSPENSION levelled the pitch -- which looked exactly like the gate failing when it was not. */
+    private static final long GATED_OBSERVE_TICKS = 8L;
+
+    /** R17's authority ramp on the production path: the assist is scaled by how close touchdown actually
+     * is, so a car far from the ground (in time) must be left alone while a car about to land is corrected.
+     *
+     * <p>Time-to-touchdown is {@code height / |verticalSpeed|}, so seeding the vertical speed makes it
+     * deterministic instead of a function of which tick the fixture happens to sample -- the exact
+     * dependence on landing timing that made the earlier R17 attempts unreliable. Both cases drop from the
+     * same height with the same tilt; only the seeded fall speed and the configured horizon differ, so
+     * whether the assist acts is decided purely by the ramp this case exists to exercise. */
+    private static void assertPitchAuthorityMatchesTimeToTouchdown(GameTestHelper helper,
+            boolean expectCorrection) {
+        CarEntity car = spawnCarWithCleanup(helper, DROP_SPAWN);
+        car.setDiffuserTuningForTest(pitchOnly(ASSIST_MAX_TORQUE,
+                expectCorrection ? LONG_HORIZON_SECONDS : SHORT_HORIZON_SECONDS, ASSIST_GAIN, ASSIST_DAMPING));
+        // rotateX(-x) for a measured NOSE-UP pitch of +x: this engine's pitch rotation is the negation of
+        // the measured asin(forward.y) angle -- the same convention the proportional-sign fix in
+        // SableCarBody.applyDiffuserAssists turns on, applied here so the signed assertions below read the
+        // way they say they do.
+        startTilted(car, new Quaternionf().rotateX(-START_TILT_RAD));
+        helper.runAfterDelay(BODY_EXISTS_TICK, () -> {
+            if (expectCorrection) {
+                car.addLinearVelocityForTest(0.0, -FAST_FALL_SPEED, 0.0);
+            }
+            // SIGNED, not magnitude: at full authority this assist can drive a +0.3 rad nose-up tilt down
+            // through level and out the other side inside the window, and |pitch| cannot tell that apart
+            // from the tilt growing. The signed value falling is "moved toward level" in both cases.
+            double pitchBefore = pitchAngleRad(car);
+            helper.assertTrue(pitchBefore > MIN_START_TILT_RAD,
+                    "sanity: car did not actually start pitched nose-up, pitch=" + pitchBefore);
+            helper.runAfterDelay(expectCorrection ? PITCH_RAMP_OBSERVE_TICKS : GATED_OBSERVE_TICKS, () -> {
+                double pitchAfter = pitchAngleRad(car);
+                if (expectCorrection) {
+                    helper.assertTrue(pitchAfter < pitchBefore - MIN_TILT_RECOVERY_RAD,
+                            "a short time-to-touchdown should give the assist authority and pitch the car "
+                                    + "back toward level: pitchBefore=" + pitchBefore + " pitchAfter=" + pitchAfter);
+                } else {
+                    helper.assertTrue(!car.isTouchingGroundForTest(),
+                            "fixture must still be airborne when it measures the gated case -- once the car "
+                                    + "lands, its own suspension levels the pitch and that is not the gate");
+                    helper.assertTrue(Math.abs(pitchAfter - pitchBefore) < MIN_TILT_RECOVERY_RAD,
+                            "a time-to-touchdown far beyond the horizon must leave pitch alone, but it moved "
+                                    + "from " + pitchBefore + " to " + pitchAfter);
+                }
+                helper.succeed();
+            });
+        });
+    }
+
+    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    public static void shortTimeToTouchdownGivesPitchTheAuthorityToLevelTheCar(GameTestHelper helper) {
+        assertPitchAuthorityMatchesTimeToTouchdown(helper, true);
+    }
+
+    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    public static void timeToTouchdownBeyondTheHorizonLeavesPitchAlone(GameTestHelper helper) {
+        assertPitchAuthorityMatchesTimeToTouchdown(helper, false);
+    }
+
+    /** Half-width of the floor pad the contact-transition fixture stands its car on. A single 1x1 block
+     * cannot support (or, removed, unsupport) a car whose four wheels span more than a block -- an earlier
+     * version of this fixture placed one block, removed it, and found the car still grounded. */
+    private static final int FLOOR_PAD_RADIUS = 3;
+    /** The contact fixture's pad sits well ABOVE the template's own ground, and the car on top of it, so
+     * that removing the pad actually leaves the car unsupported with room to fall. An earlier version put
+     * the pad at the template's own floor level and removing it changed nothing: the car simply rested on
+     * the ground that was always underneath. */
+    private static final BlockPos CONTACT_PAD = new BlockPos(5, 9, 5);
+    private static final BlockPos CONTACT_SPAWN = new BlockPos(5, 10, 5);
+
+    private static void setFloorPad(GameTestHelper helper, net.minecraft.world.level.block.Block block) {
+        for (int dx = -FLOOR_PAD_RADIUS; dx <= FLOOR_PAD_RADIUS; dx++) {
+            for (int dz = -FLOOR_PAD_RADIUS; dz <= FLOOR_PAD_RADIUS; dz++) {
+                helper.setBlock(CONTACT_PAD.offset(dx, 0, dz), block);
+            }
+        }
+    }
+
+    /** How far off its seeded target the contact-transition fixture puts the heading, big enough that a
+     * working assist moves it unmistakably and a gated one cannot be mistaken for noise. */
+    private static final double CONTACT_TARGET_OFFSET_DEG = 40.0;
+
+    /** Contact transition, on the production path: R18's target is overwritten with the car's current yaw
+     * on every grounded tick and frozen the moment the car leaves the ground, so the SAME seeded target
+     * must do nothing while grounded and take effect once airborne.
+     *
+     * <p>That self-gating is why a parked car never fights its driver: while wheels are down the error is
+     * zero by construction, so there is no torque to fight with. This exercises both sides of the
+     * transition in one fixture, and deliberately uses a FIXED relative coordinate for the floor block
+     * rather than converting the car's absolute position back to relative -- see this class's closing
+     * comment on why {@code relativePos} cannot be trusted to invert {@code absolutePos}. */
+    @GameTest(template = TEMPLATE, timeoutTicks = INVERTED_TIMEOUT_TICKS)
+    public static void headingTargetIsGatedWhileGroundedAndLiveOnceAirborne(GameTestHelper helper) {
+        setFloorPad(helper, Blocks.STONE);
+        CarEntity car = spawnCarWithCleanup(helper, CONTACT_SPAWN);
+        car.setDiffuserTuningForTest(headingOnly(ASSIST_MAX_TORQUE, ASSIST_GAIN, ASSIST_DAMPING));
+        helper.runAfterDelay(OBSERVE_TICKS, () -> {
+            helper.assertTrue(car.isTouchingGroundForTest(),
+                    "fixture needs the car actually resting on its floor block before the grounded phase");
+            double groundedYaw = car.getYRot();
+            car.setLastGroundedYawDegForTest(groundedYaw + CONTACT_TARGET_OFFSET_DEG);
+            helper.runAfterDelay(OBSERVE_TICKS, () -> {
+                double yawAfterGrounded = car.getYRot();
+                helper.assertTrue(Math.abs(wrapDeg(yawAfterGrounded - groundedYaw)) < MIN_YAW_RECOVERY_DEG,
+                        "while grounded the target is overwritten with the car's own yaw every tick, so a "
+                                + "seeded target must produce no turn at all, but yaw moved "
+                                + wrapDeg(yawAfterGrounded - groundedYaw) + " degrees");
+                // Same fixed relative coordinates that placed it; no absolute/relative round trip involved.
+                setFloorPad(helper, Blocks.AIR);
+                helper.runAfterDelay(OBSERVE_TICKS, () -> {
+                    helper.assertTrue(!car.isTouchingGroundForTest(),
+                            "fixture needs the car actually airborne after its floor was removed");
+                    double airborneYaw = car.getYRot();
+                    car.setLastGroundedYawDegForTest(airborneYaw + CONTACT_TARGET_OFFSET_DEG);
+                    helper.runAfterDelay(OBSERVE_TICKS, () -> {
+                        double moved = wrapDeg(car.getYRot() - airborneYaw);
+                        helper.assertTrue(moved > MIN_YAW_RECOVERY_DEG,
+                                "once airborne the frozen target must actually steer the car toward it, but "
+                                        + "yaw moved only " + moved + " degrees");
+                        helper.succeed();
+                    });
+                });
+            });
+        });
+    }
+
     /** Telemetry (open item from the ticket's own acceptance criteria): {@code SableCarBody.describe()}'s
      * debug line (logged every 20 ticks by {@code CarEntity.tickSable}, the same line every other car's
      * debug logging already goes through) must report each Diffuser KIT assist's own last-applied torque

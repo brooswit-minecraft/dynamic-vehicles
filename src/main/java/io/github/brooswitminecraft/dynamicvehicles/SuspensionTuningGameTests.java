@@ -4,6 +4,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
@@ -124,6 +125,13 @@ public final class SuspensionTuningGameTests {
     /** Tolerance for comparing a published steer angle against the ratio times the front angle, radians.
      * Tight: this is one multiplication in production, not an integrated physical quantity. */
     private static final double STEER_ANGLE_TOLERANCE = 1e-9;
+
+    /** A soft tire and nothing else: well under nominal, so it buys grip and pays in rolling drag. The
+     * rolling side is what this fixture measures, because cruise speed under a fixed throttle is the
+     * observable RollingResistanceGameTests has already proven this suite can compare reliably. */
+    private static final String SOFT_TIRES = """
+            {"tireKit": {"tirePressureBar": %s}}
+            """.formatted(VehicleSpecLimits.MIN_TIRE_PRESSURE_BAR);
 
     /** A load-bearing bump stop and nothing else, so a difference against the stock control can only come
      * from the bump-stop term itself (damping is zero at rest either way). */
@@ -432,6 +440,68 @@ public final class SuspensionTuningGameTests {
                             + expected + " got " + angles[wheel] + " front=" + frontAngle);
         }
     }
+
+    /**
+     * Tire pressure, through the production tick: a car on deliberately soft tires must cruise SLOWER
+     * under the same sustained throttle on the same ground than a matched stock control, because the extra
+     * rolling drag its pressure multiplier adds is real force in {@code WheelMath.tire}, not a label.
+     *
+     * <p>Observable chosen the same way slice 2's was, from what this suite has already demonstrated it
+     * can measure: {@code RollingResistanceGameTests} compares matched cars' cruise speeds under a fixed
+     * gentle throttle to detect per-surface rolling-resistance differences, and tire pressure scales
+     * exactly that quantity. So this reuses a proven measurement rather than inventing one.
+     *
+     * <p>Direction matters and is asserted, not assumed: pressure moves grip and rolling drag in OPPOSITE
+     * directions (see {@code WheelMath#tirePressureRollingMultiplier}), so a soft tire is not simply
+     * "worse" -- it is slower in a straight line while having more grip available. This fixture pins the
+     * straight-line cost; the grip side is pinned by {@code WheelMathTirePressureTest}, which can compare
+     * the multipliers directly instead of trying to isolate cornering grip in a world test.
+     */
+    @GameTest(template = "settlement_test", timeoutTicks = 300, batch = "suspensionTuningTirePressureIsolated")
+    public static void softTiresCruiseSlowerThanStockUnderTheSameThrottle(GameTestHelper helper) {
+        pad(helper, 5);
+        pad(helper, 15);
+        CarEntity stock = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
+        CarEntity soft = spawnWithOverride(helper, SOFT_TIRES, new BlockPos(5, 3, 15));
+        stock.forceDrive(GENTLE_THROTTLE, 0.0, DRIVE_TICKS);
+        soft.forceDrive(GENTLE_THROTTLE, 0.0, DRIVE_TICKS);
+
+        helper.runAfterDelay(CRUISE_TICKS, () -> {
+            helper.assertTrue(soft.spec().tirePressureBar() == VehicleSpecLimits.MIN_TIRE_PRESSURE_BAR,
+                    "the soft-tire car did not receive the tirePressureBar override at construction: "
+                            + soft.spec().tirePressureBar());
+            helper.assertTrue(stock.spec().tirePressureBar() == WheelMath.NOMINAL_TIRE_PRESSURE_BAR,
+                    "the control car was not at nominal pressure -- an override leaked into it: "
+                            + stock.spec().tirePressureBar());
+
+            double stockSpeed = horizontalSpeed(stock);
+            double softSpeed = horizontalSpeed(soft);
+            // Setup gate first: a comparison between two cars that never moved would be vacuous, which is
+            // the failure mode this suite's own rolling-resistance fixtures guard the same way.
+            helper.assertTrue(stockSpeed > MIN_MEANINGFUL_CRUISE_SPEED,
+                    "test setup never got the stock control cruising, so the comparison would be vacuous: "
+                            + stockSpeed + " " + where(stock));
+            helper.assertTrue(softSpeed < stockSpeed,
+                    "a car on soft tires must cruise slower than a matched stock control under the same "
+                            + "throttle -- its pressure rolling multiplier may not be reaching the real "
+                            + "tire force: stock=" + stockSpeed + " soft=" + softSpeed);
+            helper.succeed();
+        });
+    }
+
+    /** Horizontal ground speed, m/s, from {@code CarEntity}'s own published {@code getDeltaMovement()} --
+     * the same quantity and conversion {@code RollingResistanceGameTests} reads for its cruise comparisons. */
+    private static double horizontalSpeed(CarEntity car) {
+        Vec3 velocity = car.getDeltaMovement();
+        return Math.hypot(velocity.x, velocity.z) * 20.0;
+    }
+
+    /** Ticks of sustained throttle before cruise speeds are compared; long enough for the rolling-drag
+     * difference to separate the two cars, comfortably inside {@link #DRIVE_TICKS}. */
+    private static final long CRUISE_TICKS = 100L;
+
+    /** The stock control must exceed this (m/s) or the comparison is measuring two stationary cars. */
+    private static final double MIN_MEANINGFUL_CRUISE_SPEED = 0.5;
 
     /** A flat stone pad under a spawn point at y = 2, under a spawn at y = 3 -- the same arrangement
      * {@code RollingResistanceGameTests#fillFloor} uses for the cars it successfully asserts {@code

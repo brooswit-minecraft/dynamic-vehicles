@@ -296,6 +296,36 @@ class VehicleSpecOverridesTest {
     }
 
     @Test
+    void tirePressureOverridesAndClampsThroughTheTireKitSection(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", "{\"tireKit\": {\"tirePressureBar\": 1.1}}");
+
+        VehicleSpecOverrides.load(configDir);
+
+        assertEquals(1.1, VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR).tirePressureBar());
+    }
+
+    @Test
+    void anOutOfRangeTirePressureIsClampedIntoTheSafeRange(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", "{\"tireKit\": {\"tirePressureBar\": 0.0}}");
+
+        VehicleSpecOverrides.load(configDir);
+
+        // 0.0 would divide by zero in both pressure multipliers; the loader must clamp it to the floor.
+        assertEquals(VehicleSpecLimits.MIN_TIRE_PRESSURE_BAR,
+                VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR).tirePressureBar());
+    }
+
+    @Test
+    void aTireKitWithoutTirePressureKeepsTheStockNominalPressure(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", "{\"tireKit\": {\"rearSteerRatio\": -0.1}}");
+
+        VehicleSpecOverrides.load(configDir);
+
+        assertEquals(VehicleSpec.CAR.tirePressureBar(),
+                VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR).tirePressureBar());
+    }
+
+    @Test
     void oneCorruptFileDoesNotAffectAnotherCarsValidFile(@TempDir Path configDir) throws IOException {
         writeCarsFile(configDir, "car", "{ not valid json");
         writeCarsFile(configDir, "truck", "{\"rideHeight\": 2.0}");

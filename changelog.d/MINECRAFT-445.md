@@ -12,8 +12,8 @@ bump: minor
   outcome dozens of ticks later. Every car on the roster ships with that identity tuning, so stock
   driving feel is unchanged. Out-of-range values are clamped and non-finite ones fall back to stock,
   the same as every other field in this format. See `docs/per-car-config.md` for units, ranges and
-  defaults, including which parts of MINECRAFT-445's scope (caster, roll center, anti-dive/anti-squat,
-  tire pressure) are **not** in this section yet.
+  defaults, including which parts of MINECRAFT-445's scope (caster, roll center, anti-dive/anti-squat)
+  are **not** in this section yet.
 - **Rear-wheel steering** (MINECRAFT-445): a car's `tireKit` section can now set `rearSteerRatio`, the
   fraction of the front wheels' steer angle applied to the rear wheels. Negative steers the rear against
   the front to tighten a turn (low-speed four-wheel steering); positive steers it with the front. The
@@ -22,3 +22,11 @@ bump: minor
   rear axle stays exactly straight — bit for bit what the code did before the field existed — unless a
   file opts in. Out-of-range values are clamped and non-finite ones fall back to stock, as everywhere
   else in this format.
+- **Tire pressure** (MINECRAFT-445): a car's `tireKit` section can now set `tirePressureBar`. Below the
+  nominal 2.2 bar a tire buys grip and pays for it in rolling drag; above it, the reverse — the two
+  effects deliberately pull opposite ways, so pressure is a trade-off rather than a free win, and grip
+  responds much less than proportionally while rolling drag responds in full. Both effects are applied in
+  the production tick (both grip sites and the rolling-resistance site), and both multipliers are exactly
+  1.0 at nominal, so every stock car's grip and rolling resistance are bit-for-bit unchanged. A
+  non-positive or non-finite pressure can never reach the friction circle: the loader clamps to a positive
+  range and the multipliers themselves fall back to neutral.

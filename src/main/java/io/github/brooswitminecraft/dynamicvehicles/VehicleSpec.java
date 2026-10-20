@@ -95,7 +95,13 @@ public record VehicleSpec(
          * rear-wheel steering. {@link SteeringTuning#IDENTITY} for every vehicle that has not opted in --
          * today, every vehicle on the roster -- which makes the rear wheels' steer angle exactly {@code
          * 0.0}, bit for bit what {@code SableCarBody.tick} computed before this field existed. */
-        SteeringTuning steeringTuning) {
+        SteeringTuning steeringTuning,
+        /** Tire pressure, bar (MINECRAFT-445). {@link WheelMath#NOMINAL_TIRE_PRESSURE_BAR} for every
+         * vehicle that has not opted in -- today, every vehicle on the roster -- at which both of {@link
+         * WheelMath}'s pressure multipliers are exactly 1.0, so grip and rolling resistance are
+         * bit-for-bit what they were before this field existed. Lower than nominal buys grip and costs
+         * rolling drag; higher does the reverse. */
+        double tirePressureBar) {
 
     /**
      * Per-vehicle steering geometry (MINECRAFT-445), grouped for the same reason {@link TireTuning},
@@ -133,7 +139,8 @@ public record VehicleSpec(
                 massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
                 forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
                 downforceGripPerSpeed, antiRollScale, seats, vehicleTuning, handbrakeScale,
-                SuspensionTuning.singleRate(dampingRate), SteeringTuning.IDENTITY);
+                SuspensionTuning.singleRate(dampingRate), SteeringTuning.IDENTITY,
+                WheelMath.NOMINAL_TIRE_PRESSURE_BAR);
     }
 
     /** As the full (canonical) constructor above, minus the trailing {@link #handbrakeScale} (MINECRAFT-443)

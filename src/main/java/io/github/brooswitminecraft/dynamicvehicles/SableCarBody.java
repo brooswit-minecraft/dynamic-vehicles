@@ -397,8 +397,12 @@ final class SableCarBody {
                     continue;
                 }
                 SurfaceProperties surface = Surfaces.at(level, wheelHits[wheel].getBlockPos());
+                // MINECRAFT-445: tire pressure scales grip (under-inflation enlarges the contact patch).
+                // Exactly 1.0 at this car's nominal pressure, which every roster car carries, so this
+                // multiply is a no-op for them -- the same pattern downforceGripMultiplier already uses.
                 double gripMu = WheelMath.BASE_FRICTION * Math.min(1.0, surface.grip() * spec.looseGrip())
-                        * spec.downforceGripMultiplier(forwardSpeed) * textureGrip[wheel];
+                        * spec.downforceGripMultiplier(forwardSpeed) * textureGrip[wheel]
+                        * WheelMath.tirePressureGripMultiplier(spec.tirePressureBar());
                 gripForces[wheel] = gripMu * forces[wheel];
             }
 
@@ -530,10 +534,17 @@ final class SableCarBody {
                 // Downforce (MINECRAFT-184): spec.downforceGripMultiplier() is exactly 1.0 for every vehicle
                 // whose downforceGripPerSpeed is 0.0 (every existing vehicle), so this multiply is a no-op
                 // for them - see VehicleSpec.INDY's own javadoc for the one vehicle that sets it nonzero.
+                // MINECRAFT-445: tire pressure scales grip (under-inflation enlarges the contact patch).
+                // Exactly 1.0 at this car's nominal pressure, which every roster car carries, so this
+                // multiply is a no-op for them -- the same pattern downforceGripMultiplier already uses.
                 double gripMu = WheelMath.BASE_FRICTION * Math.min(1.0, surface.grip() * spec.looseGrip())
-                        * spec.downforceGripMultiplier(forwardSpeed) * textureGrip[wheel];
+                        * spec.downforceGripMultiplier(forwardSpeed) * textureGrip[wheel]
+                        * WheelMath.tirePressureGripMultiplier(spec.tirePressureBar());
+                // MINECRAFT-445: and pressure scales rolling drag the OTHER way (a softer tire deforms
+                // more and costs more), so dropping pressure buys grip above and pays for it here.
                 double rollingCoefficient = WheelMath.rollingCoefficient(surface.rollingResistance(), surface.deformability(), spec.rollingScale())
-                        * textureRolling[wheel];
+                        * textureRolling[wheel]
+                        * WheelMath.tirePressureRollingMultiplier(spec.tirePressureBar());
                 double effectiveMass = spec.massKg() / 4.0;
                 // isIdentity() is checked on the SPEC's own hard-wired tireTuning(), never on config, so
                 // CAR/TRUCK/TROPHY (always IDENTITY in code) can never be routed into DriftTireModel no

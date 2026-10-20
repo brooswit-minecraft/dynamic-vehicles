@@ -394,6 +394,49 @@ public final class WheelMath {
         return spin * wheelRadius - groundSpeed;
     }
 
+    /** MINECRAFT-445: the tire pressure (bar) every vehicle is tuned at today, and the value both
+     * pressure multipliers below return exactly 1.0 for. A car that does not configure a pressure carries
+     * this, so its grip and rolling resistance are bit-for-bit what they were before pressure existed:
+     * {@code NOMINAL / NOMINAL} is exactly 1.0, and {@code Math.pow(1.0, k)} is exactly 1.0. */
+    public static final double NOMINAL_TIRE_PRESSURE_BAR = 2.2;
+
+    /** How strongly pressure moves GRIP, as the exponent on the pressure ratio. Deliberately well under
+     * 1.0: a tire's contact patch does grow as it is deflated (more mechanical grip), but far less than
+     * proportionally, and this keeps a 2x under-inflation worth about +23% grip rather than +100%. */
+    public static final double TIRE_PRESSURE_GRIP_EXPONENT = 0.3;
+
+    /**
+     * MINECRAFT-445: the grip multiplier a tire at {@code pressureBar} gets, relative to one at {@link
+     * #NOMINAL_TIRE_PRESSURE_BAR}. Under-inflation enlarges the contact patch and raises grip; over-
+     * inflation shrinks it and lowers grip. Exactly 1.0 at nominal, so an unconfigured car is unchanged.
+     *
+     * <p>A non-positive or non-finite pressure returns 1.0 rather than a divide-by-zero or NaN: the
+     * config loader already clamps to a positive range, so this is the belt-and-braces guard that keeps
+     * a bad value from reaching the friction circle even if some future caller skips that clamp.
+     */
+    public static double tirePressureGripMultiplier(double pressureBar) {
+        if (!(pressureBar > 0) || !Double.isFinite(pressureBar)) {
+            return 1.0;
+        }
+        return Math.pow(NOMINAL_TIRE_PRESSURE_BAR / pressureBar, TIRE_PRESSURE_GRIP_EXPONENT);
+    }
+
+    /**
+     * MINECRAFT-445: the rolling-resistance multiplier a tire at {@code pressureBar} gets, relative to one
+     * at {@link #NOMINAL_TIRE_PRESSURE_BAR}. Inverse and first-order: a softer tire deforms more and
+     * costs more rolling drag, a harder one less. Exactly 1.0 at nominal.
+     *
+     * <p>The two multipliers deliberately pull in OPPOSITE directions for the same change, which is the
+     * real trade-off this field exists to expose: dropping pressure buys grip and pays for it in rolling
+     * drag, raising it does the reverse. Same non-positive/non-finite guard as the grip multiplier.
+     */
+    public static double tirePressureRollingMultiplier(double pressureBar) {
+        if (!(pressureBar > 0) || !Double.isFinite(pressureBar)) {
+            return 1.0;
+        }
+        return NOMINAL_TIRE_PRESSURE_BAR / pressureBar;
+    }
+
     /**
      * Anti-roll bar: a force that resists the two wheels of an axle being compressed differently.
      * @param compression this wheel's spring compression, metres (0 when airborne)

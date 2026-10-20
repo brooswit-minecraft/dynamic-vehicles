@@ -42,5 +42,6 @@ final class VehicleCarConfigFile {
         Double bumpStopTravel;
         Double bumpStopRate;
         Double rearSteerRatio;
+        Double tirePressureBar;
     }
 }

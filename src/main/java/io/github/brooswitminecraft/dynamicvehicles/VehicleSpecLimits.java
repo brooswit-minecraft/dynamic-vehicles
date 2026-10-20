@@ -68,6 +68,12 @@ final class VehicleSpecLimits {
     static final double MIN_REAR_STEER_RATIO = -1.0;
     static final double MAX_REAR_STEER_RATIO = 1.0;
 
+    /** MINECRAFT-445: tire pressure in bar. The floor is strictly positive -- both pressure multipliers
+     * divide by it -- and the range spans a genuinely flat off-road tire (0.5) to well past a loaded
+     * truck tire (8.0), around the {@link WheelMath#NOMINAL_TIRE_PRESSURE_BAR} every car ships at. */
+    static final double MIN_TIRE_PRESSURE_BAR = 0.5;
+    static final double MAX_TIRE_PRESSURE_BAR = 8.0;
+
     private VehicleSpecLimits() {}
 
     /** A non-finite value falls back to {@code fallback} so malformed config can never leak NaN/Infinity

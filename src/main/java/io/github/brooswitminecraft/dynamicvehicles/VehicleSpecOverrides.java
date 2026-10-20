@@ -201,6 +201,10 @@ final class VehicleSpecOverrides {
 
         VehicleSpec.SuspensionTuning suspensionTuning = applyTireKit(file.tireKit, stock, dampingRate);
         VehicleSpec.SteeringTuning steeringTuning = applySteering(file.tireKit, stock);
+        double tirePressureBar = file.tireKit == null || file.tireKit.tirePressureBar == null
+                ? stock.tirePressureBar()
+                : VehicleSpecLimits.clamp(file.tireKit.tirePressureBar, VehicleSpecLimits.MIN_TIRE_PRESSURE_BAR,
+                        VehicleSpecLimits.MAX_TIRE_PRESSURE_BAR, stock.tirePressureBar());
 
         return new VehicleSpec(stock.halfX(), stock.halfY(), stock.halfZ(),
                 stock.mounts(), stock.wheelRadius(), stock.wheelWidth(),
@@ -211,7 +215,8 @@ final class VehicleSpecOverrides {
                 stock.seatY(), stock.seatZ(),
                 stock.looseGrip(), rollingScale,
                 stock.tireTuning(), stock.downforceGripPerSpeed(), antiRollScale,
-                stock.seats(), vehicleTuning, handbrakeScale, suspensionTuning, steeringTuning);
+                stock.seats(), vehicleTuning, handbrakeScale, suspensionTuning, steeringTuning,
+                tirePressureBar);
     }
 
     /**

@@ -692,19 +692,33 @@ final class SableCarBody {
                 body.applyImpulseAtPoint(contactLocal, suspensionLocal);
                 Vector3d horizontalLocal = new Vector3d(impulseLocal).sub(suspensionLocal);
                 double tireY = CarConfig.TIRE_FORCE_AT_CONTACT.get() ? contactLocal.y : BODY_TIRE_FORCE_HEIGHT;
-                // MINECRAFT-445: anti-dive/anti-squat geometry raises where that horizontal force acts,
-                // shortening its moment arm about the body centre -- which is exactly what makes a real
-                // car dive or squat less. Anti-DIVE applies while this wheel's own longitudinal force
-                // opposes the car's motion, anti-SQUAT while it drives it, so a braking wheel uses
-                // anti-dive even mid-corner. Both fractions are 0.0 for every roster car, and the blend
-                // returns contactLocal.y unchanged at 0.0, so this is bit-for-bit the previous line
-                // for them.
+                // MINECRAFT-445 review fix (PR184 #issuecomment-6282623425): anti-dive/anti-squat is
+                // documented as a LONGITUDINAL (braking/drive) geometry effect only, but horizontalLocal
+                // bundles the lateral tire force too -- applying the blended height to all of it would
+                // have let a configured pitch fraction silently change CORNERING roll transfer as well,
+                // which this ticket never claimed and never tested. Only the longitudinal component (tire
+                // .longitudinal() plus the wheel-spin recovery reaction, both along `forward`) gets the
+                // anti-dive/anti-squat height; the lateral component (tire.lateral() along `lateral`)
+                // keeps applying at the ORIGINAL, unblended tireY regardless of pitch tuning.
+                //
+                // Anti-DIVE applies while this wheel's own longitudinal force opposes the car's motion,
+                // anti-SQUAT while it drives it, so a braking wheel uses anti-dive even mid-corner. Both
+                // fractions are 0.0 for every roster car; at 0.0 the blend returns tireY unchanged and the
+                // split below still sums to exactly horizontalLocal applied at exactly tireY, so this
+                // stays bit-for-bit the single pre-split call for them.
                 boolean opposingMotion = tire.longitudinal() * forwardSpeed < 0;
                 double antiFraction = opposingMotion
                         ? spec.pitchTuning().antiDive()
                         : spec.pitchTuning().antiSquat();
-                tireY = WheelMath.pitchResistApplicationHeight(tireY, BODY_TIRE_FORCE_HEIGHT, antiFraction);
-                body.applyImpulseAtPoint(new Vector3d(local.x, tireY, local.z), horizontalLocal);
+                if (antiFraction == 0.0) {
+                    body.applyImpulseAtPoint(new Vector3d(local.x, tireY, local.z), horizontalLocal);
+                } else {
+                    double pitchTireY = WheelMath.pitchResistApplicationHeight(tireY, BODY_TIRE_FORCE_HEIGHT, antiFraction);
+                    Vector3d lateralLocal = inverse.transform(new Vector3d(lateral).mul(tire.lateral() * subDt));
+                    Vector3d longitudinalLocal = new Vector3d(horizontalLocal).sub(lateralLocal);
+                    body.applyImpulseAtPoint(new Vector3d(local.x, pitchTireY, local.z), longitudinalLocal);
+                    body.applyImpulseAtPoint(new Vector3d(local.x, tireY, local.z), lateralLocal);
+                }
             }
             // Re-read velocity so the next sub-step's forces respond to the impulses just applied above -
             // see the note before this loop on why this, and not pose, is what makes sub-stepping matter.

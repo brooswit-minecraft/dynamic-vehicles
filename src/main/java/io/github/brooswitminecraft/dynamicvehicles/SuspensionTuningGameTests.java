@@ -616,6 +616,122 @@ public final class SuspensionTuningGameTests {
         double peak = Double.NEGATIVE_INFINITY;
     }
 
+    /**
+     * MINECRAFT-445 review fix (PR184 #issuecomment-6282623425): anti-dive/anti-squat is documented as a
+     * LONGITUDINAL geometry effect only -- it must not also change how much the car rolls while cornering.
+     * Before this fix, {@code SableCarBody.tick} raised the application height of a wheel's ENTIRE
+     * horizontal impulse (longitudinal AND lateral bundled together) by the anti-dive/anti-squat fraction,
+     * which would have shortened the lateral moment arm too and silently reduced roll transfer under
+     * cornering for any car that configured pitch resistance -- a claim this ticket never made and never
+     * tested. This fixture brakes AND steers at once (so both the longitudinal and lateral tire forces this
+     * fixture is supposed to tell apart are actually present simultaneously) and asserts the LEFT-RIGHT
+     * (roll) compression gap is materially UNCHANGED by full anti-dive, even though {@link
+     * #fullAntiDiveDivesLessUnderBrakingThanTheStockControl} already proves the FRONT-REAR (dive) gap is
+     * reduced by the same configuration. Same peak-over-window technique as that fixture, for the same
+     * reason: it removes any dependence on which tick is sampled.
+     */
+    @GameTest(template = "settlement_test", timeoutTicks = 300, batch = "suspensionTuningAntiDiveRollIsolated")
+    public static void fullAntiDiveDoesNotChangeRollTransferWhileCorneringUnderBraking(GameTestHelper helper) {
+        pad(helper, 5);
+        pad(helper, 15);
+        CarEntity stock = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
+        CarEntity configured = spawnWithOverride(helper, FULL_ANTI_DIVE, new BlockPos(5, 3, 15));
+        stock.forceDrive(GENTLE_THROTTLE, 0.0, (int) ACCELERATE_TICKS);
+        configured.forceDrive(GENTLE_THROTTLE, 0.0, (int) ACCELERATE_TICKS);
+
+        helper.runAfterDelay(ACCELERATE_TICKS, () -> {
+            helper.assertTrue(configured.spec().pitchTuning().antiDive() == VehicleSpecLimits.MAX_PITCH_RESIST,
+                    "the configured car did not receive the antiDive override at construction: "
+                            + configured.spec().pitchTuning());
+            helper.assertTrue(horizontalSpeed(stock) > MIN_MEANINGFUL_CRUISE_SPEED,
+                    "test setup never got the stock control moving before the brake+steer window: "
+                            + horizontalSpeed(stock) + " " + where(stock));
+
+            // Brake AND steer at once: full lock, brake-only throttle, same per-input conventions the
+            // dive-only fixture and CarDrivetrainGameTests already use.
+            stock.forceDrive(-1.0, 1.0, (int) BRAKE_TICKS);
+            configured.forceDrive(-1.0, 1.0, (int) BRAKE_TICKS);
+            PeakRoll stockRoll = peakRollOverBraking(helper, stock, ACCELERATE_TICKS);
+            PeakRoll configuredRoll = peakRollOverBraking(helper, configured, ACCELERATE_TICKS);
+
+            helper.runAfterDelay(BRAKE_TICKS, () -> {
+                helper.assertTrue(stockRoll.peak > Double.NEGATIVE_INFINITY
+                                && configuredRoll.peak > Double.NEGATIVE_INFINITY,
+                        "a car was never sampled during the brake+steer window -- its Sable body did not "
+                                + "exist on any sampled tick: stock=" + stockRoll.peak + " configured="
+                                + configuredRoll.peak);
+                helper.assertTrue(Math.abs(stockRoll.peak) > MIN_MEANINGFUL_ROLL_GAP,
+                        "the stock control never showed a meaningful left-right compression gap while "
+                                + "cornering, so this comparison would be vacuous: peak=" + stockRoll.peak
+                                + " " + where(stock));
+                double ratio = configuredRoll.peak / stockRoll.peak;
+                helper.assertTrue(ratio > MIN_UNCHANGED_ROLL_RATIO && ratio < MAX_UNCHANGED_ROLL_RATIO,
+                        "full anti-dive geometry changed the left-right (roll) compression gap while "
+                                + "cornering under braking -- its application-height blend may be reaching "
+                                + "the LATERAL tire force as well as the longitudinal one it is documented "
+                                + "to affect: stock=" + stockRoll.peak + " configured=" + configuredRoll.peak
+                                + " ratio=" + ratio);
+                helper.succeed();
+            });
+        });
+    }
+
+    /** Samples the left-minus-right mean spring compression every tick of the brake+steer window and keeps
+     * the PEAK MAGNITUDE (not signed peak: the gap can legitimately point either way depending on which
+     * side loads up under a given steer direction, and what matters here is how big it gets, not its
+     * sign). Left/right is decided the way production decides it ({@code mounts()[wheel][0] < 0.0}). */
+    private static PeakRoll peakRollOverBraking(GameTestHelper helper, CarEntity car, long fromTick) {
+        PeakRoll roll = new PeakRoll();
+        for (long tick = fromTick + 1; tick <= fromTick + BRAKE_TICKS; tick++) {
+            helper.runAtTickTime(tick, () -> {
+                if (car.sableBody() == null) {
+                    return;
+                }
+                double[] travel = SableCompat.wheelTravel(car.sableBody());
+                double[][] mounts = car.spec().mounts();
+                double leftSum = 0.0;
+                double rightSum = 0.0;
+                int leftCount = 0;
+                int rightCount = 0;
+                for (int wheel = 0; wheel < travel.length; wheel++) {
+                    if (mounts[wheel][0] < 0.0) {
+                        leftSum += travel[wheel];
+                        leftCount++;
+                    } else {
+                        rightSum += travel[wheel];
+                        rightCount++;
+                    }
+                }
+                if (leftCount > 0 && rightCount > 0) {
+                    double gap = leftSum / leftCount - rightSum / rightCount;
+                    if (Math.abs(gap) > Math.abs(roll.peak) || roll.peak == Double.NEGATIVE_INFINITY) {
+                        roll.peak = gap;
+                    }
+                }
+            });
+        }
+        return roll;
+    }
+
+    /** Mutable accumulator for {@link #peakRollOverBraking}; holds the SIGNED gap at the tick of largest
+     * magnitude, so the stock-vs-configured ratio below compares like with like rather than two peaks that
+     * could have landed on opposite signs. */
+    private static final class PeakRoll {
+        double peak = Double.NEGATIVE_INFINITY;
+    }
+
+    /** The stock control's own peak left-right gap must exceed this (metres) for the ratio comparison to
+     * be meaningful rather than dividing two near-zero numbers. */
+    private static final double MIN_MEANINGFUL_ROLL_GAP = 0.01;
+
+    /** The configured-to-stock roll-gap ratio must fall inside this band for anti-dive to count as having
+     * left cornering roll transfer alone. Wide enough to absorb ordinary run-to-run variation in a dynamic
+     * brake+steer manoeuvre, tight enough to catch the actual defect this fixture was written against (the
+     * pre-fix code raised the lateral application height by a FULL anti-dive fraction, which is not a
+     * small effect). */
+    private static final double MIN_UNCHANGED_ROLL_RATIO = 0.5;
+    private static final double MAX_UNCHANGED_ROLL_RATIO = 1.5;
+
     /** Full anti-dive and nothing else, so any difference against the control is that geometry alone. */
     private static final String FULL_ANTI_DIVE = """
             {"tireKit": {"antiDive": %s}}

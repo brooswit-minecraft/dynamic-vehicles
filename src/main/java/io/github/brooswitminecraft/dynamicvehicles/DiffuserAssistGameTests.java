@@ -3,6 +3,9 @@ package io.github.brooswitminecraft.dynamicvehicles;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.gametest.framework.GameTestInfo;
+import net.minecraft.gametest.framework.GameTestListener;
+import net.minecraft.gametest.framework.GameTestRunner;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.world.level.block.Blocks;
 import net.neoforged.neoforge.gametest.GameTestHolder;
@@ -114,16 +117,44 @@ public final class DiffuserAssistGameTests {
     private static final double KEEP_AWAKE_THROTTLE = 0.001;
     private static final int KEEP_AWAKE_TICKS = (int) INVERTED_OBSERVE_TICKS + 10;
 
-    /** Ends a fixture: discards the car first, then reports success.
+    /** Spawns a car for a fixture AND registers its cleanup in the same call, so no fixture here can own a
+     * car without also owning its disposal.
      *
      * <p>Not optional hygiene. These fixtures deliberately drop cars with no floor beneath them, so the car
-     * is still falling when the test finishes and has long since left its own structure's bounding box --
-     * which is exactly what GameTest's own post-test cleanup covers, so nothing reclaims it. Left alone it
+     * is still falling when the test ends and has long since left its own structure's bounding box -- which
+     * is exactly the region GameTest's own post-test cleanup covers, so nothing reclaims it. Left alone it
      * keeps ticking real physics in the level EVERY other test in the run shares, for as long as the run
-     * lasts. Discarding routes through {@code CarEntity#remove}, which releases the Sable body too. */
-    private static void succeedAndDiscard(GameTestHelper helper, CarEntity car) {
-        car.discard();
-        helper.succeed();
+     * lasts.
+     *
+     * <p>Cleanup is registered as a {@link GameTestListener} rather than run inline at the end of each
+     * fixture (review, PR #180): an inline call is only reached once every assertion has already passed, so
+     * a FAILING assertion or a timeout would skip it and leak the car precisely in the case where a polluted
+     * shared level does the most damage -- a failing run going on to disturb later tests. {@code testFailed}
+     * covers both of those (the framework reports a timeout through it), and discarding an entity cannot
+     * mask the failure: the result is already recorded by the time a listener runs, and this only removes
+     * the car. Discarding routes through {@code CarEntity#remove}, which releases the Sable body too. */
+    private static CarEntity spawnCarWithCleanup(GameTestHelper helper, BlockPos at) {
+        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), at);
+        helper.testInfo.addListener(new GameTestListener() {
+            @Override
+            public void testStructureLoaded(GameTestInfo info) {
+            }
+
+            @Override
+            public void testPassed(GameTestInfo info, GameTestRunner runner) {
+                car.discard();
+            }
+
+            @Override
+            public void testFailed(GameTestInfo info, GameTestRunner runner) {
+                car.discard();
+            }
+
+            @Override
+            public void testAddedForRerun(GameTestInfo previous, GameTestInfo next, GameTestRunner runner) {
+            }
+        });
+        return car;
     }
 
     /** Roll angle (radians, 0 = upright, &plusmn;&pi; = inverted) of a car's current real Sable body
@@ -181,7 +212,7 @@ public final class DiffuserAssistGameTests {
     @GameTest(template = TEMPLATE, timeoutTicks = INVERTED_TIMEOUT_TICKS)
     public static void identityDiffuserTuningLeavesAnInvertedCarInverted(GameTestHelper helper) {
         helper.setBlock(FLOOR_BLOCK, Blocks.STONE);
-        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), DROP_SPAWN);
+        CarEntity car = spawnCarWithCleanup(helper, DROP_SPAWN);
         // No setDiffuserTuningForTest call: this car's diffuserTuning() is exactly spec.diffuserTuning(),
         // VehicleSpec.CAR's own IDENTITY -- the same value every existing car ships today.
         startUpsideDown(car);
@@ -189,7 +220,7 @@ public final class DiffuserAssistGameTests {
             double roll = rollAngleRad(car);
             helper.assertTrue(Math.abs(roll) > STILL_INVERTED_ROLL_RAD,
                     "identity Diffuser tuning should not self-right an inverted car, but roll recovered to " + roll + " rad");
-            succeedAndDiscard(helper, car);
+            helper.succeed();
         });
     }
 
@@ -226,7 +257,7 @@ public final class DiffuserAssistGameTests {
      * one sign only -- e.g. a term that ignores the error's sign entirely, or a wrap-around defect that only
      * bites on one side of the convention. */
     private static void assertHeadingTurnsTowardTarget(GameTestHelper helper, double targetOffsetDeg) {
-        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), DROP_SPAWN);
+        CarEntity car = spawnCarWithCleanup(helper, DROP_SPAWN);
         helper.runAfterDelay(BODY_EXISTS_TICK, () -> {
             helper.assertTrue(car.sableBody() != null, "car's Sable body was never created on its first real tick");
             double startYaw = car.getYRot();
@@ -240,7 +271,7 @@ public final class DiffuserAssistGameTests {
                         "heading alignment should have turned the car toward its " + targetOffsetDeg
                                 + " degree target, not held still or turned away from it: errorBefore="
                                 + errorBefore + " errorAfter=" + errorAfter);
-                succeedAndDiscard(helper, car);
+                helper.succeed();
             });
         });
     }
@@ -278,7 +309,7 @@ public final class DiffuserAssistGameTests {
      * there is a real, known gap for the assist to close from the very first active tick. Run for velocity
      * on BOTH sides of the car's own facing, for the same reason the heading pair above does. */
     private static void assertTrajectoryTurnsTowardVelocity(GameTestHelper helper, double vx) {
-        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), DROP_SPAWN);
+        CarEntity car = spawnCarWithCleanup(helper, DROP_SPAWN);
         helper.runAfterDelay(BODY_EXISTS_TICK, () -> {
             helper.assertTrue(car.sableBody() != null, "car's Sable body was never created on its first real tick");
             car.addLinearVelocityForTest(vx, 0.0, 0.0);
@@ -294,7 +325,7 @@ public final class DiffuserAssistGameTests {
                         "trajectory alignment should have turned the car's nose toward its own real velocity "
                                 + "direction (vx=" + vx + "), not held still or turned away from it: errorBefore="
                                 + errorBefore + " errorAfter=" + errorAfter);
-                succeedAndDiscard(helper, car);
+                helper.succeed();
             });
         });
     }
@@ -351,7 +382,7 @@ public final class DiffuserAssistGameTests {
      * landing-tick question comes up. Run nose-up AND nose-down, for the same reason the heading/trajectory
      * pairs above are run on both sides. */
     private static void assertPitchReturnsTowardLevel(GameTestHelper helper, float startPitchRad) {
-        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), DROP_SPAWN);
+        CarEntity car = spawnCarWithCleanup(helper, DROP_SPAWN);
         car.setDiffuserTuningForTest(pitchOnly(ASSIST_MAX_TORQUE, PITCH_LANDING_HORIZON_SECONDS, ASSIST_GAIN, ASSIST_DAMPING));
         startTilted(car, new Quaternionf().rotateX(startPitchRad));
         helper.runAfterDelay(BODY_EXISTS_TICK, () -> {
@@ -363,7 +394,7 @@ public final class DiffuserAssistGameTests {
                 helper.assertTrue(pitchAfter < pitchBefore - MIN_TILT_RECOVERY_RAD,
                         "pitch landing help should have turned the car back toward level, not held still or "
                                 + "tipped further: pitchBefore=" + pitchBefore + " pitchAfter=" + pitchAfter);
-                succeedAndDiscard(helper, car);
+                helper.succeed();
             });
         });
     }
@@ -396,7 +427,7 @@ public final class DiffuserAssistGameTests {
      * no landing in the window, so there is no landing-tick question either. Both roll directions, same
      * reasoning as the heading/pitch/trajectory pairs above. */
     private static void assertRollReturnsTowardUpright(GameTestHelper helper, float startRollRad) {
-        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), DROP_SPAWN);
+        CarEntity car = spawnCarWithCleanup(helper, DROP_SPAWN);
         car.setDiffuserTuningForTest(rollOnly(ASSIST_MAX_TORQUE, ASSIST_GAIN, ASSIST_DAMPING));
         startTilted(car, new Quaternionf().rotateZ(startRollRad));
         helper.runAfterDelay(BODY_EXISTS_TICK, () -> {
@@ -408,7 +439,7 @@ public final class DiffuserAssistGameTests {
                 helper.assertTrue(rollAfter < rollBefore - MIN_TILT_RECOVERY_RAD,
                         "roll self-righting should have rolled the car back toward upright, not held still or "
                                 + "banked further: rollBefore=" + rollBefore + " rollAfter=" + rollAfter);
-                succeedAndDiscard(helper, car);
+                helper.succeed();
             });
         });
     }
@@ -437,7 +468,7 @@ public final class DiffuserAssistGameTests {
     @GameTest(template = TEMPLATE, timeoutTicks = TELEMETRY_TIMEOUT_TICKS)
     public static void describeReportsEachDiffuserAssistsOwnTorqueUnderItsOwnKey(GameTestHelper helper) {
         helper.setBlock(FLOOR_BLOCK, Blocks.STONE);
-        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), ON_FLOOR_SPAWN);
+        CarEntity car = spawnCarWithCleanup(helper, ON_FLOOR_SPAWN);
         car.setDiffuserTuningForTest(VehicleSpec.DiffuserTuning.IDENTITY);
         helper.runAfterDelay(TELEMETRY_TICKS, () -> {
             String description = SableCompat.describe(car.sableBody(), CarPhysics.Gear.AUTOMATIC, 0.0);
@@ -445,7 +476,7 @@ public final class DiffuserAssistGameTests {
                 helper.assertTrue(description.contains(key),
                         "describe() telemetry is missing its own \"" + key + "\" key, saw: " + description);
             }
-            succeedAndDiscard(helper, car);
+            helper.succeed();
         });
     }
 

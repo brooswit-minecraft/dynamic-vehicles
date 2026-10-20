@@ -591,4 +591,102 @@ public final class TownResidentAllocationHandlerGameTests {
                 "the orphaned Builder's old cross-dimension claim ticket must actually be released, not permanently leaked");
         helper.succeed();
     }
+
+    /** [Review round 20, finding #1] {@code PoiManager} tracks only a free-ticket COUNT per position,
+     *  never which entity holds it - so a stale HOME memory that happens to point at a bed NOW
+     *  genuinely held by a DIFFERENT villager must never be read as still this villager's own, and
+     *  reassigning this villager elsewhere must never release the OTHER villager's real reservation.
+     *  Uses {@link TownResidentAllocationHandler#allocateHomeIfNeeded} (production ownership
+     *  recording) for the real resident, then manually seeds a SECOND villager's stale memory
+     *  pointing at that exact same, now-rightfully-occupied bed - the data-corruption path the
+     *  previous unticketed-memory test (which only covers the fully-free case) cannot catch. */
+    @GameTest(template = "settlement_test")
+    public static void aStaleHomeMemoryNowOwnedByAnotherVillagerIsNeverStolenOrTreatedAsValid(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos bedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        placeValidBed(helper, bedHead);
+        BlockPos absoluteBedHead = helper.absolutePos(bedHead);
+        // A SECOND, genuinely different vacant bed - without this, an impostor correctly rejected
+        // from the stolen bed would simply have no alternative at all, leaving its stale memory
+        // unchanged (nothing to overwrite it with) and making the rejection itself unobservable.
+        // With a real alternative present, actually ending up reassigned HERE is the positive proof
+        // the stale memory was genuinely treated as invalid, not merely left alone by coincidence.
+        BlockPos secondBedHead = ANCHOR.offset(OLD_HOME_OFFSET.getX(), OLD_HOME_OFFSET.getY(), OLD_HOME_OFFSET.getZ());
+        placeValidBed(helper, secondBedHead);
+        BlockPos absoluteSecondBedHead = helper.absolutePos(secondBedHead);
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        markTownOwned(helper, storage, absoluteBedHead);
+        markTownOwned(helper, storage, absoluteSecondBedHead);
+        BlockPos townCenter = helper.absolutePos(ANCHOR);
+
+        Villager rightfulOwner = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), rightfulOwner, townCenter, region, storage);
+        helper.assertTrue(rightfulOwner.getBrain().getMemory(MemoryModuleType.HOME).isPresent(),
+                "test setup: the rightful owner must actually be assigned one of the two beds by production code first");
+        // Whichever of the two beds production code actually picked (search order between two
+        // equally-eligible candidates is not this test's concern) - the impostor's stale memory
+        // targets THIS exact one, and the other is the real, genuinely vacant alternative it must
+        // end up reassigned to instead.
+        BlockPos rightfulOwnerHome = rightfulOwner.getBrain().getMemory(MemoryModuleType.HOME).get().pos();
+        BlockPos theOtherVacantBed = rightfulOwnerHome.equals(absoluteBedHead) ? absoluteSecondBedHead : absoluteBedHead;
+
+        // A THIRD, unrelated villager whose own memory also (incorrectly/stalely) points at the
+        // rightful owner's exact bed - standing in for some earlier, now-outdated state that was
+        // never cleared.
+        Villager impostor = spawnVillager(helper, ANCHOR.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+        impostor.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(helper.getLevel().dimension(), rightfulOwnerHome));
+
+        TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), impostor, townCenter, region, storage);
+
+        helper.assertTrue(impostor.getBrain().getMemory(MemoryModuleType.HOME)
+                        .map(gp -> gp.pos().equals(theOtherVacantBed)).orElse(false),
+                "a villager must never be treated as housed at a bed this mod's own records show belongs to someone else, and must be reassigned the real, genuinely vacant alternative instead");
+        helper.assertTrue(helper.getLevel().getPoiManager().getFreeTickets(rightfulOwnerHome) == 0,
+                "the rightful owner's ticket must never be stolen/released just because a different villager's stale memory also pointed at it");
+        helper.assertTrue(rightfulOwner.getBrain().getMemory(MemoryModuleType.HOME)
+                        .map(gp -> gp.pos().equals(rightfulOwnerHome)).orElse(false),
+                "the rightful owner's own HOME memory must be completely unaffected by the impostor's reconciliation");
+        helper.succeed();
+    }
+
+    /** [Review round 20, finding #2] When the SOLE eligible owned fixture in range is the exact same
+     *  one a villager's own stale (since-freed) memory already points to, reacquiring it must not
+     *  immediately release the ticket this same call just took - and this must hold with a SECOND
+     *  resident also present in the search space (not only in a single-villager world), proving the
+     *  second resident is correctly left unhoused (nothing is left to give it) rather than the first
+     *  resident's own ticket being wrongly freed out from under it. */
+    @GameTest(template = "settlement_test")
+    public static void reacquiringTheSoleEligibleFixtureAlreadyPointedToDoesNotFreeItsOwnNewTicket(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos bedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        placeValidBed(helper, bedHead); // registered, but its ticket is never taken - fully free
+        BlockPos absoluteBedHead = helper.absolutePos(bedHead);
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        markTownOwned(helper, storage, absoluteBedHead);
+        BlockPos townCenter = helper.absolutePos(ANCHOR);
+
+        Villager first = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        // A stale memory pointing at the SOLE eligible bed, whose ticket is NOT currently held -
+        // exactly the sequence that previously caused a self-inflicted immediate release.
+        first.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(helper.getLevel().dimension(), absoluteBedHead));
+        // A second real resident, also unhoused, also searching the same space - proving the fix
+        // holds with more than one villager present, not merely in isolation.
+        Villager second = spawnVillager(helper, ANCHOR.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+
+        TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), first, townCenter, region, storage);
+        helper.assertTrue(helper.getLevel().getPoiManager().getFreeTickets(absoluteBedHead) == 0,
+                "reacquiring the sole eligible fixture it already pointed to must leave its own ticket actually held, not immediately freed again");
+        helper.assertTrue(first.getBrain().getMemory(MemoryModuleType.HOME)
+                        .map(gp -> gp.pos().equals(absoluteBedHead)).orElse(false),
+                "the first resident must end up genuinely assigned the one bed that exists");
+
+        TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), second, townCenter, region, storage);
+        helper.assertTrue(second.getBrain().getMemory(MemoryModuleType.HOME).isEmpty(),
+                "the second resident must correctly end up unhoused - the sole bed is genuinely, validly taken, not freed up for it by the first resident's own self-release bug");
+        helper.assertTrue(helper.getLevel().getPoiManager().getFreeTickets(absoluteBedHead) == 0,
+                "the sole bed's ticket must still be held after reconciling the second resident too");
+        helper.succeed();
+    }
 }

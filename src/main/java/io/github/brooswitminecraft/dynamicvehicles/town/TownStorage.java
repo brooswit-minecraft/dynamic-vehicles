@@ -15,6 +15,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * Server-wide persistence for Dynamic Towns: one {@link TownResourceStore} per town, plus the
@@ -63,6 +64,7 @@ public final class TownStorage extends SavedData {
     private final Map<String, BlockPos> pendingCampfires = new HashMap<>();
     private final Map<String, Integer> siteFloors = new HashMap<>();
     private final Set<String> blockedCells = new HashSet<>();
+    private final Map<String, UUID> reservationOwners = new HashMap<>();
 
     public static TownStorage of(MinecraftServer server) {
         return server.overworld().getDataStorage()
@@ -104,6 +106,41 @@ public final class TownStorage extends SavedData {
      *  region. */
     public boolean isAnyCellPlaced(ResourceKey<Level> dimension, BlockPos pos) {
         return placedCells.containsKey(cellKey(dimension, pos));
+    }
+
+    /**
+     * [Review round 20, finding #1] {@code PoiManager} itself tracks only a free-ticket COUNT per
+     * position - never which entity holds one - so "this POI's ticket is occupied" can never by
+     * itself prove "occupied BY villagerId". This is Dynamic Towns' own, separate record of exactly
+     * which villager a reservation THIS MOD granted actually belongs to, kept only for positions this
+     * mod itself has reserved (see {@link TownResidentAllocationHandler}/{@code TownConstructionService}
+     * callers) - a reservation this mod never tracked at all (pre-existing/vanilla-origin) is simply
+     * absent here, NOT evidence of anyone's ownership either way.
+     *
+     * <p>{@code true} only when a DIFFERENT villager is positively, currently on record as this
+     * reservation's owner - the one case this mod can actually prove makes reusing or releasing
+     * {@code pos} on {@code villagerId}'s behalf unsafe. An absent record (never tracked, or already
+     * cleared) deliberately returns {@code false}: there is no positive evidence it belongs to
+     * anyone else, so treating it as still safe to validate/release preserves this mod's existing,
+     * already-reviewed leak-prevention behavior for every reservation that predates this tracking.
+     */
+    public boolean isReservedByADifferentVillager(ResourceKey<Level> dimension, BlockPos pos, UUID villagerId) {
+        UUID owner = reservationOwners.get(cellKey(dimension, pos));
+        return owner != null && !owner.equals(villagerId);
+    }
+
+    /** Records that {@code villagerId} is now the one this mod granted the reservation at
+     *  {@code pos} to - called exactly once, right after this mod's own code actually secures a new
+     *  ticket there, so a later stale-memory check against a DIFFERENT villager has something real
+     *  to compare against. */
+    public void setReservationOwner(ResourceKey<Level> dimension, BlockPos pos, UUID villagerId) {
+        reservationOwners.put(cellKey(dimension, pos), villagerId);
+    }
+
+    /** Clears {@code pos}'s ownership record - called once its actual ticket is released, so a
+     *  future occupant never gets read as still "owned" by whoever held it before. */
+    public void clearReservationOwner(ResourceKey<Level> dimension, BlockPos pos) {
+        reservationOwners.remove(cellKey(dimension, pos));
     }
 
     /** Records that {@code pos} in {@code dimension} has now actually been placed and paid for by
@@ -252,6 +289,15 @@ public final class TownStorage extends SavedData {
             blockedList.add(entryTag);
         }
         tag.put("BlockedCells", blockedList);
+
+        ListTag reservationOwnerList = new ListTag();
+        for (Map.Entry<String, UUID> entry : reservationOwners.entrySet()) {
+            CompoundTag entryTag = new CompoundTag();
+            entryTag.putString("Key", entry.getKey());
+            entryTag.putUUID("Owner", entry.getValue());
+            reservationOwnerList.add(entryTag);
+        }
+        tag.put("ReservationOwners", reservationOwnerList);
         return tag;
     }
 
@@ -297,6 +343,11 @@ public final class TownStorage extends SavedData {
         ListTag blockedList = tag.getList("BlockedCells", Tag.TAG_COMPOUND);
         for (int i = 0; i < blockedList.size(); i++) {
             storage.blockedCells.add(blockedList.getCompound(i).getString("Key"));
+        }
+        ListTag reservationOwnerList = tag.getList("ReservationOwners", Tag.TAG_COMPOUND);
+        for (int i = 0; i < reservationOwnerList.size(); i++) {
+            CompoundTag entryTag = reservationOwnerList.getCompound(i);
+            storage.reservationOwners.put(entryTag.getString("Key"), entryTag.getUUID("Owner"));
         }
         return storage;
     }

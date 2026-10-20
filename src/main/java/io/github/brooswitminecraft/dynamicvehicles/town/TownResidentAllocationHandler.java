@@ -96,7 +96,8 @@ public final class TownResidentAllocationHandler {
                 if (hasActiveBuilderClaim(level, villager)) {
                     continue;
                 }
-                releaseOldReservation(level, villager.getBrain().getMemory(MemoryModuleType.JOB_SITE));
+                releaseOldReservation(level, storage, villager, villager.getBrain().getMemory(MemoryModuleType.JOB_SITE),
+                        Optional.empty());
                 villager.getBrain().eraseMemory(MemoryModuleType.JOB_SITE);
                 villager.setVillagerData(villager.getVillagerData().setProfession(VillagerProfession.NONE));
             }
@@ -123,14 +124,16 @@ public final class TownResidentAllocationHandler {
      *  villager's OWN CURRENT {@code region} - i.e. nothing needs to change. A memory pointing at a
      *  different dimension, at a position whose POI record is gone, at one outside this villager's
      *  current region (round 19, finding #1: a resident that has physically moved to a different
-     *  founded town must not keep reading its OLD town's still-intact fixture as valid forever), or
-     *  at one whose ticket is not actually held at all (an unticketed memory - the reservation was
-     *  released by something else without the memory itself being updated) is treated as "needs a
-     *  new one". */
-    private static boolean hasValidHome(ServerLevel level, Villager villager, RegionCoord region) {
+     *  founded town must not keep reading its OLD town's still-intact fixture as valid forever), at
+     *  one whose ticket is not actually held at all (an unticketed memory - the reservation was
+     *  released by something else without the memory itself being updated), or at one this mod's own
+     *  records show is now actually held by a DIFFERENT villager (round 20, finding #1 - occupancy
+     *  alone never proves it is still THIS villager's) is treated as "needs a new one". */
+    private static boolean hasValidHome(ServerLevel level, Villager villager, RegionCoord region, TownStorage storage) {
         return villager.getBrain().getMemory(MemoryModuleType.HOME)
                 .filter(home -> home.dimension().equals(level.dimension()))
                 .filter(home -> inRegion(home.pos(), region))
+                .filter(home -> !storage.isReservedByADifferentVillager(level.dimension(), home.pos(), villager.getUUID()))
                 .map(home -> level.getPoiManager().exists(home.pos(), type -> type.is(PoiTypes.HOME))
                         && isTicketHeld(level, home.pos()))
                 .orElse(false);
@@ -138,7 +141,7 @@ public final class TownResidentAllocationHandler {
 
     static void allocateHomeIfNeeded(ServerLevel level, Villager villager, BlockPos townCenter, RegionCoord region,
             TownStorage storage) {
-        if (hasValidHome(level, villager, region)) {
+        if (hasValidHome(level, villager, region, storage)) {
             return;
         }
         Optional<GlobalPos> oldHome = villager.getBrain().getMemory(MemoryModuleType.HOME);
@@ -147,12 +150,17 @@ public final class TownResidentAllocationHandler {
                         (type, pos) -> inRegion(pos, region) && storage.isAnyCellPlaced(level.dimension(), pos),
                         townCenter, TownConstants.RESIDENT_ALLOCATION_SEARCH_RADIUS)
                 .ifPresent(bedPos -> {
-                    // [Review round 18, finding #2] Only now that the new home is actually secured
-                    // does the old one (if any - stale, wrong-dimension, or simply superseded) get
-                    // released, resolved against ITS OWN actual level - never silently overwritten,
-                    // permanently leaking whatever reservation it still held.
-                    releaseOldReservation(level, oldHome);
-                    villager.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), bedPos));
+                    GlobalPos newHome = GlobalPos.of(level.dimension(), bedPos);
+                    // [Review round 18, finding #2 / round 20, finding #1] Only now that the new home
+                    // is actually secured does the old one (if any - stale, wrong-dimension, or
+                    // simply superseded) get released, resolved against ITS OWN actual level and
+                    // against this mod's OWN ownership record - never silently overwritten
+                    // (permanently leaking whatever reservation it still held), and never released
+                    // when it is the exact SAME reservation just re-acquired (round 20, finding #2:
+                    // reacquiring the sole eligible fixture must never immediately free it again).
+                    releaseOldReservation(level, storage, villager, oldHome, Optional.of(newHome));
+                    storage.setReservationOwner(level.dimension(), bedPos, villager.getUUID());
+                    villager.getBrain().setMemory(MemoryModuleType.HOME, newHome);
                 });
     }
 
@@ -160,10 +168,11 @@ public final class TownResidentAllocationHandler {
      *  memory resolves to a POI record in THIS dimension, in the villager's OWN CURRENT
      *  {@code region} (round 19, finding #1: a relocated resident must not keep its old town's
      *  workstation forever), whose TYPE actually matches that profession - not merely "some POI
-     *  exists there" (round 18, finding #2) - and whose ticket is actually held, not merely present
-     *  (round 19, finding #1: an unticketed memory is not really "employed" there). {@code NONE}
-     *  never counts as "already has a workplace", regardless of its memory. */
-    private static boolean hasValidWorkplace(ServerLevel level, Villager villager, RegionCoord region) {
+     *  exists there" (round 18, finding #2) - whose ticket is actually held, not merely present
+     *  (round 19, finding #1: an unticketed memory is not really "employed" there), and that this
+     *  mod's own records do not show as now belonging to a DIFFERENT villager (round 20, finding
+     *  #1). {@code NONE} never counts as "already has a workplace", regardless of its memory. */
+    private static boolean hasValidWorkplace(ServerLevel level, Villager villager, RegionCoord region, TownStorage storage) {
         VillagerProfession profession = villager.getVillagerData().getProfession();
         if (profession == VillagerProfession.NONE) {
             return false;
@@ -171,6 +180,7 @@ public final class TownResidentAllocationHandler {
         return villager.getBrain().getMemory(MemoryModuleType.JOB_SITE)
                 .filter(site -> site.dimension().equals(level.dimension()))
                 .filter(site -> inRegion(site.pos(), region))
+                .filter(site -> !storage.isReservedByADifferentVillager(level.dimension(), site.pos(), villager.getUUID()))
                 .map(site -> level.getPoiManager().getType(site.pos())
                         .map(type -> profession.heldJobSite().test(type))
                         .orElse(false)
@@ -180,7 +190,7 @@ public final class TownResidentAllocationHandler {
 
     static void allocateWorkplaceIfNeeded(ServerLevel level, Villager villager, BlockPos townCenter, RegionCoord region,
             TownStorage storage) {
-        if (hasValidWorkplace(level, villager, region)) {
+        if (hasValidWorkplace(level, villager, region, storage)) {
             return;
         }
         PoiManager poiManager = level.getPoiManager();
@@ -220,12 +230,15 @@ public final class TownResidentAllocationHandler {
         VillagerProfession finalAssignedProfession = assignedProfession;
         Optional<GlobalPos> oldJobSite = villager.getBrain().getMemory(MemoryModuleType.JOB_SITE);
         workstationPos.ifPresent(acquiredPos -> {
-            // [Review round 18, finding #2] Only now that the new workstation is actually secured
-            // does the old job-site reservation (if any) get released, resolved against ITS OWN
-            // actual level - never silently overwritten, permanently leaking whatever it still held.
-            releaseOldReservation(level, oldJobSite);
+            GlobalPos newJobSite = GlobalPos.of(level.dimension(), acquiredPos);
+            // [Review round 18, finding #2 / round 20, findings #1-2] Only now that the new
+            // workstation is actually secured does the old job-site reservation (if any) get
+            // released, resolved against ITS OWN actual level, this mod's own ownership record, and
+            // never against the exact SAME reservation just re-acquired.
+            releaseOldReservation(level, storage, villager, oldJobSite, Optional.of(newJobSite));
+            storage.setReservationOwner(level.dimension(), acquiredPos, villager.getUUID());
             villager.setVillagerData(villager.getVillagerData().setProfession(finalAssignedProfession));
-            villager.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), acquiredPos));
+            villager.getBrain().setMemory(MemoryModuleType.JOB_SITE, newJobSite);
         });
     }
 
@@ -251,16 +264,41 @@ public final class TownResidentAllocationHandler {
     /** Releases a previously-held ticket, if any, resolved against ITS OWN actual {@link ServerLevel}
      *  (via {@link net.minecraft.server.MinecraftServer#getLevel}) - a same-position release call
      *  made against the WRONG level's {@link PoiManager} would silently do nothing, permanently
-     *  leaking a cross-dimension reservation with no memory left to ever release it from. */
-    private static void releaseOldReservation(ServerLevel level, Optional<GlobalPos> old) {
+     *  leaking a cross-dimension reservation with no memory left to ever release it from.
+     *
+     * <p>[Review round 20] Two further guards beyond existence:
+     * <ul>
+     *   <li>finding #1 - never released when this mod's own records show it is now actually held by
+     *       a DIFFERENT villager: {@code PoiManager} occupancy alone is not proof it is still
+     *       {@code villager}'s own, and releasing another villager's genuinely-held reservation would
+     *       evict/strand its real occupant.</li>
+     *   <li>finding #2 - never released when it is the EXACT SAME reservation as {@code newReservation}
+     *       (the one just secured this same call): re-acquiring the sole eligible fixture (a stale,
+     *       since-freed memory pointing at the only vacancy available) must not immediately free the
+     *       ticket it just took.</li>
+     * </ul>
+     * The ownership record itself is cleared on an actual release, so a later occupant is never
+     * read as still "owned" by whoever held it before. */
+    private static void releaseOldReservation(ServerLevel level, TownStorage storage, Villager villager,
+            Optional<GlobalPos> old, Optional<GlobalPos> newReservation) {
         old.ifPresent(globalPos -> {
+            if (newReservation.map(globalPos::equals).orElse(false)) {
+                return;
+            }
             ServerLevel oldLevel = globalPos.dimension().equals(level.dimension())
                     ? level : level.getServer().getLevel(globalPos.dimension());
-            if (oldLevel != null && oldLevel.getPoiManager().exists(globalPos.pos(), type -> true)) {
+            if (oldLevel == null) {
+                // That dimension no longer exists/isn't loaded - there is no PoiManager left to
+                // release anything from; nothing further can be done safely.
+                return;
+            }
+            if (storage.isReservedByADifferentVillager(globalPos.dimension(), globalPos.pos(), villager.getUUID())) {
+                return;
+            }
+            if (oldLevel.getPoiManager().exists(globalPos.pos(), type -> true)) {
                 oldLevel.getPoiManager().release(globalPos.pos());
             }
-            // oldLevel == null: that dimension no longer exists/isn't loaded - there is no
-            // PoiManager left to release anything from; nothing further can be done safely.
+            storage.clearReservationOwner(globalPos.dimension(), globalPos.pos());
         });
     }
 }

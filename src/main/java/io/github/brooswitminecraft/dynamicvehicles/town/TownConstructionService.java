@@ -395,7 +395,7 @@ public final class TownConstructionService {
             // naturally retries, with no separate pending-handoff bookkeeping needed at all.
             Optional<ReservedHandoff> reservedHandoff = Optional.empty();
             if (pos.equals(campfire)) {
-                reservedHandoff = tryReserveHandoffDestinations(level, campfire, floorY, kind, finalProfession);
+                reservedHandoff = tryReserveHandoffDestinations(level, storage, claimant, campfire, floorY, kind, finalProfession);
                 if (reservedHandoff.isEmpty()) {
                     continue;
                 }
@@ -408,7 +408,7 @@ public final class TownConstructionService {
                 // placement attempt will either close the campfire with this SAME reservation once
                 // it finally lands, or this loop runs again from scratch next tick.
                 if (reservedHandoff.isPresent()) {
-                    releaseReservedHandoff(level, reservedHandoff.get());
+                    releaseReservedHandoff(level, storage, reservedHandoff.get());
                 }
                 continue;
             }
@@ -420,7 +420,7 @@ public final class TownConstructionService {
             if (reservedHandoff.isPresent()) {
                 // The campfire closure just landed with every destination already secured - the
                 // site is now genuinely, completely finished.
-                commitClaimantLifecycle(level, claimant, finalProfession, reservedHandoff.get());
+                commitClaimantLifecycle(level, storage, claimant, finalProfession, reservedHandoff.get());
                 // The persisted floor commitment has served its purpose once the site is actually done.
                 storage.clearFloor(siteOwner);
             }
@@ -454,8 +454,9 @@ public final class TownConstructionService {
      *         one is contested - in which case nothing was committed, nothing stays reserved, and
      *         the caller must leave the campfire itself unclosed so a later tick naturally retries.
      */
-    private static Optional<ReservedHandoff> tryReserveHandoffDestinations(ServerLevel level, BlockPos campfire, int floorY,
-            TownBuildingTemplates.Kind kind, Optional<VillagerProfession> finalProfession) {
+    private static Optional<ReservedHandoff> tryReserveHandoffDestinations(ServerLevel level, TownStorage storage,
+            Villager claimant, BlockPos campfire, int floorY, TownBuildingTemplates.Kind kind,
+            Optional<VillagerProfession> finalProfession) {
         boolean needsWorkstation = finalProfession.isPresent();
         boolean needsBed = kind == TownBuildingTemplates.Kind.RESIDENTIAL || kind == TownBuildingTemplates.Kind.COMMERCIAL
                 || kind == TownBuildingTemplates.Kind.INDUSTRIAL;
@@ -463,14 +464,14 @@ public final class TownConstructionService {
                 ? TownBuildingTemplates.workstationPosition(campfire.getX(), floorY, campfire.getZ()) : null;
         BlockPos bedPos = needsBed ? TownBuildingTemplates.bedPosition(campfire.getX(), floorY, campfire.getZ()) : null;
 
-        boolean workstationReserved = !needsWorkstation || acquirePoiTicket(level, workstationPos);
-        boolean bedReserved = !needsBed || acquirePoiTicket(level, bedPos);
+        boolean workstationReserved = !needsWorkstation || acquirePoiTicket(level, storage, claimant, workstationPos);
+        boolean bedReserved = !needsBed || acquirePoiTicket(level, storage, claimant, bedPos);
         if (!workstationReserved || !bedReserved) {
             if (workstationReserved && needsWorkstation) {
-                releasePoiTicket(level, workstationPos);
+                releasePoiTicket(level, storage, workstationPos);
             }
             if (bedReserved && needsBed) {
-                releasePoiTicket(level, bedPos);
+                releasePoiTicket(level, storage, bedPos);
             }
             return Optional.empty();
         }
@@ -498,7 +499,7 @@ public final class TownConstructionService {
      * extends already was: town-wide allocation of beds/workplaces across OTHER residents (not the
      * site's own claimant) remains a separate, larger, explicitly out-of-scope item.
      */
-    private static void commitClaimantLifecycle(ServerLevel level, Villager claimant,
+    private static void commitClaimantLifecycle(ServerLevel level, TownStorage storage, Villager claimant,
             Optional<VillagerProfession> finalProfession, ReservedHandoff reserved) {
         claimant.getBrain().eraseMemory(MemoryModuleType.JOB_SITE);
         // Reset XP/level on EVERY path, not only a real handoff - stale Builder XP/level must never
@@ -524,11 +525,18 @@ public final class TownConstructionService {
             claimant.getBrain().getMemory(MemoryModuleType.HOME).ifPresent(old -> {
                 ServerLevel oldLevel = old.dimension().equals(level.dimension())
                         ? level : level.getServer().getLevel(old.dimension());
-                if (oldLevel != null) {
-                    releasePoiTicket(oldLevel, old.pos());
+                boolean sameAsNewReservation = old.dimension().equals(level.dimension()) && old.pos().equals(reserved.bedPos());
+                // [Review round 20, finding #1] Never released when this mod's own records show it
+                // is now actually held by a DIFFERENT villager - occupancy alone is not proof it is
+                // still this claimant's own.
+                boolean knownDifferentOwner = storage.isReservedByADifferentVillager(old.dimension(), old.pos(), claimant.getUUID());
+                if (oldLevel != null && !sameAsNewReservation && !knownDifferentOwner) {
+                    releasePoiTicket(oldLevel, storage, old.pos());
                 }
                 // oldLevel == null: that dimension no longer exists/isn't loaded - there is no
                 // PoiManager left to release anything from; nothing further can be done safely.
+                // sameAsNewReservation: the exact same reservation just re-secured above - releasing
+                // it here would immediately free the ticket this handoff just took.
             });
             claimant.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), reserved.bedPos()));
         }
@@ -552,7 +560,7 @@ public final class TownConstructionService {
      * otherwise still read as unregistered here. {@code add} is idempotent for an already-registered
      * position, so calling it unconditionally is always safe.
      */
-    private static boolean acquirePoiTicket(ServerLevel level, BlockPos pos) {
+    private static boolean acquirePoiTicket(ServerLevel level, TownStorage storage, Villager claimant, BlockPos pos) {
         net.minecraft.world.entity.ai.village.poi.PoiManager poiManager = level.getPoiManager();
         Optional<net.minecraft.core.Holder<net.minecraft.world.entity.ai.village.poi.PoiType>> type =
                 net.minecraft.world.entity.ai.village.poi.PoiTypes.forState(level.getBlockState(pos));
@@ -560,17 +568,27 @@ public final class TownConstructionService {
             return false;
         }
         poiManager.add(pos, type.get());
-        return poiManager.take(t -> true, (t, p) -> p.equals(pos), pos, 1).isPresent();
+        boolean acquired = poiManager.take(t -> true, (t, p) -> p.equals(pos), pos, 1).isPresent();
+        if (acquired) {
+            // [Review round 20, finding #1] Records exactly which villager this mod granted the
+            // ticket to - PoiManager itself tracks only a free-ticket count, never per-entity
+            // ownership - so a later stale memory elsewhere can be told apart from this claimant's
+            // own genuinely-held reservation.
+            storage.setReservationOwner(level.dimension(), pos, claimant.getUUID());
+        }
+        return acquired;
     }
 
     /** Releases a previously-held ticket at {@code pos}, if its POI record still exists - used when
      *  a claimant's OLD fixture (e.g. a prior home elsewhere) is being given up for a NEW one that
-     *  has already been secured. */
-    private static void releasePoiTicket(ServerLevel level, BlockPos pos) {
+     *  has already been secured. Also clears this mod's own ownership record for {@code pos}, so a
+     *  later occupant is never read as still "owned" by whoever held it before. */
+    private static void releasePoiTicket(ServerLevel level, TownStorage storage, BlockPos pos) {
         net.minecraft.world.entity.ai.village.poi.PoiManager poiManager = level.getPoiManager();
         if (poiManager.exists(pos, type -> true)) {
             poiManager.release(pos);
         }
+        storage.clearReservationOwner(level.dimension(), pos);
     }
 
     /**
@@ -653,12 +671,12 @@ public final class TownConstructionService {
     /** Releases every ticket a {@link ReservedHandoff} is actually holding - used when a reservation
      *  succeeded but the campfire's own closing placement then failed to land this same tick, so
      *  nothing stays speculatively reserved against a handoff that never actually committed. */
-    private static void releaseReservedHandoff(ServerLevel level, ReservedHandoff reserved) {
+    private static void releaseReservedHandoff(ServerLevel level, TownStorage storage, ReservedHandoff reserved) {
         if (reserved.workstationPos() != null) {
-            releasePoiTicket(level, reserved.workstationPos());
+            releasePoiTicket(level, storage, reserved.workstationPos());
         }
         if (reserved.bedPos() != null) {
-            releasePoiTicket(level, reserved.bedPos());
+            releasePoiTicket(level, storage, reserved.bedPos());
         }
     }
 

@@ -153,69 +153,69 @@ public final class CarDrivetrainGameTests {
      * {@code Erosion.erode}'s own probability roll against a block's resistance) a single report has well
      * under a 1% chance of actually changing a stone block, so waiting for one in a short, deterministic
      * window would make this test flaky for the wrong reason. */
-    @GameTest(template = "settlement_test", timeoutTicks = 140)
+    @GameTest(template = "settlement_test", timeoutTicks = 140 + VehicleLanes.CHUNK_LOAD_ALLOWANCE)
     public static void limiterCapsWheelspinInsteadOfLettingItGrowWithoutBoundAgainstAWall(GameTestHelper helper) {
-        helper.setBlock(new BlockPos(5, 2, 5), Blocks.STONE);
-        helper.setBlock(new BlockPos(5, 3, 5), Blocks.AIR);
-        for (int dx = 4; dx <= 6; dx++) {
-            for (int dy = 2; dy <= 5; dy++) {
-                helper.setBlock(new BlockPos(dx, dy, 7), Blocks.STONE);
+        VehicleLanes.build(helper, VehicleLanes.Site.LIMITER_WALL, lanes -> {
+            for (int dx = 4; dx <= 6; dx++) {
+                for (int dy = 2; dy <= 5; dy++) {
+                    lanes.setBlock(new BlockPos(dx, dy, 7), Blocks.STONE.defaultBlockState());
+                }
             }
-        }
-        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
-        car.setYRot(0.0f);
-        car.selectGear(CarPhysics.Gear.D1);
-        Player rider = helper.makeMockPlayer(GameType.CREATIVE);
-        helper.assertTrue(rider.startRiding(car), "mock player failed to board the car");
-        rider.zza = 1.0f;
-        float[] worstSpinHolder = {0.0f};
-        float[] worstSlipHolder = {0.0f};
-        float[] worstSpeedHolder = {0.0f};
-        double[] bestRealSlip = {0.0};
-        double[] bestRealLoadKg = {0.0};
-        boolean[] everRealReportRan = {false};
-        long[] sampleTicks = {5, 10, 15, 20, 30, 40, 55, 70, 85, 100, 115, 130};
-        for (long sampleTick : sampleTicks) {
-            helper.runAfterDelay(sampleTick, () -> {
-                for (int wheel = 0; wheel < car.syncedWheelCount(); wheel++) {
-                    worstSpinHolder[0] = Math.max(worstSpinHolder[0], Math.abs(car.wheelSpin(wheel, 1.0f)));
-                }
-                worstSlipHolder[0] = Math.max(worstSlipHolder[0], (float) car.debugSlipSpeed());
-                worstSpeedHolder[0] = Math.max(worstSpeedHolder[0], (float) car.debugSpeed());
-                // The REAL production call's own arguments and own result, not a recomputation -- see
-                // SableCarBody.lastErosionResult()'s own javadoc.
-                Erosion.Result realResult = car.debugLastErosionResult();
-                if (realResult != Erosion.Result.SKIPPED && realResult != Erosion.Result.DISABLED) {
-                    everRealReportRan[0] = true;
-                }
-                double realSlip = car.debugLastErosionReportSlipSpeed();
-                if (realSlip > bestRealSlip[0]) {
-                    bestRealSlip[0] = realSlip;
-                    bestRealLoadKg[0] = car.debugLastErosionReportLoadKg();
-                }
+            CarEntity car = lanes.spawn(DynamicVehiclesMod.CAR.get(), new Vec3(5.5, 3, 5.5));
+            car.setYRot(0.0f);
+            car.selectGear(CarPhysics.Gear.D1);
+            Player rider = helper.makeMockPlayer(GameType.CREATIVE);
+            helper.assertTrue(rider.startRiding(car), "mock player failed to board the car");
+            rider.zza = 1.0f;
+            float[] worstSpinHolder = {0.0f};
+            float[] worstSlipHolder = {0.0f};
+            float[] worstSpeedHolder = {0.0f};
+            double[] bestRealSlip = {0.0};
+            double[] bestRealLoadKg = {0.0};
+            boolean[] everRealReportRan = {false};
+            long[] sampleTicks = {5, 10, 15, 20, 30, 40, 55, 70, 85, 100, 115, 130};
+            for (long sampleTick : sampleTicks) {
+                helper.runAfterDelay(sampleTick, () -> {
+                    for (int wheel = 0; wheel < car.syncedWheelCount(); wheel++) {
+                        worstSpinHolder[0] = Math.max(worstSpinHolder[0], Math.abs(car.wheelSpin(wheel, 1.0f)));
+                    }
+                    worstSlipHolder[0] = Math.max(worstSlipHolder[0], (float) car.debugSlipSpeed());
+                    worstSpeedHolder[0] = Math.max(worstSpeedHolder[0], (float) car.debugSpeed());
+                    // The REAL production call's own arguments and own result, not a recomputation -- see
+                    // SableCarBody.lastErosionResult()'s own javadoc.
+                    Erosion.Result realResult = car.debugLastErosionResult();
+                    if (realResult != Erosion.Result.SKIPPED && realResult != Erosion.Result.DISABLED) {
+                        everRealReportRan[0] = true;
+                    }
+                    double realSlip = car.debugLastErosionReportSlipSpeed();
+                    if (realSlip > bestRealSlip[0]) {
+                        bestRealSlip[0] = realSlip;
+                        bestRealLoadKg[0] = car.debugLastErosionReportLoadKg();
+                    }
+                });
+            }
+            helper.runAfterDelay(138L, () -> {
+                helper.assertTrue(worstSpeedHolder[0] < 5.0,
+                        "the car drifted away from the wall at some point instead of staying blocked throughout -- test setup invalid, peak speed="
+                                + worstSpeedHolder[0]);
+                // An unbounded-torque bug injects roughly (excess force * wheelRadius / wheelInertia * dt) of
+                // spin EVERY tick indefinitely, which after 130 ticks of full D1 throttle is orders of
+                // magnitude past this. A correctly limiter-coupled drivetrain's peak stays near where the
+                // engaged ratio's own RPM reaches the limiter -- comfortably under 150 rad/s for D1's ratio.
+                helper.assertTrue(worstSpinHolder[0] < 150.0,
+                        "a driven wheel's spin rate grew without bound instead of being capped by the rev limiter: " + worstSpinHolder[0] + " rad/s");
+                helper.assertTrue(worstSlipHolder[0] > 0.3,
+                        "wheelspin against the wall never produced a large RAW slip speed across the whole window (SlipReporter's own erosion threshold): peak="
+                                + worstSlipHolder[0] + " m/s");
+                helper.assertTrue(everRealReportRan[0],
+                        "the real production SlipReporter.report() call never actually ran erosion's own decision logic (stayed SKIPPED/DISABLED the whole window)");
+                // The REAL arguments the production path actually passed, not an assumed load.
+                double erosionAmount = SlipMath.amount(bestRealSlip[0], bestRealLoadKg[0]);
+                helper.assertTrue(erosionAmount > 0.0005,
+                        "the real slip/load the production call actually delivered would still round to a negligible erosion amount: slip="
+                                + bestRealSlip[0] + " m/s, load=" + bestRealLoadKg[0] + " kg, amount=" + erosionAmount);
+                helper.succeed();
             });
-        }
-        helper.runAfterDelay(138L, () -> {
-            helper.assertTrue(worstSpeedHolder[0] < 5.0,
-                    "the car drifted away from the wall at some point instead of staying blocked throughout -- test setup invalid, peak speed="
-                            + worstSpeedHolder[0]);
-            // An unbounded-torque bug injects roughly (excess force * wheelRadius / wheelInertia * dt) of
-            // spin EVERY tick indefinitely, which after 130 ticks of full D1 throttle is orders of
-            // magnitude past this. A correctly limiter-coupled drivetrain's peak stays near where the
-            // engaged ratio's own RPM reaches the limiter -- comfortably under 150 rad/s for D1's ratio.
-            helper.assertTrue(worstSpinHolder[0] < 150.0,
-                    "a driven wheel's spin rate grew without bound instead of being capped by the rev limiter: " + worstSpinHolder[0] + " rad/s");
-            helper.assertTrue(worstSlipHolder[0] > 0.3,
-                    "wheelspin against the wall never produced a large RAW slip speed across the whole window (SlipReporter's own erosion threshold): peak="
-                            + worstSlipHolder[0] + " m/s");
-            helper.assertTrue(everRealReportRan[0],
-                    "the real production SlipReporter.report() call never actually ran erosion's own decision logic (stayed SKIPPED/DISABLED the whole window)");
-            // The REAL arguments the production path actually passed, not an assumed load.
-            double erosionAmount = SlipMath.amount(bestRealSlip[0], bestRealLoadKg[0]);
-            helper.assertTrue(erosionAmount > 0.0005,
-                    "the real slip/load the production call actually delivered would still round to a negligible erosion amount: slip="
-                            + bestRealSlip[0] + " m/s, load=" + bestRealLoadKg[0] + " kg, amount=" + erosionAmount);
-            helper.succeed();
         });
     }
 
@@ -387,22 +387,34 @@ public final class CarDrivetrainGameTests {
      * ratio multiplies drive force. The default policy is {@link CarPhysics.Gear#AUTOMATIC}, so a
      * non-shifter driver who never calls {@code selectGear} must still shift up out of D1 under sustained
      * throttle. */
-    @GameTest(template = "settlement_test", timeoutTicks = 140)
+    @GameTest(template = "settlement_test", timeoutTicks = 140 + VehicleLanes.CHUNK_LOAD_ALLOWANCE)
     public static void nonShifterDefaultShiftsOutOfFirstGearInsteadOfStayingPinnedThere(GameTestHelper helper) {
-        helper.setBlock(new BlockPos(5, 2, 5), Blocks.STONE);
-        helper.setBlock(new BlockPos(5, 3, 5), Blocks.AIR);
-        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
-        car.setYRot(0.0f);
-        // Deliberately never call selectGear: this is the exact state a keyboard/gamepad driver who has
-        // never touched the reverse key is in.
-        Player rider = helper.makeMockPlayer(GameType.CREATIVE);
-        helper.assertTrue(rider.startRiding(car), "mock player failed to board the car");
-        rider.zza = 1.0f;
-        helper.runAfterDelay(120L, () -> {
-            helper.assertTrue(car.debugAutomaticGearIndex() > 0,
-                    "a non-shifter driver's default gear stayed pinned at index 0 (first gear) under sustained throttle instead of shifting up: index="
-                            + car.debugAutomaticGearIndex());
-            helper.succeed();
+        // Its own full-length lane (see VehicleLanes): 120 ticks of throttle carry this car ~57 m. On
+        // settlement_test, wherever GameTest's placement let it really move, it hit the barrier wall at z=24 at
+        // ~10.7 m/s around tick 57 and sat against it, back in first gear, by the time of the check. The lane
+        // is the floor's own grass -- the surface this car's wheels were always really on (the single stone
+        // block the old rig placed sat under the car's centre, between its wheels).
+        VehicleLanes.build(helper, VehicleLanes.Site.NON_SHIFTER, lanes -> {
+            CarEntity car = lanes.spawn(DynamicVehiclesMod.CAR.get(), VehicleLanes.spawnPoint(VehicleLanes.FIRST_LANE_X));
+            car.setYRot(0.0f);
+            lanes.assertStaysOnLane(car, VehicleLanes.FIRST_LANE_X, VehicleLanes.allWheels(Blocks.GRASS_BLOCK), VehicleLanes.Wear.ANY_STAGE,
+                    2L, 119L, "car");
+            // Deliberately never call selectGear: this is the exact state a keyboard/gamepad driver who has
+            // never touched the reverse key is in.
+            Player rider = helper.makeMockPlayer(GameType.CREATIVE);
+            helper.assertTrue(rider.startRiding(car), "mock player failed to board the car");
+            rider.zza = 1.0f;
+            // Mock players have no input packets: vanilla decays zza each tick. Reapply the
+            // held accelerator so this actually exercises the promised sustained throttle.
+            for (int t = 1; t < 120; t++) {
+                helper.runAfterDelay(t, () -> rider.zza = 1.0f);
+            }
+            helper.runAfterDelay(120L, () -> {
+                helper.assertTrue(car.debugAutomaticGearIndex() > 0,
+                        "a non-shifter driver's default gear stayed pinned at index 0 (first gear) under sustained throttle instead of shifting up: index="
+                                + car.debugAutomaticGearIndex());
+                helper.succeed();
+            });
         });
     }
 
@@ -851,35 +863,45 @@ public final class CarDrivetrainGameTests {
      * player boarding, which this test cannot control) is wrapped so a thrown assertion still restores
      * {@code originalSubSteps} before propagating, rather than leaving the global mutated into whatever
      * batch happens to run next. */
-    @GameTest(template = "settlement_test", timeoutTicks = 100, batch = "carDrivetrainSubStepIsolated")
+    @GameTest(template = "settlement_test", timeoutTicks = 100 + VehicleLanes.CHUNK_LOAD_ALLOWANCE, batch = "carDrivetrainSubStepIsolated")
     public static void wheelSubStepCountDoesNotMateriallyChangeReachedSpeedAfterAFixedWindow(GameTestHelper helper) {
-        int originalSubSteps = CarConfig.WHEEL_SUB_STEPS.get();
-        helper.setBlock(new BlockPos(5, 2, 5), Blocks.STONE);
-        helper.setBlock(new BlockPos(5, 3, 5), Blocks.AIR);
-        helper.setBlock(new BlockPos(5, 2, 15), Blocks.STONE);
-        helper.setBlock(new BlockPos(5, 3, 15), Blocks.AIR);
-        try {
-            CarConfig.WHEEL_SUB_STEPS.set(1);
-            CarEntity carOneStep = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
-            carOneStep.setYRot(0.0f);
-            carOneStep.selectGear(CarPhysics.Gear.D1);
-            Player riderOneStep = helper.makeMockPlayer(GameType.CREATIVE);
-            helper.assertTrue(riderOneStep.startRiding(carOneStep), "mock player failed to board the 1-substep car");
-            riderOneStep.zza = 1.0f;
-            helper.runAfterDelay(30L, () -> runSecondLegAndRestoreOnAnyFailure(helper, originalSubSteps, carOneStep));
-        } catch (RuntimeException e) {
-            CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
-            throw e;
-        }
+        // Each leg's car on its own grass lane (see VehicleLanes). The two used to start ten blocks apart in
+        // one lane of settlement_test, and wherever GameTest's placement let them really move, the 4-substep
+        // car (spawned at z 15.5) reached the barrier wall at z=24 right at its 30-tick reading, with the
+        // still-driven 1-substep car 0.7 m behind it: whether the reading caught it before the wall was chance.
+        VehicleLanes.build(helper, VehicleLanes.Site.SUB_STEP_SPEED, lanes -> {
+            int originalSubSteps = CarConfig.WHEEL_SUB_STEPS.get();
+            lanes.restoreSubStepsOnEveryOutcome();
+            try {
+                CarConfig.WHEEL_SUB_STEPS.set(1);
+                CarEntity carOneStep = lanes.spawn(DynamicVehiclesMod.CAR.get(),
+                        VehicleLanes.spawnPoint(VehicleLanes.FIRST_LANE_X));
+                carOneStep.setYRot(0.0f);
+                carOneStep.selectGear(CarPhysics.Gear.D1);
+                lanes.assertStaysOnLane(carOneStep, VehicleLanes.FIRST_LANE_X, VehicleLanes.allWheels(Blocks.GRASS_BLOCK),
+                        VehicleLanes.Wear.ANY_STAGE, 2L, 29L, "1-substep car");
+                Player riderOneStep = helper.makeMockPlayer(GameType.CREATIVE);
+                helper.assertTrue(riderOneStep.startRiding(carOneStep), "mock player failed to board the 1-substep car");
+                riderOneStep.zza = 1.0f;
+                helper.runAfterDelay(30L, () -> runSecondLegAndRestoreOnAnyFailure(helper, lanes, originalSubSteps, carOneStep));
+            } catch (RuntimeException e) {
+                CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
+                throw e;
+            }
+        });
     }
 
-    private static void runSecondLegAndRestoreOnAnyFailure(GameTestHelper helper, int originalSubSteps, CarEntity carOneStep) {
+    private static void runSecondLegAndRestoreOnAnyFailure(GameTestHelper helper, VehicleLanes lanes, int originalSubSteps,
+            CarEntity carOneStep) {
         try {
             double speedAtOneStep = carOneStep.debugSpeed();
             CarConfig.WHEEL_SUB_STEPS.set(4);
-            CarEntity carFourStep = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 15));
+            CarEntity carFourStep = lanes.spawn(DynamicVehiclesMod.CAR.get(),
+                    VehicleLanes.spawnPoint(VehicleLanes.THIRD_LANE_X));
             carFourStep.setYRot(0.0f);
             carFourStep.selectGear(CarPhysics.Gear.D1);
+            lanes.assertStaysOnLane(carFourStep, VehicleLanes.THIRD_LANE_X, VehicleLanes.allWheels(Blocks.GRASS_BLOCK),
+                    VehicleLanes.Wear.ANY_STAGE, 2L, 29L, "4-substep car");
             Player riderFourStep = helper.makeMockPlayer(GameType.CREATIVE);
             helper.assertTrue(riderFourStep.startRiding(carFourStep), "mock player failed to board the 4-substep car");
             riderFourStep.zza = 1.0f;
@@ -1760,12 +1782,14 @@ public final class CarDrivetrainGameTests {
                     if (airborne) {
                         airborneTicks[0]++;
                         if (previousSpins[0] != null) {
-                            // Each free wheel's own books: its angular momentum change IS the impulse it took.
+                            // Each free wheel's measured angular momentum includes its drive AND brake impulses.
+                            // Closing throttle below 1.5 m/s activates the existing parked brake (150 N*s/tick).
                             for (int wheel = 0; wheel < spins.length; wheel++) {
                                 double momentumChange = (spins[wheel] - previousSpins[0][wheel]) * WheelMath.WHEEL_INERTIA
                                         / c.debugWheelRadius();
                                 worstAirborneWheelBooks[0] = Math.max(worstAirborneWheelBooks[0],
-                                        Math.abs(momentumChange - taken[wheel]));
+                                        Math.abs(momentumChange - taken[wheel]
+                                                - ((SableCarBody) c.sableBody()).wheelBrakeAngularImpulses()[wheel] / c.debugWheelRadius()));
                             }
                         }
                         if (Math.abs(c.debugRealizedDriveImpulse()) > 1e-3) {
@@ -1886,7 +1910,8 @@ public final class CarDrivetrainGameTests {
                                     double momentumChange = (spins[wheel] - previousSpins[0][wheel]) * WheelMath.WHEEL_INERTIA
                                             / c.debugWheelRadius();
                                     worstUnloadedWheelBooks[0] = Math.max(worstUnloadedWheelBooks[0],
-                                            Math.abs(momentumChange - taken[wheel]));
+                                            Math.abs(momentumChange - taken[wheel]
+                                                - ((SableCarBody) c.sableBody()).wheelBrakeAngularImpulses()[wheel] / c.debugWheelRadius()));
                                     if (Math.abs(taken[wheel]) > 1e-3) {
                                         drivenPartialTicks[0]++;
                                     }
@@ -2340,18 +2365,39 @@ public final class CarDrivetrainGameTests {
                     note("engine books: momentum change off by " + engineGap);
                 }
             }
-            double lockExcess = lock >= 0.0
-                    ? Math.max(-transfer, transfer - lock)
-                    : Math.max(transfer, lock - transfer);
+            SableCarBody body = (SableCarBody) car.sableBody();
+            double lockExcess = 0.0;
+            double[] limits = body.stepClutchLimits();
+            double[] transfers = body.stepClutchTransfers();
+            for (int step = 0; step < limits.length; step++) {
+                lockExcess = Math.max(lockExcess, limits[step] >= 0.0
+                        ? Math.max(-transfers[step], transfers[step] - limits[step])
+                        : Math.max(transfers[step], limits[step] - transfers[step]));
+            }
             worstLockExcess = Math.max(worstLockExcess, lockExcess);
             if (lockExcess >= TORQUE_IDENTITY_TOLERANCE) {
                 note("exchange " + transfer + " outside [0, lock " + lock + "]");
             }
-            double energyCreated = -transfer * (omega - wheelSideOmega) * TICK_DT;
+            double[] beforeSpins = body.priorWheelSpinRates();
+            double[] afterSpins = body.wheelSpinRates();
+            double energyDelta = 0.5 * DrivetrainMath.ENGINE_INERTIA * (omega * omega - priorOmega * priorOmega);
+            double measuredMomentum = DrivetrainMath.ENGINE_INERTIA * (omega - priorOmega);
+            double gearing = ratio * DrivetrainMath.FINAL_DRIVE * gearDirection;
+            for (int wheel = 0; wheel < beforeSpins.length; wheel++) {
+                energyDelta += 0.5 * WheelMath.WHEEL_INERTIA
+                        * (afterSpins[wheel] * afterSpins[wheel] - beforeSpins[wheel] * beforeSpins[wheel]) / car.debugForceScale();
+                measuredMomentum += WheelMath.WHEEL_INERTIA * (afterSpins[wheel] - beforeSpins[wheel]) / (gearing * car.debugForceScale());
+            }
+            double stopImpulse = body.engineStopImpulse();
+            double externalImpulse = engineTorque * TICK_DT + stopImpulse;
+            double energyCreated = energyDelta - body.engineExternalWork()
+                    - body.wheelExternalWork() / car.debugForceScale();
+            double measuredGap = Math.abs(measuredMomentum - externalImpulse
+                    - body.wheelExternalAngularImpulse() / (gearing * car.debugForceScale()));
+            worstWheelBooks = Math.max(worstWheelBooks, measuredGap);
             worstEnergyCreated = Math.max(worstEnergyCreated, energyCreated);
-            if (energyCreated >= ENERGY_IDENTITY_TOLERANCE) {
-                note("clutch created " + energyCreated + " J: exchange " + transfer + ", engine after " + omega
-                        + ", wheel side " + wheelSideOmega);
+            if (energyCreated >= ENERGY_IDENTITY_TOLERANCE || measuredGap >= IMPULSE_IDENTITY_TOLERANCE) {
+                note("measured shaft energy gain=" + energyCreated + " J, momentum gap=" + measuredGap);
             }
             double wrongWay = throttleOpen
                     ? -impulse * gearDirection

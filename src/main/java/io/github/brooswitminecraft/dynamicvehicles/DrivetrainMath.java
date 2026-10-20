@@ -568,6 +568,24 @@ public final class DrivetrainMath {
         return Math.min(available, asked) - drag;
     }
 
+    /** Bound a signed exchange by the work measured at both shaft midpoint velocities.
+     * External torques may reverse relative speed during the step, so endpoint locking alone
+     * does not guarantee dissipation. Use the current partner response, before driver limits. */
+    public static double passiveClutchTorque(double requested, double engineOmega, double wheelOmega,
+            double engineTorque, double wheelTorque, double wheelInertia, double dt,
+            VehicleSpec.DrivetrainCoupling coupling) {
+        if (!(dt > 0.0) || !(wheelInertia > 0.0)) return 0.0;
+        double mobility = 1.0 / coupling.engineInertia() + 1.0 / wheelInertia;
+        // Work of the exchange is -T*dt times the midpoint relative speed of BOTH shafts.
+        // External torque can reverse that speed during a step; an endpoint lock alone then
+        // permits negative friction work. Bound at zero work before applying driver limits.
+        double freeEndSlip = engineOmega - wheelOmega
+                + dt * (engineTorque / coupling.engineInertia() - wheelTorque / wheelInertia);
+        double zeroWorkTorque = (engineOmega - wheelOmega + freeEndSlip) / (dt * mobility);
+        return requested >= 0.0 ? Math.min(requested, Math.max(0.0, zeroWorkTorque))
+                : Math.max(requested, Math.min(0.0, zeroWorkTorque));
+    }
+
     /**
      * How much of {@link #clutchExchangeTorque}'s lock torque the clutch can actually pass this step, N*m,
      * in the same sign convention (MINECRAFT-444 review round 3, finding 1).

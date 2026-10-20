@@ -94,6 +94,18 @@ public final class TownStorage extends SavedData {
         return cell != null && cell.owner().equals(owner) && cell.signature().equals(signature);
     }
 
+    /** {@code true} iff SOME Dynamic Towns plan (any owner, any signature) has already
+     *  placed-and-paid-for {@code pos} in {@code dimension} - for callers that only need to know
+     *  "is this a Dynamic Towns-built fixture at all" (see
+     *  {@code TownResidentAllocationHandler}'s candidate filtering, round 19 finding #2), unlike
+     *  {@link #isCellPlaced} which also demands an exact owner+signature match against one specific
+     *  plan. A same-region vanilla- or player-placed bed/workstation was never recorded here, so it
+     *  can never be mistaken for a town's own fixture just because it happens to sit in that town's
+     *  region. */
+    public boolean isAnyCellPlaced(ResourceKey<Level> dimension, BlockPos pos) {
+        return placedCells.containsKey(cellKey(dimension, pos));
+    }
+
     /** Records that {@code pos} in {@code dimension} has now actually been placed and paid for by
      *  the plan identified by {@code owner}, under exactly {@code signature} — the durable
      *  "construction progress" record a reload must not lose. Overwrites whichever plan (if any)

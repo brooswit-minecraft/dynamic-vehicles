@@ -120,6 +120,23 @@ public final class TownResidentAllocationHandlerGameTests {
         return TownRegion.fromBlockCoords(absoluteAnchor.getX(), absoluteAnchor.getZ());
     }
 
+    /** [Review round 19, finding #2] Candidate search is now scoped to fixtures Dynamic Towns itself
+     *  actually placed-and-paid-for ({@link TownStorage#isAnyCellPlaced}), not merely same-region
+     *  POIs - so every fixture a test wants the allocation logic to actually find must be registered
+     *  here too, exactly as {@code TownConstructionService} itself would via {@code markCellPlaced}
+     *  when it builds one for real. The owner/signature values themselves are never inspected by
+     *  {@code isAnyCellPlaced} - only whether SOME record exists at all - so arbitrary constants are
+     *  fine here. */
+    private static void markTownOwned(GameTestHelper helper, TownStorage storage, BlockPos absolutePos) {
+        storage.markCellPlaced(helper.getLevel().dimension(), absolutePos, "test-owner", "test-signature");
+    }
+
+    private static TownStorage newStorageWithFoundedTown(GameTestHelper helper, RegionCoord region) {
+        TownStorage storage = new TownStorage();
+        storage.markTownFounded(TownKeys.keyFor(helper.getLevel().dimension(), region));
+        return storage;
+    }
+
     /** A villager with no HOME at all, not a Builder, must be assigned a real, vacant bed - exactly
      *  the "every villager needs residential accommodation" requirement a single construction
      *  site's own claimant-only handoff can never cover. Asserted on internal consistency (whatever
@@ -130,13 +147,16 @@ public final class TownResidentAllocationHandlerGameTests {
         prepareFlatGround(helper);
         BlockPos bedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
         placeValidBed(helper, bedHead);
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        markTownOwned(helper, storage, helper.absolutePos(bedHead));
 
         Villager villager = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         // No HOME memory at all, profession NONE by default - a real villager that simply exists in
         // this founded town, never claimed any campfire.
 
         BlockPos townCenter = helper.absolutePos(ANCHOR);
-        TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), villager, townCenter, regionOf(helper));
+        TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), villager, townCenter, region, storage);
 
         helper.assertTrue(villager.getBrain().getMemory(MemoryModuleType.HOME).isPresent(),
                 "an unhoused non-Builder villager within range of a real vacant bed must be assigned a HOME");
@@ -154,12 +174,15 @@ public final class TownResidentAllocationHandlerGameTests {
         prepareFlatGround(helper);
         BlockPos workstationPos = ANCHOR.offset(WORKSTATION_OFFSET.getX(), WORKSTATION_OFFSET.getY(), WORKSTATION_OFFSET.getZ());
         placeWorkstation(helper, workstationPos, Blocks.BLAST_FURNACE);
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        markTownOwned(helper, storage, helper.absolutePos(workstationPos));
 
         Villager villager = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         villager.setVillagerData(villager.getVillagerData().setProfession(VillagerProfession.NONE));
 
         BlockPos townCenter = helper.absolutePos(ANCHOR);
-        TownResidentAllocationHandler.allocateWorkplaceIfNeeded(helper.getLevel(), villager, townCenter, regionOf(helper));
+        TownResidentAllocationHandler.allocateWorkplaceIfNeeded(helper.getLevel(), villager, townCenter, region, storage);
 
         VillagerProfession assignedProfession = villager.getVillagerData().getProfession();
         helper.assertTrue(assignedProfession != VillagerProfession.NONE,
@@ -184,14 +207,16 @@ public final class TownResidentAllocationHandlerGameTests {
         prepareFlatGround(helper);
         BlockPos bedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
         placeValidBed(helper, bedHead);
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        markTownOwned(helper, storage, helper.absolutePos(bedHead));
 
         Villager first = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         Villager second = spawnVillager(helper, ANCHOR.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
 
         BlockPos townCenter = helper.absolutePos(ANCHOR);
-        RegionCoord region = regionOf(helper);
-        TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), first, townCenter, region);
-        TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), second, townCenter, region);
+        TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), first, townCenter, region, storage);
+        TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), second, townCenter, region, storage);
 
         BlockPos absoluteBedHead = helper.absolutePos(bedHead);
         boolean firstHoused = first.getBrain().getMemory(MemoryModuleType.HOME)
@@ -205,26 +230,38 @@ public final class TownResidentAllocationHandlerGameTests {
         helper.succeed();
     }
 
+    /** A region so far from the shared GameTest world's own cluster of ~126 structures that no test
+     *  anywhere in the suite could ever have placed real content in it - unlike an adjacent
+     *  ({@code TownRegion.neighbor(...)}) region, which proved NOT reliably empty in CI: this
+     *  suite's own sibling structures sit closer together than one {@code REGION_SIZE_BLOCKS}, so a
+     *  geometrically-adjacent "wrong" region can genuinely contain another test's own real,
+     *  currently-vacant bed, which the allocation logic then (correctly, per its own contract) finds
+     *  - an entirely different failure from the one this test means to catch. The region-membership
+     *  filter under test ({@code TownResidentAllocationHandler}'s {@code inRegion}) only ever checks
+     *  equality, never adjacency, so an arbitrarily distant region exercises the exact same check
+     *  while actually guaranteeing isolation. */
+    private static final RegionCoord GUARANTEED_EMPTY_REGION = new RegionCoord(1_000_000, 1_000_000);
+
     /** [Review round 18, finding #1] A real, vacant bed must never be matched when the
      *  {@code RegionCoord} passed to the allocation call does not actually contain it - proving the
      *  exact region-membership filter that is the only thing excluding a neighbouring region's
      *  content (the raw search radius alone reaches well past a single region's own edge; see
-     *  {@link TownConstants#RESIDENT_ALLOCATION_SEARCH_RADIUS}'s own doc). A deliberately wrong
-     *  region is passed here rather than attempting real geographic separation between two actual
-     *  regions, which this suite's own fixture placement cannot reliably achieve (see the class doc). */
+     *  {@link TownConstants#RESIDENT_ALLOCATION_SEARCH_RADIUS}'s own doc). {@link #GUARANTEED_EMPTY_REGION}
+     *  is used as the wrong region rather than a geometric neighbor - see its own doc for why that
+     *  was NOT reliably isolated in CI's shared world. */
     @GameTest(template = "settlement_test")
     public static void aBedOutsideTheGivenRegionIsNeverMatched(GameTestHelper helper) {
         prepareFlatGround(helper);
         BlockPos bedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
         placeValidBed(helper, bedHead);
         BlockPos absoluteBedHead = helper.absolutePos(bedHead);
+        TownStorage storage = newStorageWithFoundedTown(helper, regionOf(helper));
+        markTownOwned(helper, storage, absoluteBedHead);
 
         Villager villager = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
 
         BlockPos townCenter = helper.absolutePos(ANCHOR);
-        RegionCoord trueRegion = regionOf(helper);
-        RegionCoord wrongRegion = TownRegion.neighbor(trueRegion, TownEdge.NORTH);
-        TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), villager, townCenter, wrongRegion);
+        TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), villager, townCenter, GUARANTEED_EMPTY_REGION, storage);
 
         helper.assertTrue(villager.getBrain().getMemory(MemoryModuleType.HOME).isEmpty(),
                 "a real, vacant bed must never be matched when the given region does not actually contain it");
@@ -245,6 +282,9 @@ public final class TownResidentAllocationHandlerGameTests {
         prepareFlatGround(helper);
         BlockPos newBedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
         placeValidBed(helper, newBedHead);
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        markTownOwned(helper, storage, helper.absolutePos(newBedHead));
 
         Villager villager = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
 
@@ -259,7 +299,7 @@ public final class TownResidentAllocationHandlerGameTests {
         villager.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(net.minecraft.world.level.Level.NETHER, oldHomeInOtherDimension));
 
         BlockPos townCenter = helper.absolutePos(ANCHOR);
-        TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), villager, townCenter, regionOf(helper));
+        TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), villager, townCenter, region, storage);
 
         helper.assertTrue(villager.getBrain().getMemory(MemoryModuleType.HOME)
                         .map(gp -> gp.dimension().equals(helper.getLevel().dimension())).orElse(false),
@@ -292,13 +332,17 @@ public final class TownResidentAllocationHandlerGameTests {
         // furnace.
         BlockPos matchingWorkstationPos = ANCHOR.offset(WORKSTATION_OFFSET.getX(), WORKSTATION_OFFSET.getY(), WORKSTATION_OFFSET.getZ());
         placeWorkstation(helper, matchingWorkstationPos, Blocks.BLAST_FURNACE);
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        markTownOwned(helper, storage, absoluteWrongWorkstationPos);
+        markTownOwned(helper, storage, helper.absolutePos(matchingWorkstationPos));
 
         Villager villager = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         villager.setVillagerData(villager.getVillagerData().setProfession(VillagerProfession.ARMORER));
         // No JOB_SITE memory at all - simulating "already Armorer, but its own workstation was lost".
 
         BlockPos townCenter = helper.absolutePos(ANCHOR);
-        TownResidentAllocationHandler.allocateWorkplaceIfNeeded(helper.getLevel(), villager, townCenter, regionOf(helper));
+        TownResidentAllocationHandler.allocateWorkplaceIfNeeded(helper.getLevel(), villager, townCenter, region, storage);
 
         helper.assertTrue(villager.getVillagerData().getProfession() == VillagerProfession.ARMORER,
                 "a villager that already held a real profession must keep it, found "
@@ -367,6 +411,7 @@ public final class TownResidentAllocationHandlerGameTests {
         TownStorage storage = new TownStorage();
         RegionCoord region = TownRegion.fromBlockCoords(absoluteAnchor.getX(), absoluteAnchor.getZ());
         storage.markTownFounded(TownKeys.keyFor(helper.getLevel().dimension(), region));
+        markTownOwned(helper, storage, helper.absolutePos(workstationPos));
 
         Villager orphan = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         orphan.setVillagerData(orphan.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
@@ -385,6 +430,165 @@ public final class TownResidentAllocationHandlerGameTests {
             helper.assertTrue(TownProfessionWorkstations.blockFor(assignedProfession).map(b -> b == assignedBlock).orElse(false),
                     "the orphaned Builder's new profession and its JOB_SITE's own real block must be each other's correct vanilla counterpart");
         }
+        helper.succeed();
+    }
+
+    /** [Review round 19, finding #1] A resident whose remembered HOME is a real, intact, still-held
+     *  bed, but in a DIFFERENT region from the one it currently stands in (it has moved to - or this
+     *  reconciliation is now running against - a different founded town), must be reassigned a new,
+     *  in-region bed, and the stale out-of-region reservation must actually be released rather than
+     *  kept forever just because the fixture itself is still perfectly intact. The old home is placed
+     *  far enough away (a real offset, not merely a different {@code RegionCoord} value) to land in a
+     *  genuinely different region while staying within the world border and far from every other
+     *  GameTest structure. */
+    @GameTest(template = "settlement_test")
+    public static void aResidentWhoseHomeIsOutsideItsCurrentRegionIsReassignedAndTheOldTicketReleased(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos newBedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        placeValidBed(helper, newBedHead);
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        markTownOwned(helper, storage, helper.absolutePos(newBedHead));
+
+        BlockPos absoluteAnchor = helper.absolutePos(ANCHOR);
+        BlockPos oldHomeInDifferentRegion = absoluteAnchor.offset(50_000, 65 - absoluteAnchor.getY(), 50_000);
+        helper.assertTrue(!TownRegion.fromBlockCoords(oldHomeInDifferentRegion.getX(), oldHomeInDifferentRegion.getZ()).equals(region),
+                "test setup: the old home's own offset must actually land in a different region");
+        placeValidBedAt(helper.getLevel(), oldHomeInDifferentRegion);
+        takeTicketDirectly(helper.getLevel(), oldHomeInDifferentRegion);
+        helper.assertTrue(helper.getLevel().getPoiManager().getFreeTickets(oldHomeInDifferentRegion) == 0,
+                "test setup: the old (different-region) home's ticket must actually be held before reconciliation runs");
+
+        Villager villager = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        villager.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(helper.getLevel().dimension(), oldHomeInDifferentRegion));
+
+        BlockPos townCenter = helper.absolutePos(ANCHOR);
+        TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), villager, townCenter, region, storage);
+
+        helper.assertTrue(villager.getBrain().getMemory(MemoryModuleType.HOME)
+                        .map(gp -> !gp.pos().equals(oldHomeInDifferentRegion)).orElse(false),
+                "a resident whose remembered HOME is outside its current region must be assigned a new, in-region bed instead of keeping the stale one");
+        helper.assertTrue(helper.getLevel().getPoiManager().getFreeTickets(oldHomeInDifferentRegion) > 0,
+                "the old, now-out-of-region home's ticket must actually be released, not permanently leaked just because it was in a different region");
+        helper.succeed();
+    }
+
+    /** [Review round 19, finding #1] A HOME memory that resolves to a real, correctly-typed,
+     *  in-region bed is still not "housed" if that bed's own ticket is not actually held (fully
+     *  free) - some OTHER mechanism released it without this villager's own memory being updated.
+     *  Existence alone must never be read as occupancy. */
+    @GameTest(template = "settlement_test")
+    public static void anUnticketedHomeMemoryIsNotTreatedAsHoused(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos staleBedHead = ANCHOR.offset(OLD_HOME_OFFSET.getX(), OLD_HOME_OFFSET.getY(), OLD_HOME_OFFSET.getZ());
+        placeValidBed(helper, staleBedHead); // registered, but its ticket is never taken - fully free
+        BlockPos newBedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        placeValidBed(helper, newBedHead);
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        markTownOwned(helper, storage, helper.absolutePos(newBedHead));
+
+        Villager villager = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        BlockPos absoluteStaleBedHead = helper.absolutePos(staleBedHead);
+        villager.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(helper.getLevel().dimension(), absoluteStaleBedHead));
+        helper.assertTrue(helper.getLevel().getPoiManager().getFreeTickets(absoluteStaleBedHead) > 0,
+                "test setup: the stale home's own ticket must NOT actually be held (fully free) before reconciliation runs");
+
+        BlockPos townCenter = helper.absolutePos(ANCHOR);
+        TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), villager, townCenter, region, storage);
+
+        helper.assertTrue(villager.getBrain().getMemory(MemoryModuleType.HOME)
+                        .map(gp -> !gp.pos().equals(absoluteStaleBedHead)).orElse(false),
+                "a HOME memory whose own ticket is not actually held must never be treated as already housed");
+        helper.succeed();
+    }
+
+    /** [Review round 19, finding #2] A real, vacant, correctly-typed, SAME-REGION workstation that
+     *  Dynamic Towns itself never built (a same-region vanilla- or player-placed fixture) must never
+     *  be matched, even though region filtering alone would otherwise accept it - proving the
+     *  town-ownership filter ({@link TownStorage#isAnyCellPlaced}) is actually what excludes it, not
+     *  merely the region check. */
+    @GameTest(template = "settlement_test")
+    public static void aSameRegionNonTownOwnedWorkstationIsNeverMatched(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos workstationPos = ANCHOR.offset(WORKSTATION_OFFSET.getX(), WORKSTATION_OFFSET.getY(), WORKSTATION_OFFSET.getZ());
+        placeWorkstation(helper, workstationPos, Blocks.BLAST_FURNACE);
+        // Deliberately NOT registered via storage.markCellPlaced - standing in for a real, vacant,
+        // same-region workstation Dynamic Towns itself never built.
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+
+        Villager villager = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        villager.setVillagerData(villager.getVillagerData().setProfession(VillagerProfession.NONE));
+
+        BlockPos townCenter = helper.absolutePos(ANCHOR);
+        TownResidentAllocationHandler.allocateWorkplaceIfNeeded(helper.getLevel(), villager, townCenter, region, storage);
+
+        helper.assertTrue(villager.getVillagerData().getProfession() == VillagerProfession.NONE,
+                "a same-region workstation Dynamic Towns itself never built must never be matched, even though it is otherwise real and vacant");
+        helper.assertTrue(villager.getBrain().getMemory(MemoryModuleType.JOB_SITE).isEmpty(),
+                "no JOB_SITE must be assigned when the only candidate in range is not a town-owned fixture");
+        helper.succeed();
+    }
+
+    /** [Review round 19, finding #3] A Builder standing in a region with NO founded Dynamic Towns
+     *  town at all - not this mod's concern regardless of its own claim's liveness - must never be
+     *  mutated by this reconciliation pass. The founded-town check must run BEFORE any Builder
+     *  mutation, not after, so a non-town Builder anywhere in the loaded Overworld is never touched. */
+    @GameTest(template = "settlement_test")
+    public static void aNonTownBuilderIsNeverTouchedByResidentAllocation(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos staleCampfireCell = ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), 0, FIRST_VILLAGER_OFFSET.getZ());
+        helper.setBlock(staleCampfireCell, Blocks.AIR); // claim already lapsed - no real campfire
+        BlockPos absoluteStaleCampfire = helper.absolutePos(staleCampfireCell);
+
+        // Deliberately an EMPTY TownStorage - no town founded anywhere, including this villager's own
+        // current region - standing in for a Builder whose region Dynamic Towns has never founded.
+        TownStorage storage = new TownStorage();
+
+        Villager builder = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        builder.setVillagerData(builder.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
+        builder.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteStaleCampfire));
+
+        TownResidentAllocationHandler.runResidentAllocationTick(helper.getLevel(), storage);
+
+        helper.assertTrue(builder.getVillagerData().getProfession() == BuilderProfession.BUILDER.get(),
+                "a Builder standing in a region with no founded Dynamic Towns town at all must never be touched by this reconciliation, even with a lapsed claim");
+        helper.assertTrue(builder.getBrain().getMemory(MemoryModuleType.JOB_SITE)
+                        .map(gp -> gp.pos().equals(absoluteStaleCampfire)).orElse(false),
+                "its stale JOB_SITE memory must be left exactly as-is");
+        helper.succeed();
+    }
+
+    /** [Review round 19, finding #3] An orphaned Builder's stale claim can itself be a real,
+     *  cross-dimension reservation (its remembered JOB_SITE is in a dimension other than the one it
+     *  is reconciled in) - releasing to NONE must still release that reservation from ITS OWN actual
+     *  level, never merely erase the memory and leave the ticket permanently held. */
+    @GameTest(template = "settlement_test")
+    public static void anOrphanedBuilderWithACrossDimensionClaimReleasesItsOldReservation(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos absoluteAnchor = helper.absolutePos(ANCHOR);
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteAnchor.getX(), absoluteAnchor.getZ());
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+
+        ServerLevel otherDimensionLevel = helper.getLevel().getServer().getLevel(net.minecraft.world.level.Level.NETHER);
+        helper.assertTrue(otherDimensionLevel != null, "test setup: the nether dimension must be loaded in this GameTest server");
+        BlockPos oldClaimInOtherDimension = new BlockPos(1_000, 65, 1_000);
+        placeValidBedAt(otherDimensionLevel, oldClaimInOtherDimension); // a real, reservable stand-in fixture; this orphan path never requires it to be a campfire specifically
+        takeTicketDirectly(otherDimensionLevel, oldClaimInOtherDimension);
+        helper.assertTrue(otherDimensionLevel.getPoiManager().getFreeTickets(oldClaimInOtherDimension) == 0,
+                "test setup: the cross-dimension old claim's ticket must actually be held before reconciliation runs");
+
+        Villager orphan = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        orphan.setVillagerData(orphan.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
+        orphan.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(net.minecraft.world.level.Level.NETHER, oldClaimInOtherDimension));
+
+        TownResidentAllocationHandler.runResidentAllocationTick(helper.getLevel(), storage);
+
+        helper.assertTrue(orphan.getVillagerData().getProfession() != BuilderProfession.BUILDER.get(),
+                "a Builder whose remembered claim is in a DIFFERENT dimension (never physically here) must be treated as orphaned, not actively claimed");
+        helper.assertTrue(otherDimensionLevel.getPoiManager().getFreeTickets(oldClaimInOtherDimension) > 0,
+                "the orphaned Builder's old cross-dimension claim ticket must actually be released, not permanently leaked");
         helper.succeed();
     }
 }

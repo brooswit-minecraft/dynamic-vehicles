@@ -69,32 +69,41 @@ public final class TownResidentAllocationHandler {
             if (!(entity instanceof Villager villager) || !villager.isAlive()) {
                 continue;
             }
-            // [Review round 18, finding #3] Builder is this mod's own temporary construction
-            // profession, and TownConstructionService owns an ACTIVELY CLAIMED Builder's entire
-            // lifecycle (claim, build, handoff) exclusively - but "is Builder" alone is not "is
-            // actively claimed": a Builder whose campfire was destroyed or whose claim otherwise
-            // lapsed must never be permanently excluded from reconciliation just because its
-            // profession field still happens to say Builder. An orphaned one is released to NONE
-            // right here (clearing the stale claim memory too) so it falls straight through into
-            // the SAME normal reconciliation as any other unemployed villager, rather than being
-            // silently re-claimed through this generic path (which owns no campfire-relocation or
-            // claim-validation logic of its own - that stays exclusively TownConstructionService's).
-            if (villager.getVillagerData().getProfession() == BuilderProfession.BUILDER.get()) {
-                if (hasActiveBuilderClaim(level, villager)) {
-                    continue;
-                }
-                villager.getBrain().eraseMemory(MemoryModuleType.JOB_SITE);
-                villager.setVillagerData(villager.getVillagerData().setProfession(VillagerProfession.NONE));
-            }
+            // [Review round 19, finding #3] The founded-town check must come FIRST: a Builder
+            // standing anywhere in the loaded Overworld that happens to have lost its claim is NOT
+            // this reconciliation's business unless it is actually standing in some town's own
+            // already-founded region. Checking this before any Builder mutation is what stops a
+            // non-town Builder (one whose claim lifecycle belongs to a region Dynamic Towns has
+            // never founded at all) from ever being touched here.
             RegionCoord region = TownRegion.fromBlockCoords(villager.blockPosition().getX(), villager.blockPosition().getZ());
             String key = TownKeys.keyFor(level.dimension(), region);
             if (!storage.hasFoundedTown(key)) {
                 continue; // only a real, already-founded town's own fixtures are ever matched
             }
+            // [Review round 18, finding #3 / round 19, finding #3] Builder is this mod's own
+            // temporary construction profession, and TownConstructionService owns an ACTIVELY
+            // CLAIMED Builder's entire lifecycle (claim, build, handoff) exclusively - but "is
+            // Builder" alone is not "is actively claimed": a Builder whose campfire was destroyed or
+            // whose claim otherwise lapsed must never be permanently excluded from reconciliation
+            // just because its profession field still happens to say Builder. An orphaned one is
+            // released to NONE right here so it falls straight through into the SAME normal
+            // reconciliation as any other unemployed villager, rather than being silently re-claimed
+            // through this generic path (which owns no campfire-relocation or claim-validation logic
+            // of its own - that stays exclusively TownConstructionService's). The stale claim memory
+            // itself is released through its own actual level (possibly a different dimension from
+            // this one) before being erased, never merely dropped.
+            if (villager.getVillagerData().getProfession() == BuilderProfession.BUILDER.get()) {
+                if (hasActiveBuilderClaim(level, villager)) {
+                    continue;
+                }
+                releaseOldReservation(level, villager.getBrain().getMemory(MemoryModuleType.JOB_SITE));
+                villager.getBrain().eraseMemory(MemoryModuleType.JOB_SITE);
+                villager.setVillagerData(villager.getVillagerData().setProfession(VillagerProfession.NONE));
+            }
             TownPlan plan = TownPlanner.generate(region, level.getSeed());
             BlockPos townCenter = new BlockPos(plan.townCenterX(), villager.blockPosition().getY(), plan.townCenterZ());
-            allocateHomeIfNeeded(level, villager, townCenter, region);
-            allocateWorkplaceIfNeeded(level, villager, townCenter, region);
+            allocateHomeIfNeeded(level, villager, townCenter, region, storage);
+            allocateWorkplaceIfNeeded(level, villager, townCenter, region, storage);
         }
     }
 
@@ -110,24 +119,33 @@ public final class TownResidentAllocationHandler {
     }
 
     /** {@code true} when {@code villager}'s existing HOME memory (if any) still resolves to a real,
-     *  currently-registered reservation in THIS dimension - i.e. nothing needs to change. A memory
-     *  pointing at a different dimension, or at a position whose POI record is gone (the bed was
-     *  destroyed, or never actually registered), is treated as "needs a new one". */
-    private static boolean hasValidHome(ServerLevel level, Villager villager) {
+     *  currently-registered, CURRENTLY HELD reservation in THIS dimension, belonging to the
+     *  villager's OWN CURRENT {@code region} - i.e. nothing needs to change. A memory pointing at a
+     *  different dimension, at a position whose POI record is gone, at one outside this villager's
+     *  current region (round 19, finding #1: a resident that has physically moved to a different
+     *  founded town must not keep reading its OLD town's still-intact fixture as valid forever), or
+     *  at one whose ticket is not actually held at all (an unticketed memory - the reservation was
+     *  released by something else without the memory itself being updated) is treated as "needs a
+     *  new one". */
+    private static boolean hasValidHome(ServerLevel level, Villager villager, RegionCoord region) {
         return villager.getBrain().getMemory(MemoryModuleType.HOME)
                 .filter(home -> home.dimension().equals(level.dimension()))
-                .map(home -> level.getPoiManager().exists(home.pos(), type -> type.is(PoiTypes.HOME)))
+                .filter(home -> inRegion(home.pos(), region))
+                .map(home -> level.getPoiManager().exists(home.pos(), type -> type.is(PoiTypes.HOME))
+                        && isTicketHeld(level, home.pos()))
                 .orElse(false);
     }
 
-    static void allocateHomeIfNeeded(ServerLevel level, Villager villager, BlockPos townCenter, RegionCoord region) {
-        if (hasValidHome(level, villager)) {
+    static void allocateHomeIfNeeded(ServerLevel level, Villager villager, BlockPos townCenter, RegionCoord region,
+            TownStorage storage) {
+        if (hasValidHome(level, villager, region)) {
             return;
         }
         Optional<GlobalPos> oldHome = villager.getBrain().getMemory(MemoryModuleType.HOME);
         level.getPoiManager()
-                .take(type -> type.is(PoiTypes.HOME), (type, pos) -> inRegion(pos, region), townCenter,
-                        TownConstants.RESIDENT_ALLOCATION_SEARCH_RADIUS)
+                .take(type -> type.is(PoiTypes.HOME),
+                        (type, pos) -> inRegion(pos, region) && storage.isAnyCellPlaced(level.dimension(), pos),
+                        townCenter, TownConstants.RESIDENT_ALLOCATION_SEARCH_RADIUS)
                 .ifPresent(bedPos -> {
                     // [Review round 18, finding #2] Only now that the new home is actually secured
                     // does the old one (if any - stale, wrong-dimension, or simply superseded) get
@@ -139,25 +157,30 @@ public final class TownResidentAllocationHandler {
     }
 
     /** {@code true} when {@code villager} already holds a real profession whose {@code JOB_SITE}
-     *  memory resolves to a POI record in THIS dimension whose TYPE actually matches that profession
-     *  - not merely "some POI exists there" (round 18, finding #2: a stale memory pointing at a
-     *  DIFFERENT profession's own workstation must never read as "still valid"). {@code NONE} never
-     *  counts as "already has a workplace", regardless of its memory. */
-    private static boolean hasValidWorkplace(ServerLevel level, Villager villager) {
+     *  memory resolves to a POI record in THIS dimension, in the villager's OWN CURRENT
+     *  {@code region} (round 19, finding #1: a relocated resident must not keep its old town's
+     *  workstation forever), whose TYPE actually matches that profession - not merely "some POI
+     *  exists there" (round 18, finding #2) - and whose ticket is actually held, not merely present
+     *  (round 19, finding #1: an unticketed memory is not really "employed" there). {@code NONE}
+     *  never counts as "already has a workplace", regardless of its memory. */
+    private static boolean hasValidWorkplace(ServerLevel level, Villager villager, RegionCoord region) {
         VillagerProfession profession = villager.getVillagerData().getProfession();
         if (profession == VillagerProfession.NONE) {
             return false;
         }
         return villager.getBrain().getMemory(MemoryModuleType.JOB_SITE)
                 .filter(site -> site.dimension().equals(level.dimension()))
+                .filter(site -> inRegion(site.pos(), region))
                 .map(site -> level.getPoiManager().getType(site.pos())
                         .map(type -> profession.heldJobSite().test(type))
-                        .orElse(false))
+                        .orElse(false)
+                        && isTicketHeld(level, site.pos()))
                 .orElse(false);
     }
 
-    static void allocateWorkplaceIfNeeded(ServerLevel level, Villager villager, BlockPos townCenter, RegionCoord region) {
-        if (hasValidWorkplace(level, villager)) {
+    static void allocateWorkplaceIfNeeded(ServerLevel level, Villager villager, BlockPos townCenter, RegionCoord region,
+            TownStorage storage) {
+        if (hasValidWorkplace(level, villager, region)) {
             return;
         }
         PoiManager poiManager = level.getPoiManager();
@@ -170,15 +193,19 @@ public final class TownResidentAllocationHandler {
             // workstation searched for first - never silently reassigned to whatever different
             // profession's vacancy happens to be found first.
             workstationPos = poiManager.take(existingProfession.heldJobSite(),
-                    (type, pos) -> inRegion(pos, region), townCenter, TownConstants.RESIDENT_ALLOCATION_SEARCH_RADIUS);
+                    (type, pos) -> inRegion(pos, region) && storage.isAnyCellPlaced(level.dimension(), pos),
+                    townCenter, TownConstants.RESIDENT_ALLOCATION_SEARCH_RADIUS);
             assignedProfession = existingProfession;
         } else {
-            // Genuinely unemployed: pick up any one vacant, assignable workstation and whichever
-            // real vanilla profession it belongs to.
+            // Genuinely unemployed: pick up any one vacant, assignable, TOWN-OWNED workstation (round
+            // 19, finding #2: a same-region vanilla- or player-placed workstation must never be
+            // eligible just because it happens to sit in the right region) and whichever real
+            // vanilla profession it belongs to.
             Optional<net.minecraft.util.Tuple<BlockPos, VillagerProfession>> candidate = poiManager
                     .getInRange(TownProfessionWorkstations::isAssignableWorkstationType, townCenter,
                             TownConstants.RESIDENT_ALLOCATION_SEARCH_RADIUS, PoiManager.Occupancy.HAS_SPACE)
-                    .filter(record -> inRegion(record.getPos(), region))
+                    .filter(record -> inRegion(record.getPos(), region)
+                            && storage.isAnyCellPlaced(level.dimension(), record.getPos()))
                     .flatMap(record -> TownProfessionWorkstations.professionForType(record.getPoiType())
                             .map(profession -> new net.minecraft.util.Tuple<>(record.getPos(), profession))
                             .stream())
@@ -200,6 +227,17 @@ public final class TownResidentAllocationHandler {
             villager.setVillagerData(villager.getVillagerData().setProfession(finalAssignedProfession));
             villager.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), acquiredPos));
         });
+    }
+
+    /** {@code true} when the POI record at {@code pos} (if any) is actually OCCUPIED - i.e. fewer
+     *  free tickets remain than the type's own maximum - rather than merely existing. A HOME/JOB_SITE
+     *  memory pointing at a real, correctly-typed fixture whose ticket was nonetheless released by
+     *  something else (round 19, finding #1) is not really still "this villager's own" reservation,
+     *  regardless of what the memory itself still says. */
+    private static boolean isTicketHeld(ServerLevel level, BlockPos pos) {
+        return level.getPoiManager().getType(pos)
+                .map(type -> level.getPoiManager().getFreeTickets(pos) < type.value().maxTickets())
+                .orElse(false);
     }
 
     /** {@code true} when {@code pos} falls within exactly {@code region} - the whole-region-diagonal

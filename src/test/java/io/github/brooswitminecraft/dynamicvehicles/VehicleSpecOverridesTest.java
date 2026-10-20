@@ -183,9 +183,11 @@ class VehicleSpecOverridesTest {
 
     @Test
     void reservedDownstreamSectionsDoNotBreakParsingOrLeakIntoTheSpec(@TempDir Path configDir) throws IOException {
-        // The ownership contract (MINECRAFT-443's ticket discussion): future tasks (445-449) will add their
-        // own keys under these section names. This loader must tolerate them existing in the file today
-        // without implementing, exposing or erroring on any of them.
+        // The ownership contract (MINECRAFT-443's ticket discussion): future tasks (445, 447-449) will add
+        // their own keys under their own section names. This loader must tolerate them existing in the
+        // file today without implementing, exposing or erroring on any of them. "wing" (MINECRAFT-446) is
+        // now implemented (see the dedicated tests below) -- an empty {} object here must still be a no-op,
+        // exactly like every other field this loader does not see mentioned.
         writeCarsFile(configDir, "bus", """
                 {
                   "rideHeight": 1.5,
@@ -202,6 +204,86 @@ class VehicleSpecOverridesTest {
 
         assertEquals(1.5, resolved.rideHeight());
         assertEquals(VehicleSpec.BUS.massKg(), resolved.massKg());
+        assertEquals(VehicleSpec.BUS.frontWingDownforceCoeff(), resolved.frontWingDownforceCoeff());
+        assertEquals(VehicleSpec.BUS.wingDragCoeff(), resolved.wingDragCoeff());
+    }
+
+    @Test
+    void anAbsentWingSectionKeepsEveryWingFieldAtStock(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", "{\"rideHeight\": 1.0}");
+
+        VehicleSpecOverrides.load(configDir);
+        VehicleSpec resolved = VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR);
+
+        assertEquals(VehicleSpec.CAR.frontWingDownforceCoeff(), resolved.frontWingDownforceCoeff());
+        assertEquals(VehicleSpec.CAR.rearWingDownforceCoeff(), resolved.rearWingDownforceCoeff());
+        assertEquals(VehicleSpec.CAR.wingDragCoeff(), resolved.wingDragCoeff());
+    }
+
+    @Test
+    void wingFieldsOverrideAndClampIndependentlyOfEveryOtherField(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", """
+                {
+                  "wing": {
+                    "frontDownforceCoeff": 1.5,
+                    "rearDownforceCoeff": 2.5,
+                    "dragCoeff": 0.9
+                  }
+                }
+                """);
+
+        VehicleSpecOverrides.load(configDir);
+        VehicleSpec resolved = VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR);
+
+        assertEquals(1.5, resolved.frontWingDownforceCoeff());
+        assertEquals(2.5, resolved.rearWingDownforceCoeff());
+        assertEquals(0.9, resolved.wingDragCoeff());
+        // Every field the wing section did not mention keeps the stock car's own value, unchanged.
+        assertEquals(VehicleSpec.CAR.rideHeight(), resolved.rideHeight());
+        assertEquals(VehicleSpec.CAR.handbrakeScale(), resolved.handbrakeScale());
+    }
+
+    @Test
+    void wingFieldsOutOfRangeAreClampedNotRejected(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", """
+                {
+                  "wing": {
+                    "frontDownforceCoeff": -3.0,
+                    "rearDownforceCoeff": 999.0,
+                    "dragCoeff": -1.0
+                  }
+                }
+                """);
+
+        VehicleSpecOverrides.load(configDir);
+        VehicleSpec resolved = VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR);
+
+        assertEquals(VehicleSpecLimits.MIN_WING_DOWNFORCE_COEFF, resolved.frontWingDownforceCoeff());
+        assertEquals(VehicleSpecLimits.MAX_WING_DOWNFORCE_COEFF, resolved.rearWingDownforceCoeff());
+        assertEquals(VehicleSpecLimits.MIN_WING_DRAG_COEFF, resolved.wingDragCoeff());
+    }
+
+    @Test
+    void onlyOneWingFieldOverridesLeavesTheOtherTwoAtStock(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", "{\"wing\": {\"frontDownforceCoeff\": 2.0}}");
+
+        VehicleSpecOverrides.load(configDir);
+        VehicleSpec resolved = VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR);
+
+        assertEquals(2.0, resolved.frontWingDownforceCoeff());
+        assertEquals(VehicleSpec.CAR.rearWingDownforceCoeff(), resolved.rearWingDownforceCoeff());
+        assertEquals(VehicleSpec.CAR.wingDragCoeff(), resolved.wingDragCoeff());
+    }
+
+    @Test
+    void aNonFiniteWingFieldFallsBackToStockInsteadOfPropagatingNanOrInfinity(@TempDir Path configDir)
+            throws IOException {
+        writeCarsFile(configDir, "car", "{\"wing\": {\"dragCoeff\": 1e400}}");
+
+        VehicleSpecOverrides.load(configDir);
+        VehicleSpec resolved = VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR);
+
+        assertEquals(VehicleSpec.CAR.wingDragCoeff(), resolved.wingDragCoeff());
     }
 
     @Test

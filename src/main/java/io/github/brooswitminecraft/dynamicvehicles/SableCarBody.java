@@ -60,6 +60,7 @@ final class SableCarBody {
     private final BoxPhysicsObject box;
     private final RigidBodyHandle body;
     private double lastSlipSpeed;
+    private double lastAudioSlipSpeed;
     private double lastSpinSlip;
     // MINECRAFT-401 review, round 4: the REAL arguments the production path actually passed to
     // SlipReporter.report() this tick, and the REAL Erosion.Result it actually returned -- captured at
@@ -459,6 +460,7 @@ final class SableCarBody {
         boolean touching = false;
         double slipThisTick = 0.0;
         double spinSlipThisTick = 0.0;
+        double audioSlipThisTick = 0.0;
         java.util.List<Vector3d> hits = new java.util.ArrayList<>();
 
         // Pass 1 (once per tick, not per sub-step): one raycast per wheel, giving every wheel's distance
@@ -927,6 +929,14 @@ final class SableCarBody {
                 wheelExternalWork += externalImpulse * (priorSpin + wheelSpin[wheel]) * 0.5;
                 double spinSlip = WheelMath.slipFromSpin(wheelSpin[wheel], spec.wheelRadius(), vLong);
                 spinSlipThisTick = Math.max(spinSlipThisTick, Math.abs(spinSlip));
+                // Audio observes the actual traction budget (including drift/alignment tuning),
+                // independently of terrain wear reporting. Never alter the applied tire forces.
+                double audioLateralScale = driftTuned
+                        ? lateralScale * (handbrake && !front ? CarConfig.driftTireTuning().handbrakeRearGripCut() : 1.0)
+                        : lateralScale * CamberToeGripModel.modifiers(tuning.camberDeg(), tuning.toeDeg()).lateralScale();
+                audioSlipThisTick = Math.max(audioSlipThisTick, TireAudioMath.slipSpeed(
+                        force, tire.frictionLimit(), spinSlip, vLong, vLat, rollingCoefficient,
+                        audioLateralScale, drive, brake, brakeGain, effectiveMass, dt));
                 // Reported slip (feeds slipThisTick/lastSlipSpeed/wearSlip/SlipReporter) is evaluated at the
                 // TICK's own dt, not subDt, so it reads the same regardless of wheelSubSteps - see
                 // WheelSubStepper.subStepSlipSpeed's own comment for why. The force above, which this does
@@ -1201,6 +1211,7 @@ final class SableCarBody {
                     touching, steer, handbrake, gear, dt);
         }
         lastSlipSpeed = slipThisTick;
+        lastAudioSlipSpeed = audioSlipThisTick;
         lastSpinSlip = spinSlipThisTick;
         if (CarDebug.enabled) {
             drawDebug(position, orientation, hits);
@@ -1573,7 +1584,12 @@ final class SableCarBody {
         }
     }
 
-    /** The largest tire slip speed seen on the last tick, m/s. */
+    /** Contact-only audio slip, including wheelspin and the actual tuned grip budget. */
+    double lastAudioSlipSpeed() {
+        return lastAudioSlipSpeed;
+    }
+
+    /** Existing terrain-wear slip report, m/s; independent of audio. */
     double lastSlipSpeed() {
         return lastSlipSpeed;
     }

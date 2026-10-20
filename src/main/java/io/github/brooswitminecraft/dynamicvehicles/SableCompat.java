@@ -30,6 +30,10 @@ final class SableCompat {
         return ((SableCarBody) body).describe(gear, throttle);
     }
 
+    static double audioSlip(Object body) {
+        return ((SableCarBody) body).lastAudioSlipSpeed();
+    }
+
     static double slip(Object body) {
         return ((SableCarBody) body).lastSlipSpeed();
     }

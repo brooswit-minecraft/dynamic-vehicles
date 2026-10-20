@@ -67,9 +67,12 @@ public class CarEntity extends Entity {
             net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
     private static final net.minecraft.network.syncher.EntityDataAccessor<Float> DATA_SLIP =
             net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
-    /** MINECRAFT-401: engine RPM fraction 0..1 between {@link DrivetrainMath#IDLE_RPM} and
-     * {@link DrivetrainMath#LIMITER_RPM}, so the client's drivetrain-derived engine sound hears actual
-     * manual/automatic shifts instead of only road speed. */
+    /** Dashboard measurements: raw crankshaft RPM and body speed in m/s, not the audio fraction. */
+    private static final net.minecraft.network.syncher.EntityDataAccessor<Float> DATA_DRIVING_RPM =
+            net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
+    private static final net.minecraft.network.syncher.EntityDataAccessor<Float> DATA_DRIVING_SPEED =
+            net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
+    /** MINECRAFT-401: engine RPM fraction between idle and limiter for engine audio. */
     private static final net.minecraft.network.syncher.EntityDataAccessor<Float> DATA_RPM =
             net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
     /** Per-wheel suspension travel, steer angle and spin rate (MINECRAFT-122), packed by {@link WheelSync}. */
@@ -322,6 +325,8 @@ public class CarEntity extends Entity {
         builder.define(DATA_RADIO_URL, "");
         builder.define(DATA_SLIP, 0.0f);
         builder.define(DATA_RPM, 0.0f);
+        builder.define(DATA_DRIVING_RPM, 0.0f);
+        builder.define(DATA_DRIVING_SPEED, 0.0f);
         builder.define(DATA_WHEELS, new CompoundTag());
         builder.define(DATA_RIDE_HEIGHT, 0.0f);
     }
@@ -714,6 +719,15 @@ public class CarEntity extends Entity {
         };
     }
 
+    public double clientDrivingRpm() { return entityData.get(DATA_DRIVING_RPM); }
+
+    public double clientDrivingSpeed() { return entityData.get(DATA_DRIVING_SPEED); }
+
+    void publishDrivingTelemetry(double rpm, double metersPerSecond) {
+        entityData.set(DATA_DRIVING_RPM, (float) Math.max(0, rpm));
+        entityData.set(DATA_DRIVING_SPEED, (float) Math.max(0, metersPerSecond));
+    }
+
     /** Server: publish what the sound system needs to hear on every client. */
     void publishSoundState(double throttle, double slipSpeed, double engineRpm) {
         float t = (float) Math.max(0.0, Math.min(1.0, throttle));
@@ -723,7 +737,7 @@ public class CarEntity extends Entity {
         if (Math.abs(entityData.get(DATA_THROTTLE) - t) > 0.05f) {
             entityData.set(DATA_THROTTLE, t);
         }
-        if (Math.abs(entityData.get(DATA_SLIP) - s) > 0.05f) {
+        if (TireAudioMath.shouldSync(entityData.get(DATA_SLIP), s)) {
             entityData.set(DATA_SLIP, s);
         }
         if (Math.abs(entityData.get(DATA_RPM) - r) > 0.02f) {
@@ -1444,7 +1458,8 @@ public class CarEntity extends Entity {
             SableCompat.tick(sableBody, this, throttle, steer, handbrake, gear, DT);
             SableCompat.syncEntity(sableBody, this);
             publishWheelState(SableCompat.wheelTravel(sableBody), SableCompat.wheelSteerAngles(sableBody), SableCompat.wheelSpinRates(sableBody));
-            publishSoundState(Math.abs(throttle), SableCompat.slip(sableBody) + (handbrake || (throttle < 0 && SableCompat.speed(sableBody) > 8.0) ? 2.0 : 0.0),
+            publishDrivingTelemetry(DrivetrainMath.omegaToRpm(SableCompat.engineOmega(sableBody)), SableCompat.speed(sableBody));
+            publishSoundState(Math.abs(throttle), SableCompat.audioSlip(sableBody),
                     SableCompat.engineRpm(sableBody));
             emitEffects(throttle, SableCompat.speed(sableBody), SableCompat.slip(sableBody));
             checkImpact(SableCompat.speed(sableBody));

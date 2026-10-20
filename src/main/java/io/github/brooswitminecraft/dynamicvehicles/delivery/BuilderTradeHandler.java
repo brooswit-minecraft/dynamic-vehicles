@@ -33,6 +33,21 @@ public final class BuilderTradeHandler {
         add(event, 3, Items.SANDSTONE, 20, Items.OAK_LEAVES, 4, 10);
         add(event, 4, Items.BRICK, 24, Items.STICK, 3, 15);
         add(event, 5, Items.QUARTZ_BLOCK, 28, Items.DIRT, 2, 30);
+
+        // MINECRAFT-388: TownDonationConversion/TownConstants already advertise stone/wood
+        // donation rates for these materials, but until now there was no actual trade offer a
+        // player could use to donate them - the conversion table had no corresponding intake.
+        // These do not feed the legacy BuilderTradeHandler::onTrade settlement-tier roll (that
+        // narrower mechanic is intentionally left keyed on its original five items only); they
+        // exist so TownDonationHandler::onTrade has a real, player-facing offer to credit from.
+        add(event, 1, Items.DIRT, 32, Items.STICK, 8, 1);
+        add(event, 2, Items.SMOOTH_STONE, 16, Items.STICK, 6, 5);
+        add(event, 2, Items.STONE_BRICKS, 16, Items.STICK, 6, 5);
+        add(event, 4, Items.CHISELED_STONE_BRICKS, 12, Items.STICK, 4, 15);
+        add(event, 1, Items.OAK_PLANKS, 16, Items.STICK, 8, 1);
+        add(event, 3, Items.WHEAT, 32, Items.STICK, 6, 10);
+        add(event, 3, Items.BREAD, 12, Items.STICK, 6, 10);
+        add(event, 3, Items.CARROT, 32, Items.STICK, 6, 10);
     }
 
     private static void add(VillagerTradesEvent event, int level, net.minecraft.world.item.Item cost,

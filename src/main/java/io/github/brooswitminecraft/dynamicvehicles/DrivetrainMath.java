@@ -708,4 +708,21 @@ public final class DrivetrainMath {
             VehicleSpec.DrivetrainCoupling coupling, double forceScale) {
         return -(nextOmega - priorOmega) * coupling.engineInertia() * forceScale / dt;
     }
+
+    /**
+     * The one-time chassis impulse, N*s along the wheel's forward axis, that pays for a ground-sourced spin
+     * change {@link #boundedSpinTowardSnap} returned -- extracted verbatim out of {@code SableCarBody.tick}
+     * (which calls this, not a copy of it) so the sign of what a recovering wheel actually hands the chassis
+     * is testable without a Sable body. Spin decreasing (overspin bleeding off) pays out as a FORWARD
+     * impulse, spin increasing (a locked wheel catching back up) as a backward one; see the call site's own
+     * comment for the torque balance this solves.
+     *
+     * <p>An IMPULSE, not a force: it is the whole recovery's momentum, so it does not scale with the
+     * sub-step's length the way a tire force times {@code subDt} does. MINECRAFT-445's anti-dive/anti-squat
+     * selector caught exactly that units mix-up once (PR184 review 5580581955).
+     */
+    public static double recoveryReactionImpulse(double priorSpin, double recoveredSpin, double wheelInertia,
+            double wheelRadius) {
+        return -(recoveredSpin - priorSpin) * wheelInertia / wheelRadius;
+    }
 }

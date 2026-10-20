@@ -54,6 +54,53 @@ final class VehicleSpecLimits {
     static final double MIN_CLUTCH_TORQUE_CAPACITY = 0.0;
     static final double MAX_CLUTCH_TORQUE_CAPACITY = 20_000.0;
 
+    /** MINECRAFT-445: same range as the existing {@code dampingRate} field above -- a fast-compression,
+     * slow-rebound or fast-rebound rate is physically the same kind of quantity, just applied in a
+     * different speed/direction regime. */
+    static final double MIN_TIRE_KIT_DAMPING = MIN_DAMPING_RATE;
+    static final double MAX_TIRE_KIT_DAMPING = MAX_DAMPING_RATE;
+
+    /** MINECRAFT-445: the compression-rate magnitude (m/s) separating "slow" from "fast" damping. 0.0 (every
+     * speed is "fast") is a valid, finite configuration; the roster's wheels rarely see compression rates
+     * much above a few m/s even over rough terrain, so 10.0 is a generous upper bound. */
+    static final double MIN_DAMPING_KNEE_SPEED = 0.0;
+    static final double MAX_DAMPING_KNEE_SPEED = 10.0;
+
+    /** MINECRAFT-445: metres of compression before the progressive bump stop engages. 0.0 (engaged from the
+     * very first touch of compression) is a valid, finite configuration; the upper bound deliberately
+     * tracks {@link #MAX_RIDE_HEIGHT} (no car's suspension travel can exceed the tallest ride height this
+     * format allows) rather than restating its number, so the two can never drift apart. A value a
+     * particular car's own geometry can never actually reach is simply inert (the bump stop never engages),
+     * not degenerate, so unlike {@code rideHeight} this field needs no per-car {@code isUsable} check. */
+    static final double MIN_BUMP_STOP_TRAVEL = 0.0;
+    static final double MAX_BUMP_STOP_TRAVEL = MAX_RIDE_HEIGHT;
+
+    /** MINECRAFT-445: N/m applied only to the compression past {@code bumpStopTravel}. 0.0 (no extra bump
+     * stop force at all, same as an unreachable {@code bumpStopTravel}) is a valid, finite configuration;
+     * the upper bound is an order of magnitude past the roster's stiffest {@code springRate} ({@code
+     * CARGO_TRUCK}'s 78,480), generous headroom for a genuinely hard mechanical stop. */
+    static final double MIN_BUMP_STOP_RATE = 0.0;
+    static final double MAX_BUMP_STOP_RATE = 500_000.0;
+
+    /** MINECRAFT-445: the fraction of front steer angle applied to the rear wheels. Bounded at +/-1.0 --
+     * a magnitude of 1.0 already means the rear wheels turn as hard as the fronts, and anything beyond that
+     * is not a steering geometry any real car has. Negative is opposite-phase, positive same-phase; see
+     * {@code VehicleSpec.SteeringTuning#rearSteerRatio}. */
+    static final double MIN_REAR_STEER_RATIO = -1.0;
+    static final double MAX_REAR_STEER_RATIO = 1.0;
+
+    /** MINECRAFT-445: tire pressure in bar. The floor is strictly positive -- both pressure multipliers
+     * divide by it -- and the range spans a genuinely flat off-road tire (0.5) to well past a loaded
+     * truck tire (8.0), around the {@link WheelMath#NOMINAL_TIRE_PRESSURE_BAR} every car ships at. */
+    static final double MIN_TIRE_PRESSURE_BAR = 0.5;
+    static final double MAX_TIRE_PRESSURE_BAR = 8.0;
+
+    /** MINECRAFT-445: anti-dive / anti-squat fractions. 0.0 is today's behaviour (full weight transfer)
+     * and 1.0 cancels the pitch couple entirely; beyond 1.0 would apply the force ABOVE the body and
+     * invert the pitch, which is not a geometry any real suspension has. */
+    static final double MIN_PITCH_RESIST = 0.0;
+    static final double MAX_PITCH_RESIST = 1.0;
+
     /** Wing downforce coefficient (MINECRAFT-446), N per (m/s)^2 applied at one axle. Identity is 0.0 (no
      * wing at all, the whole roster today); generous headroom above the roster's own existing 0.4 N/(m/s)^2
      * global air-drag constant, since a real wing's downforce coefficient is routinely several times its

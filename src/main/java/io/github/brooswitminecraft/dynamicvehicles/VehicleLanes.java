@@ -97,7 +97,7 @@ final class VehicleLanes {
         OPPOSING_THROTTLE,
         SUB_STEP_SPEED,
         GEAR_RATIO,
-        LIMITER_WALL;
+        LIMITER_WALL, INTEGRATION_CONTACT;
 
         BlockPos origin() {
             return new BlockPos(0, SITE_Y, FIRST_SITE_Z + ordinal() * SITE_SPACING);

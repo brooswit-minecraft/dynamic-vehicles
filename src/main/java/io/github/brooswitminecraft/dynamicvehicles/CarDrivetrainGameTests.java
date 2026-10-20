@@ -43,11 +43,32 @@ public final class CarDrivetrainGameTests {
      * -- the vertical settling bounce right after spawn dominates it for the first several ticks,
      * completely masking any horizontal difference between gears. Measuring from a settled standstill
      * means every bit of speed gained afterward is actually from the drivetrain.
-     * <li>A PARTIAL throttle (0.3) keeps both gears' commanded force under the tire's grip limit, which
-     * isolates the ratio multiplier itself from the separate wheelspin/rev-limiter interaction the next
-     * test below covers -- at full throttle, D1's own wheelspin can trip its own limiter within a tick or
-     * two (a real low-gear, low-grip launch's own "fighting the limiter" behavior).
+     * <li>A PARTIAL throttle ({@link #UNDER_GRIP_THROTTLE}) keeps both gears' commanded force under the
+     * tire's grip limit, which isolates the ratio multiplier itself from the separate wheelspin/rev-limiter
+     * interaction the next test below covers -- at full throttle, D1's own wheelspin can trip its own
+     * limiter within a tick or two (a real low-gear, low-grip launch's own "fighting the limiter" behavior).
      * </ul>
+     *
+     * <p><b>MINECRAFT-445 flake fix.</b> This test's throttle used to be 0.3, and that value did NOT keep
+     * D1 under the grip limit, which made the test genuinely nondeterministic (observed across CI runs on
+     * one branch: 6 passes, 4 failures, including at two commits whose production behaviour was identical).
+     * The arithmetic, all from production constants: {@link DrivetrainMath#forceMultiplier} is {@code ratio
+     * / GEAR_RATIOS[last]}, so D1 multiplies drive force by {@code 3.6 / 0.9 = 4.0} where D5 multiplies by
+     * {@code 1.0}. At throttle 0.3 on the car ({@code SableCarBody.DRIVE_FORCE} 2300 N, {@code forceScale}
+     * 1.0) D1 therefore commands {@code 0.3 * 2300 * 4.0 = 2760 N} per wheel against a grip limit of about
+     * {@code BASE_FRICTION * massKg * g / wheels = 1.1 * 2943 = 3237 N} -- 85% of the budget, before the
+     * friction circle's lateral share or rolling resistance take any of it. A ~15% dip in instantaneous
+     * wheel load (ordinary residual settling bounce) is then enough to tip D1 into wheelspin, where its
+     * longitudinal force saturates and it UNDER-accelerates. D5, commanding 690 N (21% of the budget), is
+     * nowhere near the limit, which is exactly what the evidence showed: D5 landed within 0.07% across
+     * every observed failure (0.8810-0.8816) while D1 swung from 0.62 to over 1.15.
+     *
+     * <p>The repair preserves the assertion and the coverage unchanged -- D1 must still exceed D5 by the
+     * same 1.3x margin -- and instead fixes the premise the test always claimed: the throttle now leaves a
+     * real traction margin, the settle gate is tight enough that wheel load is actually steady when
+     * throttle is applied, and {@link #assertNotSlipping} makes "under the grip limit" an asserted fact
+     * rather than a comment. If a future production change pushes D1 back over the limit at this throttle,
+     * this test now says so directly instead of flaking.
      */
     @GameTest(template = "settlement_test", timeoutTicks = 100)
     public static void d1ReachesAHigherSpeedThanD5OverTheSameShortWindow(GameTestHelper helper) {
@@ -65,23 +86,62 @@ public final class CarDrivetrainGameTests {
         helper.assertTrue(riderD1.startRiding(carD1), "mock player failed to board the D1 car");
         Player riderD5 = helper.makeMockPlayer(GameType.CREATIVE);
         helper.assertTrue(riderD5.startRiding(carD5), "mock player failed to board the D5 car");
-        helper.runAfterDelay(60L, () -> {
-            helper.assertTrue(carD1.debugSpeed() < 1.5 && carD5.debugSpeed() < 1.5,
+        helper.runAfterDelay(SETTLE_TICKS, () -> {
+            // Tightened from "< 1.5": that gate passed a car still bouncing on its springs, and a bouncing
+            // car's instantaneous wheel load is what tipped D1 over the grip limit. debugSpeed() is the
+            // body's full 3D velocity magnitude, so this threshold is also what keeps residual vertical
+            // motion from contaminating the horizontal comparison below.
+            helper.assertTrue(carD1.debugSpeed() < SETTLED_SPEED && carD5.debugSpeed() < SETTLED_SPEED,
                     "test setup invalid -- a car had not settled to a near-standstill before throttle was applied: D1="
                             + carD1.debugSpeed() + " D5=" + carD5.debugSpeed());
-            riderD1.zza = 0.3f;
-            riderD5.zza = 0.3f;
+            riderD1.zza = (float) UNDER_GRIP_THROTTLE;
+            riderD5.zza = (float) UNDER_GRIP_THROTTLE;
             helper.runAfterDelay(20L, () -> {
                 helper.assertTrue(carD1.debugGearRatio() == DrivetrainMath.ratioFor(0),
                         "D1 did not resolve to its own ratio on the production tick path: " + carD1.debugGearRatio());
                 helper.assertTrue(carD5.debugGearRatio() == DrivetrainMath.ratioFor(4),
                         "D5 did not resolve to its own ratio on the production tick path: " + carD5.debugGearRatio());
+                // The premise, now asserted rather than assumed: neither car may be traction-limited, or
+                // this is not a measurement of the ratio multiplier at all.
+                assertNotSlipping(helper, carD1, "D1");
+                assertNotSlipping(helper, carD5, "D5");
                 helper.assertTrue(carD1.debugSpeed() > carD5.debugSpeed() * 1.3,
                         "D1's extra torque multiplier did not produce a measurably higher speed than D5 from a settled standstill: D1="
-                                + carD1.debugSpeed() + " D5=" + carD5.debugSpeed());
+                                + carD1.debugSpeed() + " D5=" + carD5.debugSpeed()
+                                + " [D1 slip=" + carD1.debugSlipSpeed() + " D5 slip=" + carD5.debugSlipSpeed() + "]");
                 helper.succeed();
             });
         });
+    }
+
+    /** Ticks the cars are left at zero throttle before anything is measured. Longer than the original 60:
+     * the gate below is far tighter now, and a car needs the time to actually get there. */
+    private static final long SETTLE_TICKS = 80L;
+
+    /** How slow a car must be (m/s, full 3D speed) to count as settled before throttle is applied. Well
+     * under the 1.5 this test used to accept, which was loose enough to pass a car still bouncing on its
+     * springs -- see this test's own javadoc for why that mattered. */
+    private static final double SETTLED_SPEED = 0.05;
+
+    /** Throttle for the ratio comparison: low enough that even D1's 4.0x force multiplier stays well under
+     * the tire's grip limit (about 34% of the budget, against 85% at the old 0.3), so the test measures the
+     * ratio rather than the traction limit. See this test's own javadoc for the arithmetic. */
+    private static final double UNDER_GRIP_THROTTLE = 0.12;
+
+    /** The most tire slip (m/s) a car may show while still counting as "not traction-limited". Not zero:
+     * {@code WheelMath.tire} reports small slip transients even while gripping. Well below the sustained
+     * slip a genuinely spinning wheel produces. */
+    private static final double MAX_GRIPPING_SLIP = 0.3;
+
+    /** Asserts a car is not traction-limited, which the ratio comparison's whole premise depends on. Uses
+     * {@code debugSlipSpeed()} -- the same RAW slip speed (m/s) the erosion gate reads, not the normalized
+     * audio signal. */
+    private static void assertNotSlipping(GameTestHelper helper, CarEntity car, String which) {
+        helper.assertTrue(car.debugSlipSpeed() < MAX_GRIPPING_SLIP,
+                which + " was traction-limited at this throttle, so this is a measurement of grip, not of "
+                        + "the gear ratio -- the throttle must stay under the grip limit (see this test's "
+                        + "javadoc for the arithmetic): slip=" + car.debugSlipSpeed()
+                        + " speed=" + car.debugSpeed() + " spins=" + java.util.Arrays.toString(car.debugWheelSpins()));
     }
 
     /** Review P1 (both rounds): the rev limiter must cap TORQUE, not merely the number displayed, and the

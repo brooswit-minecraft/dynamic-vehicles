@@ -27,6 +27,11 @@ package io.github.brooswitminecraft.dynamicvehicles;
 public final class GearDrive {
     /** Reverse's own governed top speed, m/s -- unrelated to the forward gears' {@code maxSpeed}. */
     private static final double REVERSE_GOVERNOR_SPEED = 8.0;
+    /** Below this speed, m/s, a closed throttle contributes no drivetrain force at all (MINECRAFT-444):
+     * there is effectively nothing turning for the engine to drag against, and {@code SableCarBody.tick}'s
+     * own parked-hold brake already owns holding a standing car. Keeps engine drag from ever reading as a
+     * force on a car at rest. */
+    private static final double DRAG_STANDSTILL_SPEED = 0.5;
 
     private GearDrive() {}
 
@@ -103,10 +108,20 @@ public final class GearDrive {
      *
      * <p>{@code clutchWheelForce} is {@link DrivetrainMath#clutchExchangeTorque} through this gear's own
      * gearing -- the single torque the clutch exchanges, the same value the engine integrates against, so
-     * the two shafts are loaded equally and oppositely by construction. The sign needs no correction here:
-     * because {@link DrivetrainMath#wheelSideOmegaSigned} is signed in the engine's own rotation sense, an
-     * exchange that opposes the car's motion already comes out of the gearing pointing the right way,
-     * REVERSE-while-rolling-forward included (where it reads as the hard slip it physically is).
+     * the two shafts are loaded equally and oppositely by construction.
+     *
+     * <p>Which of the two cases applies is decided by the THROTTLE, not by the exchange's own sign, and
+     * that distinction is load-bearing. The exchange's sign follows the driven wheels' own rotation (the
+     * driveshaft's, correctly -- that is what the clutch is bolted to), and a slipping wheel's rotation
+     * need not agree with the car's motion: under hard opposing throttle the wheels can already be turning
+     * the new way while the body still slides the old way. Branching on the exchange's sign there
+     * classified a driving exchange as engine braking and returned it in place of the reverse the driver
+     * was asking for, which held the car in a self-sustaining stall just above zero -- measured at +0.029
+     * m/s with the throttle pinned in {@code opposingDirectionThrottleDecelerateAndReverseInBothMirroredDirections},
+     * where the pure drivetrain arithmetic on its own reverses the same car at -4.67 m/s^2. Branching on
+     * the throttle cannot be flipped by a slipping wheel: a driver asking for drive gets drive, bounded by
+     * what the clutch can actually pass, and a closed throttle gets whatever the exchange is -- which is
+     * the engine's own drag, the thing "engine braking" means.
      */
     public static double driveThroughClutch(double throttle, double forwardSpeed, CarPhysics.Gear gear,
             double forceMultiplier, double driveForce, double reverseForce, double forceScale, double maxSpeed,
@@ -114,9 +129,19 @@ public final class GearDrive {
         if (gear == CarPhysics.Gear.NEUTRAL) {
             return 0.0;
         }
-        double gearDirection = gear == CarPhysics.Gear.REVERSE ? -1.0 : 1.0;
-        if (clutchWheelForce * gearDirection < 0.0) {
-            return clutchWheelForce;
+        if (throttle <= 0.0) {
+            // Coasting or braking: the drivetrain contributes what the clutch is exchanging, which at a
+            // closed throttle is the engine's own drag -- but ONLY ever as a force opposing the car's
+            // actual motion. A clutch can momentarily be driving with the throttle shut (an engine still
+            // spinning faster than the wheel side just after a shift), and the acceptance criteria are
+            // explicit that neutral and the brakes must never create propulsion: a driver who has lifted
+            // off gets deceleration or nothing. Below DRAG_STANDSTILL_SPEED there is nothing turning worth
+            // dragging and SableCarBody's own parked-hold brake already owns holding the car.
+            if (Math.abs(forwardSpeed) < DRAG_STANDSTILL_SPEED) {
+                return 0.0;
+            }
+            boolean opposesMotion = clutchWheelForce * forwardSpeed < 0.0;
+            return opposesMotion ? clutchWheelForce : 0.0;
         }
         double demand = drive(throttle, forwardSpeed, gear, forceMultiplier, driveForce, reverseForce,
                 forceScale, maxSpeed);

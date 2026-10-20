@@ -185,6 +185,37 @@ class GearDriveTest {
     }
 
     @Test
+    void anOpposingThrottleStillGetsItsFullCommandEvenIfTheExchangeReadsTheOtherWay() {
+        // Regression for the stall this round measured: under hard opposing throttle the driven wheels can
+        // already be turning the new way while the body still slides the old way, so the exchange (which
+        // follows the driveshaft, correctly) reads as driving. Branching on its sign returned that instead
+        // of the reverse the driver asked for and pinned the car just above zero. Branching on the throttle
+        // cannot be flipped by a slipping wheel.
+        double drivingExchangeWhileStillRollingForward = 8_000.0; // positive: "driving" in the wheel's sense
+        double command = driveThroughClutch(1.0, 5.0, CarPhysics.Gear.REVERSE, 1.0, drivingExchangeWhileStillRollingForward);
+        assertTrue(command < 0.0,
+                "a driver holding full throttle in REVERSE while still rolling forward must get a rearward command, got " + command);
+        assertEquals(GearDrive.drive(1.0, 5.0, CarPhysics.Gear.REVERSE, 1.0, DRIVE_FORCE, REVERSE_FORCE, 1.0, MAX_SPEED),
+                command, 1e-9, "and it must be the governed reverse demand, since the clutch can pass more than that here");
+    }
+
+    @Test
+    void aClosedThrottleOnlyEverRetardsNeverDrives() {
+        // Both directions, and both signs of exchange: with the throttle shut the drivetrain may slow the
+        // car or do nothing, never push it.
+        assertTrue(driveThroughClutch(0.0, 5.0, CarPhysics.Gear.D1, 1.0, -600.0) < 0.0,
+                "rolling forward with a retarding exchange must decelerate");
+        assertEquals(0.0, driveThroughClutch(0.0, 5.0, CarPhysics.Gear.D1, 1.0, 600.0), 0.0,
+                "rolling forward with a driving exchange and no throttle must contribute nothing");
+        assertTrue(driveThroughClutch(0.0, -5.0, CarPhysics.Gear.REVERSE, 1.0, 600.0) > 0.0,
+                "rolling backward with a retarding exchange must decelerate");
+        assertEquals(0.0, driveThroughClutch(0.0, -5.0, CarPhysics.Gear.REVERSE, 1.0, -600.0), 0.0,
+                "rolling backward with a driving exchange and no throttle must contribute nothing");
+        assertEquals(0.0, driveThroughClutch(0.0, 0.1, CarPhysics.Gear.D1, 1.0, -600.0), 0.0,
+                "at a standstill the parked-hold brake owns the car, not engine drag");
+    }
+
+    @Test
     void neutralTransmitsNoCommandInEitherDirection() {
         assertEquals(0.0, driveThroughClutch(1.0, 10.0, CarPhysics.Gear.NEUTRAL, 1.0, 5_000.0), 0.0);
         assertEquals(0.0, driveThroughClutch(0.0, 10.0, CarPhysics.Gear.NEUTRAL, 1.0, -5_000.0), 0.0,

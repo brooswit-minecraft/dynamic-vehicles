@@ -57,7 +57,14 @@ public final class DiffuserAssistGameTests {
     /** High enough above the template's own floor that every drop-based fixture here stays airborne for its
      * whole observation window (no landing, so no dependence on the landing tick -- see the comment block
      * at the end of this class for why that matters), and the same height the pre-existing inverted-car
-     * fixture already used. */
+     * fixture already used: about 9 m over the floor (top at y=3), some 27 ticks of fall.
+     *
+     * <p>That holds only because every fixture in this class runs with {@code skyAccess}. Without it,
+     * GameTest closes each structure with a barrier ceiling at the template's height (y=9, top at 10), and
+     * a car dropped from here landed on that ceiling about 11-13 ticks in -- inside these 15-tick windows.
+     * CI's own debug telemetry (run 39371109708) showed it: resting cars with body centres at y~10.93
+     * (upright, ride height above y=10) and y~10.50 (inverted, half its height above y=10) -- on top of the
+     * barrier. */
     private static final BlockPos DROP_SPAWN = new BlockPos(5, 12, 5);
     /** Where a fixture that needs a real floor puts one, and the spawn just above it. */
     private static final BlockPos FLOOR_BLOCK = new BlockPos(5, 2, 5);
@@ -226,7 +233,7 @@ public final class DiffuserAssistGameTests {
      * stay substantially inverted after real ticks, falling and landing however gravity/collision alone
      * take it. This is also the regression guarantee for every existing car: since no car's own stock spec
      * differs from this tuning, this is exactly their own real-server behavior, unchanged. */
-    @GameTest(template = TEMPLATE, timeoutTicks = INVERTED_TIMEOUT_TICKS)
+    @GameTest(template = TEMPLATE, skyAccess = true, timeoutTicks = INVERTED_TIMEOUT_TICKS)
     public static void identityDiffuserTuningLeavesAnInvertedCarInverted(GameTestHelper helper) {
         helper.setBlock(FLOOR_BLOCK, Blocks.STONE);
         CarEntity car = spawnCarWithCleanup(helper, DROP_SPAWN);
@@ -293,12 +300,12 @@ public final class DiffuserAssistGameTests {
         });
     }
 
-    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    @GameTest(template = TEMPLATE, skyAccess = true, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
     public static void headingAlignmentTurnsTowardATargetAheadOfCurrentYawNotAwayFromIt(GameTestHelper helper) {
         assertHeadingTurnsTowardTarget(helper, HEADING_TARGET_OFFSET_DEG);
     }
 
-    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    @GameTest(template = TEMPLATE, skyAccess = true, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
     public static void headingAlignmentTurnsTowardATargetBehindCurrentYawNotAwayFromIt(GameTestHelper helper) {
         assertHeadingTurnsTowardTarget(helper, -HEADING_TARGET_OFFSET_DEG);
     }
@@ -347,12 +354,12 @@ public final class DiffuserAssistGameTests {
         });
     }
 
-    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    @GameTest(template = TEMPLATE, skyAccess = true, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
     public static void trajectoryAlignmentTurnsNoseTowardRealVelocityDirectionNotAwayFromIt(GameTestHelper helper) {
         assertTrajectoryTurnsTowardVelocity(helper, SEEDED_SPEED);
     }
 
-    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    @GameTest(template = TEMPLATE, skyAccess = true, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
     public static void trajectoryAlignmentTurnsNoseTowardVelocityOnTheOtherSideToo(GameTestHelper helper) {
         assertTrajectoryTurnsTowardVelocity(helper, -SEEDED_SPEED);
     }
@@ -386,7 +393,7 @@ public final class DiffuserAssistGameTests {
      * {@code DiffuserAssistMath.headingAlignmentTorque}'s own suppression term. Any difference observed
      * against {@link #headingAlignmentTurnsTowardATargetAheadOfCurrentYawNotAwayFromIt}, which is identical
      * but for the steer, is attributable to suppression and nothing else. */
-    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    @GameTest(template = TEMPLATE, skyAccess = true, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
     public static void fullSteerSuppressesHeadingAlignmentEntirely(GameTestHelper helper) {
         CarEntity car = spawnCarWithCleanup(helper, DROP_SPAWN);
         helper.runAfterDelay(BODY_EXISTS_TICK, () -> {
@@ -451,12 +458,12 @@ public final class DiffuserAssistGameTests {
         });
     }
 
-    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    @GameTest(template = TEMPLATE, skyAccess = true, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
     public static void headingAloneTurnsTowardItsOwnTargetNotTheVelocityDirection(GameTestHelper helper) {
         assertSingleAssistTurnsInItsOwnDirection(helper, true);
     }
 
-    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    @GameTest(template = TEMPLATE, skyAccess = true, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
     public static void trajectoryAloneTurnsTowardVelocityNotHeadingsOwnTarget(GameTestHelper helper) {
         assertSingleAssistTurnsInItsOwnDirection(helper, false);
     }
@@ -466,7 +473,7 @@ public final class DiffuserAssistGameTests {
      * interesting property is not which one wins (that is just the larger bounded torque) but that the
      * result stays finite and inside the span the two targets bracket, rather than diverging or going NaN
      * the way an unbounded or double-counted sum would. */
-    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    @GameTest(template = TEMPLATE, skyAccess = true, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
     public static void bothYawAssistsTogetherStayFiniteAndBounded(GameTestHelper helper) {
         CarEntity car = spawnCarWithCleanup(helper, DROP_SPAWN);
         helper.runAfterDelay(BODY_EXISTS_TICK, () -> {
@@ -560,12 +567,12 @@ public final class DiffuserAssistGameTests {
         });
     }
 
-    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    @GameTest(template = TEMPLATE, skyAccess = true, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
     public static void pitchLandingTurnsTowardLevelNotAwayFromIt(GameTestHelper helper) {
         assertPitchReturnsTowardLevel(helper, START_TILT_RAD);
     }
 
-    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    @GameTest(template = TEMPLATE, skyAccess = true, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
     public static void pitchLandingTurnsTowardLevelFromNoseDownToo(GameTestHelper helper) {
         assertPitchReturnsTowardLevel(helper, -START_TILT_RAD);
     }
@@ -602,12 +609,12 @@ public final class DiffuserAssistGameTests {
         });
     }
 
-    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    @GameTest(template = TEMPLATE, skyAccess = true, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
     public static void rollSelfRightingRollsBackTowardUprightNotFurtherOver(GameTestHelper helper) {
         assertRollReturnsTowardUpright(helper, START_TILT_RAD);
     }
 
-    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    @GameTest(template = TEMPLATE, skyAccess = true, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
     public static void rollSelfRightingRollsBackTowardUprightFromTheOtherSideToo(GameTestHelper helper) {
         assertRollReturnsTowardUpright(helper, -START_TILT_RAD);
     }
@@ -616,7 +623,8 @@ public final class DiffuserAssistGameTests {
      * 26 m fall, about 2.3 s (46 ticks) of air, against the ~1 s the recovery tuning below needs. */
     private static final BlockPos INVERTED_RECOVERY_SPAWN = new BlockPos(5, 30, 5);
     /** Where the recovery fixture lands: the template's own ground level, replaced with a solid pad so the
-     * car comes down on flat stone whatever the template has there. */
+     * car comes down on flat stone whatever the template has there. (It reaches it because the fixture runs
+     * with {@code skyAccess} -- see {@link #DROP_SPAWN}; without it the car landed on the barrier ceiling.) */
     private static final BlockPos LANDING_PAD = new BlockPos(5, 2, 5);
     /** Decisive, still well inside {@link DiffuserTuningLimits}: at these values a rigid box of this car's
      * mass and size (roll inertia ~460 kg*m^2) comes round from {@link #INVERTED_START_OFFSET_RAD} off
@@ -646,7 +654,7 @@ public final class DiffuserAssistGameTests {
      * airborne, so a pass cannot come from the ground knocking the car over the right way, and on its
      * wheels after landing. Still started {@link #INVERTED_START_OFFSET_RAD} off exactly inverted, for the
      * reason {@link #startUpsideDown} gives. */
-    @GameTest(template = TEMPLATE, timeoutTicks = INVERTED_TIMEOUT_TICKS)
+    @GameTest(template = TEMPLATE, skyAccess = true, timeoutTicks = INVERTED_TIMEOUT_TICKS)
     public static void rollSelfRightingRightsAnInvertedCarInTheAirAndItLandsOnItsWheels(GameTestHelper helper) {
         setPad(helper, LANDING_PAD, Blocks.STONE);
         CarEntity car = spawnCarWithCleanup(helper, INVERTED_RECOVERY_SPAWN);
@@ -672,24 +680,31 @@ public final class DiffuserAssistGameTests {
         });
     }
 
+    /** Both time-to-touchdown cases drop from here: high enough that the fast-fall case still has real air
+     * under it at the end of its window. From {@link #DROP_SPAWN} it would reach the floor in about 4.6
+     * ticks. The previous 3-tick window only "passed" because, under the barrier ceiling
+     * {@link #DROP_SPAWN}'s javadoc describes, the car hit that ceiling within ~1.3 ticks; truly airborne
+     * it moved 0.011 rad, against the 0.02 this asserts. */
+    private static final BlockPos PITCH_RAMP_SPAWN = new BlockPos(5, 30, 5);
     /** Downward speed (m/s) seeded to make time-to-touchdown SHORT and deterministic, rather than waiting
      * for gravity to produce some particular fall speed at some particular tick -- the exact dependence on
      * landing timing that sank this ticket's earlier R17 attempts. */
     private static final double FAST_FALL_SPEED = 40.0;
-    /** Horizon comfortably longer than the fast-fall case's own time-to-touchdown, so that case gets real
-     * authority. The drop here is only about 7 m (measured, not assumed: these fixtures spawn near Y=-49.5
-     * and the ground under them sits near Y=-56.6), so at {@link #FAST_FALL_SPEED} the estimate is roughly
-     * 0.18 s -- well inside this. */
-    private static final double LONG_HORIZON_SECONDS = 1.0;
-    /** Horizon short enough that NO fall this fixture can produce reaches it: gravity alone needs about
-     * 140 m/s over a 7 m drop to bring the estimate under this, which 15 ticks cannot approach. Picked this
-     * way deliberately -- an earlier attempt used 1.0 s and the car simply fell close enough to the ground
-     * for the ramp to engage late in the window, which is the assist working correctly, not a gate. */
+    /** Horizon comfortably longer than the fast-fall case's own time-to-touchdown, so that case gets nearly
+     * full authority: the probe measures from the body centre (y~30.5 at {@link #PITCH_RAMP_SPAWN}) down
+     * to the template's floor (top at y=3), about 27.5 m, so at {@link #FAST_FALL_SPEED} the estimate is
+     * roughly 0.68 s and the ramp's authority {@code 1 - ttd/horizon} about 0.93. The longest horizon
+     * {@link DiffuserTuningLimits} allows. */
+    private static final double LONG_HORIZON_SECONDS = 10.0;
+    /** Horizon short enough that NO fall this fixture can produce reaches it: gravity alone needs over
+     * 500 m/s over a 27.5 m drop to bring the estimate under this, which 15 ticks cannot approach. Picked
+     * this way deliberately -- an earlier attempt used 1.0 s and the car simply fell close enough to the
+     * ground for the ramp to engage late in the window, which is the assist working correctly, not a gate. */
     private static final double SHORT_HORIZON_SECONDS = 0.05;
-    /** Short enough that the strong-authority case is sampled before it can overshoot through level: at
-     * full authority this assist is meant to be decisive, so "did it move toward level" has to be read
-     * before it arrives, not after. */
-    private static final long PITCH_RAMP_OBSERVE_TICKS = 3L;
+    /** Short enough that the strong-authority case is sampled well before it can overshoot through level
+     * (about 0.07 rad of a 0.3 rad tilt corrected by then) and while the car is still some 15 m up, long
+     * enough for a correctly signed assist to move it clearly past {@link #MIN_TILT_RECOVERY_RAD}. */
+    private static final long PITCH_RAMP_OBSERVE_TICKS = 6L;
     /** Window for the gated case: long enough that an un-gated assist would visibly move the pitch, short
      * enough that the car is unambiguously still falling. The fixture also asserts it is still airborne at
      * the moment of measurement, because an earlier version ran 15 ticks, the car reached the ground, and
@@ -706,7 +721,7 @@ public final class DiffuserAssistGameTests {
      * whether the assist acts is decided purely by the ramp this case exists to exercise. */
     private static void assertPitchAuthorityMatchesTimeToTouchdown(GameTestHelper helper,
             boolean expectCorrection) {
-        CarEntity car = spawnCarWithCleanup(helper, DROP_SPAWN);
+        CarEntity car = spawnCarWithCleanup(helper, PITCH_RAMP_SPAWN);
         car.setDiffuserTuningForTest(pitchOnly(ASSIST_MAX_TORQUE,
                 expectCorrection ? LONG_HORIZON_SECONDS : SHORT_HORIZON_SECONDS, ASSIST_GAIN, ASSIST_DAMPING));
         // rotateX(-x) for a measured NOSE-UP pitch of +x: this engine's pitch rotation is the negation of
@@ -743,12 +758,12 @@ public final class DiffuserAssistGameTests {
         });
     }
 
-    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    @GameTest(template = TEMPLATE, skyAccess = true, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
     public static void shortTimeToTouchdownGivesPitchTheAuthorityToLevelTheCar(GameTestHelper helper) {
         assertPitchAuthorityMatchesTimeToTouchdown(helper, true);
     }
 
-    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    @GameTest(template = TEMPLATE, skyAccess = true, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
     public static void timeToTouchdownBeyondTheHorizonLeavesPitchAlone(GameTestHelper helper) {
         assertPitchAuthorityMatchesTimeToTouchdown(helper, false);
     }
@@ -790,7 +805,7 @@ public final class DiffuserAssistGameTests {
      * transition in one fixture, and deliberately uses a FIXED relative coordinate for the floor block
      * rather than converting the car's absolute position back to relative -- see this class's closing
      * comment on why {@code relativePos} cannot be trusted to invert {@code absolutePos}. */
-    @GameTest(template = TEMPLATE, timeoutTicks = INVERTED_TIMEOUT_TICKS)
+    @GameTest(template = TEMPLATE, skyAccess = true, timeoutTicks = INVERTED_TIMEOUT_TICKS)
     public static void headingTargetIsGatedWhileGroundedAndLiveOnceAirborne(GameTestHelper helper) {
         setFloorPad(helper, Blocks.STONE);
         CarEntity car = spawnCarWithCleanup(helper, CONTACT_SPAWN);
@@ -880,12 +895,12 @@ public final class DiffuserAssistGameTests {
                 });
     }
 
-    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    @GameTest(template = TEMPLATE, skyAccess = true, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
     public static void intentionalReverseIsStraightenedNotSpunAround(GameTestHelper helper) {
         assertReverseTravelIsHandled(helper, true);
     }
 
-    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    @GameTest(template = TEMPLATE, skyAccess = true, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
     public static void backwardRollbackWithoutReverseSelectedLeavesHeadingAlone(GameTestHelper helper) {
         assertReverseTravelIsHandled(helper, false);
     }
@@ -929,7 +944,7 @@ public final class DiffuserAssistGameTests {
      * {@value #REVERSE_SLEW_DEG} degrees off its reverse line at {@value #SLOW_REVERSE_SPEED} m/s -- below
      * the 0.5 m/s the original threshold sat at, with the activation floor lowered so R19 is genuinely live
      * there -- and must be straightened toward that line rather than spun toward its velocity. */
-    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    @GameTest(template = TEMPLATE, skyAccess = true, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
     public static void aSlowIntentionalReverseIsStillStraightenedNotSpun(GameTestHelper helper) {
         runSeededTravelFixture(helper, CarPhysics.Gear.REVERSE, 180.0 + REVERSE_SLEW_DEG, SLOW_REVERSE_SPEED,
                 SLOW_TRAJECTORY_MIN_SPEED, moved -> {
@@ -947,6 +962,15 @@ public final class DiffuserAssistGameTests {
      * round 3's own worked example. */
     private static final double ROLLBACK_LATERAL_SLEW_DEG = 0.25;
     private static final double SLOW_ROLLBACK_SPEED = 0.25;
+    /** How far a slow, nearly straight rollback may yaw in the window and still count as "left alone".
+     * Not zero: the fix leaves a small residual torque that passes continuously through zero at straight
+     * behind (about +-38 N*m at these inputs; {@code DiffuserAssistMathTest} bounds it below 80 N*m). On
+     * this car's ~1260 kg*m^2 of yaw inertia, 80 N*m held for the whole 15-tick window with no damping at
+     * all turns it 1.0 degree, so 2 degrees sits above anything the accepted residual can do and some 23x
+     * below the 47 degree swing the old discontinuity produced here. An earlier 0.5 degree bound held only
+     * while the car landed on the barrier ceiling ({@link #DROP_SPAWN}) mid-window and stopped yawing;
+     * truly airborne for all 15 ticks it turned 0.55 degrees. */
+    private static final double ROLLBACK_YAW_TOLERANCE_DEG = 2.0;
 
     /** R19 rollback coverage, review round 3: a car rolling slowly, almost straight backwards, with a
      * forward gear selected must be left alone whichever side of straight-behind its travel lies.
@@ -958,17 +982,17 @@ public final class DiffuserAssistGameTests {
      * with the activation floor lowered so the assist is genuinely live. */
     private static void assertSlowRollbackLeavesHeadingAlone(GameTestHelper helper, double lateralSlewDeg) {
         runSeededTravelFixture(helper, CarPhysics.Gear.D1, 180.0 + lateralSlewDeg, SLOW_ROLLBACK_SPEED,
-                SLOW_TRAJECTORY_MIN_SPEED, moved -> helper.assertTrue(Math.abs(moved) < MIN_YAW_RECOVERY_DEG,
+                SLOW_TRAJECTORY_MIN_SPEED, moved -> helper.assertTrue(Math.abs(moved) < ROLLBACK_YAW_TOLERANCE_DEG,
                         "a slow, nearly straight rollback (travel " + lateralSlewDeg + " degrees off straight "
                                 + "behind) must leave the heading alone, but yaw moved " + moved + " degrees"));
     }
 
-    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    @GameTest(template = TEMPLATE, skyAccess = true, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
     public static void aSlowRollbackJustOffStraightBehindLeavesHeadingAlone(GameTestHelper helper) {
         assertSlowRollbackLeavesHeadingAlone(helper, ROLLBACK_LATERAL_SLEW_DEG);
     }
 
-    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    @GameTest(template = TEMPLATE, skyAccess = true, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
     public static void aSlowRollbackJustOffStraightBehindLeavesHeadingAloneOnTheOtherSideToo(GameTestHelper helper) {
         assertSlowRollbackLeavesHeadingAlone(helper, -ROLLBACK_LATERAL_SLEW_DEG);
     }
@@ -1043,7 +1067,7 @@ public final class DiffuserAssistGameTests {
      * there, correctly, the airborne-gated assist acts and rolls it back onto its wheels. What this asserts
      * is the gate itself -- zero torque on every tick a wheel is down and the car is banked -- not that the
      * car stays parked. */
-    @GameTest(template = TEMPLATE, timeoutTicks = INVERTED_TIMEOUT_TICKS)
+    @GameTest(template = TEMPLATE, skyAccess = true, timeoutTicks = INVERTED_TIMEOUT_TICKS)
     public static void rollSelfRightingDoesNotFightACarRestingOnASteepSlope(GameTestHelper helper) {
         buildSteepStep(helper);
         CarEntity car = spawnCarWithCleanup(helper, STEEP_SPAWN);
@@ -1087,7 +1111,7 @@ public final class DiffuserAssistGameTests {
      * car), not specific numeric values -- deliberately, after this ticket's other GameTests here found
      * that asserting on an EXACT post-launch/post-tumble number in this environment is not reliable; a
      * stationary car on flat ground (no drop, no launch, no pit) has no such risk. */
-    @GameTest(template = TEMPLATE, timeoutTicks = TELEMETRY_TIMEOUT_TICKS)
+    @GameTest(template = TEMPLATE, skyAccess = true, timeoutTicks = TELEMETRY_TIMEOUT_TICKS)
     public static void describeReportsEachDiffuserAssistsOwnTorqueUnderItsOwnKey(GameTestHelper helper) {
         helper.setBlock(FLOOR_BLOCK, Blocks.STONE);
         CarEntity car = spawnCarWithCleanup(helper, ON_FLOOR_SPAWN);

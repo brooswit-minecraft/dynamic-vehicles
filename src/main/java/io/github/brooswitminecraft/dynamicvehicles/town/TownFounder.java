@@ -1,0 +1,200 @@
+package io.github.brooswitminecraft.dynamicvehicles.town;
+
+import io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord;
+import net.minecraft.core.BlockPos;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.tags.StructureTags;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.MobSpawnType;
+import net.minecraft.world.entity.npc.Villager;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.levelgen.Heightmap;
+import net.neoforged.neoforge.event.tick.LevelTickEvent;
+
+/**
+ * Bootstrap founder for a town region's designated centre, mirroring
+ * {@code delivery.SettlementFounder}'s bootstrap-once pattern: a single campfire plus a single
+ * unemployed villager, placed exactly once per region, with no retry duplicating it. A vanilla
+ * village that already generated at the centre always wins and is never touched or replaced
+ * (reuses {@link TownFoundationPlan}, the same decision shape {@code SettlementFoundationPlan}
+ * already defines for this exact problem).
+ *
+ * <p>Bootstrap checks run off nearby online players rather than a chunk-generation event, the
+ * same "only do work near where players actually are" shape every other periodic handler in this
+ * mod already uses (e.g. {@code delivery.BuilderCampfireHandler}) — so a town's centre bootstraps
+ * once a player's own chunk loading has generated the terrain there, never purely from world
+ * generation running unobserved far away.
+ */
+public final class TownFounder {
+    private static final int EVALUATE_INTERVAL_TICKS = 100;
+    private TownFounder() {}
+
+    public static void onLevelTick(LevelTickEvent.Post event) {
+        if (!(event.getLevel() instanceof ServerLevel level) || level.getGameTime() % EVALUATE_INTERVAL_TICKS != 0) {
+            return;
+        }
+        // [Review round 4, finding #4's scope decision, applied consistently] Dynamic Towns only
+        // ever bootstraps in the Overworld, matching vanilla's own village generation - never the
+        // Nether/End/a custom dimension (see TownConstructionService's own gate for the full
+        // rationale).
+        if (!level.dimension().equals(net.minecraft.world.level.Level.OVERWORLD)) {
+            return;
+        }
+        TownStorage storage = TownStorage.of(level.getServer());
+        for (ServerPlayer player : level.players()) {
+            tryFoundNear(level, player, storage);
+        }
+    }
+
+    /** Exposed {@code public} (rather than kept {@code private}) specifically so it is directly
+     *  testable without needing to construct a real {@link LevelTickEvent.Post}, the same shape
+     *  {@code delivery.SettlementFounder#onArrival} already uses for its own GameTests. */
+    public static void tryFoundNear(ServerLevel level, ServerPlayer player, TownStorage storage) {
+        RegionCoord region = TownRegion.fromBlockCoords(player.blockPosition().getX(), player.blockPosition().getZ());
+        TownPlan plan = TownPlanner.generate(region, level.getSeed());
+        BlockPos target = new BlockPos(plan.townCenterX(), player.blockPosition().getY(), plan.townCenterZ());
+        tryFoundAt(level, region, target, storage);
+    }
+
+    /**
+     * The core bootstrap-once decision and placement, factored out from {@link #tryFoundNear} so
+     * it is directly GameTest-able against a controlled, prepared target position — the planner's
+     * own choice of town centre (anywhere within a 384-block region) is already covered by
+     * {@code TownPlannerTest} and cannot itself be relied on to land inside a GameTest structure's
+     * tiny prepared footprint.
+     */
+    public static void tryFoundAt(ServerLevel level, RegionCoord region, BlockPos target, TownStorage storage) {
+        String key = TownKeys.keyFor(level.dimension(), region);
+        if (storage.hasFoundedTown(key)) {
+            return;
+        }
+        if (!level.hasChunkAt(target)) {
+            return;
+        }
+
+        // [Review round 5, finding #8] A prior attempt may have already placed a campfire here
+        // whose companion villager spawn (or whose own orphan cleanup) never confirmed. Reuse that
+        // EXACT persisted position rather than re-running the existing-village check and re-deriving
+        // a fresh surface point: the still-standing orphan campfire itself now reads as "the ground"
+        // to the heightmap findSurfacePoint uses, so a fresh query would land one block ABOVE it and
+        // place a second, duplicate campfire rather than retrying the same one.
+        java.util.Optional<BlockPos> pending = storage.pendingCampfireFor(key);
+        BlockPos campfirePos;
+        if (pending.isPresent()) {
+            campfirePos = pending.get();
+            if (!level.hasChunkAt(campfirePos)) {
+                return;
+            }
+        } else {
+            // The existing-village piece-containment check is a 3-D test, so it must be evaluated at
+            // the actual ground level of this column, never at whatever Y the triggering player
+            // happens to occupy (flying far above a real village, or mining far below it, must not
+            // make it read as absent). target's own Y is deliberately ignored here.
+            BlockPos groundCheckPos = groundLevelPosition(level, target);
+            boolean existingVillage = level.structureManager().getStructureWithPieceAt(groundCheckPos, StructureTags.VILLAGE).isValid();
+            TownFoundationPlan.Decision decision = TownFoundationPlan.decide(existingVillage, storage.hasFoundedTown(key));
+            if (decision != TownFoundationPlan.Decision.FOUND) {
+                if (decision == TownFoundationPlan.Decision.EXISTING_VILLAGE) {
+                    // A vanilla village already claims this centre; mark the region settled without
+                    // ever placing anything, so this same check does not keep re-evaluating it every
+                    // interval for the rest of the region's life.
+                    storage.markTownFounded(key);
+                    storage.setDirty();
+                }
+                return;
+            }
+
+            campfirePos = findSurfacePoint(level, target);
+            if (campfirePos == null) {
+                return;
+            }
+        }
+
+        // [Review round 2, finding #6 / round 6, finding #8] The one-way "founded" claim must NOT
+        // be persisted before the placements it claims to represent are actually confirmed in the
+        // world: a rejected block placement or spawn failure must leave the region retryable, never
+        // permanently "founded" with nothing (or only half of something) actually there. A pending
+        // retry's campfire is already there (its own prior attempt placed it) - checked FIRST,
+        // explicitly, rather than relying on Level#setBlock's return value: setting a block to the
+        // SAME state it already holds is a genuine no-op that Level#setBlock can legitimately report
+        // as "nothing changed" (returns false), which would otherwise make this read as a placement
+        // FAILURE on every pending retry and return before ever attempting the villager spawn again.
+        boolean campfirePlaced = level.getBlockState(campfirePos).is(Blocks.CAMPFIRE)
+                || (level.setBlock(campfirePos, Blocks.CAMPFIRE.defaultBlockState(), 3)
+                        && level.getBlockState(campfirePos).is(Blocks.CAMPFIRE));
+        if (!campfirePlaced) {
+            return; // retryable next EVALUATE_INTERVAL_TICKS pass - nothing was committed
+        }
+
+        Villager villager = EntityType.VILLAGER.create(level, null, campfirePos, MobSpawnType.EVENT, false, false);
+        boolean villagerSpawned = false;
+        if (villager != null) {
+            villager.moveTo(campfirePos.getX() + 0.5D, campfirePos.getY() + 1.0D, campfirePos.getZ() + 0.5D,
+                    level.random.nextFloat() * 360.0F, 0.0F);
+            villagerSpawned = level.addFreshEntity(villager);
+        }
+
+        TownBootstrapOutcome.PlacementOutcome outcome = TownBootstrapOutcome.evaluatePlacement(campfirePlaced, villagerSpawned);
+        if (outcome.cleanupCampfire()) {
+            // [Review round 5, finding #8] The campfire landed but its companion villager did not:
+            // never leave an orphan campfire with nothing to claim it and no way to retry - remove
+            // it so the next pass can attempt a clean placement of both from scratch. The removal
+            // itself is now CONFIRMED (re-read, not merely attempted): if it genuinely fails, this
+            // exact position is persisted as pending so the next retry reuses it directly instead of
+            // re-deriving a fresh surface point that would stack a second campfire above the orphan.
+            boolean cleaned = level.removeBlock(campfirePos, false) && level.getBlockState(campfirePos).isAir();
+            if (cleaned) {
+                storage.clearPendingCampfire(key);
+            } else {
+                storage.setPendingCampfire(key, campfirePos);
+                storage.setDirty();
+            }
+        }
+        if (outcome.markFounded()) {
+            // Only now, with BOTH placements confirmed, commit the one-way claim - a retry after
+            // this point must never duplicate either placement.
+            storage.clearPendingCampfire(key);
+            storage.markTownFounded(key);
+            storage.setDirty();
+        }
+    }
+
+    /**
+     * The column's real ground-level position (per the same tree-ignoring
+     * {@code MOTION_BLOCKING_NO_LEAVES} heightmap {@link #findSurfacePoint} already uses),
+     * discarding whatever Y the input {@code column} carries entirely. This is the single seam
+     * that used to leak the observing player's altitude into the existing-village structure-piece
+     * check: a {@link BlockPos} built from a player's own Y could sit well above or below a real
+     * village's piece bounding boxes, making a 3-D containment test report "absent" even directly
+     * over/under one. Exposed {@code public} so it is directly testable without a real village.
+     */
+    public static BlockPos groundLevelPosition(ServerLevel level, BlockPos column) {
+        int y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, column.getX(), column.getZ());
+        return new BlockPos(column.getX(), y, column.getZ());
+    }
+
+    /**
+     * The surface at {@code column}'s (x, z), same shape as
+     * {@code SettlementFounder#findSurfacePoint}: the first non-motion-blocking position above the
+     * highest motion-blocking block (leaves ignored, so a low canopy cannot masquerade as ground),
+     * fluids included. {@code null} when there is nothing to stand on, no headroom, or the
+     * candidate cell and the villager's two cells above it are not all clear.
+     */
+    static BlockPos findSurfacePoint(ServerLevel level, BlockPos column) {
+        int y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, column.getX(), column.getZ());
+        if (y <= level.getMinBuildHeight() || y + 2 > level.getMaxBuildHeight() - 1) {
+            return null;
+        }
+        BlockPos pos = new BlockPos(column.getX(), y, column.getZ());
+        BlockState cell = level.getBlockState(pos);
+        if (!cell.isAir() && cell.getFluidState().isEmpty()) {
+            return null;
+        }
+        if (!level.getBlockState(pos.above()).isAir() || !level.getBlockState(pos.above(2)).isAir()) {
+            return null;
+        }
+        return pos;
+    }
+}

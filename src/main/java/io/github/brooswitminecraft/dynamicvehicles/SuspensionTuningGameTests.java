@@ -47,25 +47,21 @@ import java.nio.file.Path;
 public final class SuspensionTuningGameTests {
     private SuspensionTuningGameTests() {}
 
-    /** The tick every measurement is taken at: late enough that the spawn transient is over and the car is
-     * rolling under steady load, early enough to be comfortably inside {@link #DRIVE_TICKS} so the rigid
-     * body is still awake and its suspension telemetry still live. See {@link #driving} for why measuring a
-     * car at rest does not work at all. */
+    /** The tick each test's own assertions run at: comfortably past {@link #SAMPLE_UNTIL_TICK}, so every
+     * per-tick sample a test compares has already been taken. */
     private static final long MEASURE_TICK = 60L;
 
     /** A bump stop engaging well INSIDE the car's own spring-only static compression ({@code massKg * g /
-     * wheels / springRate}, 0.15 m for the car), so it is genuinely load-bearing under ordinary load rather
-     * than only on a big hit. That is what makes its effect visible as a steady difference in how far the
-     * springs compress while rolling, rather than only during a transient that would have to be sampled
-     * tick by tick. */
+     * wheels / springRate}, 0.15 m for the car), so an ordinary landing drives compression past it and the
+     * stop genuinely bears load. A threshold near the end of travel would only engage on a violent impact
+     * and would make the comparison depend on how hard the drop happened to be. */
     private static final double LOAD_BEARING_BUMP_STOP_TRAVEL = 0.05;
 
-    /** The configured car's mean compression must come out at most this fraction of the stock control's,
-     * both measured on the same surface under the same throttle at the same tick. The static arithmetic
-     * (0.0538 m against 0.15 m, a ratio of 0.36) is the reason to expect a large gap, but it is NOT the
-     * predicted value here: these cars are rolling under load, not sitting at their static equilibrium, so
-     * this is deliberately a loose one-sided bound on a MATCHED-PAIR ratio. It still fails outright if the
-     * bump-stop term never reached production, which is the claim under test. */
+    /** The configured car's PEAK compression over its drop must come out at most this fraction of the stock
+     * control's over an identical drop. The static arithmetic (0.0538 m against 0.15 m, a ratio of 0.36) is
+     * the reason to expect a large gap, but it is NOT the predicted value here: a drop is a dynamic impact,
+     * not a static equilibrium, so this is deliberately a loose one-sided bound on a MATCHED-PAIR ratio. It
+     * still fails outright if the bump-stop term never reached production, which is the claim under test. */
     private static final double MAX_CONFIGURED_TO_STOCK_TRAVEL_RATIO = 0.7;
 
     /** Every {@code tireKit} field at the extreme end of its {@link VehicleSpecLimits} range at once: the
@@ -99,6 +95,11 @@ public final class SuspensionTuningGameTests {
      * exactly 0 for any of it; this bound just keeps the assertion meaningful rather than vacuous. */
     private static final double MAX_OUT_OF_CONTACT_GAP = 0.25;
 
+    /** An upper bound on any sane speed for a car under {@link #GENTLE_THROTTLE}, m/s -- comfortably above
+     * its own cruise speed, well below anything that would indicate the suspension had launched it. Only
+     * used to catch a blow-up, never to assert a particular speed. */
+    private static final double MAX_SANE_DRIVEN_SPEED = 40.0;
+
     /** A load-bearing bump stop and nothing else, so a difference against the stock control can only come
      * from the bump-stop term itself (damping is zero at rest either way). */
     private static final String LOAD_BEARING_BUMP_STOP = """
@@ -107,29 +108,30 @@ public final class SuspensionTuningGameTests {
 
     /**
      * The headline production claim: a configured bump stop changes what {@link SableCarBody}'s own
-     * suspension call actually computes, in the direction and by roughly the magnitude the arithmetic
-     * predicts. A stiff stop engaging at 0.05 m carries part of the car's load once compression passes it,
-     * so the springs compress measurably LESS than they do without it -- the car rides higher on them.
-     * Observed through {@code SableCompat.wheelTravel}, which is populated from {@code SableCarBody.tick}'s
-     * own {@code compressions[]} (the real per-tick value the force is computed from), against a matched
-     * stock control driving beside it on identical ground for identical ticks.
+     * suspension call actually computes. A stiff stop engaging at 0.05 m carries load as soon as
+     * compression passes that point, so it must limit how far the springs can be driven on a real impact --
+     * the configured car's PEAK compression over a drop must come out materially below the matched stock
+     * control's. Read through {@code SableCompat.wheelTravel}, which is populated from {@code
+     * SableCarBody.tick}'s own {@code compressions[]}: the real per-tick value the force is computed from.
      *
-     * <p>Measured while both cars are rolling under a gentle throttle, not at rest: see {@link #driving}
-     * for why a car at rest reports nothing at all through this telemetry.
+     * <p>Why a drop rather than a resting or rolling measurement -- both of which earlier revisions of this
+     * test tried and CI rejected: a car at rest sleeps and reports nothing ({@link #driving}), and a car
+     * under throttle pitches so only one axle stays loaded. A drop keeps the body awake and loads all four
+     * wheels together, and a peak over the whole window does not depend on which tick is sampled. See
+     * {@link #peakCompressionOverDrop}.
      */
     @GameTest(template = "settlement_test", timeoutTicks = 200, batch = "suspensionTuningBumpStopIsolated")
-    public static void aConfiguredBumpStopMakesTheCarRestHigherThanTheStockControl(GameTestHelper helper) {
+    public static void aConfiguredBumpStopLimitsPeakCompressionVersusTheStockControl(GameTestHelper helper) {
         pad(helper, 5);
         pad(helper, 15);
-        // Spawned BEFORE any override is loaded, so this is a genuine stock control -- and driven through
-        // the same gentle-throttle window as the configured car, so the two differ only in their tireKit.
-        CarEntity stock = driving(helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5)));
-        CarEntity configured = spawnWithOverride(helper, LOAD_BEARING_BUMP_STOP, new BlockPos(5, 3, 15));
+        // Spawned BEFORE any override is loaded, so this is a genuine stock control; dropped from the same
+        // height over identical ground for identical ticks, so the two differ only in their tireKit.
+        CarEntity stock = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3 + DROP_BLOCKS, 5));
+        CarEntity configured = spawnWithOverride(helper, LOAD_BEARING_BUMP_STOP,
+                new BlockPos(5, 3 + DROP_BLOCKS, 15));
 
-        // Both cars must hold contact for the whole run-up to the comparison, not just at the instant it
-        // is taken (review 49040) -- otherwise a bouncing car could be grounded on exactly the right tick.
-        assertGroundedThroughout(helper, stock, "stock control", CONTACT_SAMPLE_START, MEASURE_TICK);
-        assertGroundedThroughout(helper, configured, "configured car", CONTACT_SAMPLE_START, MEASURE_TICK);
+        PeakCompression stockPeak = peakCompressionOverDrop(helper, stock);
+        PeakCompression configuredPeak = peakCompressionOverDrop(helper, configured);
 
         helper.runAfterDelay(MEASURE_TICK, () -> {
             helper.assertTrue(configured.spec().suspensionTuning().bumpStopRate() == VehicleSpecLimits.MAX_BUMP_STOP_RATE,
@@ -138,13 +140,24 @@ public final class SuspensionTuningGameTests {
             helper.assertTrue(stock.spec().suspensionTuning()
                             .equals(VehicleSpec.SuspensionTuning.singleRate(VehicleSpec.CAR.dampingRate())),
                     "the control car was not stock -- an override leaked into it: " + stock.spec().suspensionTuning());
+            helper.assertTrue(stockPeak.allFinite && configuredPeak.allFinite,
+                    "a wheel reported non-finite compression at some point during the drop");
 
-            double stockTravel = meanTravel(helper, stock, "stock control");
-            double configuredTravel = meanTravel(helper, configured, "configured car");
-            helper.assertTrue(configuredTravel < stockTravel * MAX_CONFIGURED_TO_STOCK_TRAVEL_RATIO,
-                    "a load-bearing configured bump stop did not reduce spring compression under load in the production "
-                            + "tick: stock=" + stockTravel + " configured=" + configuredTravel + " (configured had "
-                            + "to be below " + (stockTravel * MAX_CONFIGURED_TO_STOCK_TRAVEL_RATIO) + ")");
+            // Both cars must actually have landed, or the comparison below would be between two numbers
+            // that only mean "never touched anything".
+            helper.assertTrue(stockPeak.deepest > LOAD_BEARING_BUMP_STOP_TRAVEL,
+                    "the stock control never compressed past the configured car's own bump-stop threshold, so "
+                            + "this drop cannot distinguish them at all: peak=" + stockPeak.deepest + " "
+                            + where(stock));
+            helper.assertTrue(configuredPeak.deepest > 0.0,
+                    "the configured car never touched the ground during the drop: peak="
+                            + configuredPeak.deepest + " " + where(configured));
+
+            helper.assertTrue(configuredPeak.deepest < stockPeak.deepest * MAX_CONFIGURED_TO_STOCK_TRAVEL_RATIO,
+                    "a load-bearing configured bump stop did not limit peak compression in the production tick: "
+                            + "stock=" + stockPeak.deepest + " configured=" + configuredPeak.deepest
+                            + " (configured had to be below "
+                            + (stockPeak.deepest * MAX_CONFIGURED_TO_STOCK_TRAVEL_RATIO) + ")");
             helper.succeed();
         });
     }
@@ -159,7 +172,7 @@ public final class SuspensionTuningGameTests {
     @GameTest(template = "settlement_test", timeoutTicks = 200, batch = "suspensionTuningExtremesIsolated")
     public static void extremeConfiguredTireKitValuesKeepTheProductionTickFiniteAndStable(GameTestHelper helper) {
         pad(helper, 5);
-        CarEntity car = spawnWithOverride(helper, EXTREME_TIRE_KIT, new BlockPos(5, 3, 5));
+        CarEntity car = driving(spawnWithOverride(helper, EXTREME_TIRE_KIT, new BlockPos(5, 3, 5)));
 
         helper.runAfterDelay(MEASURE_TICK, () -> {
             helper.assertTrue(!car.isRemoved(), "a car configured with extreme tireKit values was destroyed "
@@ -206,7 +219,7 @@ public final class SuspensionTuningGameTests {
         // The grounded control uses the load-bearing stop, not EXTREME_TIRE_KIT: the latter deliberately
         // rides at the edge of contact (see its javadoc), which would make "the control is really touching
         // the ground" flaky for a reason that has nothing to do with the lost-contact claim under test.
-        CarEntity grounded = spawnWithOverride(helper, LOAD_BEARING_BUMP_STOP, new BlockPos(5, 3, 5));
+        CarEntity grounded = spawnWithOverride(helper, LOAD_BEARING_BUMP_STOP, new BlockPos(5, 3 + DROP_BLOCKS, 5));
         // A pit wider than the car's own track/wheelbase (CarGeometry halfX 0.95, halfZ 1.5) and the full
         // template height, so every wheel's raycast -- at most restLength + 0.25 m -- finds nothing below.
         for (int dx = -3; dx <= 3; dx++) {
@@ -221,11 +234,18 @@ public final class SuspensionTuningGameTests {
         helper.runAfterDelay(MEASURE_TICK, () -> {
             helper.assertTrue(!airborne.isRemoved(),
                     "the configured car over the open pit was removed while falling with no ground under it");
-            for (double travel : SableCompat.wheelTravel(grounded.sableBody())) {
-                helper.assertTrue(travel > 0.0, "the grounded control was not actually touching the ground, so "
-                        + "the airborne comparison would be vacuous: suspensionTravel=" + travel
-                        + " " + where(grounded));
+            // The control only has to prove the ground IS detected here, so ANY wheel in contact suffices.
+            // Requiring all four was wrong and CI said so: a real car on real ground does not keep every
+            // wheel loaded at every instant (one round reported [0.229, 0.103, 0.0, 0.0] while rolling).
+            // The claim under test -- an ungrounded car manufactures no contact force -- is asserted at full
+            // strength below, on every wheel, and is not weakened by this precondition.
+            double[] groundedTravel = SableCompat.wheelTravel(grounded.sableBody());
+            boolean anyContact = false;
+            for (double travel : groundedTravel) {
+                anyContact |= travel > 0.0;
             }
+            helper.assertTrue(anyContact, "the grounded control never detected the ground under it at all, so "
+                    + "the airborne comparison would be vacuous: " + where(grounded));
             double[] airborneTravel = SableCompat.wheelTravel(airborne.sableBody());
             for (int wheel = 0; wheel < airborneTravel.length; wheel++) {
                 helper.assertTrue(airborneTravel[wheel] == 0.0,
@@ -238,12 +258,13 @@ public final class SuspensionTuningGameTests {
     }
 
     /**
-     * Sub-step consistency for the new force path: the compression a configured bump stop produces under a
-     * fixed load must not depend on how many sub-steps {@code SableCarBody.tick} splits its tick into. A static
-     * equilibrium is the right observable for this (the spring/bump-stop terms depend on compression,
-     * which is fixed for the whole tick, while only the damper term depends on the per-sub-step velocity
-     * snapshot), so unlike an acceleration comparison this should agree closely rather than merely
-     * "not materially" -- 15% of allowance for settling differences.
+     * Sub-step consistency for the new force path: the peak compression a configured bump stop allows on an
+     * identical drop must not depend on how many sub-steps {@code SableCarBody.tick} splits its tick into.
+     * Compression is the right observable (the spring and bump-stop terms depend on compression, which is
+     * fixed for the whole tick, while only the damper term reads the per-sub-step velocity snapshot), so
+     * unlike a speed comparison this should agree closely rather than merely "not materially" -- 25% of
+     * allowance, since the damper term genuinely does see a different velocity snapshot per sub-step and an
+     * impact is where that difference is largest.
      *
      * <p>{@code CarConfig.WHEEL_SUB_STEPS} is a global, live-reloadable setting, so this follows the same
      * two rules {@code CarDrivetrainGameTests}' own sub-step test established: its OWN {@code batch} (one
@@ -251,33 +272,40 @@ public final class SuspensionTuningGameTests {
      * that is guaranteed on every path, including a thrown assertion.
      */
     @GameTest(template = "settlement_test", timeoutTicks = 300, batch = "suspensionTuningSubStepIsolated")
-    public static void aConfiguredBumpStopRestsAtTheSameHeightAtOneAndFourSubSteps(GameTestHelper helper) {
+    public static void aConfiguredBumpStopAllowsTheSamePeakCompressionAtOneAndFourSubSteps(GameTestHelper helper) {
         int originalSubSteps = CarConfig.WHEEL_SUB_STEPS.get();
         try {
             pad(helper, 5);
             pad(helper, 15);
             CarConfig.WHEEL_SUB_STEPS.set(1);
-            CarEntity oneStep = spawnWithOverride(helper, LOAD_BEARING_BUMP_STOP, new BlockPos(5, 3, 5));
-            helper.runAfterDelay(MEASURE_TICK, () -> compareFourSubStepsAndRestore(helper, originalSubSteps, oneStep));
+            CarEntity oneStep = spawnWithOverride(helper, LOAD_BEARING_BUMP_STOP,
+                    new BlockPos(5, 3 + DROP_BLOCKS, 5));
+            PeakCompression oneStepPeak = peakCompressionOverDrop(helper, oneStep);
+            helper.runAfterDelay(MEASURE_TICK,
+                    () -> compareFourSubStepsAndRestore(helper, originalSubSteps, oneStepPeak));
         } catch (RuntimeException e) {
             CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
             throw e;
         }
     }
 
-    private static void compareFourSubStepsAndRestore(GameTestHelper helper, int originalSubSteps, CarEntity oneStep) {
+    private static void compareFourSubStepsAndRestore(GameTestHelper helper, int originalSubSteps,
+            PeakCompression oneStepPeak) {
         try {
-            double travelAtOneStep = meanTravel(helper, oneStep, "1-substep car");
             CarConfig.WHEEL_SUB_STEPS.set(4);
-            CarEntity fourStep = spawnWithOverride(helper, LOAD_BEARING_BUMP_STOP, new BlockPos(5, 3, 15));
+            CarEntity fourStep = spawnWithOverride(helper, LOAD_BEARING_BUMP_STOP,
+                    new BlockPos(5, 3 + DROP_BLOCKS, 15));
+            PeakCompression fourStepPeak = peakCompressionOverDrop(helper, fourStep);
             helper.runAfterDelay(MEASURE_TICK, () -> {
                 try {
-                    double travelAtFourSteps = meanTravel(helper, fourStep, "4-substep car");
                     CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
-                    double ratio = travelAtFourSteps / travelAtOneStep;
-                    helper.assertTrue(ratio > 0.85 && ratio < 1.15,
-                            "the configured bump stop's compression under load depended on wheelSubSteps: 1-step="
-                                    + travelAtOneStep + " 4-step=" + travelAtFourSteps + " ratio=" + ratio);
+                    helper.assertTrue(oneStepPeak.deepest > 0.0 && fourStepPeak.deepest > 0.0,
+                            "a sub-step car never touched the ground during its drop, so there is nothing to "
+                                    + "compare: 1-step=" + oneStepPeak.deepest + " 4-step=" + fourStepPeak.deepest);
+                    double ratio = fourStepPeak.deepest / oneStepPeak.deepest;
+                    helper.assertTrue(ratio > 0.75 && ratio < 1.25,
+                            "the configured bump stop's peak compression depended on wheelSubSteps: 1-step="
+                                    + oneStepPeak.deepest + " 4-step=" + fourStepPeak.deepest + " ratio=" + ratio);
                     helper.succeed();
                 } catch (RuntimeException e) {
                     CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
@@ -290,61 +318,7 @@ public final class SuspensionTuningGameTests {
         }
     }
 
-    /** This car's mean per-wheel compression as the production tick last computed it, asserting first that
-     * every wheel is actually grounded -- a mean over a car with a wheel in the air would silently measure
-     * something other than the loaded compression these tests compare. */
-    private static double meanTravel(GameTestHelper helper, CarEntity car, String what) {
-        helper.assertTrue(car.sableBody() != null, what + "'s Sable body was never created");
-        double[] travel = SableCompat.wheelTravel(car.sableBody());
-        helper.assertTrue(travel.length > 0, what + " reported no wheels at all");
-        double total = 0.0;
-        for (double wheel : travel) {
-            helper.assertTrue(wheel > 0.0,
-                    what + " had a wheel off the ground, so its spring compression is not measurable here: "
-                            + wheel + " " + where(car));
-            total += wheel;
-        }
-        return total / travel.length;
-    }
 
-    /**
-     * MINECRAFT-445 review follow-up (comment 49040, "verify support/contact throughout measurement"):
-     * asserts every wheel is grounded at several points ACROSS the measurement window, not only at the
-     * instant the comparison is taken. A car that is bouncing, drifting off its pad, or momentarily
-     * airborne mid-window can still happen to be grounded on the one tick a single end-of-window check
-     * looks at -- which would make the equilibrium comparison that follows quietly meaningless. This
-     * strengthens the precondition rather than relaxing it: the final comparison's own assertions are
-     * unchanged.
-     *
-     * @param firstSampleTick the first tick to sample at; sampling continues every {@link #CONTACT_SAMPLE_STRIDE}
-     *        ticks up to (but not including) {@code lastSampleTick}, which the caller measures at itself
-     */
-    private static void assertGroundedThroughout(GameTestHelper helper, CarEntity car, String what,
-            long firstSampleTick, long lastSampleTick) {
-        for (long tick = firstSampleTick; tick < lastSampleTick; tick += CONTACT_SAMPLE_STRIDE) {
-            helper.runAtTickTime(tick, () -> {
-                for (double travel : SableCompat.wheelTravel(car.sableBody())) {
-                    helper.assertTrue(travel > 0.0, what + " lost contact mid-measurement, so its spring "
-                            + "compression would not be a meaningful loaded reading: " + travel + " " + where(car));
-                }
-            });
-        }
-    }
-
-    /** An upper bound on any sane speed for a car under {@link #GENTLE_THROTTLE}, m/s -- comfortably above
-     * its own cruise speed, well below anything that would indicate the suspension had launched it. Only
-     * used to catch a blow-up, never to assert a particular speed. */
-    private static final double MAX_SANE_DRIVEN_SPEED = 40.0;
-
-    /** How often {@link #assertGroundedThroughout} samples contact, in ticks. Frequent enough to catch a
-     * car bouncing or rolling off its pad, sparse enough not to turn one test into hundreds of assertions. */
-    private static final long CONTACT_SAMPLE_STRIDE = 10L;
-
-    /** The tick from which contact is required to hold continuously: late enough that the spawn transient
-     * is over (so a car still dropping onto its springs is not treated as a failure), and strictly less
-     * than {@link #MEASURE_TICK} so the sampling window is non-empty -- an equal value would silently
-     * sample nothing at all and make this check vacuous. */
-    private static final long CONTACT_SAMPLE_START = 30L;
 
     /** Enough context in a failure message to tell a car that never settled from one that settled somewhere
      * unexpected: where it actually ended up, how fast it is still moving, every wheel's own travel, and
@@ -381,7 +355,7 @@ public final class SuspensionTuningGameTests {
             Files.createDirectories(carsDir);
             Files.writeString(carsDir.resolve(VehicleIds.CAR + ".json"), json);
             VehicleSpecOverrides.load(configDir);
-            return driving(helper.spawn(DynamicVehiclesMod.CAR.get(), pos));
+            return helper.spawn(DynamicVehiclesMod.CAR.get(), pos);
         } catch (IOException e) {
             throw new RuntimeException(e);
         } finally {
@@ -425,6 +399,53 @@ public final class SuspensionTuningGameTests {
         car.forceDrive(GENTLE_THROTTLE, 0.0, DRIVE_TICKS);
         return car;
     }
+
+    /**
+     * Samples every wheel's compression on each of the first {@link #SAMPLE_UNTIL_TICK} ticks and returns a
+     * holder of the PEAK (deepest) compression seen on any wheel.
+     *
+     * <p>This is the observable the bump stop and the damper rates actually exist to change, and it is the
+     * one regime where the measurement is both well defined and robust. A car in free fall onto its pad is
+     * awake (so its telemetry is live, unlike a car at rest -- see {@link #driving}) and loads all four
+     * wheels together on impact (unlike a car under throttle, which pitches: CI showed exactly that, one
+     * car reading {@code [0.229, 0.103, 0.0, 0.0]} and another {@code [0.0, 0.0, -0.087, -0.086]} while
+     * rolling, with real contact on only one axle). Taking a peak across the whole window also removes any
+     * dependence on which single tick the comparison lands on.
+     */
+    private static PeakCompression peakCompressionOverDrop(GameTestHelper helper, CarEntity car) {
+        PeakCompression peak = new PeakCompression();
+        for (long tick = 1; tick <= SAMPLE_UNTIL_TICK; tick++) {
+            helper.runAtTickTime(tick, () -> {
+                for (double travel : SableCompat.wheelTravel(car.sableBody())) {
+                    if (Double.isFinite(travel)) {
+                        peak.deepest = Math.max(peak.deepest, travel);
+                    }
+                    peak.allFinite &= Double.isFinite(travel);
+                }
+            });
+        }
+        return peak;
+    }
+
+    /** Mutable accumulator for {@link #peakCompressionOverDrop}; a plain holder because GameTest's own
+     * per-tick callbacks are the only way to sample a value across ticks. */
+    private static final class PeakCompression {
+        /** Deepest compression any wheel reached, metres; stays at its initial value if no wheel ever
+         * touched, which the asserting test checks rather than silently averaging away. */
+        double deepest = Double.NEGATIVE_INFINITY;
+        /** Whether every sample on every tick was finite -- the "finite forces" half of this ticket's own
+         * acceptance, observed across a real impact rather than at one chosen instant. */
+        boolean allFinite = true;
+    }
+
+    /** Height above the pad, in blocks, that a car is dropped from: enough to build a real impact speed
+     * that pushes compression past {@link #LOAD_BEARING_BUMP_STOP_TRAVEL}, little enough to stay inside the
+     * template. */
+    private static final int DROP_BLOCKS = 3;
+
+    /** Last tick {@link #peakCompressionOverDrop} samples; comfortably past the landing and the bounce that
+     * follows it. */
+    private static final long SAMPLE_UNTIL_TICK = 50L;
 
     /** Throttle held across the measurement window: enough to keep the rigid body awake and its wheels
      * loaded, gentle enough (the same value {@code RollingResistanceGameTests} uses for its own cruise

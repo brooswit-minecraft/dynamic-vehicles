@@ -128,15 +128,31 @@ public final class TownResidentAllocationHandler {
      *  one whose ticket is not actually held at all (an unticketed memory - the reservation was
      *  released by something else without the memory itself being updated), or at one this mod's own
      *  records show is now actually held by a DIFFERENT villager (round 20, finding #1 - occupancy
-     *  alone never proves it is still THIS villager's) is treated as "needs a new one". */
+     *  alone never proves it is still THIS villager's) is treated as "needs a new one".
+     *
+     * <p>[Review round 22 follow-up] A reservation that validates here but has no tracked owner yet
+     * (vanilla-origin, or simply never checked before) is backfilled into the registry as
+     * {@code villager}'s own right now - the one moment this mod can be SURE who it belongs to.
+     * This is what lets the registry alone (no live scan needed) keep protecting it later even if
+     * {@code villager} becomes unloaded/unscannable by then: {@link #isCurrentlyClaimedByAnotherVillager}
+     * can only ever see currently-loaded villagers, so an untracked owner that is ALSO unloaded at
+     * the moment some other villager's stale memory is reconciled would otherwise be invisible to
+     * both checks at once - backfilling here closes that gap for every reservation this mod has
+     * validated at least once since this tracking existed. */
     private static boolean hasValidHome(ServerLevel level, Villager villager, RegionCoord region, TownStorage storage) {
         return villager.getBrain().getMemory(MemoryModuleType.HOME)
                 .filter(home -> home.dimension().equals(level.dimension()))
                 .filter(home -> inRegion(home.pos(), region))
                 .filter(home -> !storage.isReservedByADifferentVillager(level.dimension(), home.pos(), villager.getUUID()))
                 .filter(home -> !isCurrentlyClaimedByAnotherVillager(level, home.pos(), villager))
-                .map(home -> level.getPoiManager().exists(home.pos(), type -> type.is(PoiTypes.HOME))
-                        && isTicketHeld(level, home.pos()))
+                .map(home -> {
+                    boolean valid = level.getPoiManager().exists(home.pos(), type -> type.is(PoiTypes.HOME))
+                            && isTicketHeld(level, home.pos());
+                    if (valid) {
+                        storage.setReservationOwner(level.dimension(), home.pos(), villager.getUUID());
+                    }
+                    return valid;
+                })
                 .orElse(false);
     }
 
@@ -183,10 +199,17 @@ public final class TownResidentAllocationHandler {
                 .filter(site -> inRegion(site.pos(), region))
                 .filter(site -> !storage.isReservedByADifferentVillager(level.dimension(), site.pos(), villager.getUUID()))
                 .filter(site -> !isCurrentlyClaimedByAnotherVillager(level, site.pos(), villager))
-                .map(site -> level.getPoiManager().getType(site.pos())
-                        .map(type -> profession.heldJobSite().test(type))
-                        .orElse(false)
-                        && isTicketHeld(level, site.pos()))
+                .map(site -> {
+                    // [Review round 22 follow-up] Same backfill as hasValidHome - see its own doc.
+                    boolean valid = level.getPoiManager().getType(site.pos())
+                            .map(type -> profession.heldJobSite().test(type))
+                            .orElse(false)
+                            && isTicketHeld(level, site.pos());
+                    if (valid) {
+                        storage.setReservationOwner(level.dimension(), site.pos(), villager.getUUID());
+                    }
+                    return valid;
+                })
                 .orElse(false);
     }
 

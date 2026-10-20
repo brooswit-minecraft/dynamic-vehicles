@@ -776,4 +776,56 @@ public final class TownResidentAllocationHandlerGameTests {
                 "clearReservationOwner must also mark the storage dirty");
         helper.succeed();
     }
+
+    /** [Review round 22 follow-up] {@link TownResidentAllocationHandler#isCurrentlyClaimedByAnotherVillager}
+     *  can only ever see currently-loaded, alive villagers - an untracked (vanilla-origin) owner
+     *  that later becomes unloaded (or despawns) is invisible to it, exactly like it is invisible to
+     *  {@code level.getEntities()} either way. Proves the fix: once that owner's OWN real
+     *  reservation has been validated at least once by this reconciliation (backfilling the
+     *  ownership registry as a side effect - see {@code hasValidHome}'s own doc), the PERSISTED
+     *  registry entry alone keeps protecting it even after it becomes unscannable, with no live scan
+     *  needed at all. {@code discard()} stands in for "no longer visible to a live villager scan"
+     *  (unloaded or despawned - this mod's own scan cannot tell the two apart either). */
+    @GameTest(template = "settlement_test")
+    public static void aLazilyBackfilledOwnerStillProtectsItsReservationAfterBecomingUnscannable(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos bedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        placeValidBed(helper, bedHead);
+        BlockPos absoluteBedHead = helper.absolutePos(bedHead);
+        BlockPos secondBedHead = ANCHOR.offset(OLD_HOME_OFFSET.getX(), OLD_HOME_OFFSET.getY(), OLD_HOME_OFFSET.getZ());
+        placeValidBed(helper, secondBedHead);
+        BlockPos absoluteSecondBedHead = helper.absolutePos(secondBedHead);
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        markTownOwned(helper, storage, absoluteBedHead);
+        markTownOwned(helper, storage, absoluteSecondBedHead);
+        BlockPos townCenter = helper.absolutePos(ANCHOR);
+
+        // An UNTRACKED resident (standing in for vanilla-origin: no ownership record at all at
+        // first) whose real, genuinely-held home is validated by this reconciliation once - which
+        // backfills the registry - before becoming unscannable.
+        Villager untrackedResident = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        takeTicketDirectly(helper.getLevel(), absoluteBedHead);
+        untrackedResident.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(helper.getLevel().dimension(), absoluteBedHead));
+        TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), untrackedResident, townCenter, region, storage);
+        helper.assertTrue(untrackedResident.getBrain().getMemory(MemoryModuleType.HOME)
+                        .map(gp -> gp.pos().equals(absoluteBedHead)).orElse(false),
+                "test setup: the untracked resident must still validly keep its own real home on this first check (and get backfilled into the registry as a side effect)");
+        untrackedResident.discard();
+
+        // A second, unrelated villager whose own memory also (incorrectly/stalely) points at that
+        // exact same bed - now that its real owner is unscannable, ONLY the backfilled registry
+        // entry (not a live scan) can still protect it.
+        Villager impostor = spawnVillager(helper, ANCHOR.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+        impostor.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(helper.getLevel().dimension(), absoluteBedHead));
+
+        TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), impostor, townCenter, region, storage);
+
+        helper.assertTrue(impostor.getBrain().getMemory(MemoryModuleType.HOME)
+                        .map(gp -> gp.pos().equals(absoluteSecondBedHead)).orElse(false),
+                "the backfilled ownership record must still protect the real owner's reservation even after it becomes unscannable (unloaded/despawned) - the impostor must be reassigned the real alternative instead");
+        helper.assertTrue(helper.getLevel().getPoiManager().getFreeTickets(absoluteBedHead) == 0,
+                "the now-unscannable owner's real ticket must never be stolen just because a live scan can no longer confirm it");
+        helper.succeed();
+    }
 }

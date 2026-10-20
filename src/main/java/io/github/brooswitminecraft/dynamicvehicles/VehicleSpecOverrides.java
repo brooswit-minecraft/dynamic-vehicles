@@ -217,6 +217,15 @@ final class VehicleSpecOverrides {
                 file.toeDeg == null ? stockTuning.toeDeg() : file.toeDeg);
         VehicleSpec.VehicleTuning vehicleTuning = VehicleTuningLimits.clamp(requestedTuning, stockTuning);
 
+        VehicleSpec.SuspensionTuning suspensionTuning = applyTireKit(file.tireKit, stock, dampingRate);
+        VehicleSpec.SteeringTuning steeringTuning = applySteering(file.tireKit, stock);
+        double tirePressureBar = file.tireKit == null || file.tireKit.tirePressureBar == null
+                ? stock.tirePressureBar()
+                : VehicleSpecLimits.clamp(file.tireKit.tirePressureBar, VehicleSpecLimits.MIN_TIRE_PRESSURE_BAR,
+                        VehicleSpecLimits.MAX_TIRE_PRESSURE_BAR, stock.tirePressureBar());
+
+        VehicleSpec.PitchTuning pitchTuning = applyPitch(file.tireKit, stock);
+
         return new VehicleSpec(stock.halfX(), stock.halfY(), stock.halfZ(),
                 stock.mounts(), stock.wheelRadius(), stock.wheelWidth(),
                 rideHeight, restLength,
@@ -226,7 +235,89 @@ final class VehicleSpecOverrides {
                 stock.seatY(), stock.seatZ(),
                 stock.looseGrip(), rollingScale,
                 stock.tireTuning(), stock.downforceGripPerSpeed(), antiRollScale,
-                stock.seats(), vehicleTuning, handbrakeScale,
+                stock.seats(), vehicleTuning, handbrakeScale, suspensionTuning, steeringTuning,
+                tirePressureBar, pitchTuning,
                 frontWingDownforceCoeff, rearWingDownforceCoeff, wingDragCoeff);
     }
+
+    /** MINECRAFT-445: the {@code tireKit} section's anti-dive/anti-squat fractions, clamped like every
+     * other field here. A section that mentions neither keeps this car's stock {@link
+     * VehicleSpec.PitchTuning}, instance identity included. */
+    private static VehicleSpec.PitchTuning applyPitch(VehicleCarConfigFile.TireKit tireKit, VehicleSpec stock) {
+        if (tireKit == null || (tireKit.antiDive == null && tireKit.antiSquat == null)) {
+            return stock.pitchTuning();
+        }
+        VehicleSpec.PitchTuning stockPitch = stock.pitchTuning();
+        double antiDive = tireKit.antiDive == null ? stockPitch.antiDive()
+                : VehicleSpecLimits.clamp(tireKit.antiDive, VehicleSpecLimits.MIN_PITCH_RESIST,
+                        VehicleSpecLimits.MAX_PITCH_RESIST, stockPitch.antiDive());
+        double antiSquat = tireKit.antiSquat == null ? stockPitch.antiSquat()
+                : VehicleSpecLimits.clamp(tireKit.antiSquat, VehicleSpecLimits.MIN_PITCH_RESIST,
+                        VehicleSpecLimits.MAX_PITCH_RESIST, stockPitch.antiSquat());
+        return new VehicleSpec.PitchTuning(antiDive, antiSquat);
+    }
+
+    /**
+     * MINECRAFT-445: the {@code tireKit} section's steering geometry (today, rear-wheel steering), clamped
+     * into {@link VehicleSpecLimits}' range exactly like every other field here. An absent {@code tireKit}
+     * section, or one that does not mention {@code rearSteerRatio}, keeps this car's stock {@link
+     * VehicleSpec.SteeringTuning} -- object identity included, so a car with no steering override is the
+     * same instance it always was.
+     */
+    private static VehicleSpec.SteeringTuning applySteering(VehicleCarConfigFile.TireKit tireKit,
+            VehicleSpec stock) {
+        if (tireKit == null || tireKit.rearSteerRatio == null) {
+            return stock.steeringTuning();
+        }
+        return new VehicleSpec.SteeringTuning(VehicleSpecLimits.clamp(tireKit.rearSteerRatio,
+                VehicleSpecLimits.MIN_REAR_STEER_RATIO, VehicleSpecLimits.MAX_REAR_STEER_RATIO,
+                stock.steeringTuning().rearSteerRatio()));
+    }
+
+    /**
+     * MINECRAFT-445: the {@code tireKit} section's own fields, clamped into {@link VehicleSpecLimits}' safe
+     * range exactly like every other field in this loader (falling back to the stock car's own value for a
+     * non-finite number). An absent {@code tireKit} section (the common case today: no vehicle's stock
+     * {@link VehicleSpec} has opted into two-rate damping or a bump stop) keeps the car's stock {@link
+     * VehicleSpec.SuspensionTuning} unchanged, object identity included.
+     *
+     * @param tireKit the file's own {@code tireKit} section, or {@code null} if absent
+     * @param stock this car's stock spec, read for its own {@code suspensionTuning} as the fallback for any
+     *        field {@code tireKit} does not set
+     * @param dampingRate THIS override's own resolved {@code dampingRate} (already clamped above) -- not
+     *        necessarily {@code stock.dampingRate()}, since a file can override {@code dampingRate} and
+     *        {@code tireKit} in the same request. A {@code tireKit} field left unset falls back to this
+     *        resolved {@code dampingRate}, not the stock one, so e.g. a file that only sets {@code
+     *        dampingRate} (no {@code tireKit} at all) still gets {@code fastCompressionDamping}/{@code
+     *        slowReboundDamping}/{@code fastReboundDamping} all equal to its own new {@code dampingRate},
+     *        exactly the single-rate behaviour {@link VehicleSpec.SuspensionTuning#singleRate} documents.
+     */
+    private static VehicleSpec.SuspensionTuning applyTireKit(VehicleCarConfigFile.TireKit tireKit,
+            VehicleSpec stock, double dampingRate) {
+        if (tireKit == null) {
+            return dampingRate == stock.dampingRate() ? stock.suspensionTuning()
+                    : VehicleSpec.SuspensionTuning.singleRate(dampingRate);
+        }
+        VehicleSpec.SuspensionTuning stockTuning = dampingRate == stock.dampingRate() ? stock.suspensionTuning()
+                : VehicleSpec.SuspensionTuning.singleRate(dampingRate);
+        double fastCompressionDamping = tireKit.compressionDampingFast == null ? stockTuning.fastCompressionDamping()
+                : VehicleSpecLimits.clamp(tireKit.compressionDampingFast, VehicleSpecLimits.MIN_TIRE_KIT_DAMPING,
+                        VehicleSpecLimits.MAX_TIRE_KIT_DAMPING, stockTuning.fastCompressionDamping());
+        double slowReboundDamping = tireKit.reboundDampingSlow == null ? stockTuning.slowReboundDamping()
+                : VehicleSpecLimits.clamp(tireKit.reboundDampingSlow, VehicleSpecLimits.MIN_TIRE_KIT_DAMPING,
+                        VehicleSpecLimits.MAX_TIRE_KIT_DAMPING, stockTuning.slowReboundDamping());
+        double fastReboundDamping = tireKit.reboundDampingFast == null ? stockTuning.fastReboundDamping()
+                : VehicleSpecLimits.clamp(tireKit.reboundDampingFast, VehicleSpecLimits.MIN_TIRE_KIT_DAMPING,
+                        VehicleSpecLimits.MAX_TIRE_KIT_DAMPING, stockTuning.fastReboundDamping());
+        double dampingKneeSpeed = tireKit.dampingKneeSpeed == null ? stockTuning.dampingKneeSpeed()
+                : VehicleSpecLimits.clamp(tireKit.dampingKneeSpeed, VehicleSpecLimits.MIN_DAMPING_KNEE_SPEED,
+                        VehicleSpecLimits.MAX_DAMPING_KNEE_SPEED, stockTuning.dampingKneeSpeed());
+        double bumpStopTravel = tireKit.bumpStopTravel == null ? stockTuning.bumpStopTravel()
+                : VehicleSpecLimits.clamp(tireKit.bumpStopTravel, VehicleSpecLimits.MIN_BUMP_STOP_TRAVEL,
+                        VehicleSpecLimits.MAX_BUMP_STOP_TRAVEL, stockTuning.bumpStopTravel());
+        double bumpStopRate = tireKit.bumpStopRate == null ? stockTuning.bumpStopRate()
+                : VehicleSpecLimits.clamp(tireKit.bumpStopRate, VehicleSpecLimits.MIN_BUMP_STOP_RATE,
+                        VehicleSpecLimits.MAX_BUMP_STOP_RATE, stockTuning.bumpStopRate());
+        return new VehicleSpec.SuspensionTuning(fastCompressionDamping, slowReboundDamping, fastReboundDamping,
+                dampingKneeSpeed, bumpStopTravel, bumpStopRate);    }
 }

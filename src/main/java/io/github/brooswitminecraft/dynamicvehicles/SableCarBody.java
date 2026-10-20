@@ -44,6 +44,10 @@ final class SableCarBody {
     // MINECRAFT-446: the old hardcoded "AIR_DRAG = 0.4 N per (m/s)^2" constant moved to
     // VehicleSpec#wingDragCoeff (defaulted to 0.4 for the whole roster), so it is per-car configurable
     // through the wing section of a per-car config file.
+    /** The body-frame height a horizontal tire force acts at when it is NOT applied at the contact patch:
+     * the pre-existing literal behind {@code CarConfig.TIRE_FORCE_AT_CONTACT}'s off branch, named so
+     * MINECRAFT-445's anti-dive/anti-squat blend has something meaningful to blend TOWARD. */
+    private static final double BODY_TIRE_FORCE_HEIGHT = -0.1;
 
     private final VehicleSpec spec;
     private final Vector3d halfExtents;
@@ -415,7 +419,11 @@ final class SableCarBody {
                 }
                 Vector3d pointVelocity = new Vector3d(subAngular).cross(wheelOffsets[wheel]).add(subLinear);
                 double rate = pointVelocity.dot(down);
-                subSuspension[wheel] = WheelMath.suspensionForce(compressions[wheel], rate, spec.springRate(), spec.dampingRate(), spec.maxSpringForce());
+                VehicleSpec.SuspensionTuning suspTuning = spec.suspensionTuning();
+                subSuspension[wheel] = WheelMath.suspensionForce(compressions[wheel], rate, spec.springRate(),
+                        spec.dampingRate(), suspTuning.fastCompressionDamping(),
+                        suspTuning.slowReboundDamping(), suspTuning.fastReboundDamping(), suspTuning.dampingKneeSpeed(),
+                        spec.maxSpringForce(), suspTuning.bumpStopTravel(), suspTuning.bumpStopRate());
             }
             double[] forces = WheelSubStepper.afterAntiRoll(subSuspension, compressions, partners, barRate);
             double[] gripForces = new double[wheelCount];
@@ -424,8 +432,12 @@ final class SableCarBody {
                     continue;
                 }
                 SurfaceProperties surface = Surfaces.at(level, wheelHits[wheel].getBlockPos());
+                // MINECRAFT-445: tire pressure scales grip (under-inflation enlarges the contact patch).
+                // Exactly 1.0 at this car's nominal pressure, which every roster car carries, so this
+                // multiply is a no-op for them -- the same pattern downforceGripMultiplier already uses.
                 double gripMu = WheelMath.BASE_FRICTION * Math.min(1.0, surface.grip() * spec.looseGrip())
-                        * spec.downforceGripMultiplier(forwardSpeed) * textureGrip[wheel];
+                        * spec.downforceGripMultiplier(forwardSpeed) * textureGrip[wheel]
+                        * WheelMath.tirePressureGripMultiplier(spec.tirePressureBar());
                 gripForces[wheel] = gripMu * forces[wheel];
             }
 
@@ -436,8 +448,16 @@ final class SableCarBody {
                 // sub-step, ahead of both guards. See the steerAngle field's own comment for the contract.
                 double[] mount = spec.mounts()[wheel];
                 boolean front = mount[2] > 0;
-                double wheelSteerAngle = front ? steer * WheelMath.maxSteerAngle(forwardSpeed, WheelMath.BASE_FRICTION,
-                        spec.wheelbase(), CarPhysics.MAX_STEER) : 0.0;
+                // MINECRAFT-445: the rear axle takes its own configured share of the front angle. The
+                // ratio is 0.0 for every vehicle that has not opted in, so this is bit-for-bit the
+                // `: 0.0` the rear wheels got before rear steering existed. A nonzero ratio is real
+                // physics, not just a rendered pose: this angle rotates the tire's own forward axis
+                // below, which is what vLong/vLat -- and therefore the tire's force directions -- are
+                // measured against.
+                double frontSteerAngle = steer * WheelMath.maxSteerAngle(forwardSpeed, WheelMath.BASE_FRICTION,
+                        spec.wheelbase(), CarPhysics.MAX_STEER);
+                double wheelSteerAngle = front ? frontSteerAngle
+                        : frontSteerAngle * spec.steeringTuning().rearSteerRatio();
                 this.steerAngle[wheel] = wheelSteerAngle;
 
                 BlockHitResult hit = wheelHits[wheel];
@@ -549,10 +569,17 @@ final class SableCarBody {
                 // Downforce (MINECRAFT-184): spec.downforceGripMultiplier() is exactly 1.0 for every vehicle
                 // whose downforceGripPerSpeed is 0.0 (every existing vehicle), so this multiply is a no-op
                 // for them - see VehicleSpec.INDY's own javadoc for the one vehicle that sets it nonzero.
+                // MINECRAFT-445: tire pressure scales grip (under-inflation enlarges the contact patch).
+                // Exactly 1.0 at this car's nominal pressure, which every roster car carries, so this
+                // multiply is a no-op for them -- the same pattern downforceGripMultiplier already uses.
                 double gripMu = WheelMath.BASE_FRICTION * Math.min(1.0, surface.grip() * spec.looseGrip())
-                        * spec.downforceGripMultiplier(forwardSpeed) * textureGrip[wheel];
+                        * spec.downforceGripMultiplier(forwardSpeed) * textureGrip[wheel]
+                        * WheelMath.tirePressureGripMultiplier(spec.tirePressureBar());
+                // MINECRAFT-445: and pressure scales rolling drag the OTHER way (a softer tire deforms
+                // more and costs more), so dropping pressure buys grip above and pays for it here.
                 double rollingCoefficient = WheelMath.rollingCoefficient(surface.rollingResistance(), surface.deformability(), spec.rollingScale())
-                        * textureRolling[wheel];
+                        * textureRolling[wheel]
+                        * WheelMath.tirePressureRollingMultiplier(spec.tirePressureBar());
                 double effectiveMass = spec.massKg() / 4.0;
                 // isIdentity() is checked on the SPEC's own hard-wired tireTuning(), never on config, so
                 // CAR/TRUCK/TROPHY (always IDENTITY in code) can never be routed into DriftTireModel no
@@ -615,7 +642,8 @@ final class SableCarBody {
                     // bleeding off) pays out as a FORWARD impulse, spin increasing (a locked wheel catching
                     // back up) as a backward one, matching the two cases driving/braking already use the
                     // opposite sign for.
-                    reactionImpulse = -(recoveredSpin - priorSpin) * WheelMath.WHEEL_INERTIA / spec.wheelRadius();
+                    reactionImpulse = DrivetrainMath.recoveryReactionImpulse(priorSpin, recoveredSpin,
+                            WheelMath.WHEEL_INERTIA, spec.wheelRadius());
                     impulseWorld.fma(reactionImpulse, forward);
                     wheelSpin[wheel] = recoveredSpin;
                     recoveryImpulseAccum[wheel] += Math.abs(reactionImpulse);
@@ -664,8 +692,40 @@ final class SableCarBody {
                 Vector3d suspensionLocal = inverse.transform(new Vector3d(up).mul(force * subDt));
                 body.applyImpulseAtPoint(contactLocal, suspensionLocal);
                 Vector3d horizontalLocal = new Vector3d(impulseLocal).sub(suspensionLocal);
-                double tireY = CarConfig.TIRE_FORCE_AT_CONTACT.get() ? contactLocal.y : -0.1;
-                body.applyImpulseAtPoint(new Vector3d(local.x, tireY, local.z), horizontalLocal);
+                double tireY = CarConfig.TIRE_FORCE_AT_CONTACT.get() ? contactLocal.y : BODY_TIRE_FORCE_HEIGHT;
+                // MINECRAFT-445 review fix (PR184 #issuecomment-6282623425): anti-dive/anti-squat is
+                // documented as a LONGITUDINAL (braking/drive) geometry effect only, but horizontalLocal
+                // bundles the lateral tire force too -- applying the blended height to all of it would
+                // have let a configured pitch fraction silently change CORNERING roll transfer as well,
+                // which this ticket never claimed and never tested. Only the longitudinal component (tire
+                // .longitudinal() plus the wheel-spin recovery reaction, both along `forward`) gets the
+                // anti-dive/anti-squat height; the lateral component (tire.lateral() along `lateral`)
+                // keeps applying at the ORIGINAL, unblended tireY regardless of pitch tuning.
+                //
+                // Anti-DIVE applies while this wheel's own longitudinal force opposes the car's motion,
+                // anti-SQUAT while it drives it, so a braking wheel uses anti-dive even mid-corner. Both
+                // fractions are 0.0 for every roster car; at 0.0 the blend returns tireY unchanged and the
+                // split below still sums to exactly horizontalLocal applied at exactly tireY, so this
+                // stays bit-for-bit the single pre-split call for them.
+                // MINECRAFT-445 review fix (PR184 review 5580581955): the selector reads the TOTAL
+                // longitudinal IMPULSE actually applied to the chassis this sub-step -- tire.longitudinal()
+                // over subDt plus the wheel-spin recovery reaction (0.0 whenever no recovery happened),
+                // the same two terms impulseWorld accumulated along `forward` above and the split below
+                // applies. During reachable coasting overspin the recovery reaction can outweigh rolling
+                // drag, and a lock-up recovery can outweigh gentle drive, so neither tire.longitudinal()
+                // alone nor that force summed with an impulse gives the sign the chassis actually feels.
+                double antiFraction = WheelMath.pitchResistFraction(
+                        WheelMath.chassisLongitudinalImpulse(tire.longitudinal(), subDt, reactionImpulse),
+                        forwardSpeed, spec.pitchTuning().antiDive(), spec.pitchTuning().antiSquat());
+                if (antiFraction == 0.0) {
+                    body.applyImpulseAtPoint(new Vector3d(local.x, tireY, local.z), horizontalLocal);
+                } else {
+                    double pitchTireY = WheelMath.pitchResistApplicationHeight(tireY, BODY_TIRE_FORCE_HEIGHT, antiFraction);
+                    Vector3d lateralLocal = inverse.transform(new Vector3d(lateral).mul(tire.lateral() * subDt));
+                    Vector3d longitudinalLocal = new Vector3d(horizontalLocal).sub(lateralLocal);
+                    body.applyImpulseAtPoint(new Vector3d(local.x, pitchTireY, local.z), longitudinalLocal);
+                    body.applyImpulseAtPoint(new Vector3d(local.x, tireY, local.z), lateralLocal);
+                }
             }
             // Re-read velocity so the next sub-step's forces respond to the impulses just applied above -
             // see the note before this loop on why this, and not pose, is what makes sub-stepping matter.

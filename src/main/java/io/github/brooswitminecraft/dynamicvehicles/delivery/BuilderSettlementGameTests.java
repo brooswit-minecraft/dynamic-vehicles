@@ -179,11 +179,18 @@ public final class BuilderSettlementGameTests {
         helper.assertTrue(!helper.getBlockState(campfireAnchor).isAir(), "floor hole left at former campfire position");
         helper.assertTrue(villager.getVillagerData().getProfession() == VillagerProfession.NONE, "Builder did not retire");
         helper.assertTrue(villager.isAlive(), "Builder died from being entombed in the new house");
-        BlockPos villagerPos = helper.relativePos(villager.blockPosition());
-        helper.assertTrue(!BuilderSettlementPlan.isWithinHouseFootprint(center.getX(), center.getZ(), villagerPos.getX(), villagerPos.getZ()),
+        // In 1.21.1 GameTestHelper.relativePos applies rotation + 180 degrees, not the inverse
+        // of absolutePos. Even an unrotated fixture therefore checks the opposite side of its origin.
+        // Settlement and the entity both use world coordinates: test the actual destination directly.
+        BlockPos absoluteCenter = helper.absolutePos(center);
+        BlockPos villagerPos = villager.blockPosition();
+        helper.assertTrue(!BuilderSettlementPlan.isWithinHouseFootprint(absoluteCenter.getX(), absoluteCenter.getZ(), villagerPos.getX(), villagerPos.getZ()),
                 "Builder was left standing inside its own new house's footprint: " + villagerPos);
-        helper.assertTrue(helper.getBlockState(villagerPos).isAir() && helper.getBlockState(villagerPos.above()).isAir(),
+        helper.assertTrue(helper.getLevel().getBlockState(villagerPos).isAir()
+                        && helper.getLevel().getBlockState(villagerPos.above()).isAir(),
                 "Builder was relocated into a solid block: " + villagerPos);
+        helper.assertTrue(helper.getLevel().noCollision(villager, villager.getBoundingBox()),
+                "Builder's bounding box intersects the completed house at " + villagerPos);
         // An unrelated entity well outside the footprint is untouched by the relocation/placement.
         helper.assertTrue(pig.isAlive(), "unrelated entity died during settlement");
         helper.assertTrue(pig.position().equals(pigPosBefore),

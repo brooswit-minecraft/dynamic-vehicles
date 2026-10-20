@@ -95,7 +95,9 @@ final class VehicleLanes {
         WING_VS_CONTROL,
         NON_SHIFTER,
         OPPOSING_THROTTLE,
-        SUB_STEP_SPEED;
+        SUB_STEP_SPEED,
+        GEAR_RATIO,
+        LIMITER_WALL;
 
         BlockPos origin() {
             return new BlockPos(0, SITE_Y, FIRST_SITE_Z + ordinal() * SITE_SPACING);
@@ -412,6 +414,34 @@ final class VehicleLanes {
                 cleanup();
             }
         };
+    }
+
+    /** Capture before changing the global setting. Scheduled assertions and timeouts do not unwind
+     * the fixture's setup stack, so restoration belongs to the test lifecycle. */
+    void restoreSubStepsOnEveryOutcome() {
+        int original = CarConfig.WHEEL_SUB_STEPS.get();
+        helper.testInfo.addListener(new GameTestListener() {
+            private boolean restored;
+
+            private void restore() {
+                if (!restored) {
+                    CarConfig.WHEEL_SUB_STEPS.set(original);
+                    restored = true;
+                }
+            }
+
+            @Override
+            public void testStructureLoaded(GameTestInfo info) {}
+
+            @Override
+            public void testPassed(GameTestInfo info, GameTestRunner runner) { restore(); }
+
+            @Override
+            public void testFailed(GameTestInfo info, GameTestRunner runner) { restore(); }
+
+            @Override
+            public void testAddedForRerun(GameTestInfo info, GameTestInfo retry, GameTestRunner runner) { restore(); }
+        });
     }
 
     /** Undoes everything recorded so far; running it again does nothing. */

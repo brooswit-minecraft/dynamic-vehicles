@@ -477,6 +477,7 @@ public final class WingAeroGameTests {
             Vec3 oneStepSpawn = stoneLane(lanes, FIRST_CAR_LANE_X);
             Vec3 manyStepSpawn = stoneLane(lanes, SECOND_CAR_LANE_X);
             int originalSubSteps = CarConfig.WHEEL_SUB_STEPS.get();
+            lanes.restoreSubStepsOnEveryOutcome();
             String wingJson = wingJsonWithOnlyDownforce(MODERATE_DOWNFORCE_COEFF, MODERATE_DOWNFORCE_COEFF);
             try {
                 CarConfig.WHEEL_SUB_STEPS.set(ONE_SUB_STEP);

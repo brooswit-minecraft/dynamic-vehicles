@@ -43,45 +43,130 @@ public final class CarDrivetrainGameTests {
      * -- the vertical settling bounce right after spawn dominates it for the first several ticks,
      * completely masking any horizontal difference between gears. Measuring from a settled standstill
      * means every bit of speed gained afterward is actually from the drivetrain.
-     * <li>A PARTIAL throttle (0.3) keeps both gears' commanded force under the tire's grip limit, which
-     * isolates the ratio multiplier itself from the separate wheelspin/rev-limiter interaction the next
-     * test below covers -- at full throttle, D1's own wheelspin can trip its own limiter within a tick or
-     * two (a real low-gear, low-grip launch's own "fighting the limiter" behavior).
+     * <li>A PARTIAL throttle ({@link #UNDER_GRIP_THROTTLE}) keeps both gears' commanded force under the
+     * tire's grip limit, which isolates the ratio multiplier itself from the separate wheelspin/rev-limiter
+     * interaction the next test below covers -- at full throttle, D1's own wheelspin can trip its own
+     * limiter within a tick or two (a real low-gear, low-grip launch's own "fighting the limiter" behavior).
      * </ul>
+     *
+     * <p><b>MINECRAFT-445 flake fix.</b> This test's throttle used to be 0.3, and that value did NOT keep
+     * D1 under the grip limit, which made the test genuinely nondeterministic (observed across CI runs on
+     * one branch: 6 passes, 4 failures, including at two commits whose production behaviour was identical).
+     * The arithmetic, all from production constants: {@link DrivetrainMath#forceMultiplier} is {@code ratio
+     * / GEAR_RATIOS[last]}, so D1 multiplies drive force by {@code 3.6 / 0.9 = 4.0} where D5 multiplies by
+     * {@code 1.0}. At throttle 0.3 on the car ({@code SableCarBody.DRIVE_FORCE} 2300 N, {@code forceScale}
+     * 1.0) D1 therefore commands {@code 0.3 * 2300 * 4.0 = 2760 N} per wheel against a grip limit of about
+     * {@code BASE_FRICTION * massKg * g / wheels = 1.1 * 2943 = 3237 N} -- 85% of the budget, before the
+     * friction circle's lateral share or rolling resistance take any of it. A ~15% dip in instantaneous
+     * wheel load (ordinary residual settling bounce) is then enough to tip D1 into wheelspin, where its
+     * longitudinal force saturates and it UNDER-accelerates. D5, commanding 690 N (21% of the budget), is
+     * nowhere near the limit, which is exactly what the evidence showed: D5 landed within 0.07% across
+     * every observed failure (0.8810-0.8816) while D1 swung from 0.62 to over 1.15.
+     *
+     * <p>The repair preserves the assertion and the coverage unchanged -- D1 must still exceed D5 by the
+     * same 1.3x margin -- and instead fixes the premise the test always claimed: the throttle now leaves a
+     * real traction margin, the settle gate is tight enough that wheel load is actually steady when
+     * throttle is applied, and {@link #assertNotSlipping} makes "under the grip limit" an asserted fact
+     * rather than a comment. If a future production change pushes D1 back over the limit at this throttle,
+     * this test now says so directly instead of flaking.
      */
-    @GameTest(template = "settlement_test", timeoutTicks = 100)
+    @GameTest(template = "settlement_test", timeoutTicks = 260 + VehicleLanes.CHUNK_LOAD_ALLOWANCE)
     public static void d1ReachesAHigherSpeedThanD5OverTheSameShortWindow(GameTestHelper helper) {
-        helper.setBlock(new BlockPos(5, 2, 2), Blocks.STONE);
-        helper.setBlock(new BlockPos(5, 3, 2), Blocks.AIR);
-        helper.setBlock(new BlockPos(5, 2, 10), Blocks.STONE);
-        helper.setBlock(new BlockPos(5, 3, 10), Blocks.AIR);
-        CarEntity carD1 = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 2));
-        carD1.setYRot(0.0f);
-        carD1.selectGear(CarPhysics.Gear.D1);
-        CarEntity carD5 = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 10));
-        carD5.setYRot(0.0f);
-        carD5.selectGear(CarPhysics.Gear.D5);
-        Player riderD1 = helper.makeMockPlayer(GameType.CREATIVE);
-        helper.assertTrue(riderD1.startRiding(carD1), "mock player failed to board the D1 car");
-        Player riderD5 = helper.makeMockPlayer(GameType.CREATIVE);
-        helper.assertTrue(riderD5.startRiding(carD5), "mock player failed to board the D5 car");
-        helper.runAfterDelay(60L, () -> {
-            helper.assertTrue(carD1.debugSpeed() < 1.5 && carD5.debugSpeed() < 1.5,
-                    "test setup invalid -- a car had not settled to a near-standstill before throttle was applied: D1="
-                            + carD1.debugSpeed() + " D5=" + carD5.debugSpeed());
-            riderD1.zza = 0.3f;
-            riderD5.zza = 0.3f;
-            helper.runAfterDelay(20L, () -> {
-                helper.assertTrue(carD1.debugGearRatio() == DrivetrainMath.ratioFor(0),
-                        "D1 did not resolve to its own ratio on the production tick path: " + carD1.debugGearRatio());
-                helper.assertTrue(carD5.debugGearRatio() == DrivetrainMath.ratioFor(4),
-                        "D5 did not resolve to its own ratio on the production tick path: " + carD5.debugGearRatio());
-                helper.assertTrue(carD1.debugSpeed() > carD5.debugSpeed() * 1.3,
-                        "D1's extra torque multiplier did not produce a measurably higher speed than D5 from a settled standstill: D1="
-                                + carD1.debugSpeed() + " D5=" + carD5.debugSpeed());
-                helper.succeed();
+        VehicleLanes.build(helper, VehicleLanes.Site.GEAR_RATIO, lanes -> {
+            lanes.layLane(VehicleLanes.FIRST_LANE_X, Blocks.STONE.defaultBlockState());
+            lanes.layLane(VehicleLanes.THIRD_LANE_X, Blocks.STONE.defaultBlockState());
+            CarEntity carD1 = lanes.spawn(DynamicVehiclesMod.CAR.get(), VehicleLanes.spawnPoint(VehicleLanes.FIRST_LANE_X));
+            carD1.setYRot(0.0f);
+            carD1.selectGear(CarPhysics.Gear.D1);
+            CarEntity carD5 = lanes.spawn(DynamicVehiclesMod.CAR.get(), VehicleLanes.spawnPoint(VehicleLanes.THIRD_LANE_X));
+            carD5.setYRot(0.0f);
+            carD5.selectGear(CarPhysics.Gear.D5);
+            Player riderD1 = helper.makeMockPlayer(GameType.CREATIVE);
+            helper.assertTrue(riderD1.startRiding(carD1), "mock player failed to board the D1 car");
+            Player riderD5 = helper.makeMockPlayer(GameType.CREATIVE);
+            helper.assertTrue(riderD5.startRiding(carD5), "mock player failed to board the D5 car");
+            helper.startSequence().thenIdle(SETTLE_TICKS).thenWaitUntil(() -> {
+                // Gated on HORIZONTAL speed, not debugSpeed(). debugSpeed() is the body's full 3D velocity
+                // magnitude and it does not converge to zero: measured on CI, both cars sat at exactly
+                // 0.28257137537002563 after 80 settling ticks -- identical to every digit, so an irreducible
+                // floor rather than run-to-run bounce. A 3D gate therefore cannot be tightened past that floor
+                // at all, which is why the original "< 1.5" was so loose. Horizontal speed does converge, and
+                // it is the quantity that actually matters here: this test compares horizontal acceleration
+                // from a standstill, so what must be zero beforehand is horizontal motion.
+                helper.assertTrue(horizontalSpeed(carD1) < SETTLED_HORIZONTAL_SPEED
+                                && horizontalSpeed(carD5) < SETTLED_HORIZONTAL_SPEED,
+                        "test setup invalid -- a car had not settled to a near-standstill before throttle was applied:"
+                                + " D1 horizontal=" + horizontalSpeed(carD1) + " D5 horizontal=" + horizontalSpeed(carD5)
+                                + " (3D: D1=" + carD1.debugSpeed() + " D5=" + carD5.debugSpeed() + ")");
+            }).thenExecute(() -> {
+                riderD1.zza = (float) UNDER_GRIP_THROTTLE;
+                riderD5.zza = (float) UNDER_GRIP_THROTTLE;
+                lanes.assertStaysOnLane(carD1, VehicleLanes.FIRST_LANE_X, VehicleLanes.allWheels(Blocks.STONE),
+                        VehicleLanes.Wear.SAME_SURFACE, 1L, 19L, "D1 ratio comparison");
+                lanes.assertStaysOnLane(carD5, VehicleLanes.THIRD_LANE_X, VehicleLanes.allWheels(Blocks.STONE),
+                        VehicleLanes.Wear.SAME_SURFACE, 1L, 19L, "D5 ratio comparison");
+                for (int tick = 1; tick < 20; tick++) {
+                    helper.runAfterDelay(tick, () -> {
+                        assertNotSlipping(helper, carD1, "D1");
+                        assertNotSlipping(helper, carD5, "D5");
+                    });
+                }
+                helper.runAfterDelay(20L, () -> {
+                    helper.assertTrue(carD1.debugGearRatio() == DrivetrainMath.ratioFor(0),
+                            "D1 did not resolve to its own ratio on the production tick path: " + carD1.debugGearRatio());
+                    helper.assertTrue(carD5.debugGearRatio() == DrivetrainMath.ratioFor(4),
+                            "D5 did not resolve to its own ratio on the production tick path: " + carD5.debugGearRatio());
+                    // The premise, now asserted rather than assumed: neither car may be traction-limited, or
+                    // this is not a measurement of the ratio multiplier at all.
+                    assertNotSlipping(helper, carD1, "D1");
+                    assertNotSlipping(helper, carD5, "D5");
+                    helper.assertTrue(carD1.debugSpeed() > carD5.debugSpeed() * 1.3,
+                            "D1's extra torque multiplier did not produce a measurably higher speed than D5 from a settled standstill: D1="
+                                    + carD1.debugSpeed() + " D5=" + carD5.debugSpeed()
+                                    + " [D1 slip=" + carD1.debugSlipSpeed() + " D5 slip=" + carD5.debugSlipSpeed() + "]");
+                    helper.succeed();
+                });
             });
         });
+    }
+
+    /** Ticks the cars are left at zero throttle before anything is measured. Longer than the original 60:
+     * the gate below is far tighter now, and a car needs the time to actually get there. */
+    private static final int SETTLE_TICKS = 80;
+
+    /** How slow a car must be HORIZONTALLY (m/s) to count as settled before throttle is applied. 15x
+     * tighter than the 1.5 of full 3D speed this test used to accept, and tight relative to the speeds the
+     * comparison itself reads, while still being a threshold a real car converges to -- unlike a tight 3D
+     * gate, which the body's own irreducible ~0.283 m/s floor makes unreachable. */
+    private static final double SETTLED_HORIZONTAL_SPEED = 0.1;
+
+    /** Horizontal ground speed, m/s, from {@code CarEntity}'s own published {@code getDeltaMovement()}
+     * (blocks/tick) -- the same quantity and conversion {@code RollingResistanceGameTests} reads for its
+     * own cruise comparisons, rather than a reimplementation against internal state. */
+    private static double horizontalSpeed(CarEntity car) {
+        Vec3 velocity = car.getDeltaMovement();
+        return Math.hypot(velocity.x, velocity.z) * 20.0;
+    }
+
+    /** Throttle for the ratio comparison: low enough that even D1's 4.0x force multiplier stays well under
+     * the tire's grip limit (about 34% of the budget, against 85% at the old 0.3), so the test measures the
+     * ratio rather than the traction limit. See this test's own javadoc for the arithmetic. */
+    private static final double UNDER_GRIP_THROTTLE = 0.12;
+
+    /** The most tire slip (m/s) a car may show while still counting as "not traction-limited". Not zero:
+     * {@code WheelMath.tire} reports small slip transients even while gripping. Well below the sustained
+     * slip a genuinely spinning wheel produces. */
+    private static final double MAX_GRIPPING_SLIP = 0.3;
+
+    /** Asserts a car is not traction-limited, which the ratio comparison's whole premise depends on. Uses
+     * {@code debugSlipSpeed()} -- the same RAW slip speed (m/s) the erosion gate reads, not the normalized
+     * audio signal. */
+    private static void assertNotSlipping(GameTestHelper helper, CarEntity car, String which) {
+        helper.assertTrue(car.debugSlipSpeed() < MAX_GRIPPING_SLIP,
+                which + " was traction-limited at this throttle, so this is a measurement of grip, not of "
+                        + "the gear ratio -- the throttle must stay under the grip limit (see this test's "
+                        + "javadoc for the arithmetic): slip=" + car.debugSlipSpeed()
+                        + " speed=" + car.debugSpeed() + " spins=" + java.util.Arrays.toString(car.debugWheelSpins()));
     }
 
     /** Review P1 (both rounds): the rev limiter must cap TORQUE, not merely the number displayed, and the
@@ -121,69 +206,69 @@ public final class CarDrivetrainGameTests {
      * {@code Erosion.erode}'s own probability roll against a block's resistance) a single report has well
      * under a 1% chance of actually changing a stone block, so waiting for one in a short, deterministic
      * window would make this test flaky for the wrong reason. */
-    @GameTest(template = "settlement_test", timeoutTicks = 140)
+    @GameTest(template = "settlement_test", timeoutTicks = 140 + VehicleLanes.CHUNK_LOAD_ALLOWANCE)
     public static void limiterCapsWheelspinInsteadOfLettingItGrowWithoutBoundAgainstAWall(GameTestHelper helper) {
-        helper.setBlock(new BlockPos(5, 2, 5), Blocks.STONE);
-        helper.setBlock(new BlockPos(5, 3, 5), Blocks.AIR);
-        for (int dx = 4; dx <= 6; dx++) {
-            for (int dy = 2; dy <= 5; dy++) {
-                helper.setBlock(new BlockPos(dx, dy, 7), Blocks.STONE);
+        VehicleLanes.build(helper, VehicleLanes.Site.LIMITER_WALL, lanes -> {
+            for (int dx = 4; dx <= 6; dx++) {
+                for (int dy = 2; dy <= 5; dy++) {
+                    lanes.setBlock(new BlockPos(dx, dy, 7), Blocks.STONE.defaultBlockState());
+                }
             }
-        }
-        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
-        car.setYRot(0.0f);
-        car.selectGear(CarPhysics.Gear.D1);
-        Player rider = helper.makeMockPlayer(GameType.CREATIVE);
-        helper.assertTrue(rider.startRiding(car), "mock player failed to board the car");
-        rider.zza = 1.0f;
-        float[] worstSpinHolder = {0.0f};
-        float[] worstSlipHolder = {0.0f};
-        float[] worstSpeedHolder = {0.0f};
-        double[] bestRealSlip = {0.0};
-        double[] bestRealLoadKg = {0.0};
-        boolean[] everRealReportRan = {false};
-        long[] sampleTicks = {5, 10, 15, 20, 30, 40, 55, 70, 85, 100, 115, 130};
-        for (long sampleTick : sampleTicks) {
-            helper.runAfterDelay(sampleTick, () -> {
-                for (int wheel = 0; wheel < car.syncedWheelCount(); wheel++) {
-                    worstSpinHolder[0] = Math.max(worstSpinHolder[0], Math.abs(car.wheelSpin(wheel, 1.0f)));
-                }
-                worstSlipHolder[0] = Math.max(worstSlipHolder[0], (float) car.debugSlipSpeed());
-                worstSpeedHolder[0] = Math.max(worstSpeedHolder[0], (float) car.debugSpeed());
-                // The REAL production call's own arguments and own result, not a recomputation -- see
-                // SableCarBody.lastErosionResult()'s own javadoc.
-                Erosion.Result realResult = car.debugLastErosionResult();
-                if (realResult != Erosion.Result.SKIPPED && realResult != Erosion.Result.DISABLED) {
-                    everRealReportRan[0] = true;
-                }
-                double realSlip = car.debugLastErosionReportSlipSpeed();
-                if (realSlip > bestRealSlip[0]) {
-                    bestRealSlip[0] = realSlip;
-                    bestRealLoadKg[0] = car.debugLastErosionReportLoadKg();
-                }
+            CarEntity car = lanes.spawn(DynamicVehiclesMod.CAR.get(), new Vec3(5.5, 3, 5.5));
+            car.setYRot(0.0f);
+            car.selectGear(CarPhysics.Gear.D1);
+            Player rider = helper.makeMockPlayer(GameType.CREATIVE);
+            helper.assertTrue(rider.startRiding(car), "mock player failed to board the car");
+            rider.zza = 1.0f;
+            float[] worstSpinHolder = {0.0f};
+            float[] worstSlipHolder = {0.0f};
+            float[] worstSpeedHolder = {0.0f};
+            double[] bestRealSlip = {0.0};
+            double[] bestRealLoadKg = {0.0};
+            boolean[] everRealReportRan = {false};
+            long[] sampleTicks = {5, 10, 15, 20, 30, 40, 55, 70, 85, 100, 115, 130};
+            for (long sampleTick : sampleTicks) {
+                helper.runAfterDelay(sampleTick, () -> {
+                    for (int wheel = 0; wheel < car.syncedWheelCount(); wheel++) {
+                        worstSpinHolder[0] = Math.max(worstSpinHolder[0], Math.abs(car.wheelSpin(wheel, 1.0f)));
+                    }
+                    worstSlipHolder[0] = Math.max(worstSlipHolder[0], (float) car.debugSlipSpeed());
+                    worstSpeedHolder[0] = Math.max(worstSpeedHolder[0], (float) car.debugSpeed());
+                    // The REAL production call's own arguments and own result, not a recomputation -- see
+                    // SableCarBody.lastErosionResult()'s own javadoc.
+                    Erosion.Result realResult = car.debugLastErosionResult();
+                    if (realResult != Erosion.Result.SKIPPED && realResult != Erosion.Result.DISABLED) {
+                        everRealReportRan[0] = true;
+                    }
+                    double realSlip = car.debugLastErosionReportSlipSpeed();
+                    if (realSlip > bestRealSlip[0]) {
+                        bestRealSlip[0] = realSlip;
+                        bestRealLoadKg[0] = car.debugLastErosionReportLoadKg();
+                    }
+                });
+            }
+            helper.runAfterDelay(138L, () -> {
+                helper.assertTrue(worstSpeedHolder[0] < 5.0,
+                        "the car drifted away from the wall at some point instead of staying blocked throughout -- test setup invalid, peak speed="
+                                + worstSpeedHolder[0]);
+                // An unbounded-torque bug injects roughly (excess force * wheelRadius / wheelInertia * dt) of
+                // spin EVERY tick indefinitely, which after 130 ticks of full D1 throttle is orders of
+                // magnitude past this. A correctly limiter-coupled drivetrain's peak stays near where the
+                // engaged ratio's own RPM reaches the limiter -- comfortably under 150 rad/s for D1's ratio.
+                helper.assertTrue(worstSpinHolder[0] < 150.0,
+                        "a driven wheel's spin rate grew without bound instead of being capped by the rev limiter: " + worstSpinHolder[0] + " rad/s");
+                helper.assertTrue(worstSlipHolder[0] > 0.3,
+                        "wheelspin against the wall never produced a large RAW slip speed across the whole window (SlipReporter's own erosion threshold): peak="
+                                + worstSlipHolder[0] + " m/s");
+                helper.assertTrue(everRealReportRan[0],
+                        "the real production SlipReporter.report() call never actually ran erosion's own decision logic (stayed SKIPPED/DISABLED the whole window)");
+                // The REAL arguments the production path actually passed, not an assumed load.
+                double erosionAmount = SlipMath.amount(bestRealSlip[0], bestRealLoadKg[0]);
+                helper.assertTrue(erosionAmount > 0.0005,
+                        "the real slip/load the production call actually delivered would still round to a negligible erosion amount: slip="
+                                + bestRealSlip[0] + " m/s, load=" + bestRealLoadKg[0] + " kg, amount=" + erosionAmount);
+                helper.succeed();
             });
-        }
-        helper.runAfterDelay(138L, () -> {
-            helper.assertTrue(worstSpeedHolder[0] < 5.0,
-                    "the car drifted away from the wall at some point instead of staying blocked throughout -- test setup invalid, peak speed="
-                            + worstSpeedHolder[0]);
-            // An unbounded-torque bug injects roughly (excess force * wheelRadius / wheelInertia * dt) of
-            // spin EVERY tick indefinitely, which after 130 ticks of full D1 throttle is orders of
-            // magnitude past this. A correctly limiter-coupled drivetrain's peak stays near where the
-            // engaged ratio's own RPM reaches the limiter -- comfortably under 150 rad/s for D1's ratio.
-            helper.assertTrue(worstSpinHolder[0] < 150.0,
-                    "a driven wheel's spin rate grew without bound instead of being capped by the rev limiter: " + worstSpinHolder[0] + " rad/s");
-            helper.assertTrue(worstSlipHolder[0] > 0.3,
-                    "wheelspin against the wall never produced a large RAW slip speed across the whole window (SlipReporter's own erosion threshold): peak="
-                            + worstSlipHolder[0] + " m/s");
-            helper.assertTrue(everRealReportRan[0],
-                    "the real production SlipReporter.report() call never actually ran erosion's own decision logic (stayed SKIPPED/DISABLED the whole window)");
-            // The REAL arguments the production path actually passed, not an assumed load.
-            double erosionAmount = SlipMath.amount(bestRealSlip[0], bestRealLoadKg[0]);
-            helper.assertTrue(erosionAmount > 0.0005,
-                    "the real slip/load the production call actually delivered would still round to a negligible erosion amount: slip="
-                            + bestRealSlip[0] + " m/s, load=" + bestRealLoadKg[0] + " kg, amount=" + erosionAmount);
-            helper.succeed();
         });
     }
 
@@ -837,6 +922,7 @@ public final class CarDrivetrainGameTests {
         // still-driven 1-substep car 0.7 m behind it: whether the reading caught it before the wall was chance.
         VehicleLanes.build(helper, VehicleLanes.Site.SUB_STEP_SPEED, lanes -> {
             int originalSubSteps = CarConfig.WHEEL_SUB_STEPS.get();
+            lanes.restoreSubStepsOnEveryOutcome();
             try {
                 CarConfig.WHEEL_SUB_STEPS.set(1);
                 CarEntity carOneStep = lanes.spawn(DynamicVehiclesMod.CAR.get(),

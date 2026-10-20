@@ -231,7 +231,7 @@ public final class SuspensionTuningGameTests {
         // template height, so every wheel's raycast -- at most restLength + 0.25 m -- finds nothing below.
         for (int dx = -3; dx <= 3; dx++) {
             for (int dz = -3; dz <= 3; dz++) {
-                for (int y = 0; y <= 7; y++) {
+                for (int y = PIT_FLOOR_Y; y <= 7; y++) {
                     helper.setBlock(new BlockPos(5 + dx, y, 15 + dz), Blocks.AIR);
                 }
             }
@@ -244,7 +244,12 @@ public final class SuspensionTuningGameTests {
         // ground". Sampling instead makes each side's claim the stronger one: the control must find contact
         // at SOME point, and the airborne car must find it at NO point.
         PeakCompression groundedPeak = peakCompressionOverDrop(helper, grounded, 0L);
-        PeakCompression airbornePeak = peakCompressionOverDrop(helper, airborne, 0L);
+        // The airborne car is sampled over a SHORTER window than the grounded control, and that asymmetry
+        // is the fix for the last CI failure here rather than an oversight: with the full 50-tick window
+        // the car fell clean through the cleared column and landed on the template floor underneath it
+        // (peak=0.284, blockBelow=stone), so the test was measuring a landing it had itself arranged. The
+        // window now ends well before the car can cross even the deepened pit -- see AIRBORNE_SAMPLE_TICKS.
+        PeakCompression airbornePeak = peakCompressionOverWindow(helper, airborne, 0L, AIRBORNE_SAMPLE_TICKS);
 
         helper.runAfterDelay(MEASURE_TICK, () -> {
             helper.assertTrue(!airborne.isRemoved(),
@@ -426,8 +431,15 @@ public final class SuspensionTuningGameTests {
      * dependence on which single tick the comparison lands on.
      */
     private static PeakCompression peakCompressionOverDrop(GameTestHelper helper, CarEntity car, long fromTick) {
+        return peakCompressionOverWindow(helper, car, fromTick, SAMPLE_WINDOW_TICKS);
+    }
+
+    /** As {@link #peakCompressionOverDrop}, for a caller that needs its own window length -- the airborne
+     * case, whose window must end before its car can fall far enough to find anything to land on. */
+    private static PeakCompression peakCompressionOverWindow(GameTestHelper helper, CarEntity car,
+            long fromTick, long windowTicks) {
         PeakCompression peak = new PeakCompression();
-        for (long tick = fromTick + 1; tick <= fromTick + SAMPLE_WINDOW_TICKS; tick++) {
+        for (long tick = fromTick + 1; tick <= fromTick + windowTicks; tick++) {
             helper.runAtTickTime(tick, () -> {
                 for (double travel : SableCompat.wheelTravel(car.sableBody())) {
                     if (Double.isFinite(travel)) {
@@ -459,6 +471,18 @@ public final class SuspensionTuningGameTests {
     /** How many ticks {@link #peakCompressionOverDrop} samples for, starting from the tick its car was
      * spawned at; comfortably past the landing and the bounce that follows it. */
     private static final long SAMPLE_WINDOW_TICKS = 50L;
+
+    /** Lowest level the lost-contact pit is cleared to, in template coordinates. Deeper than the template's
+     * own floor so a car suspended over it has a long way to fall before finding anything, which is what
+     * makes {@link #AIRBORNE_SAMPLE_TICKS} able to cover a genuinely contact-free window. */
+    private static final int PIT_FLOOR_Y = -6;
+
+    /** How long the airborne car is sampled for, in ticks. Must END BEFORE the car can reach the bottom of
+     * the pit: free fall covers about 5 blocks in these 20 ticks, against the 12 blocks of cleared air
+     * below its spawn ({@code y = 6} down to {@link #PIT_FLOOR_Y}), so every sampled tick is one where the
+     * car genuinely has nothing under it. A longer window is what made this fixture measure its own
+     * arranged landing instead of the lost-contact behaviour it is about. */
+    private static final long AIRBORNE_SAMPLE_TICKS = 20L;
 
     /** Throttle held across the measurement window: enough to keep the rigid body awake and its wheels
      * loaded, gentle enough (the same value {@code RollingResistanceGameTests} uses for its own cruise

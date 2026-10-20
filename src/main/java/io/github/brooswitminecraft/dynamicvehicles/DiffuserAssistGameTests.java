@@ -668,9 +668,23 @@ public final class DiffuserAssistGameTests {
     // moved both R18 and R19 to the much lower-risk direction-only single-axis regressions above
     // (CarEntity#setLastGroundedYawDegForTest / #addLinearVelocityForTest seed the target/velocity directly,
     // with zero initial angular velocity and no grounded driving phase, so nothing perturbs roll or pitch).
-    // A real GameTestHelper API bug was found and fixed while building that earlier fixture, worth keeping
-    // in mind for anyone touching block placement in a GameTest: setBlock takes template-RELATIVE
-    // coordinates and translates internally via absolutePos/relativePos (which also account for the
-    // structure's own per-run rotation); passing an ABSOLUTE position (e.g. CarEntity#blockPosition)
-    // straight to setBlock compiles and runs with no error but silently clears the wrong patch of the world.
+    // A GameTestHelper coordinate trap was found while building that earlier fixture. The first half of
+    // what this comment used to say was right: setBlock/getBlockState take template-RELATIVE coordinates,
+    // so handing them an ABSOLUTE position (e.g. CarEntity#blockPosition) compiles, runs without error, and
+    // silently acts on the wrong patch of the world.
+    //
+    // The second half was WRONG, and is corrected here rather than left to mislead: "convert back with
+    // helper.relativePos" does NOT reliably fix it, because relativePos is not the inverse of absolutePos.
+    // In vanilla (1.21.1):
+    //     absolutePos(rel) = origin + R(rel)
+    //     relativePos(abs) = R'(abs - origin),  where R' = R.getRotated(CLOCKWISE_180)
+    // R' equals R-inverse only for the 90 and 270 degree cases. At rotation NONE -- the default these tests
+    // actually run under -- R' is a 180 degree rotation, so relativePos NEGATES x and z instead of
+    // inverting. Measured directly with a probe fixture rather than inferred from the source:
+    //     rotation=NONE rel=(5,3,5) -> abs -> relativePos(abs)=(-5,3,-5), identity=false
+    // That is why the earlier pit fixture appeared to be "fixed" by relativePos: it was clearing a region
+    // mirrored about the structure origin, and only a 41x41 pit was wide enough to still overlap the car by
+    // accident -- which is also why a 9x9 pit did not work. No live code in this class depends on it now
+    // (that fixture is gone), but anything converting an absolute entity position back to relative should
+    // keep its own positions in relative space, or invert absolutePos itself, rather than trust relativePos.
 }

@@ -641,6 +641,12 @@ public final class CarDrivetrainGameTests {
         }
 
         CarEntity[] carRef = new CarEntity[1];
+        // MINECRAFT-445 diagnostic accumulators (49254) -- see their use in the sampling step below.
+        boolean[] bodyEverExisted = {false};
+        boolean[] everTouched = {false};
+        boolean[] rampPresentAtFirstSample = {false};
+        Vec3[] firstSamplePos = {null};
+        Vec3[] lastSamplePos = {null};
         Runnable cleanup = () -> {
             if (carRef[0] != null) {
                 carRef[0].discard();
@@ -737,6 +743,23 @@ public final class CarDrivetrainGameTests {
                             firstUngroundedTick[0] = sampleTick;
                         }
                     }
+                    // MINECRAFT-445 diagnostic (ticket comment 49254): when this fixture's own setup gate
+                    // fails with "never built forward speed", the message alone cannot distinguish a car
+                    // that never ticked, from one whose rig had been removed under it, from one that simply
+                    // never gripped. These four are the state that tells them apart, recorded as they were
+                    // DURING the window rather than re-read afterwards (by then the rig may be cleaned up).
+                    if (car.sableBody() != null) {
+                        bodyEverExisted[0] = true;
+                    }
+                    if (car.debugTouching()) {
+                        everTouched[0] = true;
+                    }
+                    if (sampleTick == 1) {
+                        firstSamplePos[0] = car.position();
+                        rampPresentAtFirstSample[0] =
+                                !level.getBlockState(new BlockPos(originX, originY - 1, originZ)).isAir();
+                    }
+                    lastSamplePos[0] = car.position();
                 })
                 .thenExecute(() -> {
                     CarEntity car = carRef[0];
@@ -749,7 +772,20 @@ public final class CarDrivetrainGameTests {
                             "car speed diverged after driving off a ledge: " + finalSpeed);
                     helper.assertTrue(peakForwardVelocity[0] > 1.0,
                             "car never actually built real forward speed under its own drive -- test setup invalid: peak forward velocity="
-                                    + peakForwardVelocity[0]);
+                                    + peakForwardVelocity[0]
+                                    // MINECRAFT-445 diagnostic (49254): which of the candidate causes it was.
+                                    + " [rig origin=(" + originX + "," + originY + "," + originZ + ")"
+                                    + " firstSamplePos=" + firstSamplePos[0]
+                                    + " lastSamplePos=" + lastSamplePos[0]
+                                    + " samples=" + sampleTickCount[0]
+                                    + " bodyEverExisted=" + bodyEverExisted[0]
+                                    + " everTouchedGround=" + everTouched[0]
+                                    + " rampPresentAtFirstSample=" + rampPresentAtFirstSample[0]
+                                    + " rampPresentNow=" + !level.getBlockState(
+                                            new BlockPos(originX, originY - 1, originZ)).isAir()
+                                    + " originChunkStillForced=" + level.getForcedChunks().contains(
+                                            new ChunkPos(originX >> 4, originZ >> 4).toLong())
+                                    + "]");
                     double traveled = car.getZ() - startZ[0];
                     helper.assertTrue(minVerticalVelocity[0] < -2.0,
                             "car never showed a real falling (negative Y velocity) at any point -- the ledge drop never actually left the ground: worst Y velocity="

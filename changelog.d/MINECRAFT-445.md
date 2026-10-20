@@ -33,7 +33,9 @@ bump: minor
 - **Anti-dive and anti-squat** (MINECRAFT-445): a car's `tireKit` section can now set `antiDive` and
   `antiSquat`, each the fraction of a wheel's longitudinal force carried into the chassis directly rather
   than through a moment arm about the body centre — which is what makes a real car dive under braking and
-  squat under power. Anti-dive applies while a wheel's force opposes the car's motion and anti-squat while
-  it drives it, chosen per wheel, so a braking wheel resists dive even mid-corner. Both are `0.0` for every
-  stock car, and the blend returns the contact-patch height bit-for-bit at `0.0`, so no existing car's
-  pitch behaviour changes.
+  squat under power. Anti-dive applies while the longitudinal push a wheel actually gives the chassis (its
+  tire force plus any wheel-spin recovery) opposes the car's motion and anti-squat while it drives it,
+  chosen per wheel, so a braking wheel resists dive even mid-corner. Only that longitudinal force moves;
+  the tire's cornering force keeps acting where it always did. Both are `0.0` for every stock car, and
+  the blend returns the contact-patch height bit-for-bit at `0.0`, so no existing car's pitch behaviour
+  changes.

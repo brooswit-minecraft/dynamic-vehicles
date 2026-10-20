@@ -464,6 +464,37 @@ public final class WheelMath {
     }
 
     /**
+     * MINECRAFT-445: the longitudinal impulse, N*s along the wheel's forward axis, one wheel actually hands
+     * the chassis in one sub-step -- its tire force over the sub-step plus any wheel-spin recovery reaction
+     * ({@link DrivetrainMath#recoveryReactionImpulse}, 0.0 when no recovery happened). These are exactly the
+     * two terms {@code SableCarBody.tick} accumulates along {@code forward}, so this is what decides whether
+     * that wheel is braking or driving the car.
+     *
+     * <p>PR184 review 5580581955: the tire term must be multiplied by {@code subDt} BEFORE the reaction is
+     * added. Summing the raw force (N) with the impulse (N*s) mixed units, and on a coasting, overspinning
+     * wheel -- rolling drag {@code -15} N against a {@code +3} N*s recovery at {@code subDt = 0.05} -- picked
+     * the sign of the drag (-12) although the impulse actually applied was {@code +2.25} N*s forward.
+     */
+    public static double chassisLongitudinalImpulse(double tireLongitudinalForce, double subDt,
+            double recoveryReactionImpulse) {
+        return tireLongitudinalForce * subDt + recoveryReactionImpulse;
+    }
+
+    /**
+     * MINECRAFT-445: which pitch-resisting fraction governs a wheel this sub-step. Anti-DIVE while the
+     * longitudinal impulse it actually delivers ({@link #chassisLongitudinalImpulse}) opposes the car's
+     * motion, anti-SQUAT while it drives it -- chosen per wheel, so a braking wheel uses anti-dive even
+     * mid-corner. At rest ({@code forwardSpeed == 0}) nothing can oppose motion, so it is anti-squat.
+     *
+     * @param longitudinalImpulse N*s along the wheel's forward axis, from {@link #chassisLongitudinalImpulse}
+     * @param forwardSpeed the car's own speed along its forward axis, m/s (sign gives the direction of travel)
+     */
+    public static double pitchResistFraction(double longitudinalImpulse, double forwardSpeed, double antiDive,
+            double antiSquat) {
+        return longitudinalImpulse * forwardSpeed < 0 ? antiDive : antiSquat;
+    }
+
+    /**
      * Anti-roll bar: a force that resists the two wheels of an axle being compressed differently.
      * @param compression this wheel's spring compression, metres (0 when airborne)
      * @param otherCompression the other wheel of the axle

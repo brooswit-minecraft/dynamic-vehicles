@@ -642,7 +642,8 @@ final class SableCarBody {
                     // bleeding off) pays out as a FORWARD impulse, spin increasing (a locked wheel catching
                     // back up) as a backward one, matching the two cases driving/braking already use the
                     // opposite sign for.
-                    reactionImpulse = -(recoveredSpin - priorSpin) * WheelMath.WHEEL_INERTIA / spec.wheelRadius();
+                    reactionImpulse = DrivetrainMath.recoveryReactionImpulse(priorSpin, recoveredSpin,
+                            WheelMath.WHEEL_INERTIA, spec.wheelRadius());
                     impulseWorld.fma(reactionImpulse, forward);
                     wheelSpin[wheel] = recoveredSpin;
                     recoveryImpulseAccum[wheel] += Math.abs(reactionImpulse);
@@ -706,19 +707,16 @@ final class SableCarBody {
                 // fractions are 0.0 for every roster car; at 0.0 the blend returns tireY unchanged and the
                 // split below still sums to exactly horizontalLocal applied at exactly tireY, so this
                 // stays bit-for-bit the single pre-split call for them.
-                // MINECRAFT-445 review fix (comment 49278, P2): the selector must read the TOTAL
-                // longitudinal force actually applied to the chassis this sub-step, not tire.longitudinal()
-                // alone. reactionImpulse (0.0 whenever no recovery happened this sub-step) is the
-                // wheel-spin recovery reaction, also applied along `forward` -- during reachable coasting
-                // overspin, tire.longitudinal() can be small or even the wrong sign while the recovery
-                // reaction dominates the real net force, which would have picked anti-dive/anti-squat by
-                // the wrong signal. Both terms are exactly what the longitudinal/lateral split below also
-                // uses, so the selector and the split now agree on what "longitudinal force" means.
-                double totalLongitudinal = tire.longitudinal() + reactionImpulse;
-                boolean opposingMotion = totalLongitudinal * forwardSpeed < 0;
-                double antiFraction = opposingMotion
-                        ? spec.pitchTuning().antiDive()
-                        : spec.pitchTuning().antiSquat();
+                // MINECRAFT-445 review fix (PR184 review 5580581955): the selector reads the TOTAL
+                // longitudinal IMPULSE actually applied to the chassis this sub-step -- tire.longitudinal()
+                // over subDt plus the wheel-spin recovery reaction (0.0 whenever no recovery happened),
+                // the same two terms impulseWorld accumulated along `forward` above and the split below
+                // applies. During reachable coasting overspin the recovery reaction can outweigh rolling
+                // drag, and a lock-up recovery can outweigh gentle drive, so neither tire.longitudinal()
+                // alone nor that force summed with an impulse gives the sign the chassis actually feels.
+                double antiFraction = WheelMath.pitchResistFraction(
+                        WheelMath.chassisLongitudinalImpulse(tire.longitudinal(), subDt, reactionImpulse),
+                        forwardSpeed, spec.pitchTuning().antiDive(), spec.pitchTuning().antiSquat());
                 if (antiFraction == 0.0) {
                     body.applyImpulseAtPoint(new Vector3d(local.x, tireY, local.z), horizontalLocal);
                 } else {

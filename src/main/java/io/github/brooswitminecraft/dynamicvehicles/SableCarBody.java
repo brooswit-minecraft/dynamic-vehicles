@@ -34,6 +34,13 @@ final class SableCarBody {
     private static final double REVERSE_FORCE = 1_400.0;
     private static final double BRAKE_FORCE = 3_000.0;
     private static final double HANDBRAKE_FORCE = 6_000.0;
+    /** Total speed (m/s) at or below which NO aerodynamic/fluid/foliage drag impulse is applied at all
+     * (MINECRAFT-446 review, comment 49064: named and documented rather than left as a bare literal, since
+     * it is part of the per-car drag contract's own speed dependence). Pre-existing behaviour, unchanged by
+     * this ticket; {@code docs/per-car-config.md}'s `wing` section documents it, and {@code
+     * WingAeroGameTests} pins that the documented value still matches this one. Note the wing DOWNFORCE
+     * path below has no such dead band: it applies at any nonzero airflow speed. */
+    static final double DRAG_SPEED_DEADBAND = 0.5;
     // MINECRAFT-446: the old hardcoded "AIR_DRAG = 0.4 N per (m/s)^2" constant moved to
     // VehicleSpec#wingDragCoeff (defaulted to 0.4 for the whole roster), so it is per-car configurable
     // through the wing section of a per-car config file.
@@ -741,8 +748,15 @@ final class SableCarBody {
         // MINECRAFT-446: spec.wingDragCoeff() replaces the old hardcoded AIR_DRAG global constant -- 0.4
         // for every vehicle that has not opted into a different per-car wing config, so this is
         // byte-for-byte the same impulse as before for the whole roster until an operator overrides it.
+        //
+        // MINECRAFT-446 review (comment 49064): the effective applied force is
+        //   dragCoeff * forceScale() * |v| * v        (opposing the full 3D velocity vector)
+        // i.e. the configured coefficient is scaled by this vehicle's own forceScale, and NOTHING is
+        // applied at or below DRAG_SPEED_DEADBAND. Both are pre-existing behaviour this ticket preserves
+        // byte-for-byte, and both are now documented as part of the contract in docs/per-car-config.md
+        // rather than left implicit -- see that doc's `wing` section for the exact formulas.
         double speed = subLinear.length();
-        if (speed > 0.5) {
+        if (speed > DRAG_SPEED_DEADBAND) {
             double fluidDrag = fluidScale * (
                     EnvironmentMath.fluidDragCoefficient(waterFraction, EnvironmentMath.WATER_DRAG)
                     + EnvironmentMath.fluidDragCoefficient(lavaFraction, EnvironmentMath.LAVA_DRAG));

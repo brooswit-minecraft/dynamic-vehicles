@@ -83,9 +83,13 @@ public record VehicleSpec(
          * TireTuning#handbrakeRearGripCut}, which scales the handbrake's lateral-grip cut, not its brake
          * force, and is owned by {@code CarConfig}, not this per-vehicle field. */
         double handbrakeScale,
-        /** Wing downforce (MINECRAFT-446): extra downward force, newtons per (m/s)^2 of forward airflow
-         * speed, applied as a genuine impulse in the real rigid-body path ({@link SableCarBody#tick}) at
-         * this vehicle's front/rear axle points &mdash; distinct from {@link #downforceGripPerSpeed}
+        /** Wing downforce (MINECRAFT-446): extra downward force per (m/s)^2 of forward airflow speed,
+         * applied as a genuine impulse in the real rigid-body path ({@link SableCarBody#tick}) at this
+         * vehicle's front/rear axle points. The APPLIED force is {@code coeff * forwardSpeed^2 *
+         * forceScale()} &mdash; this coefficient is scaled by the vehicle's own {@link #forceScale()} at
+         * the application site, like every other force in that method, so it is not a literal
+         * newtons-per-(m/s)^2 figure (review fix, comment 49064; see {@link #wingDownforceNewtons} and
+         * {@code docs/per-car-config.md}). Distinct from {@link #downforceGripPerSpeed}
          * (MINECRAFT-184), which is a tire-grip multiplier with no downward force or moment at all. Applied
          * off the CoG at each axle's own mount point, so a front/rear split also produces a genuine pitch
          * moment, not just a vertical force. {@code 0.0} for every vehicle that has not opted in &mdash;
@@ -95,15 +99,26 @@ public record VehicleSpec(
         /** As {@link #frontWingDownforceCoeff}, applied at the rear axle's own mount point instead. {@code
          * 0.0} for every vehicle that has not opted in &mdash; today, every vehicle on the roster. */
         double rearWingDownforceCoeff,
-        /** Aerodynamic drag (MINECRAFT-446): newtons per (m/s)^2 of the body's own TOTAL speed (the full
-         * 3D velocity vector's magnitude, {@code subLinear.length()} in {@link SableCarBody#tick} &mdash;
-         * NOT just the forward component {@link #frontWingDownforceCoeff}/{@link #rearWingDownforceCoeff}
-         * use), opposing that same velocity vector exactly &mdash; the generalized, per-vehicle form of the
-         * single hardcoded {@code AIR_DRAG} constant {@code SableCarBody.tick} used before this field
-         * existed, at exactly the same point in that method, unchanged. {@code 0.4} (the old global
-         * constant's own value) for every vehicle that has not opted into a different value via its own
-         * wing config, so {@code SableCarBody.tick}'s drag impulse is byte-for-byte unchanged for the whole
-         * roster until an operator overrides it. */
+        /** Aerodynamic drag (MINECRAFT-446): drag coefficient per (m/s)^2 of the body's own TOTAL speed
+         * (the full 3D velocity vector's magnitude, {@code subLinear.length()} in {@link
+         * SableCarBody#tick} &mdash; NOT just the forward component {@link #frontWingDownforceCoeff}/{@link
+         * #rearWingDownforceCoeff} use), opposing that same velocity vector exactly &mdash; the
+         * generalized, per-vehicle form of the single hardcoded {@code AIR_DRAG} constant {@code
+         * SableCarBody.tick} used before this field existed, at exactly the same point in that method,
+         * unchanged.
+         *
+         * <p>Applied force, stated exactly (review fix, comment 49064 &mdash; both factors below are
+         * pre-existing behaviour this ticket preserves, but neither was documented):
+         * <pre>  (wingDragCoeff + fluidDrag + foliageDrag) * forceScale() * |v| * v,
+         *   and nothing at all while |v| &lt;= SableCarBody.DRAG_SPEED_DEADBAND (0.5 m/s)</pre>
+         * So this coefficient is scaled by the vehicle's own {@link #forceScale()} and carries a low-speed
+         * dead band; it is not a literal newtons-per-(m/s)^2 figure, and drag is not merely "zero at a
+         * standstill" but absent below that threshold. {@code docs/per-car-config.md}'s `wing` section
+         * documents both.
+         *
+         * <p>{@code 0.4} (the old global constant's own value) for every vehicle that has not opted into a
+         * different value via its own wing config, so {@code SableCarBody.tick}'s drag impulse is
+         * byte-for-byte unchanged for the whole roster until an operator overrides it. */
         double wingDragCoeff) {
 
     /** Legacy drag coefficient (MINECRAFT-446): every vehicle on the roster used this single hardcoded
@@ -666,10 +681,24 @@ public record VehicleSpec(
         return 1.0 + downforceGripPerSpeed * Math.abs(forwardSpeed);
     }
 
-    /** The genuine downward wing force (newtons, MINECRAFT-446) for one axle at this forward airflow speed
-     * (m/s, either direction -- squared, so direction never matters): {@code coeff * forwardSpeed^2}.
-     * {@code 0.0} at zero speed and for every vehicle whose coefficient is {@code 0.0} (the whole roster
-     * today), so {@code SableCarBody.tick} applies no impulse for them. */
+    /**
+     * One axle's wing downforce term (MINECRAFT-446) at this forward airflow speed (m/s, either direction
+     * -- squared, so direction never matters): {@code coeff * forwardSpeed^2}. {@code 0.0} at zero speed
+     * and for every vehicle whose coefficient is {@code 0.0} (the whole roster today), so {@code
+     * SableCarBody.tick} applies no impulse for them.
+     *
+     * <p><b>This is NOT the newtons that reach the body.</b> Review fix (comment 49064): {@code
+     * SableCarBody.tick} multiplies this result by the vehicle's own {@link #forceScale()} before applying
+     * it, exactly as it does for drive, brake, handbrake and drag forces in that same method, so the
+     * applied force is
+     * <pre>  coeff * forwardSpeed^2 * forceScale()</pre>
+     * An earlier version of this javadoc called the return value "the genuine downward wing force
+     * (newtons)", which was wrong for the eight roster cars whose {@code forceScale} is not 1.0 (only
+     * {@code CAR} and {@code DRIFT} are) -- the configured coefficient is a coefficient scaled by the
+     * car's own force scale, not a literal newton-per-(m/s)^2 figure. {@code docs/per-car-config.md}'s
+     * `wing` section documents the full applied formula, and {@code WingAeroGameTests} pins it against a
+     * car whose {@code forceScale} is deliberately NOT 1.0, so dropping the multiplication would fail.
+     */
     public static double wingDownforceNewtons(double coeff, double forwardSpeed) {
         return coeff * forwardSpeed * forwardSpeed;
     }

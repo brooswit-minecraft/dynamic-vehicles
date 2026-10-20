@@ -103,6 +103,15 @@ public final class WingAeroGameTests {
     /** One aero impulse per axle per tick: this roster is all four-wheel, two-axle cars, so a correct tick
      * applies exactly this many when both coefficients are nonzero. */
     private static final int AXLES_WITH_A_WING = 2;
+    /** The drag dead band docs/per-car-config.md documents, pinned against the production constant by
+     * {@link #theDocumentedDragDeadBandMatchesTheProductionConstant}. */
+    private static final double DOCUMENTED_DRAG_DEADBAND = 0.5;
+    /** The car the applied-force test runs on: {@code muscle_car}, deliberately chosen because its
+     * {@code forceScale} is NOT 1.0 (review fix, comment 49064). On {@code car} (forceScale exactly 1.0)
+     * the {@code coeff * vf^2 * forceScale()} assertion is insensitive to whether the production path
+     * applies {@code forceScale} at all, which is how the documentation drifted from the code unnoticed;
+     * the test asserts that premise explicitly so this can never silently regress to a 1.0 car. */
+    private static final String FORCE_SCALED_CAR_ID = VehicleIds.MUSCLE_CAR;
     /** How far the applied force may sit from the documented formula evaluated at the recorded airflow
      * speed. Both sides are computed from the same recorded speed via the same {@code
      * VehicleSpec#wingDownforceNewtons} call, so only double rounding separates them; this allows far more
@@ -432,8 +441,8 @@ public final class WingAeroGameTests {
         String wingJson = wingJsonWithOnlyDownforce(MODERATE_DOWNFORCE_COEFF, MODERATE_DOWNFORCE_COEFF);
         try {
             CarConfig.WHEEL_SUB_STEPS.set(ONE_SUB_STEP);
-            withLoadedOverride(VehicleIds.CAR, wingJson, () -> {
-                CarEntity oneStepCar = helper.spawn(DynamicVehiclesMod.CAR.get(), oneStepSpawn);
+            withLoadedOverride(FORCE_SCALED_CAR_ID, wingJson, () -> {
+                CarEntity oneStepCar = helper.spawn(DynamicVehiclesMod.MUSCLE.get(), oneStepSpawn);
                 oneStepCar.forceDrive(FULL_THROTTLE, NO_STEER, DRIVE_TICKS);
                 helper.runAfterDelay(DRIVE_TICKS, () -> {
                     assertAppliedAeroMatchesFormula(helper, oneStepCar, ONE_SUB_STEP);
@@ -450,8 +459,8 @@ public final class WingAeroGameTests {
             String wingJson, BlockPos spawn) {
         try {
             CarConfig.WHEEL_SUB_STEPS.set(MANY_SUB_STEPS);
-            withLoadedOverride(VehicleIds.CAR, wingJson, () -> {
-                CarEntity manyStepCar = helper.spawn(DynamicVehiclesMod.CAR.get(), spawn);
+            withLoadedOverride(FORCE_SCALED_CAR_ID, wingJson, () -> {
+                CarEntity manyStepCar = helper.spawn(DynamicVehiclesMod.MUSCLE.get(), spawn);
                 manyStepCar.forceDrive(FULL_THROTTLE, NO_STEER, DRIVE_TICKS);
                 helper.runAfterDelay(DRIVE_TICKS, () -> {
                     try {
@@ -484,14 +493,43 @@ public final class WingAeroGameTests {
                         + "(an application inside the sub-step loop would multiply this by the count): "
                         + "wheelSubSteps=" + subSteps + " applications=" + body.lastAeroApplications()
                         + " expected=" + AXLES_WITH_A_WING);
-        double expected = (VehicleSpec.wingDownforceNewtons(MODERATE_DOWNFORCE_COEFF, airflow)
-                + VehicleSpec.wingDownforceNewtons(MODERATE_DOWNFORCE_COEFF, airflow))
-                * car.spec().forceScale();
+        // Review fix (comment 49064): the applied force is coeff * vf^2 * forceScale(), and this test must
+        // be able to FAIL if that forceScale factor were dropped. On CAR it could not -- CAR's forceScale
+        // is exactly 1.0, so multiplying by it changes nothing and the earlier version of this test passed
+        // either way. Hence the premise assertion below, and MUSCLE as the subject.
+        double forceScale = car.spec().forceScale();
+        helper.assertTrue(forceScale != 1.0,
+                "test premise broken: this test must run on a car whose forceScale is NOT 1.0, or it cannot "
+                        + "detect the forceScale multiplication being dropped. forceScale=" + forceScale);
+        double unscaled = VehicleSpec.wingDownforceNewtons(MODERATE_DOWNFORCE_COEFF, airflow)
+                + VehicleSpec.wingDownforceNewtons(MODERATE_DOWNFORCE_COEFF, airflow);
+        double expected = unscaled * forceScale;
         double applied = body.lastAeroDownforceNewtons();
         helper.assertTrue(Math.abs(applied - expected) <= expected * APPLIED_FORCE_TOLERANCE_FRACTION,
                 "applied wing downforce must equal coeff * forwardSpeed^2 * forceScale at the airflow speed "
-                        + "it was evaluated at: wheelSubSteps=" + subSteps + " airflow=" + airflow
-                        + " applied=" + applied + " expected=" + expected);
+                        + "it was evaluated at (see docs/per-car-config.md's exact formulas): wheelSubSteps="
+                        + subSteps + " airflow=" + airflow + " forceScale=" + forceScale + " applied="
+                        + applied + " expected=" + expected);
+        // The drift pin proper: the applied value must NOT be the unscaled coefficient * vf^2, which is
+        // what the documentation used to claim and what dropping the multiplication would produce.
+        helper.assertTrue(Math.abs(applied - unscaled) > unscaled * APPLIED_FORCE_TOLERANCE_FRACTION,
+                "applied wing downforce equals the UNSCALED coeff * forwardSpeed^2, i.e. forceScale was not "
+                        + "applied -- the documented contract in docs/per-car-config.md has drifted from the "
+                        + "production path: applied=" + applied + " unscaled=" + unscaled
+                        + " forceScale=" + forceScale);
+    }
+
+    /** Review fix (comment 49064): pins the 0.5 m/s drag dead band that {@code docs/per-car-config.md}'s
+     * "Exact applied formulas" section now documents against the production constant itself, so the doc and
+     * the code cannot drift apart silently. The dead band is pre-existing behaviour this ticket preserves;
+     * what was missing was it being documented as part of the per-car drag contract's speed dependence. */
+    @GameTest(template = "settlement_test")
+    public static void theDocumentedDragDeadBandMatchesTheProductionConstant(GameTestHelper helper) {
+        helper.assertTrue(SableCarBody.DRAG_SPEED_DEADBAND == DOCUMENTED_DRAG_DEADBAND,
+                "docs/per-car-config.md documents a " + DOCUMENTED_DRAG_DEADBAND + " m/s drag dead band but "
+                        + "SableCarBody.DRAG_SPEED_DEADBAND is " + SableCarBody.DRAG_SPEED_DEADBAND
+                        + " -- update the doc and this constant together");
+        helper.succeed();
     }
 
     /** AC (nonzero-speed behaviour), review follow-up (comment 49019): the END-TO-END half &mdash; that the

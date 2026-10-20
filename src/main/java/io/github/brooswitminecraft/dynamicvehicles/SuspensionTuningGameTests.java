@@ -446,10 +446,12 @@ public final class SuspensionTuningGameTests {
      * under the same sustained throttle on the same ground than a matched stock control, because the extra
      * rolling drag its pressure multiplier adds is real force in {@code WheelMath.tire}, not a label.
      *
-     * <p>Observable chosen the same way slice 2's was, from what this suite has already demonstrated it
-     * can measure: {@code RollingResistanceGameTests} compares matched cars' cruise speeds under a fixed
-     * gentle throttle to detect per-surface rolling-resistance differences, and tire pressure scales
-     * exactly that quantity. So this reuses a proven measurement rather than inventing one.
+     * <p>Measured while COASTING, not under throttle, and that distinction is the fix for this fixture's
+     * first CI failure. Under power the two effects of pressure compete: a soft tire has more rolling drag
+     * (slower) but also more grip (better acceleration), and in a throttled window the grip side can win,
+     * which is exactly what CI showed. With the throttle released there is no drive force for extra grip
+     * to deliver, so rolling drag is the only term left that differs between the two cars -- the clean
+     * isolation this claim needs.
      *
      * <p>Direction matters and is asserted, not assumed: pressure moves grip and rolling drag in OPPOSITE
      * directions (see {@code WheelMath#tirePressureRollingMultiplier}), so a soft tire is not simply
@@ -463,10 +465,11 @@ public final class SuspensionTuningGameTests {
         pad(helper, 15);
         CarEntity stock = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
         CarEntity soft = spawnWithOverride(helper, SOFT_TIRES, new BlockPos(5, 3, 15));
-        stock.forceDrive(GENTLE_THROTTLE, 0.0, DRIVE_TICKS);
-        soft.forceDrive(GENTLE_THROTTLE, 0.0, DRIVE_TICKS);
+        // Spin both up under identical throttle, then release it: the comparison happens while coasting.
+        stock.forceDrive(GENTLE_THROTTLE, 0.0, (int) SPIN_UP_TICKS);
+        soft.forceDrive(GENTLE_THROTTLE, 0.0, (int) SPIN_UP_TICKS);
 
-        helper.runAfterDelay(CRUISE_TICKS, () -> {
+        helper.runAfterDelay(SPIN_UP_TICKS, () -> {
             helper.assertTrue(soft.spec().tirePressureBar() == VehicleSpecLimits.MIN_TIRE_PRESSURE_BAR,
                     "the soft-tire car did not receive the tirePressureBar override at construction: "
                             + soft.spec().tirePressureBar());
@@ -474,18 +477,29 @@ public final class SuspensionTuningGameTests {
                     "the control car was not at nominal pressure -- an override leaked into it: "
                             + stock.spec().tirePressureBar());
 
-            double stockSpeed = horizontalSpeed(stock);
-            double softSpeed = horizontalSpeed(soft);
-            // Setup gate first: a comparison between two cars that never moved would be vacuous, which is
-            // the failure mode this suite's own rolling-resistance fixtures guard the same way.
-            helper.assertTrue(stockSpeed > MIN_MEANINGFUL_CRUISE_SPEED,
-                    "test setup never got the stock control cruising, so the comparison would be vacuous: "
-                            + stockSpeed + " " + where(stock));
-            helper.assertTrue(softSpeed < stockSpeed,
-                    "a car on soft tires must cruise slower than a matched stock control under the same "
-                            + "throttle -- its pressure rolling multiplier may not be reaching the real "
-                            + "tire force: stock=" + stockSpeed + " soft=" + softSpeed);
-            helper.succeed();
+            double stockEntry = horizontalSpeed(stock);
+            double softEntry = horizontalSpeed(soft);
+            // Setup gate: a comparison between two cars that never moved would be vacuous, the same
+            // failure mode this suite's own rolling-resistance fixtures guard against.
+            helper.assertTrue(stockEntry > MIN_MEANINGFUL_CRUISE_SPEED && softEntry > MIN_MEANINGFUL_CRUISE_SPEED,
+                    "test setup never got both cars rolling before the coast, so there would be no speed "
+                            + "loss to compare: stock=" + stockEntry + " soft=" + softEntry);
+
+            helper.runAfterDelay(COAST_TICKS, () -> {
+                // Speed LOST while coasting, each car measured against its own entry speed, so a small
+                // difference in how fast they got up to speed cannot be mistaken for the drag difference.
+                double stockLoss = stockEntry - horizontalSpeed(stock);
+                double softLoss = softEntry - horizontalSpeed(soft);
+                helper.assertTrue(stockLoss > 0.0,
+                        "the stock control did not slow down at all while coasting, so this comparison "
+                                + "would be vacuous: entry=" + stockEntry + " now=" + horizontalSpeed(stock));
+                helper.assertTrue(softLoss > stockLoss,
+                        "a car on soft tires must lose MORE speed while coasting than a matched stock "
+                                + "control -- its pressure rolling multiplier may not be reaching the real "
+                                + "tire force: stockLoss=" + stockLoss + " softLoss=" + softLoss
+                                + " (entry speeds stock=" + stockEntry + " soft=" + softEntry + ")");
+                helper.succeed();
+            });
         });
     }
 
@@ -496,9 +510,12 @@ public final class SuspensionTuningGameTests {
         return Math.hypot(velocity.x, velocity.z) * 20.0;
     }
 
-    /** Ticks of sustained throttle before cruise speeds are compared; long enough for the rolling-drag
-     * difference to separate the two cars, comfortably inside {@link #DRIVE_TICKS}. */
-    private static final long CRUISE_TICKS = 100L;
+    /** Ticks of sustained throttle used to get both cars rolling before the throttle is released. */
+    private static final long SPIN_UP_TICKS = 60L;
+
+    /** Ticks of coasting, throttle released, over which the two cars' speed LOSS is compared. Long enough
+     * for a 4.4x rolling-drag difference to separate them, short enough that neither has stopped. */
+    private static final long COAST_TICKS = 40L;
 
     /** The stock control must exceed this (m/s) or the comparison is measuring two stationary cars. */
     private static final double MIN_MEANINGFUL_CRUISE_SPEED = 0.5;
@@ -540,6 +557,11 @@ public final class SuspensionTuningGameTests {
             PeakDive configuredDive = peakDiveOverBraking(helper, configured, ACCELERATE_TICKS);
 
             helper.runAfterDelay(BRAKE_TICKS, () -> {
+                helper.assertTrue(stockDive.peak > Double.NEGATIVE_INFINITY
+                                && configuredDive.peak > Double.NEGATIVE_INFINITY,
+                        "a car was never sampled during the braking window -- its Sable body did not exist "
+                                + "on any sampled tick: stock=" + stockDive.peak + " configured="
+                                + configuredDive.peak);
                 helper.assertTrue(stockDive.peak > 0.0,
                         "the stock control never dived at all under braking, so this comparison would be "
                                 + "vacuous: peak=" + stockDive.peak + " " + where(stock));
@@ -559,6 +581,12 @@ public final class SuspensionTuningGameTests {
         PeakDive dive = new PeakDive();
         for (long tick = fromTick + 1; tick <= fromTick + BRAKE_TICKS; tick++) {
             helper.runAtTickTime(tick, () -> {
+                // A car whose Sable body does not exist on this tick cannot be sampled. CI hit exactly
+                // this as an NPE from SableCompat.wheelTravel(null) -- skip the tick and let the
+                // assertion below report "never sampled", which says what happened instead of throwing.
+                if (car.sableBody() == null) {
+                    return;
+                }
                 double[] travel = SableCompat.wheelTravel(car.sableBody());
                 double[][] mounts = car.spec().mounts();
                 double front = 0.0;
@@ -691,6 +719,9 @@ public final class SuspensionTuningGameTests {
         PeakCompression peak = new PeakCompression();
         for (long tick = fromTick + 1; tick <= fromTick + windowTicks; tick++) {
             helper.runAtTickTime(tick, () -> {
+                if (car.sableBody() == null) {
+                    return;
+                }
                 for (double travel : SableCompat.wheelTravel(car.sableBody())) {
                     if (Double.isFinite(travel)) {
                         peak.deepest = Math.max(peak.deepest, travel);

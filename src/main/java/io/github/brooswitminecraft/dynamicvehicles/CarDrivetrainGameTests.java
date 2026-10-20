@@ -1124,53 +1124,56 @@ public final class CarDrivetrainGameTests {
         double[] worstGearedClutchTorqueWhileCoasting = {0.0};
         double[] worstGearedClutchForceWhileCoasting = {0.0};
         double[] worstNeutralClutchForceWhileCoasting = {0.0};
+        // Every callback is registered here, at the method's own top level, at its absolute tick -- never
+        // from inside another callback; see carRecoversCleanlyAfterDrivingOffALedgeAndLanding's round-14
+        // note for the server crash a nested registration causes.
         helper.runAfterDelay(30L, () -> {
             gearedRider.zza = 1.0f;
             neutralRider.zza = 1.0f;
-            helper.runAfterDelay(90L, () -> {
-                // Both cars have been driven identically up to here; now cut throttle and declutch one.
-                gearedRider.zza = 0.0f;
-                neutralRider.zza = 0.0f;
-                neutral.selectGear(CarPhysics.Gear.NEUTRAL);
-                speedAtRelease[0] = geared.debugSpeed();
-                speedAtRelease[1] = neutral.debugSpeed();
-                helper.assertTrue(speedAtRelease[0] > 4.0 && speedAtRelease[1] > 4.0,
-                        "test setup invalid -- a car never reached a coast-down speed well above the parked-hold threshold: geared="
-                                + speedAtRelease[0] + " neutral=" + speedAtRelease[1]);
-                helper.assertTrue(Math.abs(speedAtRelease[0] - speedAtRelease[1]) < speedAtRelease[0] * 0.25,
-                        "test setup invalid -- the two cars did not start coasting from comparable speeds: geared="
-                                + speedAtRelease[0] + " neutral=" + speedAtRelease[1]);
-                for (long tick = 1; tick <= 20; tick++) {
-                    helper.runAfterDelay(tick, () -> {
-                        worstGearedClutchTorqueWhileCoasting[0] =
-                                Math.min(worstGearedClutchTorqueWhileCoasting[0], geared.debugClutchTorque());
-                        worstGearedClutchForceWhileCoasting[0] =
-                                Math.min(worstGearedClutchForceWhileCoasting[0], geared.debugClutchWheelForce());
-                        worstNeutralClutchForceWhileCoasting[0] = Math.max(worstNeutralClutchForceWhileCoasting[0],
-                                Math.abs(neutral.debugClutchWheelForce()));
-                    });
-                }
-                helper.runAfterDelay(21L, () -> {
-                    double gearedLost = speedAtRelease[0] - geared.debugSpeed();
-                    double neutralLost = speedAtRelease[1] - neutral.debugSpeed();
-                    helper.assertTrue(geared.debugSpeed() > 1.5,
-                            "test setup invalid -- the geared car dropped into the parked-hold branch during the measured window, so this compares the service brake, not engine braking: speed="
-                                    + geared.debugSpeed());
-                    helper.assertTrue(worstGearedClutchTorqueWhileCoasting[0] < 0.0,
-                            "coasting in gear never produced a negative (drivetrain -> engine) clutch torque on the production path: worst="
-                                    + worstGearedClutchTorqueWhileCoasting[0] + " N*m");
-                    helper.assertTrue(worstGearedClutchForceWhileCoasting[0] < 0.0,
-                            "the coasting clutch torque never reached the wheels as a retarding force: worst per-wheel force="
-                                    + worstGearedClutchForceWhileCoasting[0] + " N");
-                    helper.assertTrue(worstNeutralClutchForceWhileCoasting[0] == 0.0,
-                            "NEUTRAL is disengaged and must transmit no wheel force in either direction, but the production path applied up to "
-                                    + worstNeutralClutchForceWhileCoasting[0] + " N");
-                    helper.assertTrue(gearedLost > neutralLost * 1.15,
-                            "coasting in gear did not decelerate the car measurably harder than coasting declutched -- engine braking is not propagating through the drivetrain: geared lost "
-                                    + gearedLost + " m/s, neutral lost " + neutralLost + " m/s");
-                    helper.succeed();
-                });
+        });
+        helper.runAfterDelay(120L, () -> {
+            // Both cars have been driven identically up to here; now cut throttle and declutch one.
+            gearedRider.zza = 0.0f;
+            neutralRider.zza = 0.0f;
+            neutral.selectGear(CarPhysics.Gear.NEUTRAL);
+            speedAtRelease[0] = geared.debugSpeed();
+            speedAtRelease[1] = neutral.debugSpeed();
+            helper.assertTrue(speedAtRelease[0] > 4.0 && speedAtRelease[1] > 4.0,
+                    "test setup invalid -- a car never reached a coast-down speed well above the parked-hold threshold: geared="
+                            + speedAtRelease[0] + " neutral=" + speedAtRelease[1]);
+            helper.assertTrue(Math.abs(speedAtRelease[0] - speedAtRelease[1]) < speedAtRelease[0] * 0.25,
+                    "test setup invalid -- the two cars did not start coasting from comparable speeds: geared="
+                            + speedAtRelease[0] + " neutral=" + speedAtRelease[1]);
+        });
+        for (long tick = 121; tick <= 140; tick++) {
+            helper.runAfterDelay(tick, () -> {
+                worstGearedClutchTorqueWhileCoasting[0] =
+                        Math.min(worstGearedClutchTorqueWhileCoasting[0], geared.debugClutchTorque());
+                worstGearedClutchForceWhileCoasting[0] =
+                        Math.min(worstGearedClutchForceWhileCoasting[0], geared.debugClutchWheelForce());
+                worstNeutralClutchForceWhileCoasting[0] = Math.max(worstNeutralClutchForceWhileCoasting[0],
+                        Math.abs(neutral.debugClutchWheelForce()));
             });
+        }
+        helper.runAfterDelay(141L, () -> {
+            double gearedLost = speedAtRelease[0] - geared.debugSpeed();
+            double neutralLost = speedAtRelease[1] - neutral.debugSpeed();
+            helper.assertTrue(geared.debugSpeed() > 1.5,
+                    "test setup invalid -- the geared car dropped into the parked-hold branch during the measured window, so this compares the service brake, not engine braking: speed="
+                            + geared.debugSpeed());
+            helper.assertTrue(worstGearedClutchTorqueWhileCoasting[0] < 0.0,
+                    "coasting in gear never produced a negative (drivetrain -> engine) clutch torque on the production path: worst="
+                            + worstGearedClutchTorqueWhileCoasting[0] + " N*m");
+            helper.assertTrue(worstGearedClutchForceWhileCoasting[0] < 0.0,
+                    "the coasting clutch torque never reached the wheels as a retarding force: worst per-wheel force="
+                            + worstGearedClutchForceWhileCoasting[0] + " N");
+            helper.assertTrue(worstNeutralClutchForceWhileCoasting[0] == 0.0,
+                    "NEUTRAL is disengaged and must transmit no wheel force in either direction, but the production path applied up to "
+                            + worstNeutralClutchForceWhileCoasting[0] + " N");
+            helper.assertTrue(gearedLost > neutralLost * 1.15,
+                    "coasting in gear did not decelerate the car measurably harder than coasting declutched -- engine braking is not propagating through the drivetrain: geared lost "
+                            + gearedLost + " m/s, neutral lost " + neutralLost + " m/s");
+            helper.succeed();
         });
     }
 
@@ -1229,40 +1232,41 @@ public final class CarDrivetrainGameTests {
             helper.assertTrue(referenceRider.startRiding(reference), "mock player failed to board the reference car");
             boolean[] everSaturatedAtTheConfiguredCapacity = {false};
             double[] worstCommandOverExchange = {0.0};
+            // Flat, absolute-tick scheduling only -- see the note in engineBrakingInGear... above.
             helper.runAfterDelay(30L, () -> {
                 limitedRider.zza = 1.0f;
                 referenceRider.zza = 1.0f;
-                for (long tick = 1; tick <= 60; tick++) {
-                    helper.runAfterDelay(tick, () -> {
-                        double exchange = Math.abs(limited.debugClutchTorque());
-                        helper.assertTrue(exchange <= LOW_CLUTCH_CAPACITY + CLUTCH_SATURATION_TOLERANCE,
-                                "the exchange exceeded this car's own CONFIGURED capacity: " + exchange + " > "
-                                        + LOW_CLUTCH_CAPACITY + " N*m");
-                        if (exchange >= LOW_CLUTCH_CAPACITY - CLUTCH_SATURATION_TOLERANCE) {
-                            everSaturatedAtTheConfiguredCapacity[0] = true;
-                        }
-                        double exchangeBound = Math.abs(limited.debugClutchWheelForce());
-                        for (double command : limited.debugWheelDriveCommands()) {
-                            worstCommandOverExchange[0] = Math.max(worstCommandOverExchange[0],
-                                    Math.abs(command) - exchangeBound);
-                        }
-                    });
-                }
-                helper.runAfterDelay(65L, () -> {
-                    helper.assertTrue(everSaturatedAtTheConfiguredCapacity[0],
-                            "test setup invalid -- the configured " + LOW_CLUTCH_CAPACITY
-                                    + " N*m capacity never actually saturated at full throttle, so nothing above was exercised");
-                    helper.assertTrue(worstCommandOverExchange[0] <= WHEEL_FORCE_BOUND_TOLERANCE,
-                            "a wheel was commanded more than the saturated exchange could transmit, by "
-                                    + worstCommandOverExchange[0] + " N");
-                    // The resulting response: a clutch that cannot carry the engine's output must actually
-                    // hold the car back, not merely report a bounded number.
-                    helper.assertTrue(reference.debugSpeed() > limited.debugSpeed() * 2.0,
-                            "a clutch limited to " + LOW_CLUTCH_CAPACITY
-                                    + " N*m did not measurably limit the car: limited=" + limited.debugSpeed()
-                                    + " m/s vs stock-capacity reference=" + reference.debugSpeed() + " m/s");
-                    helper.succeed();
+            });
+            for (long tick = 31; tick <= 90; tick++) {
+                helper.runAfterDelay(tick, () -> {
+                    double exchange = Math.abs(limited.debugClutchTorque());
+                    helper.assertTrue(exchange <= LOW_CLUTCH_CAPACITY + CLUTCH_SATURATION_TOLERANCE,
+                            "the exchange exceeded this car's own CONFIGURED capacity: " + exchange + " > "
+                                    + LOW_CLUTCH_CAPACITY + " N*m");
+                    if (exchange >= LOW_CLUTCH_CAPACITY - CLUTCH_SATURATION_TOLERANCE) {
+                        everSaturatedAtTheConfiguredCapacity[0] = true;
+                    }
+                    double exchangeBound = Math.abs(limited.debugClutchWheelForce());
+                    for (double command : limited.debugWheelDriveCommands()) {
+                        worstCommandOverExchange[0] = Math.max(worstCommandOverExchange[0],
+                                Math.abs(command) - exchangeBound);
+                    }
                 });
+            }
+            helper.runAfterDelay(95L, () -> {
+                helper.assertTrue(everSaturatedAtTheConfiguredCapacity[0],
+                        "test setup invalid -- the configured " + LOW_CLUTCH_CAPACITY
+                                + " N*m capacity never actually saturated at full throttle, so nothing above was exercised");
+                helper.assertTrue(worstCommandOverExchange[0] <= WHEEL_FORCE_BOUND_TOLERANCE,
+                        "a wheel was commanded more than the saturated exchange could transmit, by "
+                                + worstCommandOverExchange[0] + " N");
+                // The resulting response: a clutch that cannot carry the engine's output must actually
+                // hold the car back, not merely report a bounded number.
+                helper.assertTrue(reference.debugSpeed() > limited.debugSpeed() * 2.0,
+                        "a clutch limited to " + LOW_CLUTCH_CAPACITY
+                                + " N*m did not measurably limit the car: limited=" + limited.debugSpeed()
+                                + " m/s vs stock-capacity reference=" + reference.debugSpeed() + " m/s");
+                helper.succeed();
             });
         } catch (RuntimeException e) {
             VehicleSpecOverrides.load(configDir.resolve("empty-so-every-car-is-stock"));
@@ -1294,50 +1298,51 @@ public final class CarDrivetrainGameTests {
         double[] worstIdentityGap = {0.0, 0.0};
         boolean[] everAccelerated = {false, false};
         boolean[] everReactedWrongWayWhileAccelerating = {false, false};
+        // Flat, absolute-tick scheduling only -- see the note in engineBrakingInGear... above.
         helper.runAfterDelay(30L, () -> {
             forwardRider.zza = 1.0f;
             reverseRider.zza = 1.0f;
-            for (long tick = 1; tick <= 50; tick++) {
-                helper.runAfterDelay(tick, () -> {
-                    // Each car is checked against ITSELF, tick by tick: the reaction must equal that car's
-                    // own realized engine momentum change, and must be negative on exactly the ticks where
-                    // that car's own engine sped up. Comparing the two cars' reactions to each other at the
-                    // same tick would prove nothing -- their engines are in different states at any given
-                    // moment, so a difference there is ordinary, not an axis flip. The gear-independence
-                    // claim is that BOTH cars obey the same sign rule about their own rotation, which is
-                    // what these two parallel checks establish.
-                    CarEntity[] cars = {forward, reverse};
-                    for (int index = 0; index < cars.length; index++) {
-                        CarEntity car = cars[index];
-                        double omega = car.debugEngineOmega();
-                        double priorOmega = car.debugPriorEngineOmega();
-                        double reaction = car.debugEngineReactionTorque();
-                        double expectedReaction = -(omega - priorOmega) * DrivetrainMath.ENGINE_INERTIA / TICK_DT;
-                        worstIdentityGap[index] = Math.max(worstIdentityGap[index],
-                                Math.abs(reaction - expectedReaction));
-                        if (omega > priorOmega) {
-                            everAccelerated[index] = true;
-                            if (reaction > 0.0) {
-                                everReactedWrongWayWhileAccelerating[index] = true;
-                            }
+        });
+        for (long tick = 31; tick <= 80; tick++) {
+            helper.runAfterDelay(tick, () -> {
+                // Each car is checked against ITSELF, tick by tick: the reaction must equal that car's
+                // own realized engine momentum change, and must be negative on exactly the ticks where
+                // that car's own engine sped up. Comparing the two cars' reactions to each other at the
+                // same tick would prove nothing -- their engines are in different states at any given
+                // moment, so a difference there is ordinary, not an axis flip. The gear-independence
+                // claim is that BOTH cars obey the same sign rule about their own rotation, which is
+                // what these two parallel checks establish.
+                CarEntity[] cars = {forward, reverse};
+                for (int index = 0; index < cars.length; index++) {
+                    CarEntity car = cars[index];
+                    double omega = car.debugEngineOmega();
+                    double priorOmega = car.debugPriorEngineOmega();
+                    double reaction = car.debugEngineReactionTorque();
+                    double expectedReaction = -(omega - priorOmega) * DrivetrainMath.ENGINE_INERTIA / TICK_DT;
+                    worstIdentityGap[index] = Math.max(worstIdentityGap[index],
+                            Math.abs(reaction - expectedReaction));
+                    if (omega > priorOmega) {
+                        everAccelerated[index] = true;
+                        if (reaction > 0.0) {
+                            everReactedWrongWayWhileAccelerating[index] = true;
                         }
                     }
-                });
-            }
-            helper.runAfterDelay(55L, () -> {
-                String[] names = {"forward (D1)", "reverse (REVERSE)"};
-                for (int index = 0; index < names.length; index++) {
-                    helper.assertTrue(worstIdentityGap[index] < REACTION_IDENTITY_TOLERANCE,
-                            "the " + names[index] + " car's applied engine-axis reaction diverged from its own realized angular-momentum change by "
-                                    + worstIdentityGap[index] + " N*m -- an unmatched chassis impulse");
-                    helper.assertTrue(everAccelerated[index],
-                            "test setup invalid -- the " + names[index] + " car's engine never actually sped up, so the sign rule below was never exercised");
-                    helper.assertTrue(!everReactedWrongWayWhileAccelerating[index],
-                            "the " + names[index]
-                                    + " car reacted POSITIVELY on a tick its own engine sped up -- the reaction must track the engine's own rotation in both gears alike, so selecting reverse cannot flip the engine torque axis");
                 }
-                helper.succeed();
             });
+        }
+        helper.runAfterDelay(85L, () -> {
+            String[] names = {"forward (D1)", "reverse (REVERSE)"};
+            for (int index = 0; index < names.length; index++) {
+                helper.assertTrue(worstIdentityGap[index] < REACTION_IDENTITY_TOLERANCE,
+                        "the " + names[index] + " car's applied engine-axis reaction diverged from its own realized angular-momentum change by "
+                                + worstIdentityGap[index] + " N*m -- an unmatched chassis impulse");
+                helper.assertTrue(everAccelerated[index],
+                        "test setup invalid -- the " + names[index] + " car's engine never actually sped up, so the sign rule below was never exercised");
+                helper.assertTrue(!everReactedWrongWayWhileAccelerating[index],
+                        "the " + names[index]
+                                + " car reacted POSITIVELY on a tick its own engine sped up -- the reaction must track the engine's own rotation in both gears alike, so selecting reverse cannot flip the engine torque axis");
+            }
+            helper.succeed();
         });
     }
 
@@ -1447,65 +1452,64 @@ public final class CarDrivetrainGameTests {
         boolean[] sawDriving = {false};
         boolean[] sawCoasting = {false};
         int[] floorClampedTicks = {0};
-        helper.runAfterDelay(30L, () -> {
-            rider.zza = 1.0f;
-            for (long tick = 1; tick <= 120; tick++) {
-                long thisTick = tick;
-                helper.runAfterDelay(tick, () -> {
-                    if (thisTick == 90L) {
-                        rider.zza = 0.0f; // coast phase: the exchange must go negative and still balance
+        // Flat, absolute-tick scheduling only -- see the note in engineBrakingInGear... above.
+        helper.runAfterDelay(30L, () -> rider.zza = 1.0f);
+        for (long tick = 31; tick <= 150; tick++) {
+            long thisTick = tick;
+            helper.runAfterDelay(tick, () -> {
+                if (thisTick == 120L) {
+                    rider.zza = 0.0f; // coast phase: the exchange must go negative and still balance
+                }
+                double exchange = car.debugClutchTorque();
+                double engineOutput = car.debugEngineOutputTorque();
+                double priorOmega = car.debugPriorEngineOmega();
+                double omega = car.debugEngineOmega();
+                if (omega <= 0.0 && priorOmega + (engineOutput - exchange) / DrivetrainMath.ENGINE_INERTIA * TICK_DT < 0.0) {
+                    floorClampedTicks[0]++; // stalled against the floor: slipping, not locked
+                } else {
+                    double realizedMomentumChange = (omega - priorOmega) * DrivetrainMath.ENGINE_INERTIA;
+                    double exchangedImpulse = (engineOutput - exchange) * TICK_DT;
+                    worstEngineImbalance[0] = Math.max(worstEngineImbalance[0],
+                            Math.abs(realizedMomentumChange - exchangedImpulse));
+                }
+                double expectedWheelForce = car.debugClutchWheelForce();
+                for (double command : car.debugWheelDriveCommands()) {
+                    // The command is the exchange through the gearing, except where GearDrive's own
+                    // governed demand legitimately capped it lower (never higher) -- so the imbalance
+                    // under test is one-sided: a command EXCEEDING the exchange is a broken exchange.
+                    worstWheelImbalance[0] = Math.max(worstWheelImbalance[0],
+                            Math.abs(command) - Math.abs(expectedWheelForce));
+                }
+                if (exchange > 0.0) {
+                    sawDriving[0] = true;
+                } else if (exchange < 0.0) {
+                    sawCoasting[0] = true;
+                }
+                // Real slip is the tire failing to deliver what the drivetrain commanded, NOT the
+                // clutch saturating: with the load inertia keyed to the contact constraint, a launch on
+                // good grip transmits the engine's output without ever needing the clutch's full
+                // capacity, so a saturation-based check here never fired and only proved the premise
+                // wrong (measured: slip=false while driving and coasting both occurred).
+                double[] commands = car.debugWheelDriveCommands();
+                double[] forces = car.debugWheelForces();
+                for (int wheel = 0; wheel < Math.min(commands.length, forces.length); wheel++) {
+                    if (Math.abs(commands[wheel]) > 1.0 && Math.abs(commands[wheel] - forces[wheel]) > 1.0) {
+                        sawSlip[0] = true;
                     }
-                    double exchange = car.debugClutchTorque();
-                    double engineOutput = car.debugEngineOutputTorque();
-                    double priorOmega = car.debugPriorEngineOmega();
-                    double omega = car.debugEngineOmega();
-                    if (omega <= 0.0 && priorOmega + (engineOutput - exchange) / DrivetrainMath.ENGINE_INERTIA * TICK_DT < 0.0) {
-                        floorClampedTicks[0]++; // stalled against the floor: slipping, not locked
-                    } else {
-                        double realizedMomentumChange = (omega - priorOmega) * DrivetrainMath.ENGINE_INERTIA;
-                        double exchangedImpulse = (engineOutput - exchange) * TICK_DT;
-                        worstEngineImbalance[0] = Math.max(worstEngineImbalance[0],
-                                Math.abs(realizedMomentumChange - exchangedImpulse));
-                    }
-                    double expectedWheelForce = car.debugClutchWheelForce();
-                    for (double command : car.debugWheelDriveCommands()) {
-                        // The command is the exchange through the gearing, except where GearDrive's own
-                        // governed demand legitimately capped it lower (never higher) -- so the imbalance
-                        // under test is one-sided: a command EXCEEDING the exchange is a broken exchange.
-                        worstWheelImbalance[0] = Math.max(worstWheelImbalance[0],
-                                Math.abs(command) - Math.abs(expectedWheelForce));
-                    }
-                    if (exchange > 0.0) {
-                        sawDriving[0] = true;
-                    } else if (exchange < 0.0) {
-                        sawCoasting[0] = true;
-                    }
-                    // Real slip is the tire failing to deliver what the drivetrain commanded, NOT the
-                    // clutch saturating: with the load inertia keyed to the contact constraint, a launch on
-                    // good grip transmits the engine's output without ever needing the clutch's full
-                    // capacity, so a saturation-based check here never fired and only proved the premise
-                    // wrong (measured: slip=false while driving and coasting both occurred).
-                    double[] commands = car.debugWheelDriveCommands();
-                    double[] forces = car.debugWheelForces();
-                    for (int wheel = 0; wheel < Math.min(commands.length, forces.length); wheel++) {
-                        if (Math.abs(commands[wheel]) > 1.0 && Math.abs(commands[wheel] - forces[wheel]) > 1.0) {
-                            sawSlip[0] = true;
-                        }
-                    }
-                });
-            }
-            helper.runAfterDelay(125L, () -> {
-                helper.assertTrue(sawSlip[0] && sawDriving[0] && sawCoasting[0],
-                        "test setup invalid -- all three regimes must occur in this window (slip = the tire not delivering what was commanded): slip="
-                                + sawSlip[0] + " driving=" + sawDriving[0] + " coasting=" + sawCoasting[0]);
-                helper.assertTrue(worstEngineImbalance[0] < EXCHANGE_BALANCE_TOLERANCE,
-                        "the engine side's realized momentum change did not match the exchange it was integrated against, off by "
-                                + worstEngineImbalance[0] + " N*m*s");
-                helper.assertTrue(worstWheelImbalance[0] <= WHEEL_FORCE_BOUND_TOLERANCE,
-                        "a wheel received more than the clutch exchanged, by " + worstWheelImbalance[0]
-                                + " N -- the two shafts are not loaded by the same torque");
-                helper.succeed();
+                }
             });
+        }
+        helper.runAfterDelay(155L, () -> {
+            helper.assertTrue(sawSlip[0] && sawDriving[0] && sawCoasting[0],
+                    "test setup invalid -- all three regimes must occur in this window (slip = the tire not delivering what was commanded): slip="
+                            + sawSlip[0] + " driving=" + sawDriving[0] + " coasting=" + sawCoasting[0]);
+            helper.assertTrue(worstEngineImbalance[0] < EXCHANGE_BALANCE_TOLERANCE,
+                    "the engine side's realized momentum change did not match the exchange it was integrated against, off by "
+                            + worstEngineImbalance[0] + " N*m*s");
+            helper.assertTrue(worstWheelImbalance[0] <= WHEEL_FORCE_BOUND_TOLERANCE,
+                    "a wheel received more than the clutch exchanged, by " + worstWheelImbalance[0]
+                            + " N -- the two shafts are not loaded by the same torque");
+            helper.succeed();
         });
     }
 
@@ -1544,39 +1548,40 @@ public final class CarDrivetrainGameTests {
         double[] bestEngineAxisResponse = {0.0};
         double[] crossAxisAtBest = {0.0};
         double[] reactionAtBest = {0.0};
+        // Flat, absolute-tick scheduling only -- see the note in engineBrakingInGear... above.
         helper.runAfterDelay(40L, () -> {
             rider.zza = 1.0f; // free-rev in neutral: engine accelerates, nothing drives the wheels
-            for (long tick = 1; tick <= 40; tick++) {
-                helper.runAfterDelay(tick, () -> {
-                    double reaction = car.debugEngineReactionTorque();
-                    double[] angular = car.debugBodyAngularVelocity();
-                    double aboutEngineAxis = angular[0] * forwardX + angular[2] * forwardZ;
-                    double aboutCrossAxis = angular[0] * rightX + angular[2] * rightZ;
-                    // Keep the sample where the body's roll about its own forward axis is largest, with
-                    // the reaction and cross-axis reading from that same tick for the failure message.
-                    if (Math.abs(aboutEngineAxis) > Math.abs(bestEngineAxisResponse[0])) {
-                        bestEngineAxisResponse[0] = aboutEngineAxis;
-                        crossAxisAtBest[0] = aboutCrossAxis;
-                        reactionAtBest[0] = reaction;
-                    }
-                });
-            }
-            helper.runAfterDelay(45L, () -> {
-                helper.assertTrue(Math.abs(bestEngineAxisResponse[0]) > ENGINE_AXIS_RESPONSE_FLOOR,
-                        "revving the engine in neutral produced no measurable chassis rotation about the car's own forward axis ("
-                                + bestEngineAxisResponse[0] + " rad/s) -- the engine-axis reaction is not reaching the body");
-                helper.assertTrue(reactionAtBest[0] != 0.0,
-                        "test setup invalid -- no engine-axis reaction torque was being applied at the sample with the largest response");
-                helper.assertTrue(Math.signum(bestEngineAxisResponse[0]) == Math.signum(reactionAtBest[0]),
-                        "the chassis rolled the OPPOSITE way to the engine-axis reaction being applied: response="
-                                + bestEngineAxisResponse[0] + " rad/s, reaction=" + reactionAtBest[0] + " N*m");
-                helper.assertTrue(Math.abs(bestEngineAxisResponse[0]) > Math.abs(crossAxisAtBest[0]),
-                        "the chassis rotation was not predominantly about the car's OWN forward axis at yaw "
-                                + yawDegrees + " degrees -- engine axis=" + bestEngineAxisResponse[0]
-                                + " rad/s vs across it=" + crossAxisAtBest[0]
-                                + " rad/s, so the impulse is being applied in the wrong frame");
-                helper.succeed();
+        });
+        for (long tick = 41; tick <= 80; tick++) {
+            helper.runAfterDelay(tick, () -> {
+                double reaction = car.debugEngineReactionTorque();
+                double[] angular = car.debugBodyAngularVelocity();
+                double aboutEngineAxis = angular[0] * forwardX + angular[2] * forwardZ;
+                double aboutCrossAxis = angular[0] * rightX + angular[2] * rightZ;
+                // Keep the sample where the body's roll about its own forward axis is largest, with
+                // the reaction and cross-axis reading from that same tick for the failure message.
+                if (Math.abs(aboutEngineAxis) > Math.abs(bestEngineAxisResponse[0])) {
+                    bestEngineAxisResponse[0] = aboutEngineAxis;
+                    crossAxisAtBest[0] = aboutCrossAxis;
+                    reactionAtBest[0] = reaction;
+                }
             });
+        }
+        helper.runAfterDelay(85L, () -> {
+            helper.assertTrue(Math.abs(bestEngineAxisResponse[0]) > ENGINE_AXIS_RESPONSE_FLOOR,
+                    "revving the engine in neutral produced no measurable chassis rotation about the car's own forward axis ("
+                            + bestEngineAxisResponse[0] + " rad/s) -- the engine-axis reaction is not reaching the body");
+            helper.assertTrue(reactionAtBest[0] != 0.0,
+                    "test setup invalid -- no engine-axis reaction torque was being applied at the sample with the largest response");
+            helper.assertTrue(Math.signum(bestEngineAxisResponse[0]) == Math.signum(reactionAtBest[0]),
+                    "the chassis rolled the OPPOSITE way to the engine-axis reaction being applied: response="
+                            + bestEngineAxisResponse[0] + " rad/s, reaction=" + reactionAtBest[0] + " N*m");
+            helper.assertTrue(Math.abs(bestEngineAxisResponse[0]) > Math.abs(crossAxisAtBest[0]),
+                    "the chassis rotation was not predominantly about the car's OWN forward axis at yaw "
+                            + yawDegrees + " degrees -- engine axis=" + bestEngineAxisResponse[0]
+                            + " rad/s vs across it=" + crossAxisAtBest[0]
+                            + " rad/s, so the impulse is being applied in the wrong frame");
+            helper.succeed();
         });
     }
 }

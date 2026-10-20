@@ -1,13 +1,16 @@
 package io.github.brooswitminecraft.dynamicvehicles.town;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Holder;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.world.entity.ai.village.poi.PoiTypes;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.saveddata.SavedData;
 
 import java.util.HashMap;
@@ -59,10 +62,14 @@ public final class TownStorage extends SavedData {
     private static final String NAME = "dynamicvehicles_towns";
 
     /** An owner's claim on one persisted cell: WHO placed it (see {@link #siteOwner(BlockPos)} /
-     *  {@link #roadOwner}) and WHAT, exactly, was placed and paid for there (an opaque signature
+     *  {@link #roadOwner}), WHAT, exactly, was placed and paid for there (an opaque signature
      *  capturing the expected block, cost category, and template/plan identity) - see
-     *  {@link #isCellPlaced(ResourceKey, BlockPos, String, String)}. */
-    private record PlacedCell(String owner, String signature) {}
+     *  {@link #isCellPlaced(ResourceKey, BlockPos, String, String)} - and, when the placed state is
+     *  itself a villager fixture, the id of the POI type it registered (see
+     *  {@link #isTownBuiltFixture}). {@code fixturePoi} is empty for every other cell (walls, floors,
+     *  roofs, doors, road surface, a bed's foot half) and for any record saved before this field
+     *  existed. */
+    private record PlacedCell(String owner, String signature, String fixturePoi) {}
 
     private final Set<String> foundedTowns = new HashSet<>();
     private final Map<String, TownResourceStore> stores = new HashMap<>();
@@ -136,16 +143,26 @@ public final class TownStorage extends SavedData {
         return cell != null && cell.owner().equals(owner) && cell.signature().equals(signature);
     }
 
-    /** {@code true} iff SOME Dynamic Towns plan (any owner, any signature) has already
-     *  placed-and-paid-for {@code pos} in {@code dimension} - for callers that only need to know
-     *  "is this a Dynamic Towns-built fixture at all" (see
-     *  {@code TownResidentAllocationHandler}'s candidate filtering, round 19 finding #2), unlike
-     *  {@link #isCellPlaced} which also demands an exact owner+signature match against one specific
-     *  plan. A same-region vanilla- or player-placed bed/workstation was never recorded here, so it
-     *  can never be mistaken for a town's own fixture just because it happens to sit in that town's
-     *  region. */
-    public boolean isAnyCellPlaced(ResourceKey<Level> dimension, BlockPos pos) {
-        return placedCells.containsKey(cellKey(dimension, pos));
+    /** {@code true} iff some Dynamic Towns plan (any owner, any signature) placed-and-paid-for a
+     *  villager fixture at {@code pos} in {@code dimension}, and {@code liveState} is still that same
+     *  fixture - for callers that need to know "is this bed/workstation one of the town's own
+     *  fixtures" (see {@code TownResidentAllocationHandler}'s candidate filtering, round 19 finding
+     *  #2), unlike {@link #isCellPlaced} which also demands an exact owner+signature match against
+     *  one specific plan. A same-region vanilla- or player-placed bed/workstation was never recorded
+     *  here, so it can never be mistaken for a town's own fixture just because it happens to sit in
+     *  that town's region.
+     *
+     * <p>[Review round 25, P2] A record alone is not enough: it proves only that the town once paid
+     * for SOMETHING at this coordinate. A player who replaces a paid wall, floor or road cell (or the
+     * foot half of a town bed) with their own bed or workstation leaves that historical record in
+     * place, but the town never placed a fixture there, so it is never eligible. Likewise a town
+     * workstation swapped for a different one no longer registers the POI type the town placed.
+     * Identity is the POI type rather than the exact block state, so the town's own fixture stays
+     * eligible through ordinary state changes (a bed being slept in, a furnace lit, a cauldron
+     * filled). */
+    public boolean isTownBuiltFixture(ResourceKey<Level> dimension, BlockPos pos, BlockState liveState) {
+        PlacedCell cell = placedCells.get(cellKey(dimension, pos));
+        return cell != null && !cell.fixturePoi().isEmpty() && cell.fixturePoi().equals(fixturePoiOf(liveState));
     }
 
     /**
@@ -198,13 +215,37 @@ public final class TownStorage extends SavedData {
         setDirty();
     }
 
+    /**
+     * [Review round 25] Reconciles {@code pos}'s ownership record against a LIVE observation that
+     * {@code claimantId}'s own memory currently points at it. A record naming a DIFFERENT villager
+     * is a historical fact the world has since contradicted (vanilla released and re-granted the
+     * ticket outside this mod's bookkeeping, or one of the two memories is stale), and this mod can
+     * no longer prove which of them really holds the ticket - so the record is dropped, leaving the
+     * reservation unresolved. Unresolved reservations are preserved, never released (see
+     * {@link #isReservedBySelf}), so this can only ever turn a would-be release into a kept ticket,
+     * never the reverse. The observed claimant is deliberately NOT recorded as the new owner: an
+     * observation is not proof of ownership either (round 24).
+     *
+     * @return {@code true} if a contradicted record was dropped
+     */
+    public boolean reconcileObservedClaim(ResourceKey<Level> dimension, BlockPos pos, UUID claimantId) {
+        String key = cellKey(dimension, pos);
+        UUID owner = reservationOwners.get(key);
+        if (owner == null || owner.equals(claimantId)) {
+            return false;
+        }
+        reservationOwners.remove(key);
+        setDirty();
+        return true;
+    }
+
     /** Records that {@code pos} in {@code dimension} has now actually been placed and paid for by
-     *  the plan identified by {@code owner}, under exactly {@code signature} — the durable
-     *  "construction progress" record a reload must not lose. Overwrites whichever plan (if any)
-     *  previously claimed this exact cell: the world itself is the final arbiter of "what is here
-     *  now", and only one plan can own a given cell's paid progress at a time. */
-    public void markCellPlaced(ResourceKey<Level> dimension, BlockPos pos, String owner, String signature) {
-        placedCells.put(cellKey(dimension, pos), new PlacedCell(owner, signature));
+     *  the plan identified by {@code owner}, under exactly {@code signature}, as {@code placedState}
+     *  — the durable "construction progress" record a reload must not lose. Overwrites whichever
+     *  plan (if any) previously claimed this exact cell: the world itself is the final arbiter of
+     *  "what is here now", and only one plan can own a given cell's paid progress at a time. */
+    public void markCellPlaced(ResourceKey<Level> dimension, BlockPos pos, String owner, String signature, BlockState placedState) {
+        placedCells.put(cellKey(dimension, pos), new PlacedCell(owner, signature, fixturePoiOf(placedState)));
         setDirty();
     }
 
@@ -292,6 +333,20 @@ public final class TownStorage extends SavedData {
         return dimension.location() + "@" + pos.getX() + "," + pos.getY() + "," + pos.getZ();
     }
 
+    /** {@code true} when {@code planned} is a villager fixture and {@code live} is still that same
+     *  fixture - the identity {@link #isTownBuiltFixture} checks, for a caller that already knows
+     *  exactly which state its own plan placed. */
+    static boolean isSameFixture(BlockState planned, BlockState live) {
+        String fixture = fixturePoiOf(planned);
+        return !fixture.isEmpty() && fixture.equals(fixturePoiOf(live));
+    }
+
+    /** The id of the POI type {@code state} registers (a bed's HEAD half, a workstation), or
+     *  {@code ""} when it registers none. */
+    private static String fixturePoiOf(BlockState state) {
+        return PoiTypes.forState(state).flatMap(Holder::unwrapKey).map(key -> key.location().toString()).orElse("");
+    }
+
     @Override
     public CompoundTag save(CompoundTag tag, HolderLookup.Provider registries) {
         ListTag founded = new ListTag();
@@ -319,6 +374,7 @@ public final class TownStorage extends SavedData {
             entryTag.putString("Key", entry.getKey());
             entryTag.putString("Owner", entry.getValue().owner());
             entryTag.putString("Signature", entry.getValue().signature());
+            entryTag.putString("Fixture", entry.getValue().fixturePoi());
             placedList.add(entryTag);
         }
         tag.put("PlacedCells", placedList);
@@ -387,8 +443,10 @@ public final class TownStorage extends SavedData {
         ListTag placedList = tag.getList("PlacedCells", Tag.TAG_COMPOUND);
         for (int i = 0; i < placedList.size(); i++) {
             CompoundTag entryTag = placedList.getCompound(i);
+            // getString returns "" for a record saved before "Fixture" existed: that cell is never a
+            // candidate for allocation (see isTownBuiltFixture) until a plan places it again.
             storage.placedCells.put(entryTag.getString("Key"),
-                    new PlacedCell(entryTag.getString("Owner"), entryTag.getString("Signature")));
+                    new PlacedCell(entryTag.getString("Owner"), entryTag.getString("Signature"), entryTag.getString("Fixture")));
         }
         ListTag pendingList = tag.getList("PendingCampfires", Tag.TAG_COMPOUND);
         for (int i = 0; i < pendingList.size(); i++) {

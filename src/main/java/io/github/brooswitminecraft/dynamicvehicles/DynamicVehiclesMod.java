@@ -186,6 +186,7 @@ public class DynamicVehiclesMod {
         NeoForge.EVENT_BUS.addListener(TownPassiveProductionHandler::onLevelTick);
         NeoForge.EVENT_BUS.addListener(TownConstructionService::onLevelTick);
         NeoForge.EVENT_BUS.addListener(TownResidentAllocationHandler::onLevelTick);
+        NeoForge.EVENT_BUS.addListener(TownResidentAllocationHandler::onEntityLeaveLevel);
         NeoForge.EVENT_BUS.addListener(TownDonationHandler::onTrade);
         NeoForge.EVENT_BUS.addListener(ContractTickHandler::onServerTick);
         NeoForge.EVENT_BUS.addListener(ContractTickHandler::onPlayerLoggedIn);

@@ -40,28 +40,37 @@ public final class TownPassiveProductionHandlerGameTests {
     }
 
     /** A JOB_SITE memory pointing at the right position but the WRONG dimension must never credit
-     *  this level's own town, even though {@link TownPassiveProductionHandler} is ticking THIS level. */
+     *  this level's own town, even though {@link TownPassiveProductionHandler} is ticking THIS level.
+     *
+     * <p>Asserts {@link TownRegion#liveClaimedRegion} - the per-villager decision the tick credits
+     * from - directly, for the same reason (and in the same way) as
+     * {@link #aDestroyedJobSiteWithNoRemainingBlockIsNeverCredited}: a before/after balance on the
+     * real, server-wide storage also counts every OTHER live worker that happens to share this
+     * region in the dense GameTest world, and failed intermittently that way (the PR's own known
+     * "region-collision" flake). The position holds a real job-site block and the region is
+     * founded, so the dimension is the only thing that can reject it - confirmed by the same memory
+     * resolving normally once it names this level's own dimension. */
     @GameTest(template = "settlement_test")
     public static void aCrossDimensionJobSiteMemoryIsNeverCreditedToThisLevelsOwnTown(GameTestHelper helper) {
         prepareFlatGround(helper);
+        helper.setBlock(ANCHOR, Blocks.SMOKER);
         BlockPos absoluteAnchor = helper.absolutePos(ANCHOR);
         Villager villager = EntityType.VILLAGER.create(helper.getLevel(), null, absoluteAnchor, MobSpawnType.EVENT, false, false);
         helper.getLevel().addFreshEntity(villager);
         villager.setVillagerData(villager.getVillagerData().setProfession(VillagerProfession.FARMER));
 
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteAnchor.getX(), absoluteAnchor.getZ());
+        TownStorage storage = new TownStorage();
+        storage.markTownFounded(TownKeys.keyFor(helper.getLevel().dimension(), region));
+
         ResourceKey<Level> otherDimension = helper.getLevel().dimension().equals(Level.NETHER) ? Level.END : Level.NETHER;
         villager.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(otherDimension, absoluteAnchor));
+        helper.assertTrue(TownRegion.liveClaimedRegion(helper.getLevel(), villager, storage).isEmpty(),
+                "a JOB_SITE memory from a DIFFERENT dimension must never resolve to (and so never credit) this level's own town");
 
-        RegionCoord region = TownRegion.fromBlockCoords(absoluteAnchor.getX(), absoluteAnchor.getZ());
-        TownStorage storage = TownStorage.of(helper.getLevel().getServer());
-        TownResourceStore store = storage.storeFor(TownKeys.keyFor(helper.getLevel().dimension(), region));
-        int before = store.balance(TownResourceCategory.FOOD);
-
-        TownPassiveProductionHandler.runPassiveProductionTick(helper.getLevel());
-
-        helper.assertTrue(store.balance(TownResourceCategory.FOOD) == before,
-                "a JOB_SITE memory from a DIFFERENT dimension must never credit this level's own town, found balance change "
-                        + (store.balance(TownResourceCategory.FOOD) - before));
+        villager.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteAnchor));
+        helper.assertTrue(TownRegion.liveClaimedRegion(helper.getLevel(), villager, storage).map(region::equals).orElse(false),
+                "test setup: the same memory in this level's own dimension must resolve to the founded region");
         helper.succeed();
     }
 

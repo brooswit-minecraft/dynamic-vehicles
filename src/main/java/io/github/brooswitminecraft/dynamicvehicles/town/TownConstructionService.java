@@ -395,7 +395,16 @@ public final class TownConstructionService {
             // naturally retries, with no separate pending-handoff bookkeeping needed at all.
             Optional<ReservedHandoff> reservedHandoff = Optional.empty();
             if (pos.equals(campfire)) {
-                reservedHandoff = tryReserveHandoffDestinations(level, storage, claimant, campfire, floorY, kind, finalProfession);
+                // [Review round 25, P2] Only THIS plan's own paid fixture cell, still holding the
+                // fixture the plan placed there, may be handed to the claimant.
+                java.util.function.Predicate<BlockPos> isOwnPlannedFixture = fixturePos -> {
+                    TownBuildingTemplates.Placement planned = byPosition.get(key(fixturePos.getX(), fixturePos.getY(), fixturePos.getZ()));
+                    return planned != null
+                            && storage.isCellPlaced(level.dimension(), fixturePos, siteOwner, cellSignature(planSignature, planned))
+                            && TownStorage.isSameFixture(planned.state(), level.getBlockState(fixturePos));
+                };
+                reservedHandoff = tryReserveHandoffDestinations(level, storage, claimant, campfire, floorY, kind, finalProfession,
+                        isOwnPlannedFixture);
                 if (reservedHandoff.isEmpty()) {
                     continue;
                 }
@@ -415,7 +424,7 @@ public final class TownConstructionService {
             if (!alreadyPlaced) {
                 ConstructionSitePlan.tryPayForBlock(store, block, TownConstants.CONSTRUCTION_COST_PER_BLOCK);
             }
-            storage.markCellPlaced(level.dimension(), pos, siteOwner, signature);
+            storage.markCellPlaced(level.dimension(), pos, siteOwner, signature, placement.state());
             placedThisTick++;
             if (reservedHandoff.isPresent()) {
                 // The campfire closure just landed with every destination already secured - the
@@ -450,13 +459,20 @@ public final class TownConstructionService {
      * moment any required one fails, rather than leaving the other reserved for a handoff that never
      * actually commits.
      *
+     * <p>[Review round 25, P2] A destination is only ever reserved when {@code isOwnPlannedFixture}
+     * confirms it is this plan's own paid fixture cell still holding the fixture the plan placed -
+     * the handoff never reserves a coordinate merely because something paid for it once. (The
+     * closing placement already waits until every planned cell holds its planned block, and a
+     * different player fixture there is foreign content the build refuses to overwrite, so this
+     * cannot normally fail; it keeps the reservation itself honest rather than relying on that.)
+     *
      * @return the reserved destinations once every one of them is secured, or empty if any required
      *         one is contested - in which case nothing was committed, nothing stays reserved, and
      *         the caller must leave the campfire itself unclosed so a later tick naturally retries.
      */
     private static Optional<ReservedHandoff> tryReserveHandoffDestinations(ServerLevel level, TownStorage storage,
             Villager claimant, BlockPos campfire, int floorY, TownBuildingTemplates.Kind kind,
-            Optional<VillagerProfession> finalProfession) {
+            Optional<VillagerProfession> finalProfession, java.util.function.Predicate<BlockPos> isOwnPlannedFixture) {
         boolean needsWorkstation = finalProfession.isPresent();
         boolean needsBed = kind == TownBuildingTemplates.Kind.RESIDENTIAL || kind == TownBuildingTemplates.Kind.COMMERCIAL
                 || kind == TownBuildingTemplates.Kind.INDUSTRIAL;
@@ -464,8 +480,10 @@ public final class TownConstructionService {
                 ? TownBuildingTemplates.workstationPosition(campfire.getX(), floorY, campfire.getZ()) : null;
         BlockPos bedPos = needsBed ? TownBuildingTemplates.bedPosition(campfire.getX(), floorY, campfire.getZ()) : null;
 
-        boolean workstationReserved = !needsWorkstation || acquirePoiTicket(level, storage, claimant, workstationPos);
-        boolean bedReserved = !needsBed || acquirePoiTicket(level, storage, claimant, bedPos);
+        boolean workstationReserved = !needsWorkstation
+                || (isOwnPlannedFixture.test(workstationPos) && acquirePoiTicket(level, storage, claimant, workstationPos));
+        boolean bedReserved = !needsBed
+                || (isOwnPlannedFixture.test(bedPos) && acquirePoiTicket(level, storage, claimant, bedPos));
         if (!workstationReserved || !bedReserved) {
             if (workstationReserved && needsWorkstation) {
                 releasePoiTicket(level, storage, workstationPos);
@@ -544,6 +562,11 @@ public final class TownConstructionService {
                         && TownResidentAllocationHandler.isCurrentlyClaimedByAnotherVillager(oldLevel, old.pos(), claimant);
                 if (oldLevel != null && !sameAsNewReservation && provenOwner && !liveOwnedByAnother) {
                     releasePoiTicket(oldLevel, storage, old.pos());
+                } else if (!sameAsNewReservation && provenOwner && liveOwnedByAnother) {
+                    // The claimant's record is contradicted by another villager's live claim - drop
+                    // it, mirroring TownResidentAllocationHandler#releaseOldReservation, so it cannot
+                    // authorize a release later once that villager unloads.
+                    storage.clearReservationOwner(old.dimension(), old.pos());
                 }
                 // oldLevel == null: that dimension no longer exists/isn't loaded - there is no
                 // PoiManager left to release anything from; nothing further can be done safely.

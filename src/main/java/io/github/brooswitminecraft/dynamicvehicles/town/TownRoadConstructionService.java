@@ -338,7 +338,7 @@ public final class TownRoadConstructionService {
         }
 
         store.tryDebit(TownResourceCategory.STONE, TownConstants.ROAD_COST_PER_BLOCK);
-        storage.markCellPlaced(level.dimension(), pos, roadOwner, roadSignature);
+        storage.markCellPlaced(level.dimension(), pos, roadOwner, roadSignature, ROAD_SURFACE.defaultBlockState());
 
         // [Review round 4, finding #5 / round 5, finding #4] Credit clearing salvage for the
         // headroom AND the original surface block actually removed, exactly once (only now that

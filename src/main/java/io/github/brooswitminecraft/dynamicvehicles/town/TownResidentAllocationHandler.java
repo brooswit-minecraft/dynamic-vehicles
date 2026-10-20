@@ -13,6 +13,7 @@ import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.npc.VillagerProfession;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
+import net.neoforged.neoforge.event.entity.EntityLeaveLevelEvent;
 import net.neoforged.neoforge.event.tick.LevelTickEvent;
 
 import java.util.Optional;
@@ -69,6 +70,11 @@ public final class TownResidentAllocationHandler {
             if (!(entity instanceof Villager villager) || !villager.isAlive()) {
                 continue;
             }
+            // [Review round 25] Every loaded villager - founded town or not - is a live
+            // observation that can contradict a stale ownership record. Reconciling here (and on
+            // unload, see onEntityLeaveLevel) is what keeps a record from outliving the moment the
+            // villager who really took the ticket over stops being visible to the live scan.
+            reconcileObservedClaims(villager, storage);
             // [Review round 19, finding #3] The founded-town check must come FIRST: a Builder
             // standing anywhere in the loaded Overworld that happens to have lost its claim is NOT
             // this reconciliation's business unless it is actually standing in some town's own
@@ -159,7 +165,7 @@ public final class TownResidentAllocationHandler {
         Optional<GlobalPos> oldHome = villager.getBrain().getMemory(MemoryModuleType.HOME);
         level.getPoiManager()
                 .take(type -> type.is(PoiTypes.HOME),
-                        (type, pos) -> inRegion(pos, region) && storage.isAnyCellPlaced(level.dimension(), pos),
+                        (type, pos) -> inRegion(pos, region) && isTownBuiltFixture(level, storage, pos),
                         townCenter, TownConstants.RESIDENT_ALLOCATION_SEARCH_RADIUS)
                 .ifPresent(bedPos -> {
                     GlobalPos newHome = GlobalPos.of(level.dimension(), bedPos);
@@ -216,7 +222,7 @@ public final class TownResidentAllocationHandler {
             // workstation searched for first - never silently reassigned to whatever different
             // profession's vacancy happens to be found first.
             workstationPos = poiManager.take(existingProfession.heldJobSite(),
-                    (type, pos) -> inRegion(pos, region) && storage.isAnyCellPlaced(level.dimension(), pos),
+                    (type, pos) -> inRegion(pos, region) && isTownBuiltFixture(level, storage, pos),
                     townCenter, TownConstants.RESIDENT_ALLOCATION_SEARCH_RADIUS);
             assignedProfession = existingProfession;
         } else {
@@ -228,7 +234,7 @@ public final class TownResidentAllocationHandler {
                     .getInRange(TownProfessionWorkstations::isAssignableWorkstationType, townCenter,
                             TownConstants.RESIDENT_ALLOCATION_SEARCH_RADIUS, PoiManager.Occupancy.HAS_SPACE)
                     .filter(record -> inRegion(record.getPos(), region)
-                            && storage.isAnyCellPlaced(level.dimension(), record.getPos()))
+                            && isTownBuiltFixture(level, storage, record.getPos()))
                     .flatMap(record -> TownProfessionWorkstations.professionForType(record.getPoiType())
                             .map(profession -> new net.minecraft.util.Tuple<>(record.getPos(), profession))
                             .stream())
@@ -272,6 +278,14 @@ public final class TownResidentAllocationHandler {
      *  ever being matched (round 18, finding #1). */
     private static boolean inRegion(BlockPos pos, RegionCoord region) {
         return TownRegion.fromBlockCoords(pos.getX(), pos.getZ()).equals(region);
+    }
+
+    /** {@code true} when what stands at {@code pos} right now is still the fixture a town plan
+     *  placed and paid for there - not merely a coordinate the town once paid for. A player's
+     *  bed/workstation on an old paid wall, floor or road cell is therefore never a candidate
+     *  (review round 25, P2); see {@link TownStorage#isTownBuiltFixture}. */
+    private static boolean isTownBuiltFixture(ServerLevel level, TownStorage storage, BlockPos pos) {
+        return storage.isTownBuiltFixture(level.dimension(), pos, level.getBlockState(pos));
     }
 
     /** Releases a previously-held ticket, if any, resolved against ITS OWN actual {@link ServerLevel}
@@ -318,7 +332,11 @@ public final class TownResidentAllocationHandler {
                 return; // unresolved (or positively someone else's) - preserve, never release
             }
             if (isCurrentlyClaimedByAnotherVillager(oldLevel, globalPos.pos(), villager)) {
-                return; // the registry's history no longer matches reality - someone else genuinely holds it now
+                // The registry's history no longer matches reality - someone else genuinely holds
+                // it now. Drop the contradicted record too, so it cannot authorize a release later
+                // once that other villager unloads and the live scan can no longer see it.
+                storage.clearReservationOwner(globalPos.dimension(), globalPos.pos());
+                return;
             }
             if (oldLevel.getPoiManager().exists(globalPos.pos(), type -> true)) {
                 oldLevel.getPoiManager().release(globalPos.pos());
@@ -347,5 +365,33 @@ public final class TownResidentAllocationHandler {
             }
         }
         return false;
+    }
+
+    /**
+     * [Review round 25] The live-scan veto in {@link #releaseOldReservation} only protects a villager
+     * that is still loaded. Tracked A is granted P; vanilla later re-grants P's ticket to B outside
+     * this mod's bookkeeping; then B unloads before any reconciliation looks at it. From then on the
+     * registry still says "A", the live scan cannot see B, and A relocating would release B's ticket.
+     *
+     * <p>{@link ServerLevel}'s tracking-end callback fires this event at the exact moment a villager
+     * stops being visible to {@code level.getEntities()} (chunk unload, dimension change, death or
+     * discard alike), so reconciling here - while B's memory can still be read - drops the
+     * contradicted "A" record before it can ever authorize that release. The reservation is then
+     * unresolved, and unresolved reservations are preserved. Nothing is recorded for B either: its
+     * memory is an observation, not proof of ownership.
+     */
+    public static void onEntityLeaveLevel(EntityLeaveLevelEvent event) {
+        if (event.getLevel() instanceof ServerLevel level && event.getEntity() instanceof Villager villager) {
+            reconcileObservedClaims(villager, TownStorage.of(level.getServer()));
+        }
+    }
+
+    /** Drops every ownership record that {@code villager}'s own current {@code HOME}/{@code JOB_SITE}
+     *  memory contradicts - see {@link TownStorage#reconcileObservedClaim}. */
+    static void reconcileObservedClaims(Villager villager, TownStorage storage) {
+        villager.getBrain().getMemory(MemoryModuleType.HOME)
+                .ifPresent(home -> storage.reconcileObservedClaim(home.dimension(), home.pos(), villager.getUUID()));
+        villager.getBrain().getMemory(MemoryModuleType.JOB_SITE)
+                .ifPresent(site -> storage.reconcileObservedClaim(site.dimension(), site.pos(), villager.getUUID()));
     }
 }

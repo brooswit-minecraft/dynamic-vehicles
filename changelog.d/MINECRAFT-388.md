@@ -8,3 +8,6 @@ bump: minor
   construction at any villager-claimed campfire (never an unclaimed one, and never charging
   resources it doesn't have), and a once-only campfire+villager bootstrap at each region's
   designated centre when no vanilla village already exists there.
+- Dynamic Towns build their planned roads, and give every resident villager a bed and workplace
+  from the fixtures the town itself built - a player's own bed or workstation, even one placed
+  where the town once built something else, is never taken over.

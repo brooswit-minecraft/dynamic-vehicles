@@ -4,12 +4,15 @@ import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderProfession;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.GameTestMockPlayers;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.GlobalPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.entity.ai.memory.MemoryModuleType;
@@ -21,7 +24,9 @@ import net.minecraft.world.item.trading.ItemCost;
 import net.minecraft.world.item.trading.MerchantOffer;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.BedBlock;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BedPart;
 import net.minecraft.world.phys.AABB;
 import net.neoforged.neoforge.gametest.GameTestHolder;
@@ -1300,7 +1305,7 @@ public final class TownGameTests {
         helper.assertTrue(!storage.isCellPlaced(helper.getLevel().dimension(), a, owner, signature),
                 "a fresh store must not report any cell as placed");
 
-        storage.markCellPlaced(helper.getLevel().dimension(), a, owner, signature);
+        storage.markCellPlaced(helper.getLevel().dimension(), a, owner, signature, Blocks.STONE.defaultBlockState());
 
         helper.assertTrue(storage.isCellPlaced(helper.getLevel().dimension(), a, owner, signature),
                 "a marked cell must read back as placed");
@@ -1323,7 +1328,7 @@ public final class TownGameTests {
         String siteOwner = TownStorage.siteOwner(pos);
         String signature = "test-plan:minecraft:dirt_path:STONE";
 
-        storage.markCellPlaced(helper.getLevel().dimension(), pos, roadOwner, signature);
+        storage.markCellPlaced(helper.getLevel().dimension(), pos, roadOwner, signature, Blocks.DIRT_PATH.defaultBlockState());
 
         helper.assertTrue(storage.isCellPlaced(helper.getLevel().dimension(), pos, roadOwner, signature),
                 "the road plan that actually placed this cell must read it back as its own progress");
@@ -1346,7 +1351,7 @@ public final class TownGameTests {
         String oldPlanSignature = "RESIDENTIAL:0:none:minecraft:oak_planks:WOOD";
         String newPlanSignature = "COMMERCIAL:0:FARMER:minecraft:stone_bricks:STONE";
 
-        storage.markCellPlaced(helper.getLevel().dimension(), pos, owner, oldPlanSignature);
+        storage.markCellPlaced(helper.getLevel().dimension(), pos, owner, oldPlanSignature, Blocks.OAK_PLANKS.defaultBlockState());
         helper.assertTrue(storage.isCellPlaced(helper.getLevel().dimension(), pos, owner, oldPlanSignature),
                 "the original plan must read its own progress back correctly");
 
@@ -1894,6 +1899,372 @@ public final class TownGameTests {
         TownStorage reloaded = TownStorage.load(saved, helper.getLevel().registryAccess());
         helper.assertTrue(reloaded.storeFor(townKey).balance(TownResourceCategory.STONE) == 6,
                 "the credited-then-debited balance (10 - 4 = 6) must survive a real save/load round trip");
+        helper.succeed();
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Review round 25 regressions (retained fixture-provenance and takeover-lifecycle items)
+    // ---------------------------------------------------------------------------------------
+
+    private static Villager spawnBuilderClaimant(GameTestHelper helper, BlockPos absoluteCampfire) {
+        Villager claimant = EntityType.VILLAGER.create(helper.getLevel(), null, absoluteCampfire, MobSpawnType.EVENT, false, false);
+        helper.getLevel().addFreshEntity(claimant);
+        claimant.setVillagerData(claimant.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
+        claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteCampfire));
+        return claimant;
+    }
+
+    /** A villager standing in the prepared area's corner - well outside every footprint, so it never
+     *  blocks construction. */
+    private static Villager spawnBystander(GameTestHelper helper) {
+        Villager villager = EntityType.VILLAGER.create(helper.getLevel(), null, helper.absolutePos(new BlockPos(0, 2, 0)),
+                MobSpawnType.EVENT, false, false);
+        helper.getLevel().addFreshEntity(villager);
+        return villager;
+    }
+
+    /** The kind a site at {@code absoluteCampfire} resolves to, decided exactly as
+     *  {@link TownConstructionService#buildAt} decides it. */
+    private static TownBuildingTemplates.Kind siteKind(GameTestHelper helper, BlockPos absoluteCampfire) {
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
+        TownPlan plan = TownPlanner.generate(region, helper.getLevel().getSeed());
+        boolean isStorehouseSite = Math.abs(absoluteCampfire.getX() - plan.townCenterX()) <= TownConstants.STOREHOUSE_FOOTPRINT_WIDTH
+                && Math.abs(absoluteCampfire.getZ() - plan.townCenterZ()) <= TownConstants.STOREHOUSE_FOOTPRINT_WIDTH;
+        return isStorehouseSite ? TownBuildingTemplates.Kind.STOREHOUSE
+                : TownBuildingTemplates.kindFor(plan.zoneAt(absoluteCampfire.getX(), absoluteCampfire.getZ()));
+    }
+
+    private static void buildUntilHandedOff(GameTestHelper helper, BlockPos absoluteCampfire, Villager claimant, TownStorage storage) {
+        for (int i = 0; i < 500 && claimant.getVillagerData().getProfession() == BuilderProfession.BUILDER.get(); i++) {
+            TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
+        }
+    }
+
+    /** Puts a player's own fixture at {@code pos} - never through a Dynamic Towns plan - and brings
+     *  its POI record in step at once (see {@link #registerAndTakeTicket} for why the placement hook
+     *  cannot be relied on within the same test call). {@code UPDATE_KNOWN_SHAPE} keeps a half-swapped
+     *  bed from breaking its other half while the two halves are replaced one at a time. */
+    private static void placePlayerFixture(ServerLevel level, BlockPos pos, BlockState state) {
+        level.setBlock(pos, state, Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE);
+        net.minecraft.world.entity.ai.village.poi.PoiManager poiManager = level.getPoiManager();
+        java.util.Optional<net.minecraft.core.Holder<net.minecraft.world.entity.ai.village.poi.PoiType>> type =
+                net.minecraft.world.entity.ai.village.poi.PoiTypes.forState(state);
+        java.util.Optional<net.minecraft.core.Holder<net.minecraft.world.entity.ai.village.poi.PoiType>> registered = poiManager.getType(pos);
+        if (registered.isPresent() && !registered.equals(type)) {
+            poiManager.remove(pos);
+        }
+        type.ifPresent(t -> {
+            if (poiManager.getType(pos).isEmpty()) {
+                poiManager.add(pos, t);
+            }
+        });
+    }
+
+    private static void placePlayerBed(ServerLevel level, BlockPos foot, Direction facing, Block bed) {
+        BlockState footState = bed.defaultBlockState().setValue(BedBlock.FACING, facing).setValue(BedBlock.PART, BedPart.FOOT);
+        BlockState headState = bed.defaultBlockState().setValue(BedBlock.FACING, facing).setValue(BedBlock.PART, BedPart.HEAD);
+        placePlayerFixture(level, foot, footState);
+        placePlayerFixture(level, foot.relative(facing), headState);
+    }
+
+    /**
+     * [Review round 25, P2] Provenance from a REAL completed building's own production records: a
+     * player's bed laid across two of the building's paid north-wall cells, and a player's blast
+     * furnace on one of its paid floor cells, must never be reserved by resident allocation - even
+     * after those records go through a save/load round trip - while the building's own bed and
+     * workstation, once vacated, stay eligible from the very same records.
+     */
+    @GameTest(template = "settlement_test")
+    public static void aPlayerFixtureOnAPaidWallOrFloorCellOfARealBuildingIsNeverReservable(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        ServerLevel level = helper.getLevel();
+        helper.setBlock(ANCHOR, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(ANCHOR);
+        Villager claimant = spawnBuilderClaimant(helper, absoluteCampfire);
+        TownStorage storage = new TownStorage();
+        fundStore(helper, storage, absoluteCampfire, 100000);
+        TownBuildingTemplates.Kind kind = siteKind(helper, absoluteCampfire);
+        buildUntilHandedOff(helper, absoluteCampfire, claimant, storage);
+        helper.assertTrue(claimant.getVillagerData().getProfession() != BuilderProfession.BUILDER.get(),
+                "test setup: the site never finished (kind=" + kind + ")");
+
+        int cx = absoluteCampfire.getX();
+        int cz = absoluteCampfire.getZ();
+        int floorY = TownTerrain.estimateGroundHeightBelow(level, absoluteCampfire);
+        int radius = ((kind == TownBuildingTemplates.Kind.STOREHOUSE ? TownConstants.STOREHOUSE_FOOTPRINT_WIDTH : 5) - 1) / 2;
+        Block wall = TownBuildingTemplates.wallBlockFor(kind);
+        BlockPos bedFoot = new BlockPos(cx, floorY + 1, cz - radius);
+        BlockPos bedHead = bedFoot.east();
+        BlockPos floorCell = new BlockPos(cx + 1, floorY, cz - 1);
+        helper.assertTrue(level.getBlockState(bedFoot).is(wall) && level.getBlockState(bedHead).is(wall)
+                        && level.getBlockState(floorCell).is(wall),
+                "test setup: the cells the player replaces must be the building's own paid wall/floor cells");
+        placePlayerBed(level, bedFoot, Direction.EAST, Blocks.RED_BED);
+        placePlayerFixture(level, floorCell, Blocks.BLAST_FURNACE.defaultBlockState());
+
+        TownStorage reloaded = TownStorage.load(storage.save(new CompoundTag(), level.registryAccess()), level.registryAccess());
+        RegionCoord region = TownRegion.fromBlockCoords(cx, cz);
+        Villager resident = spawnBystander(helper);
+        resident.setVillagerData(resident.getVillagerData().setProfession(VillagerProfession.NONE));
+
+        TownResidentAllocationHandler.allocateHomeIfNeeded(level, resident, absoluteCampfire, region, reloaded);
+        TownResidentAllocationHandler.allocateWorkplaceIfNeeded(level, resident, absoluteCampfire, region, reloaded);
+        helper.assertTrue(resident.getBrain().getMemory(MemoryModuleType.HOME).isEmpty(),
+                "a player's bed on the building's paid wall cells must never be reserved as town housing");
+        helper.assertTrue(resident.getBrain().getMemory(MemoryModuleType.JOB_SITE).isEmpty()
+                        && resident.getVillagerData().getProfession() == VillagerProfession.NONE,
+                "a player's workstation on the building's paid floor cell must never be reserved as town employment");
+        helper.assertTrue(level.getPoiManager().getFreeTickets(bedHead) > 0 && level.getPoiManager().getFreeTickets(floorCell) > 0,
+                "both player fixtures must be left unreserved");
+
+        if (kind == TownBuildingTemplates.Kind.STOREHOUSE) {
+            helper.succeed(); // no bed or workstation of its own to vacate this run; other slots cover it
+            return;
+        }
+        // The building's own fixtures, once vacated, stay eligible from the same production records.
+        BlockPos townBed = TownBuildingTemplates.bedPosition(cx, floorY, cz);
+        claimant.getBrain().eraseMemory(MemoryModuleType.HOME);
+        level.getPoiManager().release(townBed);
+        java.util.Optional<VillagerProfession> finalProfession = TownProfessionWorkstations.finalProfessionFor(kind, level.getSeed(), cx, cz);
+        BlockPos townWorkstation = TownBuildingTemplates.workstationPosition(cx, floorY, cz);
+        if (finalProfession.isPresent()) {
+            claimant.getBrain().eraseMemory(MemoryModuleType.JOB_SITE);
+            level.getPoiManager().release(townWorkstation);
+        }
+        TownResidentAllocationHandler.allocateHomeIfNeeded(level, resident, absoluteCampfire, region, reloaded);
+        TownResidentAllocationHandler.allocateWorkplaceIfNeeded(level, resident, absoluteCampfire, region, reloaded);
+        helper.assertTrue(resident.getBrain().getMemory(MemoryModuleType.HOME).map(gp -> gp.pos().equals(townBed)).orElse(false),
+                "the building's own unchanged bed must remain eligible");
+        if (finalProfession.isPresent()) {
+            helper.assertTrue(resident.getBrain().getMemory(MemoryModuleType.JOB_SITE).map(gp -> gp.pos().equals(townWorkstation)).orElse(false)
+                            && resident.getVillagerData().getProfession() == finalProfession.get(),
+                    "the building's own unchanged workstation must remain eligible");
+        }
+        helper.succeed();
+    }
+
+    /** [Review round 25, P2] The road service's own production records: a player's bed laid across
+     *  two paved, paid road cells must never be reserved as town housing. */
+    @GameTest(template = "settlement_test")
+    public static void aPlayerBedOnPaidRoadCellsIsNeverReservable(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        ServerLevel level = helper.getLevel();
+        BlockPos absoluteAnchor = helper.absolutePos(ANCHOR);
+        List<TownRoadPlanner.RoadCell> cells = List.of(
+                new TownRoadPlanner.RoadCell(absoluteAnchor.getX(), absoluteAnchor.getZ(), absoluteAnchor.getY()),
+                new TownRoadPlanner.RoadCell(absoluteAnchor.getX() + 1, absoluteAnchor.getZ(), absoluteAnchor.getY()));
+        TownStorage storage = new TownStorage();
+        TownResourceStore store = storage.storeFor("test:road-provenance");
+        store.credit(TownResourceCategory.STONE, 1000);
+        for (int i = 0; i < 4; i++) {
+            TownRoadConstructionService.buildRoadCells(level, cells, storage, store); // bounded per call
+        }
+        helper.assertTrue(helper.getBlockState(ANCHOR).is(Blocks.DIRT_PATH) && helper.getBlockState(ANCHOR.east()).is(Blocks.DIRT_PATH),
+                "test setup: both route cells must have been paved and paid for by the road service");
+
+        placePlayerBed(level, absoluteAnchor, Direction.EAST, Blocks.RED_BED);
+        BlockPos bedHead = absoluteAnchor.east();
+        Villager resident = spawnBystander(helper);
+        TownResidentAllocationHandler.allocateHomeIfNeeded(level, resident, absoluteAnchor,
+                TownRegion.fromBlockCoords(absoluteAnchor.getX(), absoluteAnchor.getZ()), storage);
+
+        helper.assertTrue(resident.getBrain().getMemory(MemoryModuleType.HOME).isEmpty()
+                        && level.getPoiManager().getFreeTickets(bedHead) > 0,
+                "a player's bed on paid road cells must never be reserved as town housing");
+        helper.succeed();
+    }
+
+    /**
+     * [Review round 25, P2] The claimant handoff never reserves a player's fixture either. The
+     * moment the build places its planned bed (and, for a workplace, its planned workstation), a
+     * player swaps in a different fixture of their own at the same cell. The build refuses to
+     * overwrite that foreign content and the handoff only ever reserves the plan's own fixture, so
+     * the site never closes onto it: the claimant stays a Builder on its intact campfire, and the
+     * swapped-in fixtures stay unreserved.
+     */
+    @GameTest(template = "settlement_test")
+    public static void aHandoffNeverReservesAPlayerFixtureSwappedIntoAPlannedFixtureCell(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        ServerLevel level = helper.getLevel();
+        helper.setBlock(ANCHOR, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(ANCHOR);
+        Villager claimant = spawnBuilderClaimant(helper, absoluteCampfire);
+        TownStorage storage = new TownStorage();
+        fundStore(helper, storage, absoluteCampfire, 100000);
+        TownBuildingTemplates.Kind kind = siteKind(helper, absoluteCampfire);
+        if (kind == TownBuildingTemplates.Kind.STOREHOUSE) {
+            helper.succeed(); // no planned fixture to swap this run; other slots cover it
+            return;
+        }
+        int cx = absoluteCampfire.getX();
+        int cz = absoluteCampfire.getZ();
+        int floorY = TownTerrain.estimateGroundHeightBelow(level, absoluteCampfire);
+        BlockPos bedPos = TownBuildingTemplates.bedPosition(cx, floorY, cz);
+        java.util.Optional<VillagerProfession> finalProfession = TownProfessionWorkstations.finalProfessionFor(kind, level.getSeed(), cx, cz);
+        BlockPos workstationPos = finalProfession.isPresent() ? TownBuildingTemplates.workstationPosition(cx, floorY, cz) : null;
+        Block plannedWorkstation = finalProfession.flatMap(TownProfessionWorkstations::blockFor).orElse(null);
+        Block swappedWorkstation = plannedWorkstation == Blocks.COMPOSTER ? Blocks.BARREL : Blocks.COMPOSTER;
+
+        // Both fixtures are swapped together, the moment the bed (planned after the workstation, in
+        // the same layer) appears - a swapped fixture stalls the build at its own cell, so swapping
+        // the workstation first would stop the bed from ever being placed.
+        boolean swapped = false;
+        for (int i = 0; i < 300; i++) {
+            TownConstructionService.buildAt(level, absoluteCampfire, storage);
+            if (!swapped && level.getBlockState(bedPos).is(Blocks.RED_BED)
+                    && (workstationPos == null || level.getBlockState(workstationPos).is(plannedWorkstation))) {
+                placePlayerBed(level, bedPos.north(), Direction.SOUTH, Blocks.BLUE_BED);
+                if (workstationPos != null) {
+                    placePlayerFixture(level, workstationPos, swappedWorkstation.defaultBlockState());
+                }
+                swapped = true;
+            }
+        }
+
+        helper.assertTrue(swapped, "test setup: the planned fixtures were never placed in time to swap them");
+        helper.assertTrue(claimant.getVillagerData().getProfession() == BuilderProfession.BUILDER.get()
+                        && claimant.getBrain().getMemory(MemoryModuleType.JOB_SITE).map(gp -> gp.pos().equals(absoluteCampfire)).orElse(false)
+                        && helper.getBlockState(ANCHOR).is(Blocks.CAMPFIRE),
+                "the site must never close (and hand off) onto a swapped-in player fixture");
+        helper.assertTrue(claimant.getBrain().getMemory(MemoryModuleType.HOME).map(gp -> !gp.pos().equals(bedPos)).orElse(true)
+                        && level.getPoiManager().getFreeTickets(bedPos) > 0,
+                "the player's bed must never be reserved for the claimant");
+        if (workstationPos != null) {
+            helper.assertTrue(level.getPoiManager().getFreeTickets(workstationPos) > 0,
+                    "the player's workstation must never be reserved for the claimant");
+        }
+        claimant.discard(); // leave no live claimed campfire behind for the real periodic construction tick
+        helper.succeed();
+    }
+
+    /**
+     * [Review round 25] Handoff counterpart of the resident-allocation takeover regressions: the
+     * claimant's old home P is still recorded as the claimant's, but vanilla has since re-granted
+     * P's ticket to a different, still-loaded villager B. When the finished site hands the claimant
+     * its new bed, B's live claim must veto the old-home release, the contradicted record must be
+     * dropped (recording nobody in its place), and B's ticket and memory must be left intact.
+     */
+    @GameTest(template = "settlement_test")
+    public static void aHandoffNeverReleasesAnOldHomeAnotherVillagerGenuinelyTookOver(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        ServerLevel level = helper.getLevel();
+        helper.setBlock(ANCHOR, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(ANCHOR);
+        TownBuildingTemplates.Kind kind = siteKind(helper, absoluteCampfire);
+        if (kind == TownBuildingTemplates.Kind.STOREHOUSE) {
+            helper.succeed(); // no bed of its own, so HOME is never touched (anExistingHomeIsNeverLeakedOrErasedWithoutAnActualReplacement)
+            return;
+        }
+        Villager claimant = spawnBuilderClaimant(helper, absoluteCampfire);
+        // The claimant's original home, granted by this mod - the same placement
+        // anExistingHomeIsNeverLeakedOrErasedWithoutAnActualReplacement uses, clear of the footprint.
+        BlockPos absoluteOldHome = helper.absolutePos(ANCHOR.offset(30, 50, 30));
+        placeStandaloneBedFixture(helper, absoluteOldHome);
+        claimant.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), absoluteOldHome));
+        TownStorage storage = new TownStorage();
+        storage.setReservationOwner(level.dimension(), absoluteOldHome, claimant.getUUID());
+
+        // Vanilla releases it and re-grants it to B, who stays loaded.
+        level.getPoiManager().release(absoluteOldHome);
+        Villager b = spawnBystander(helper);
+        registerAndTakeTicket(helper, absoluteOldHome);
+        b.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), absoluteOldHome));
+
+        fundStore(helper, storage, absoluteCampfire, 100000);
+        buildUntilHandedOff(helper, absoluteCampfire, claimant, storage);
+        helper.assertTrue(claimant.getVillagerData().getProfession() != BuilderProfession.BUILDER.get(),
+                "test setup: the site never finished (kind=" + kind + ")");
+
+        int floorY = TownTerrain.estimateGroundHeightBelow(level, absoluteCampfire);
+        BlockPos expectedBed = TownBuildingTemplates.bedPosition(absoluteCampfire.getX(), floorY, absoluteCampfire.getZ());
+        helper.assertTrue(claimant.getBrain().getMemory(MemoryModuleType.HOME).map(gp -> gp.pos().equals(expectedBed)).orElse(false),
+                "the claimant must be handed its new bed");
+        helper.assertTrue(level.getPoiManager().getFreeTickets(absoluteOldHome) == 0,
+                "B's real, current ticket must never be released on the strength of the claimant's stale record");
+        helper.assertTrue(b.getBrain().getMemory(MemoryModuleType.HOME).map(gp -> gp.pos().equals(absoluteOldHome)).orElse(false),
+                "B's own HOME memory must be unaffected by the handoff");
+        helper.assertTrue(!storage.isReservedBySelf(level.dimension(), absoluteOldHome, claimant.getUUID())
+                        && !storage.isReservedBySelf(level.dimension(), absoluteOldHome, b.getUUID()),
+                "the contradicted record must be dropped, and B must not be recorded in its place");
+        helper.succeed();
+    }
+
+    /**
+     * [Review round 25, retained P1] The handoff with the takeover owner UNLOADED before the site
+     * completes - the case a live veto cannot see. B (holding the claimant's old home P after a
+     * vanilla re-grant) unloads through the real removal path, firing the registered
+     * {@code EntityLeaveLevelEvent} listener against the real server-wide {@link TownStorage}; that
+     * storage is saved and loaded back (a restart) and the site completes against the reloaded copy;
+     * B is then loaded back from its saved form. P's ticket must survive every step, and the reloaded
+     * B must still be validly housed there - a vacant town-built bed beside P stays untouched when B
+     * reconciles, which it would not if B's reservation were judged invalid.
+     */
+    @GameTest(template = "settlement_test")
+    public static void aHandoffPreservesAnOldHomeWhoseTakeoverOwnerUnloadedAcrossSaveAndReload(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        ServerLevel level = helper.getLevel();
+        helper.setBlock(ANCHOR, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(ANCHOR);
+        Villager claimant = spawnBuilderClaimant(helper, absoluteCampfire);
+        BlockPos absoluteOldHome = helper.absolutePos(ANCHOR.offset(30, 50, 30));
+        placeStandaloneBedFixture(helper, absoluteOldHome);
+        claimant.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), absoluteOldHome));
+        TownStorage real = TownStorage.of(level.getServer());
+        real.setReservationOwner(level.dimension(), absoluteOldHome, claimant.getUUID());
+
+        level.getPoiManager().release(absoluteOldHome);
+        Villager b = spawnBystander(helper);
+        registerAndTakeTicket(helper, absoluteOldHome);
+        b.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), absoluteOldHome));
+
+        // B unloads before anything has reconciled it.
+        CompoundTag savedB = new CompoundTag();
+        helper.assertTrue(b.save(savedB), "test setup: B must serialize like a chunk save would");
+        boolean wasDirty = real.isDirty();
+        real.setDirty(false);
+        b.remove(Entity.RemovalReason.UNLOADED_TO_CHUNK);
+        boolean dirtiedByUnload = real.isDirty();
+        real.setDirty(wasDirty || dirtiedByUnload);
+        helper.assertTrue(level.getEntity(b.getUUID()) == null, "test setup: an unloaded B must be invisible to the live scan");
+        helper.assertTrue(!real.isReservedBySelf(level.dimension(), absoluteOldHome, claimant.getUUID())
+                        && !real.isReservedBySelf(level.dimension(), absoluteOldHome, b.getUUID()),
+                "B unloading must drop the record its memory contradicts, recording nobody in its place");
+        helper.assertTrue(dirtiedByUnload, "dropping the record must mark the storage dirty, or a real save could skip it");
+
+        TownStorage reloaded = TownStorage.load(real.save(new CompoundTag(), level.registryAccess()), level.registryAccess());
+        helper.assertTrue(!reloaded.isReservedBySelf(level.dimension(), absoluteOldHome, claimant.getUUID()),
+                "the dropped record must stay dropped across a save/load round trip");
+        TownBuildingTemplates.Kind kind = siteKind(helper, absoluteCampfire);
+        if (kind == TownBuildingTemplates.Kind.STOREHOUSE) {
+            claimant.discard();
+            helper.succeed(); // no bed of its own, so HOME is never touched; the reconciliation above is still proven
+            return;
+        }
+
+        fundStore(helper, reloaded, absoluteCampfire, 100000);
+        buildUntilHandedOff(helper, absoluteCampfire, claimant, reloaded);
+        helper.assertTrue(claimant.getVillagerData().getProfession() != BuilderProfession.BUILDER.get(),
+                "test setup: the site never finished (kind=" + kind + ")");
+        int floorY = TownTerrain.estimateGroundHeightBelow(level, absoluteCampfire);
+        BlockPos expectedBed = TownBuildingTemplates.bedPosition(absoluteCampfire.getX(), floorY, absoluteCampfire.getZ());
+        helper.assertTrue(claimant.getBrain().getMemory(MemoryModuleType.HOME).map(gp -> gp.pos().equals(expectedBed)).orElse(false),
+                "the claimant must be handed its new bed");
+        helper.assertTrue(level.getPoiManager().getFreeTickets(absoluteOldHome) == 0,
+                "B's ticket must be preserved while B is unloaded - nothing proves the claimant still owns it");
+
+        // B's chunk loads again.
+        Villager reloadedB = (Villager) EntityType.create(savedB, level).orElseThrow();
+        helper.assertTrue(level.addFreshEntity(reloadedB), "test setup: B must load back into the level");
+        BlockPos spareBed = absoluteOldHome.offset(3, 0, 0);
+        placePlayerBed(level, spareBed.north(), Direction.SOUTH, Blocks.RED_BED);
+        reloaded.markCellPlaced(level.dimension(), spareBed, "site:test-owner", "test-signature", level.getBlockState(spareBed));
+        TownResidentAllocationHandler.allocateHomeIfNeeded(level, reloadedB, absoluteOldHome,
+                TownRegion.fromBlockCoords(absoluteOldHome.getX(), absoluteOldHome.getZ()), reloaded);
+        helper.assertTrue(reloadedB.getBrain().getMemory(MemoryModuleType.HOME).map(gp -> gp.pos().equals(absoluteOldHome)).orElse(false)
+                        && level.getPoiManager().getFreeTickets(spareBed) > 0,
+                "the reloaded B must still be validly housed at its own home, never moved off it");
+        helper.assertTrue(level.getPoiManager().getFreeTickets(absoluteOldHome) == 0,
+                "B's ticket must still be held after B reloads");
         helper.succeed();
     }
 }

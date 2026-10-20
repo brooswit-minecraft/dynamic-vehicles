@@ -7,7 +7,9 @@ import net.minecraft.core.Direction;
 import net.minecraft.core.GlobalPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.entity.ai.memory.MemoryModuleType;
@@ -121,14 +123,15 @@ public final class TownResidentAllocationHandlerGameTests {
     }
 
     /** [Review round 19, finding #2] Candidate search is now scoped to fixtures Dynamic Towns itself
-     *  actually placed-and-paid-for ({@link TownStorage#isAnyCellPlaced}), not merely same-region
+     *  actually placed-and-paid-for ({@link TownStorage#isTownBuiltFixture}), not merely same-region
      *  POIs - so every fixture a test wants the allocation logic to actually find must be registered
      *  here too, exactly as {@code TownConstructionService} itself would via {@code markCellPlaced}
-     *  when it builds one for real. The owner/signature values themselves are never inspected by
-     *  {@code isAnyCellPlaced} - only whether SOME record exists at all - so arbitrary constants are
-     *  fine here. */
+     *  when it builds one for real: recording the state it actually placed there (round 25, P2 - the
+     *  fixture recorded from it must still match the live one). The owner/signature values are never
+     *  inspected by {@code isTownBuiltFixture}, so arbitrary constants are fine for those. */
     private static void markTownOwned(GameTestHelper helper, TownStorage storage, BlockPos absolutePos) {
-        storage.markCellPlaced(helper.getLevel().dimension(), absolutePos, "test-owner", "test-signature");
+        storage.markCellPlaced(helper.getLevel().dimension(), absolutePos, "test-owner", "test-signature",
+                helper.getLevel().getBlockState(absolutePos));
     }
 
     private static TownStorage newStorageWithFoundedTown(GameTestHelper helper, RegionCoord region) {
@@ -514,7 +517,7 @@ public final class TownResidentAllocationHandlerGameTests {
     /** [Review round 19, finding #2] A real, vacant, correctly-typed, SAME-REGION workstation that
      *  Dynamic Towns itself never built (a same-region vanilla- or player-placed fixture) must never
      *  be matched, even though region filtering alone would otherwise accept it - proving the
-     *  town-ownership filter ({@link TownStorage#isAnyCellPlaced}) is actually what excludes it, not
+     *  town-ownership filter ({@link TownStorage#isTownBuiltFixture}) is actually what excludes it, not
      *  merely the region check. */
     @GameTest(template = "settlement_test")
     public static void aSameRegionNonTownOwnedWorkstationIsNeverMatched(GameTestHelper helper) {
@@ -917,6 +920,385 @@ public final class TownResidentAllocationHandlerGameTests {
         helper.assertTrue(b.getBrain().getMemory(MemoryModuleType.HOME)
                         .map(gp -> gp.pos().equals(absoluteOldBedHead)).orElse(false),
                 "B's own HOME memory must be completely unaffected by A's reconciliation");
+        // [Review round 25] The vetoed record is reconciled, not kept: left in place it would
+        // authorize exactly this release the moment B unloads and the live scan can no longer see it.
+        helper.assertTrue(!storage.isReservedBySelf(helper.getLevel().dimension(), absoluteOldBedHead, a.getUUID()),
+                "the stale record the live veto contradicted must be dropped, not left to authorize a release once B unloads");
+        helper.assertTrue(!storage.isReservedBySelf(helper.getLevel().dimension(), absoluteOldBedHead, b.getUUID()),
+                "B must not be recorded as owner either - an observed memory is not proof of ownership");
+        helper.succeed();
+    }
+
+    private static void placeWorkstationAt(ServerLevel level, BlockPos absolutePos, Block block) {
+        level.setBlock(absolutePos, block.defaultBlockState(), Block.UPDATE_ALL);
+        registerPoiImmediately(level, absolutePos);
+    }
+
+    /** [Review round 25] The JOB_SITE counterpart of
+     *  {@link #aStaleRegistryRecordNeverReleasesARealVillagerThatGenuinelyTookOverTheOldPosition}:
+     *  A's recorded workstation is re-granted to B outside this mod's bookkeeping, and A's genuine
+     *  replacement (a second vacant workstation of its own profession) must never release B's
+     *  ticket - and must drop the contradicted record. */
+    @GameTest(template = "settlement_test")
+    public static void aStaleRegistryRecordNeverReleasesAWorkstationAnotherVillagerGenuinelyTookOver(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        ServerLevel level = helper.getLevel();
+        BlockPos oldWorkstation = ANCHOR.offset(WORKSTATION_OFFSET.getX(), WORKSTATION_OFFSET.getY(), WORKSTATION_OFFSET.getZ());
+        placeWorkstation(helper, oldWorkstation, Blocks.BLAST_FURNACE);
+        BlockPos absoluteOldWorkstation = helper.absolutePos(oldWorkstation);
+        BlockPos newWorkstation = ANCHOR.offset(OLD_WORKSTATION_OFFSET.getX(), OLD_WORKSTATION_OFFSET.getY(), OLD_WORKSTATION_OFFSET.getZ());
+        placeWorkstation(helper, newWorkstation, Blocks.BLAST_FURNACE);
+        BlockPos absoluteNewWorkstation = helper.absolutePos(newWorkstation);
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        markTownOwned(helper, storage, absoluteOldWorkstation);
+        markTownOwned(helper, storage, absoluteNewWorkstation);
+        BlockPos townCenter = helper.absolutePos(ANCHOR);
+
+        // This mod originally granted the workstation to A: ticket taken, owner recorded.
+        Villager a = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        a.setVillagerData(a.getVillagerData().setProfession(VillagerProfession.ARMORER));
+        takeTicketDirectly(level, absoluteOldWorkstation);
+        storage.setReservationOwner(level.dimension(), absoluteOldWorkstation, a.getUUID());
+        a.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), absoluteOldWorkstation));
+
+        // Vanilla releases it and re-grants it to B; the registry is never told.
+        level.getPoiManager().release(absoluteOldWorkstation);
+        Villager b = spawnVillager(helper, ANCHOR.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+        b.setVillagerData(b.getVillagerData().setProfession(VillagerProfession.ARMORER));
+        takeTicketDirectly(level, absoluteOldWorkstation);
+        b.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), absoluteOldWorkstation));
+
+        TownResidentAllocationHandler.allocateWorkplaceIfNeeded(level, a, townCenter, region, storage);
+
+        helper.assertTrue(a.getBrain().getMemory(MemoryModuleType.JOB_SITE)
+                        .map(gp -> gp.pos().equals(absoluteNewWorkstation)).orElse(false),
+                "A must be moved to the genuinely vacant replacement workstation");
+        helper.assertTrue(level.getPoiManager().getFreeTickets(absoluteOldWorkstation) == 0,
+                "B's real, current workstation ticket must never be released on the strength of A's stale record");
+        helper.assertTrue(b.getBrain().getMemory(MemoryModuleType.JOB_SITE)
+                        .map(gp -> gp.pos().equals(absoluteOldWorkstation)).orElse(false),
+                "B's own JOB_SITE memory must be completely unaffected by A's reconciliation");
+        helper.assertTrue(!storage.isReservedBySelf(level.dimension(), absoluteOldWorkstation, a.getUUID())
+                        && !storage.isReservedBySelf(level.dimension(), absoluteOldWorkstation, b.getUUID()),
+                "the contradicted record must be dropped, and B must not be recorded in its place");
+        helper.succeed();
+    }
+
+    /**
+     * [Review round 25, retained P1] The live-scan veto cannot protect a takeover owner that is no
+     * longer loaded. Tracked A was granted home P and workstation W (in A's OLD town); vanilla
+     * re-granted both tickets to B outside this mod's bookkeeping; B's chunk then unloads BEFORE any
+     * reconciliation pass has ever seen B. A, now living in a different town, genuinely needs
+     * replacements there - which runs the old-reservation release path for P and W.
+     *
+     * <p>Lifecycle exercised, in order: B unloads through the real removal path (tracking end, the
+     * same callback a chunk unload runs, firing the registered {@code EntityLeaveLevelEvent}
+     * listener against the real server-wide {@link TownStorage}); that storage is saved and loaded
+     * back, standing in for a restart; A reconciles against the reloaded storage; B's saved form is
+     * then loaded back into the level, as its chunk reloading would. Both tickets must survive every
+     * step, A's stale records must not, nothing may be recorded for B, and the reloaded B must still
+     * be validly housed and employed - a vacant town-built bed and workstation next to its own stay
+     * untouched, which they would not if B's reservations were judged invalid.
+     */
+    @GameTest(template = "settlement_test")
+    public static void aTakeoverOwnerThatUnloadsBeforeReconciliationKeepsBothTicketsAcrossSaveAndReload(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        ServerLevel level = helper.getLevel();
+        RegionCoord region = regionOf(helper);
+        BlockPos townCenter = helper.absolutePos(ANCHOR);
+
+        // A's replacement destinations in its CURRENT town (this test's own region).
+        BlockPos newBedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        placeValidBed(helper, newBedHead);
+        BlockPos newWorkstation = ANCHOR.offset(WORKSTATION_OFFSET.getX(), WORKSTATION_OFFSET.getY(), WORKSTATION_OFFSET.getZ());
+        placeWorkstation(helper, newWorkstation, Blocks.BLAST_FURNACE);
+
+        // A's OLD home and workstation, in a genuinely different region, plus a vacant bed and
+        // workstation there for B to be (wrongly) moved to. A distinct offset from
+        // aResidentWhoseHomeIsOutsideItsCurrentRegionIsReassignedAndTheOldTicketReleased's own, so the
+        // two tests' far fixtures can never land on each other.
+        BlockPos absoluteAnchor = helper.absolutePos(ANCHOR);
+        BlockPos oldHome = absoluteAnchor.offset(60_000, 65 - absoluteAnchor.getY(), -60_000);
+        BlockPos oldWorkstation = oldHome.offset(4, 0, 0);
+        BlockPos spareBed = oldHome.offset(-4, 0, 0);
+        BlockPos spareWorkstation = oldHome.offset(8, 0, 0);
+        RegionCoord oldRegion = TownRegion.fromBlockCoords(oldHome.getX(), oldHome.getZ());
+        helper.assertTrue(!oldRegion.equals(region)
+                        && TownRegion.fromBlockCoords(spareBed.getX(), spareBed.getZ()).equals(oldRegion)
+                        && TownRegion.fromBlockCoords(spareWorkstation.getX(), spareWorkstation.getZ()).equals(oldRegion),
+                "test setup: the old fixtures must share one region, different from A's current one");
+        placeValidBedAt(level, oldHome);
+        placeWorkstationAt(level, oldWorkstation, Blocks.BLAST_FURNACE);
+        placeValidBedAt(level, spareBed);
+        placeWorkstationAt(level, spareWorkstation, Blocks.BLAST_FURNACE);
+
+        // This mod originally granted both to A: tickets taken, owners recorded in the REAL
+        // server-wide storage - the one the registered unload listener reconciles.
+        Villager a = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        a.setVillagerData(a.getVillagerData().setProfession(VillagerProfession.ARMORER));
+        takeTicketDirectly(level, oldHome);
+        takeTicketDirectly(level, oldWorkstation);
+        TownStorage real = TownStorage.of(level.getServer());
+        real.setReservationOwner(level.dimension(), oldHome, a.getUUID());
+        real.setReservationOwner(level.dimension(), oldWorkstation, a.getUUID());
+        a.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), oldHome));
+        a.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), oldWorkstation));
+
+        // Vanilla releases both and re-grants them to B; the registry is never told.
+        level.getPoiManager().release(oldHome);
+        level.getPoiManager().release(oldWorkstation);
+        Villager b = spawnVillager(helper, ANCHOR.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+        b.setVillagerData(b.getVillagerData().setProfession(VillagerProfession.ARMORER));
+        takeTicketDirectly(level, oldHome);
+        takeTicketDirectly(level, oldWorkstation);
+        b.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), oldHome));
+        b.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), oldWorkstation));
+        helper.assertTrue(level.getPoiManager().getFreeTickets(oldHome) == 0 && level.getPoiManager().getFreeTickets(oldWorkstation) == 0,
+                "test setup: B must actually hold both tickets");
+
+        // B unloads before any reconciliation pass has seen it.
+        CompoundTag savedB = new CompoundTag();
+        helper.assertTrue(b.save(savedB), "test setup: B must serialize like a chunk save would");
+        boolean wasDirty = real.isDirty();
+        real.setDirty(false);
+        b.remove(Entity.RemovalReason.UNLOADED_TO_CHUNK);
+        boolean dirtiedByUnload = real.isDirty();
+        real.setDirty(wasDirty || dirtiedByUnload);
+        helper.assertTrue(level.getEntity(b.getUUID()) == null, "test setup: an unloaded B must be invisible to the live scan");
+        helper.assertTrue(!real.isReservedBySelf(level.dimension(), oldHome, a.getUUID())
+                        && !real.isReservedBySelf(level.dimension(), oldWorkstation, a.getUUID()),
+                "B unloading with memories that contradict A's records must drop those records");
+        helper.assertTrue(!real.isReservedBySelf(level.dimension(), oldHome, b.getUUID())
+                        && !real.isReservedBySelf(level.dimension(), oldWorkstation, b.getUUID()),
+                "B must not be recorded as owner either - an observed memory is not proof of ownership");
+        helper.assertTrue(dirtiedByUnload, "dropping the records must mark the storage dirty, or a real save could skip it");
+
+        // Restart: only the persisted form survives.
+        TownStorage reloaded = TownStorage.load(real.save(new CompoundTag(), level.registryAccess()), level.registryAccess());
+        helper.assertTrue(!reloaded.isReservedBySelf(level.dimension(), oldHome, a.getUUID())
+                        && !reloaded.isReservedBySelf(level.dimension(), oldWorkstation, a.getUUID()),
+                "the dropped records must stay dropped across a save/load round trip");
+        markTownOwned(helper, reloaded, helper.absolutePos(newBedHead));
+        markTownOwned(helper, reloaded, helper.absolutePos(newWorkstation));
+        markTownOwned(helper, reloaded, spareBed);
+        markTownOwned(helper, reloaded, spareWorkstation);
+
+        // A reconciles in its current town: both old reservations are out of region, so A really
+        // does take replacements, and the old-reservation release path runs for P and W.
+        TownResidentAllocationHandler.allocateHomeIfNeeded(level, a, townCenter, region, reloaded);
+        TownResidentAllocationHandler.allocateWorkplaceIfNeeded(level, a, townCenter, region, reloaded);
+        helper.assertTrue(a.getBrain().getMemory(MemoryModuleType.HOME).map(gp -> !gp.pos().equals(oldHome)).orElse(false)
+                        && a.getBrain().getMemory(MemoryModuleType.JOB_SITE).map(gp -> !gp.pos().equals(oldWorkstation)).orElse(false),
+                "test setup: A must actually have been moved to replacements, or the release path never ran");
+        helper.assertTrue(level.getPoiManager().getFreeTickets(oldHome) == 0,
+                "B's home ticket must be preserved while B is unloaded - nothing proves A still owns it");
+        helper.assertTrue(level.getPoiManager().getFreeTickets(oldWorkstation) == 0,
+                "B's workstation ticket must be preserved while B is unloaded - nothing proves A still owns it");
+
+        // B's chunk loads again.
+        Villager reloadedB = (Villager) EntityType.create(savedB, level).orElseThrow();
+        helper.assertTrue(level.addFreshEntity(reloadedB), "test setup: B must load back into the level");
+        helper.assertTrue(reloadedB.getBrain().getMemory(MemoryModuleType.HOME).map(gp -> gp.pos().equals(oldHome)).orElse(false)
+                        && reloadedB.getBrain().getMemory(MemoryModuleType.JOB_SITE).map(gp -> gp.pos().equals(oldWorkstation)).orElse(false),
+                "test setup: the reloaded B must come back with its own memories");
+        TownResidentAllocationHandler.allocateHomeIfNeeded(level, reloadedB, oldHome, oldRegion, reloaded);
+        TownResidentAllocationHandler.allocateWorkplaceIfNeeded(level, reloadedB, oldHome, oldRegion, reloaded);
+        helper.assertTrue(reloadedB.getBrain().getMemory(MemoryModuleType.HOME).map(gp -> gp.pos().equals(oldHome)).orElse(false)
+                        && reloadedB.getBrain().getMemory(MemoryModuleType.JOB_SITE).map(gp -> gp.pos().equals(oldWorkstation)).orElse(false)
+                        && reloadedB.getVillagerData().getProfession() == VillagerProfession.ARMORER,
+                "the reloaded B must still be validly housed and employed at its own reservations");
+        helper.assertTrue(level.getPoiManager().getFreeTickets(spareBed) > 0 && level.getPoiManager().getFreeTickets(spareWorkstation) > 0,
+                "the reloaded B must not have been moved: its reservations were never vacated or reassigned");
+        helper.assertTrue(level.getPoiManager().getFreeTickets(oldHome) == 0 && level.getPoiManager().getFreeTickets(oldWorkstation) == 0,
+                "both tickets must still be held after B reloads");
+        helper.succeed();
+    }
+
+    /**
+     * [Review round 25, retained P1] The restart variant: a server stop does not unload spawn or
+     * force-loaded chunks, so no unload event fires for a takeover owner standing in one. The
+     * periodic reconciliation pass is what drops the contradicted record there - it runs while
+     * both A and B are loaded, before A has anywhere new to go. After a save/load in which B never
+     * comes back, A's eventual relocation must still preserve B's ticket.
+     */
+    @GameTest(template = "settlement_test")
+    public static void aTakeoverSeenByTheReconciliationPassIsPreservedAcrossARestartWithoutItsOwner(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        ServerLevel level = helper.getLevel();
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        BlockPos townCenter = helper.absolutePos(ANCHOR);
+
+        BlockPos absoluteAnchor = helper.absolutePos(ANCHOR);
+        BlockPos oldHome = absoluteAnchor.offset(-70_000, 65 - absoluteAnchor.getY(), 70_000);
+        helper.assertTrue(!TownRegion.fromBlockCoords(oldHome.getX(), oldHome.getZ()).equals(region),
+                "test setup: the old home must be in a different region from A's current one");
+        placeValidBedAt(level, oldHome);
+
+        Villager a = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        takeTicketDirectly(level, oldHome);
+        storage.setReservationOwner(level.dimension(), oldHome, a.getUUID());
+        a.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), oldHome));
+
+        level.getPoiManager().release(oldHome);
+        Villager b = spawnVillager(helper, ANCHOR.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+        takeTicketDirectly(level, oldHome);
+        b.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), oldHome));
+
+        // The production reconciliation pass, with no vacant town-built bed anywhere yet - so A
+        // cannot move this pass, and only the reconciliation itself can touch the record.
+        TownResidentAllocationHandler.runResidentAllocationTick(level, storage);
+        helper.assertTrue(!storage.isReservedBySelf(level.dimension(), oldHome, a.getUUID())
+                        && !storage.isReservedBySelf(level.dimension(), oldHome, b.getUUID()),
+                "the reconciliation pass must drop the record B's live memory contradicts, recording nobody in its place");
+        helper.assertTrue(level.getPoiManager().getFreeTickets(oldHome) == 0, "nothing may be released by that pass");
+
+        // Restart in which B's chunk never loads again.
+        TownStorage reloaded = TownStorage.load(storage.save(new CompoundTag(), level.registryAccess()), level.registryAccess());
+        b.discard();
+        BlockPos newBedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        placeValidBed(helper, newBedHead);
+        BlockPos absoluteNewBedHead = helper.absolutePos(newBedHead);
+        markTownOwned(helper, reloaded, absoluteNewBedHead);
+
+        TownResidentAllocationHandler.allocateHomeIfNeeded(level, a, townCenter, region, reloaded);
+
+        helper.assertTrue(a.getBrain().getMemory(MemoryModuleType.HOME).map(gp -> gp.pos().equals(absoluteNewBedHead)).orElse(false),
+                "test setup: A must actually move to the new bed, or the release path never ran");
+        helper.assertTrue(level.getPoiManager().getFreeTickets(oldHome) == 0,
+                "B's ticket must survive a restart in which B never reloaded");
+        helper.succeed();
+    }
+
+    /** A cell recorded exactly as {@code TownConstructionService} records an ordinary paid wall or
+     *  floor block - paid-for progress, but never a fixture. */
+    private static void markPaidNonFixtureCell(GameTestHelper helper, TownStorage storage, BlockPos absolutePos) {
+        storage.markCellPlaced(helper.getLevel().dimension(), absolutePos, "site:test-owner",
+                "RESIDENTIAL:0:none:minecraft:oak_planks:WOOD", Blocks.OAK_PLANKS.defaultBlockState());
+    }
+
+    /** [Review round 25, P2] A coordinate the town once paid for is not a town-built fixture: a
+     *  player who replaces a paid wall cell with their own bed must never get that bed treated as
+     *  town housing, while a town bed that is still exactly what the town placed stays eligible.
+     *  Both records go through a save/load round trip first, as they would across a restart. */
+    @GameTest(template = "settlement_test")
+    public static void aPlayerBedOnAHistoricallyPaidCellIsNeverReservableWhileAnUnchangedTownBedStillIs(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        ServerLevel level = helper.getLevel();
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        BlockPos townCenter = helper.absolutePos(ANCHOR);
+
+        BlockPos paidWallCell = ANCHOR.offset(OLD_HOME_OFFSET.getX(), OLD_HOME_OFFSET.getY(), OLD_HOME_OFFSET.getZ());
+        BlockPos absolutePaidWallCell = helper.absolutePos(paidWallCell);
+        markPaidNonFixtureCell(helper, storage, absolutePaidWallCell);
+        placeValidBed(helper, paidWallCell); // the player's bed, its head on the paid wall cell
+
+        BlockPos townBed = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        placeValidBed(helper, townBed);
+        BlockPos absoluteTownBed = helper.absolutePos(townBed);
+        markTownOwned(helper, storage, absoluteTownBed);
+
+        TownStorage reloaded = TownStorage.load(storage.save(new CompoundTag(), level.registryAccess()), level.registryAccess());
+
+        Villager first = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        TownResidentAllocationHandler.allocateHomeIfNeeded(level, first, townCenter, region, reloaded);
+        helper.assertTrue(first.getBrain().getMemory(MemoryModuleType.HOME).map(gp -> gp.pos().equals(absoluteTownBed)).orElse(false),
+                "an unchanged town-built bed must remain eligible");
+
+        Villager second = spawnVillager(helper, ANCHOR.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+        TownResidentAllocationHandler.allocateHomeIfNeeded(level, second, townCenter, region, reloaded);
+        helper.assertTrue(second.getBrain().getMemory(MemoryModuleType.HOME).isEmpty(),
+                "a player's bed on a historically paid wall cell must never be reserved as town housing");
+        helper.assertTrue(level.getPoiManager().getFreeTickets(absolutePaidWallCell) > 0,
+                "the player's bed must be left unreserved");
+        helper.succeed();
+    }
+
+    /** [Review round 25, P2] The workstation counterpart, through both allocation paths (an
+     *  unemployed villager, and one that already holds the matching profession): neither a player's
+     *  blast furnace on a paid floor cell nor one swapped in for the smoker the town actually placed
+     *  may be reserved, while the town's own unchanged blast furnace stays eligible. */
+    @GameTest(template = "settlement_test")
+    public static void aPlayerWorkstationOnAHistoricallyPaidCellIsNeverReservableWhileAnUnchangedTownOneStillIs(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        ServerLevel level = helper.getLevel();
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        BlockPos townCenter = helper.absolutePos(ANCHOR);
+
+        BlockPos paidFloorCell = ANCHOR.offset(OLD_WORKSTATION_OFFSET.getX(), OLD_WORKSTATION_OFFSET.getY(), OLD_WORKSTATION_OFFSET.getZ());
+        BlockPos absolutePaidFloorCell = helper.absolutePos(paidFloorCell);
+        markPaidNonFixtureCell(helper, storage, absolutePaidFloorCell);
+        placeWorkstation(helper, paidFloorCell, Blocks.BLAST_FURNACE);
+
+        BlockPos swappedFixtureCell = ANCHOR.offset(2, 1, -2);
+        BlockPos absoluteSwappedFixtureCell = helper.absolutePos(swappedFixtureCell);
+        storage.markCellPlaced(level.dimension(), absoluteSwappedFixtureCell, "site:test-owner",
+                "COMMERCIAL:0:minecraft:butcher:minecraft:smoker:STONE", Blocks.SMOKER.defaultBlockState());
+        placeWorkstation(helper, swappedFixtureCell, Blocks.BLAST_FURNACE);
+
+        BlockPos townWorkstation = ANCHOR.offset(WORKSTATION_OFFSET.getX(), WORKSTATION_OFFSET.getY(), WORKSTATION_OFFSET.getZ());
+        placeWorkstation(helper, townWorkstation, Blocks.BLAST_FURNACE);
+        BlockPos absoluteTownWorkstation = helper.absolutePos(townWorkstation);
+        markTownOwned(helper, storage, absoluteTownWorkstation);
+
+        TownStorage reloaded = TownStorage.load(storage.save(new CompoundTag(), level.registryAccess()), level.registryAccess());
+
+        Villager unemployed = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        unemployed.setVillagerData(unemployed.getVillagerData().setProfession(VillagerProfession.NONE));
+        TownResidentAllocationHandler.allocateWorkplaceIfNeeded(level, unemployed, townCenter, region, reloaded);
+        helper.assertTrue(unemployed.getBrain().getMemory(MemoryModuleType.JOB_SITE).map(gp -> gp.pos().equals(absoluteTownWorkstation)).orElse(false)
+                        && unemployed.getVillagerData().getProfession() == VillagerProfession.ARMORER,
+                "an unchanged town-built workstation must remain eligible");
+
+        Villager armorer = spawnVillager(helper, ANCHOR.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+        armorer.setVillagerData(armorer.getVillagerData().setProfession(VillagerProfession.ARMORER));
+        TownResidentAllocationHandler.allocateWorkplaceIfNeeded(level, armorer, townCenter, region, reloaded);
+        helper.assertTrue(armorer.getBrain().getMemory(MemoryModuleType.JOB_SITE).isEmpty(),
+                "neither a player workstation on a paid floor cell nor one swapped in for a different town fixture may be reserved");
+        Villager secondUnemployed = spawnVillager(helper, ANCHOR.offset(0, 1, 0));
+        secondUnemployed.setVillagerData(secondUnemployed.getVillagerData().setProfession(VillagerProfession.NONE));
+        TownResidentAllocationHandler.allocateWorkplaceIfNeeded(level, secondUnemployed, townCenter, region, reloaded);
+        helper.assertTrue(secondUnemployed.getVillagerData().getProfession() == VillagerProfession.NONE
+                        && secondUnemployed.getBrain().getMemory(MemoryModuleType.JOB_SITE).isEmpty(),
+                "the unemployed path must not reserve either player workstation either");
+        helper.assertTrue(level.getPoiManager().getFreeTickets(absolutePaidFloorCell) > 0
+                        && level.getPoiManager().getFreeTickets(absoluteSwappedFixtureCell) > 0,
+                "both player workstations must be left unreserved");
+        helper.succeed();
+    }
+
+    /** [Review round 25, P2] Migration: a placed-cell record saved before fixture identity was
+     *  recorded carries no proof of WHICH fixture (if any) the town placed there, so it is not
+     *  reservable by allocation - the fail-safe default. Residents already housed or employed at
+     *  such a fixture keep it (validation of an existing memory never consults provenance). */
+    @GameTest(template = "settlement_test")
+    public static void aPlacedCellSavedBeforeFixtureIdentityExistedIsNotReservable(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        ServerLevel level = helper.getLevel();
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        BlockPos bedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        placeValidBed(helper, bedHead);
+        BlockPos absoluteBedHead = helper.absolutePos(bedHead);
+        markTownOwned(helper, storage, absoluteBedHead);
+
+        CompoundTag saved = storage.save(new CompoundTag(), level.registryAccess());
+        net.minecraft.nbt.ListTag placedCells = saved.getList("PlacedCells", net.minecraft.nbt.Tag.TAG_COMPOUND);
+        helper.assertTrue(!placedCells.isEmpty(), "test setup: the bed's record must have been saved");
+        for (int i = 0; i < placedCells.size(); i++) {
+            placedCells.getCompound(i).remove("Fixture"); // the pre-change save format
+        }
+        TownStorage legacy = TownStorage.load(saved, level.registryAccess());
+
+        Villager villager = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        TownResidentAllocationHandler.allocateHomeIfNeeded(level, villager, helper.absolutePos(ANCHOR), region, legacy);
+
+        helper.assertTrue(villager.getBrain().getMemory(MemoryModuleType.HOME).isEmpty()
+                        && level.getPoiManager().getFreeTickets(absoluteBedHead) > 0,
+                "a legacy record without fixture identity must not make its cell reservable");
         helper.succeed();
     }
 }

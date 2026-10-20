@@ -931,8 +931,9 @@ final class SableCarBody {
                 spinSlipThisTick = Math.max(spinSlipThisTick, Math.abs(spinSlip));
                 // Audio observes the actual traction budget (including drift/alignment tuning),
                 // independently of terrain wear reporting. Never alter the applied tire forces.
-                double audioLateralScale = driftTuned && handbrake && !front
-                        ? lateralScale * CarConfig.driftTireTuning().handbrakeRearGripCut() : lateralScale;
+                double audioLateralScale = driftTuned
+                        ? lateralScale * (handbrake && !front ? CarConfig.driftTireTuning().handbrakeRearGripCut() : 1.0)
+                        : lateralScale * CamberToeGripModel.modifiers(tuning.camberDeg(), tuning.toeDeg()).lateralScale();
                 audioSlipThisTick = Math.max(audioSlipThisTick, TireAudioMath.slipSpeed(
                         force, tire.frictionLimit(), spinSlip, vLong, vLat, rollingCoefficient,
                         audioLateralScale, drive, brake, brakeGain, effectiveMass, dt));

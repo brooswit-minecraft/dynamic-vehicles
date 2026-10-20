@@ -144,47 +144,53 @@ public final class SuspensionTuningGameTests {
 
     /**
      * The headline production claim: a configured bump stop changes what {@link SableCarBody}'s own
-     * suspension call actually computes. A stiff stop engaging at 0.05 m carries load as soon as
-     * compression passes that point, so it must limit how far the springs can be driven on a real impact --
-     * the configured car's PEAK compression over a drop must come out materially below the matched stock
-     * control's. Read through {@code SableCompat.wheelTravel}, which is populated from {@code
-     * SableCarBody.tick}'s own {@code compressions[]}: the real per-tick value the force is computed from.
+     * suspension call actually computes. A stop carrying load must limit how far the springs settle under
+     * a real impact -- the configured car's LATE-WINDOW mean compression after a drop must come out
+     * materially below the matched stock control's. Read through {@code SableCompat.wheelTravel}, which is
+     * populated from {@code SableCarBody.tick}'s own {@code compressions[]}: the real per-tick value the
+     * force is computed from.
      *
-     * <p>Why a drop rather than a resting or rolling measurement -- both of which earlier revisions of this
-     * test tried and CI rejected: a car at rest sleeps and reports nothing ({@link #driving}), and a car
-     * under throttle pitches so only one axle stays loaded. A drop keeps the body awake and loads all four
-     * wheels together, and a peak over the whole window does not depend on which tick is sampled. See
-     * {@link #peakCompressionOverDrop}.
+     * <p>Three measurement techniques were tried for this one fixture, each corrected by CI evidence:
+     * <ol>
+     * <li>Drop + PEAK compression: failed once in six runs (stock=0.4065, configured=0.3151, a 0.775 ratio
+     * against a 0.7 requirement) with no change to its own code path. A drop's peak depends on impact
+     * timing -- exactly when first contact lands relative to a physics sub-step -- which is not
+     * deterministic the way a settled value is.
+     * <li>Driving (throttle) + MEAN compression: failed differently (configured mean -0.008, i.e. the
+     * configured car was OFF THE GROUND on average). Diagnosis: {@link #MAX_BUMP_STOP_RATE_FOR_THIS_TEST}
+     * at the schema's full 500,000 N/m, engaging only 0.05 m into travel, makes the EFFECTIVE stiffness
+     * near equilibrium (springRate + bumpStopRate = 519,620 N/m) nearly 27x the car's own spring rate,
+     * while the damping rate stays the one tuned for the SOFT spring alone -- the effective damping ratio
+     * collapses from ~0.70 (critically damped, by the stock springRate/dampingRate's own design) to ~0.14
+     * (sharply underdamped). Combined with throttle-induced pitch, the configured car oscillates around
+     * its ~0.0538 m analytical equilibrium with enough amplitude to swing below zero (off the ground)
+     * repeatedly -- averaging those negative/no-contact samples in with the real ones does not measure
+     * settled compression at all, it partly measures "how often is this car airborne", which can trivially
+     * look smaller than the control's for reasons that have nothing to do with the bump stop limiting
+     * anything (review comment 49284).
+     * </ol>
+     * This version removes BOTH problems at their source rather than filtering around them: a DROP (no
+     * throttle, so no pitch) using a MODERATE bump-stop rate ({@link #MAX_BUMP_STOP_RATE_FOR_THIS_TEST},
+     * a tenth of the schema's ceiling) chosen specifically so the effective damping ratio near equilibrium
+     * stays well-behaved (~0.37, still underdamped but nowhere near the 500,000 N/m case's ~0.14), sampled
+     * in a LATE window well after both the fall and the post-impact settling transient are over. Every
+     * sampled tick asserts EVERY wheel of BOTH cars is actually in contact (positive travel) before it
+     * contributes to the mean -- a car that is not stably supported fails loudly, with the tick and the
+     * offending reading named, rather than being silently averaged into a number that looks fine.
      */
     @GameTest(template = "settlement_test", timeoutTicks = 200, batch = "suspensionTuningBumpStopIsolated")
     public static void aConfiguredBumpStopLimitsPeakCompressionVersusTheStockControl(GameTestHelper helper) {
         pad(helper, 5);
         pad(helper, 15);
-        // MINECRAFT-445 review fix (PR184 #issuecomment-6282714154): the original version of this fixture
-        // dropped both cars and compared PEAK compression during the impact. CI failed it with stock=0.4065
-        // and configured=0.3151 -- a 0.775 ratio against the required 0.7 -- the first failure in five prior
-        // CI runs of the exact same test, with no code in its own path changed. A drop's peak depends on
-        // impact timing (exactly when first contact lands relative to a physics sub-step), which is not
-        // deterministic across runs the way a settled steady state is, and the chosen threshold (0.7) had
-        // no analytical basis to begin with -- it was deliberately loose BECAUSE a drop is noisy.
-        //
-        // This version measures the SETTLED MEAN compression while both cars drive gently in a straight
-        // line (driving(), the same technique the pitch-resist fixtures already use to keep the rigid body
-        // awake without a drop's impact variance) rather than a transient peak. The analytical prediction
-        // for the car at TRUE static equilibrium, solved from spring force plus bump-stop force balancing
-        // one quarter of its own weight: stock (spring only) settles at massKg*g/(wheels*springRate) =
-        // 1200*9.81/(4*19620) = 0.15 m; configured (spring plus the bump stop engaging at 0.05 m, rate
-        // 500,000 N/m) settles where 19620*c + 500000*(c-0.05) = 1200*9.81/4, giving c ~= 0.0538 m -- a
-        // ratio of ~0.36, comfortably under MAX_CONFIGURED_TO_STOCK_TRAVEL_RATIO (0.6) with real margin
-        // either side, unlike the old drop fixture's observed 0.775 against a 0.7 requirement.
-        CarEntity stock = driving(helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5)));
-        CarEntity configured = driving(spawnWithOverride(helper, LOAD_BEARING_BUMP_STOP, new BlockPos(5, 3, 15)));
+        CarEntity stock = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3 + DROP_BLOCKS, 5));
+        CarEntity configured = spawnWithOverride(helper, MODERATE_LOAD_BEARING_BUMP_STOP,
+                new BlockPos(5, 3 + DROP_BLOCKS, 15));
 
-        MeanCompression stockMean = meanCompressionOverWindow(helper, stock, SETTLE_TICKS, COMPRESSION_SAMPLE_TICKS);
-        MeanCompression configuredMean = meanCompressionOverWindow(helper, configured, SETTLE_TICKS, COMPRESSION_SAMPLE_TICKS);
+        SupportedMean stockMean = supportedMeanCompressionOverWindow(helper, stock, LATE_WINDOW_START, LATE_WINDOW_TICKS);
+        SupportedMean configuredMean = supportedMeanCompressionOverWindow(helper, configured, LATE_WINDOW_START, LATE_WINDOW_TICKS);
 
-        helper.runAfterDelay(SETTLE_TICKS + COMPRESSION_SAMPLE_TICKS, () -> {
-            helper.assertTrue(configured.spec().suspensionTuning().bumpStopRate() == VehicleSpecLimits.MAX_BUMP_STOP_RATE,
+        helper.runAfterDelay(LATE_WINDOW_START + LATE_WINDOW_TICKS, () -> {
+            helper.assertTrue(configured.spec().suspensionTuning().bumpStopRate() == MAX_BUMP_STOP_RATE_FOR_THIS_TEST,
                     "the configured car did not actually receive the tireKit override at construction: "
                             + configured.spec().suspensionTuning());
             helper.assertTrue(stock.spec().suspensionTuning()
@@ -192,9 +198,18 @@ public final class SuspensionTuningGameTests {
                     "the control car was not stock -- an override leaked into it: " + stock.spec().suspensionTuning());
             helper.assertTrue(stockMean.allFinite && configuredMean.allFinite,
                     "a wheel reported non-finite compression at some point during the sampling window");
+            // The explicit diagnosis review 49284 asked for: a car that was not STABLY SUPPORTED for the
+            // whole window fails here, by name, with the exact tick and reading -- not folded into an
+            // average that could look fine for the wrong reason.
+            helper.assertTrue(stockMean.unsupportedTick < 0,
+                    "the stock control lost contact on at least one wheel during the late sampling window, "
+                            + "so it was not stably supported: " + stockMean.unsupportedDetail);
+            helper.assertTrue(configuredMean.unsupportedTick < 0,
+                    "the configured car lost contact on at least one wheel during the late sampling window, "
+                            + "so it was not stably supported: " + configuredMean.unsupportedDetail);
             helper.assertTrue(stockMean.samples > 0 && configuredMean.samples > 0,
-                    "a car was never sampled during the settling window -- its Sable body did not exist on "
-                            + "any sampled tick: stock samples=" + stockMean.samples + " configured samples="
+                    "a car was never sampled during the late window -- its Sable body did not exist on any "
+                            + "sampled tick: stock samples=" + stockMean.samples + " configured samples="
                             + configuredMean.samples);
 
             double stockMeanTravel = stockMean.sum / stockMean.samples;
@@ -203,9 +218,6 @@ public final class SuspensionTuningGameTests {
                     "the stock control's settled compression never exceeded the configured car's own "
                             + "bump-stop threshold, so this comparison cannot distinguish them at all: mean="
                             + stockMeanTravel + " " + where(stock));
-            helper.assertTrue(configuredMeanTravel > 0.0,
-                    "the configured car never touched the ground during the settling window: mean="
-                            + configuredMeanTravel + " " + where(configured));
 
             helper.assertTrue(configuredMeanTravel < stockMeanTravel * MAX_CONFIGURED_TO_STOCK_TRAVEL_RATIO,
                     "a load-bearing configured bump stop did not limit settled compression in the production "
@@ -216,32 +228,58 @@ public final class SuspensionTuningGameTests {
         });
     }
 
-    /** Ticks of {@link #driving} before sampling starts, long enough for the transient from spawn to have
-     * died out so what is sampled is the settled state, not the drop/spin-up that preceded it. */
-    private static final long SETTLE_TICKS = 40L;
+    /** A moderate bump-stop rate, deliberately a TENTH of the schema's own ceiling
+     * ({@code VehicleSpecLimits.MAX_BUMP_STOP_RATE}), chosen specifically for this fixture's stability --
+     * see this fixture's own javadoc for the underdamped-oscillation failure the full ceiling produced.
+     * {@link #extremeConfiguredTireKitValuesKeepTheProductionTickFiniteAndStable} already exercises the
+     * actual schema ceiling deliberately, with its own documented edge-of-contact caveat; this fixture's
+     * job is only to prove a load-bearing stop reaches production, which a moderate rate does just as
+     * conclusively while staying well-behaved enough to measure reliably. */
+    private static final double MAX_BUMP_STOP_RATE_FOR_THIS_TEST = VehicleSpecLimits.MAX_BUMP_STOP_RATE / 10.0;
 
-    /** Ticks over which the settled mean compression is averaged; comfortably inside {@link #DRIVE_TICKS}
-     * so the car is still under throttle (awake) for every sampled tick. */
-    private static final long COMPRESSION_SAMPLE_TICKS = 40L;
+    /** A load-bearing bump stop at the moderate rate above, used only by this fixture. */
+    private static final String MODERATE_LOAD_BEARING_BUMP_STOP = """
+            {"tireKit": {"bumpStopTravel": %s, "bumpStopRate": %s}}
+            """.formatted(LOAD_BEARING_BUMP_STOP_TRAVEL, MAX_BUMP_STOP_RATE_FOR_THIS_TEST);
+
+    /** Tick the late sampling window starts at: past both the fall ({@code DROP_BLOCKS} takes roughly 16
+     * ticks to land) and the post-impact settling transient (a handful of oscillation periods at this
+     * fixture's own moderate effective stiffness/damping -- see its javadoc). */
+    private static final long LATE_WINDOW_START = 34L;
+
+    /** Ticks the late window samples for. {@code LATE_WINDOW_START + LATE_WINDOW_TICKS} (34 + 16 = 50)
+     * deliberately matches {@link #SAMPLE_WINDOW_TICKS}, so this stays inside the same drop window every
+     * other drop-based fixture in this class already uses -- not expressed as that constant minus the
+     * start tick because {@code SAMPLE_WINDOW_TICKS} is declared later in this file and a static final
+     * field cannot forward-reference one that is not yet initialised. */
+    private static final long LATE_WINDOW_TICKS = 16L;
 
     /** Samples every wheel's compression on each tick of the window and keeps the running MEAN across all
-     * four wheels and all sampled ticks -- the settled-state counterpart to {@link #peakCompressionOverDrop}'s
-     * transient peak, chosen for {@link #aConfiguredBumpStopLimitsPeakCompressionVersusTheStockControl}
-     * specifically because a settled mean has far less run-to-run variance than a drop's impact peak. */
-    private static MeanCompression meanCompressionOverWindow(GameTestHelper helper, CarEntity car,
+     * four wheels and all sampled ticks, but -- unlike a plain mean -- records the FIRST tick (and wheel
+     * reading) where any wheel was not in contact, so a car that was not stably supported for the whole
+     * window is diagnosable by name rather than silently folded into an average. */
+    private static SupportedMean supportedMeanCompressionOverWindow(GameTestHelper helper, CarEntity car,
             long fromTick, long windowTicks) {
-        MeanCompression mean = new MeanCompression();
+        SupportedMean mean = new SupportedMean();
         for (long tick = fromTick + 1; tick <= fromTick + windowTicks; tick++) {
-            helper.runAtTickTime(tick, () -> {
+            long sampleTick = tick;
+            helper.runAtTickTime(sampleTick, () -> {
                 if (car.sableBody() == null) {
                     return;
                 }
-                for (double travel : SableCompat.wheelTravel(car.sableBody())) {
-                    if (!Double.isFinite(travel)) {
+                double[] travel = SableCompat.wheelTravel(car.sableBody());
+                for (int wheel = 0; wheel < travel.length; wheel++) {
+                    double t = travel[wheel];
+                    if (!Double.isFinite(t)) {
                         mean.allFinite = false;
                         continue;
                     }
-                    mean.sum += travel;
+                    if (t <= 0.0 && mean.unsupportedTick < 0) {
+                        mean.unsupportedTick = sampleTick;
+                        mean.unsupportedDetail = "tick=" + sampleTick + " wheel=" + wheel + " travel=" + t
+                                + " " + where(car);
+                    }
+                    mean.sum += t;
                     mean.samples++;
                 }
             });
@@ -249,11 +287,15 @@ public final class SuspensionTuningGameTests {
         return mean;
     }
 
-    /** Mutable accumulator for {@link #meanCompressionOverWindow}. */
-    private static final class MeanCompression {
+    /** Mutable accumulator for {@link #supportedMeanCompressionOverWindow}. */
+    private static final class SupportedMean {
         double sum = 0.0;
         int samples = 0;
         boolean allFinite = true;
+        /** The first sampled tick any wheel was not in contact, or -1 if every sampled wheel on every
+         * sampled tick was. */
+        long unsupportedTick = -1;
+        String unsupportedDetail = "";
     }
 
     /**

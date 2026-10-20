@@ -706,7 +706,16 @@ final class SableCarBody {
                 // fractions are 0.0 for every roster car; at 0.0 the blend returns tireY unchanged and the
                 // split below still sums to exactly horizontalLocal applied at exactly tireY, so this
                 // stays bit-for-bit the single pre-split call for them.
-                boolean opposingMotion = tire.longitudinal() * forwardSpeed < 0;
+                // MINECRAFT-445 review fix (comment 49278, P2): the selector must read the TOTAL
+                // longitudinal force actually applied to the chassis this sub-step, not tire.longitudinal()
+                // alone. reactionImpulse (0.0 whenever no recovery happened this sub-step) is the
+                // wheel-spin recovery reaction, also applied along `forward` -- during reachable coasting
+                // overspin, tire.longitudinal() can be small or even the wrong sign while the recovery
+                // reaction dominates the real net force, which would have picked anti-dive/anti-squat by
+                // the wrong signal. Both terms are exactly what the longitudinal/lateral split below also
+                // uses, so the selector and the split now agree on what "longitudinal force" means.
+                double totalLongitudinal = tire.longitudinal() + reactionImpulse;
+                boolean opposingMotion = totalLongitudinal * forwardSpeed < 0;
                 double antiFraction = opposingMotion
                         ? spec.pitchTuning().antiDive()
                         : spec.pitchTuning().antiSquat();

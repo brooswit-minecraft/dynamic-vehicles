@@ -29,6 +29,9 @@ public final class WheelMath {
     /** Rotational inertia of one wheel+tire about its axle, kg*m^2: a plain number for a ~0.35 m wheel, shared by every vehicle (not a per-spec tuning knob; MINECRAFT-75 owns tuning). */
     public static final double WHEEL_INERTIA = 1.2;
 
+    /** m/s^2, matching {@code SableCarBody}'s own private constant of the same value. */
+    public static final double GRAVITY = 9.81;
+
     private WheelMath() {}
 
     /**
@@ -53,8 +56,16 @@ public final class WheelMath {
      *        the honest basis for {@link #spinRate}'s own torque balance (not a value a caller should
      *        try to approximate itself: it already folds in rolling resistance and the brake's own
      *        relaxation clamp, both of which a drive/brake-force-only approximation misses).
+     * @param frictionLimit {@code mu * normalForce} as THIS call actually used it (0 when not gripping at
+     *        all) -- the same circle {@code longitudinal}/{@code lateral} were clamped to, exposed so a
+     *        caller computing the circle's remaining HEADROOM this step ({@code frictionLimit -
+     *        hypot(longitudinal, lateral)}, see {@code SableCarBody}'s own wheel-spin-recovery call site)
+     *        does not have to recompute {@code mu * normalForce} itself: {@link DriftTireModel} tunes
+     *        {@code mu} before calling {@link #tire}, so recomputing it at a caller would silently use
+     *        the wrong (untuned) circle for a drift-tuned vehicle.
      */
-    public record Tire(double longitudinal, double lateral, double slipSpeed, double commandLongitudinal) {}
+    public record Tire(double longitudinal, double lateral, double slipSpeed, double commandLongitudinal,
+            double frictionLimit) {}
 
     /**
      * A friction-circle tire: it wants to cancel sideways sliding and to deliver the drive or brake force,
@@ -90,7 +101,7 @@ public final class WheelMath {
     public static Tire tire(double vLong, double vLat, double normalForce, double mu, double rollingCoefficient,
             double lateralScale, double driveForce, double brakeForce, double brakeGain, double effectiveMass, double dt) {
         if (!(normalForce > 0) || !(mu > 0)) {
-            return new Tire(0.0, 0.0, 0.0, 0.0);
+            return new Tire(0.0, 0.0, 0.0, 0.0, 0.0);
         }
         double limit = mu * normalForce;
         double wantLat = -effectiveMass * vLat / dt * RELAXATION * lateralScale;
@@ -99,13 +110,26 @@ public final class WheelMath {
             double stop = effectiveMass * vLong / dt * RELAXATION * brakeGain;
             wantLong = -Math.max(-brakeForce, Math.min(brakeForce, stop));
         } else {
-            double rolling = Math.abs(vLong) > 0.05 ? -Math.signum(vLong) * rollingCoefficient * normalForce : 0.0;
+            // MINECRAFT-450: capped at the force that would bring vLong to exactly 0 this step
+            // (effectiveMass * |vLong| / dt), not just rollingCoefficient * normalForce outright - a
+            // fixed-magnitude rolling force applied for a full dt/subDt can otherwise remove MORE momentum
+            // than the wheel actually has once vLong is small but still above the 0.05 dead zone (e.g. a
+            // high-rollingCoefficient surface with wheelSubSteps=1, the longest subDt the live config
+            // allows), overshooting past zero into the opposite sign - exactly the "near-rest sign flip"
+            // the dead zone above exists to prevent, just one step later than the dead zone alone catches.
+            // Proven by a failing test before this fix (WheelMathTest.coastingToRestNeverFlipsSignNearZeroSpeed):
+            // repeatedly stepping WheelMath.tire's own output at vLong just above 0.05 made it oscillate
+            // across zero indefinitely instead of settling. Far from zero this cap is a no-op - every
+            // existing coast-down test's rollingCoefficient * normalForce is already far smaller than
+            // effectiveMass * |vLong| / dt there, so this changes no other behaviour.
+            double rollingMagnitude = Math.min(rollingCoefficient * normalForce, effectiveMass * Math.abs(vLong) / dt);
+            double rolling = Math.abs(vLong) > 0.05 ? -Math.signum(vLong) * rollingMagnitude : 0.0;
             wantLong = driveForce + rolling;
         }
         double demand = Math.hypot(wantLong, wantLat);
         double scale = demand > limit ? limit / demand : 1.0;
         double slip = demand > limit ? (demand - limit) * dt / effectiveMass : 0.0;
-        return new Tire(wantLong * scale, wantLat * scale, slip, wantLong);
+        return new Tire(wantLong * scale, wantLat * scale, slip, wantLong, limit);
     }
 
     /** As above, applying the vehicle's static camber/toe setup before the existing friction-circle math.
@@ -126,10 +150,92 @@ public final class WheelMath {
      *
      * @param rollingResistance the surface's {@code SurfaceProperties.rollingResistance()}, 0..1
      * @param deformability the surface's {@code SurfaceProperties.deformability()}, 0..1
-     * @param rollingScale per-vehicle scale for soft-ground rolling resistance ({@code VehicleSpec.rollingScale})
+     * @param rollingScale per-vehicle scale for soft-ground rolling resistance ({@code VehicleSpec.rollingScale()},
+     *        dimensionless, see that field's own javadoc for its range/default/fallback - no clamp is applied here,
+     *        so a caller passing an out-of-range value gets a proportionally out-of-range coefficient back)
+     * @return the dimensionless rolling resistance coefficient {@link #tire} multiplies by the wheel's own
+     *         normal force to get the rolling drag force, N
      */
     public static double rollingCoefficient(double rollingResistance, double deformability, double rollingScale) {
         return rollingResistance * rollingScale * (1.0 + deformability * DEFORMABILITY_ROLLING_GAIN);
+    }
+
+    /**
+     * MINECRAFT-443: the production seam a per-car {@code rideHeight} config override actually reaches,
+     * extracted out of {@code SableCarBody.tick}'s raycast loop (which calls this exact method, not a
+     * reimplementation of it) so the restLength-to-compression step is itself directly testable without
+     * Sable/Minecraft bootstrap, the same way {@link #suspensionForce} already is.
+     *
+     * @param restLength metres from a wheel mount to the ground at which the spring is unloaded
+     *        ({@code VehicleSpec#restLength}, derived by {@code VehicleSpecOverrides} from any
+     *        {@code rideHeight} override via {@link #restLengthForRideHeight})
+     * @param distance metres from the wheel mount to the raycast hit (the ground)
+     * @return metres the spring is shorter than {@code restLength} (negative: not touching)
+     */
+    public static double compression(double restLength, double distance) {
+        return restLength - distance;
+    }
+
+    /**
+     * MINECRAFT-443 review fix (comment 48903): the {@code restLength} a {@code rideHeight} config
+     * override must produce so the car's ACTUAL static resting height (where spring force balances its
+     * own static per-wheel load, {@link #suspensionForce}'s {@code compression * springRate} at zero
+     * compression rate) equals the REQUESTED {@code rideHeight} -- not a value merely proportional to the
+     * stock {@code restLength}, which {@link #compression}'s own geometry (restLength, mount height and
+     * static sag are not related by a common ratio) does not preserve.
+     *
+     * <p>This is NOT claimed to reproduce every existing car's own stock {@code restLength} when called
+     * with that car's own stock {@code rideHeight} (review fix 48913's correction of an earlier, wrong
+     * claim here): only CAR, TRUCK, TROPHY and MUSCLE's stock numbers happen to already satisfy this
+     * equilibrium exactly (see {@code WheelMathTest}); DRIFT, ROCK_CRAWLER, MONSTER_TRUCK, INDY, BUS and
+     * CARGO_TRUCK's stock pairings do not (hand-tuned/rounded, not derived). That is expected and fine --
+     * this method is only ever called with a NEWLY REQUESTED {@code rideHeight} from an actual override,
+     * never with a car's own unmodified stock value (see the {@code rideHeight == stock.rideHeight()}
+     * guard in {@code VehicleSpecOverrides#applyOverride}), so no existing car's stock pairing needs to
+     * satisfy this formula for the override case to be correct.
+     *
+     * <p>Derivation: at rest, {@code distance = rideHeight + mountY} (mountY is negative: the mount sits
+     * below the body centre {@code VehicleSpec#mounts()} describes), and {@code compression = restLength
+     * - distance} must equal the static compression that makes {@code springRate * compression} carry
+     * this wheel's even share of the car's weight: {@code massKg * GRAVITY / wheelCount / springRate}.
+     * Solving for {@code restLength} gives this method's return value.
+     *
+     * @param rideHeight the REQUESTED resting height, metres (the config override's own value)
+     * @param mountY this car's wheel mount height in the body frame, metres (negative; {@code
+     *        VehicleSpec#mounts()[wheel][1]}, uniform across every existing car's own four wheels)
+     * @param massKg {@code VehicleSpec#massKg} (not file-overridable, so always the stock value)
+     * @param springRate {@code VehicleSpec#springRate} (likewise always stock)
+     * @param wheelCount {@code VehicleSpec#mounts().length}
+     */
+    public static double restLengthForRideHeight(double rideHeight, double mountY, double massKg,
+            double springRate, int wheelCount) {
+        double staticCompression = massKg * GRAVITY / wheelCount / springRate;
+        return rideHeight + mountY + staticCompression;
+    }
+
+    /**
+     * MINECRAFT-443 review fix (comment 48913): {@link VehicleSpecLimits}' own {@code rideHeight} range
+     * (0.1 - 5.0 m) is car-agnostic, but a {@code rideHeight} this low is not usable for every car: {@link
+     * #restLengthForRideHeight} can return a negative or near-zero {@code restLength} once {@code
+     * rideHeight} is smaller than this car's own mount depth, and {@code SableCarBody.tick}'s raycast
+     * (length {@code restLength + 0.25}) can even reverse direction once that goes negative enough. A
+     * {@code rideHeight} at or below this car's own {@code halfY} also sinks the chassis itself into the
+     * ground, independent of suspension entirely.
+     *
+     * <p>The exact, sufficient condition for a physically sane result: the wheel mount must end up above
+     * ground at rest ({@code rideHeight + mountY > 0}, i.e. {@code rideHeight > -mountY}), which alone
+     * guarantees {@code restLengthForRideHeight} returns a value strictly greater than the (always
+     * positive) static compression; and the chassis bottom must clear the ground ({@code rideHeight >
+     * halfY}). Both are per-car geometry constants (never file-overridable), so this check is itself
+     * independent of anything a config file could possibly request.
+     *
+     * @param rideHeight the REQUESTED resting height, metres
+     * @param halfY {@code VehicleSpec#halfY} -- half the body's own height
+     * @param mountY {@code VehicleSpec#mounts()[wheel][1]} (negative)
+     * @return whether {@code rideHeight} is usable for a car with this geometry
+     */
+    public static boolean isUsableRideHeight(double rideHeight, double halfY, double mountY) {
+        return rideHeight > halfY && rideHeight > -mountY;
     }
 
     /**
@@ -148,6 +254,23 @@ public final class WheelMath {
         }
         double force = springRate * compression + dampingRate * compressionRate;
         return Math.max(0.0, Math.min(maxForce, force));
+    }
+
+    /**
+     * MINECRAFT-443: the production seam a per-car {@code handbrakeScale} config override actually
+     * reaches, extracted out of {@code SableCarBody.tick}'s handbrake branch (which calls this exact
+     * method, not a reimplementation of it) so the multiplication is itself directly testable without
+     * Sable/Minecraft bootstrap.
+     *
+     * @param handbrakeForce the shared base handbrake force constant, N ({@code
+     *        SableCarBody#HANDBRAKE_FORCE})
+     * @param forceScale this vehicle's overall drive/brake force scale ({@code VehicleSpec#forceScale})
+     * @param handbrakeScale this vehicle's own handbrake strength multiplier ({@code
+     *        VehicleSpec#handbrakeScale}, {@code 1.0} = identity)
+     * @return the actual rear-wheel brake force applied while the handbrake is held, N
+     */
+    public static double handbrakeForce(double handbrakeForce, double forceScale, double handbrakeScale) {
+        return handbrakeForce * forceScale * handbrakeScale;
     }
 
     /**

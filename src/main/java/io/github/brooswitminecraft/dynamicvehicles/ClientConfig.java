@@ -12,6 +12,7 @@ public final class ClientConfig {
     public static final ModConfigSpec.BooleanValue HEADLIGHTS;
     public static final ModConfigSpec.DoubleValue HEADLIGHT_BEAM;
     public static final ModConfigSpec.BooleanValue SHOW_LEGACY_CONTRACT_HUD;
+    public static final ModConfigSpec.BooleanValue SHOW_LEGACY_PATHFINDER_HUD;
     public static final ModConfigSpec.BooleanValue WHEEL_ENABLED;
     public static final ModConfigSpec.IntValue WHEEL_DEVICE;
     public static final ModConfigSpec.ConfigValue<String> WHEEL_NAME_CONTAINS;
@@ -61,6 +62,11 @@ public final class ClientConfig {
         SHOW_LEGACY_CONTRACT_HUD = builder
                 .comment("Show the legacy contract HUD overlay alongside the waypoint marker. Disabled by default because the waypoint marker is the primary contract destination display.")
                 .define("showLegacyContractHud", false);
+        builder.pop();
+        builder.push("pathfinder");
+        SHOW_LEGACY_PATHFINDER_HUD = builder
+                .comment("Show the legacy fixed-corner Pathfinder HUD alongside the shared mission waypoint marker. Disabled by default because the waypoint marker (shared with the Dispatcher contract waypoint) is the primary Pathfinder checkpoint display (MINECRAFT-411).")
+                .define("showLegacyPathfinderHud", false);
         builder.pop();
         builder.push("wheel");
         WHEEL_ENABLED = builder

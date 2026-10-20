@@ -67,9 +67,25 @@ public class CarEntity extends Entity {
             net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
     private static final net.minecraft.network.syncher.EntityDataAccessor<Float> DATA_SLIP =
             net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
+    /** MINECRAFT-401: engine RPM fraction 0..1 between {@link DrivetrainMath#IDLE_RPM} and
+     * {@link DrivetrainMath#LIMITER_RPM}, so the client's drivetrain-derived engine sound hears actual
+     * manual/automatic shifts instead of only road speed. */
+    private static final net.minecraft.network.syncher.EntityDataAccessor<Float> DATA_RPM =
+            net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
     /** Per-wheel suspension travel, steer angle and spin rate (MINECRAFT-122), packed by {@link WheelSync}. */
     private static final net.minecraft.network.syncher.EntityDataAccessor<CompoundTag> DATA_WHEELS =
             net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.COMPOUND_TAG);
+    /** MINECRAFT-443 review fix (comment 48876): this car's AUTHORITATIVE (server-resolved, override-
+     * aware) ride height, synced so {@link CarRenderer} draws wheels/body at the height the server's
+     * physics actually used -- never the client's own {@link #spec}, which {@link
+     * VehicleSpecOverrides#resolveForSide} always keeps at the plain stock value (a logical client never
+     * reads the per-car config override table at all, by design: see that method's own javadoc for why).
+     * Without this, a rideHeight override made a car's wheels visually float or sink by exactly the
+     * override's delta, since the renderer would draw the stock wheel offset under a body the server
+     * actually suspended at a different height. Static for this car's whole lifetime (set once, here,
+     * never updated per-tick), unlike every other {@code DATA_*} field in this class. */
+    private static final net.minecraft.network.syncher.EntityDataAccessor<Float> DATA_RIDE_HEIGHT =
+            net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
     // Client side: the last two received per-wheel frames, for renderOrientation-style interpolation.
     // Zero-length default (no wheels known yet) rather than a guessed wheel count, so an empty tag
     // decodes to a frame the renderer can tell apart from "not synced yet" if it ever needs to.
@@ -112,6 +128,15 @@ public class CarEntity extends Entity {
     private int forcedDriveTicks;
 
     private final VehicleSpec spec;
+    /** MINECRAFT-443: this car's registry id (see {@link VehicleIds}), kept alongside {@link #spec}
+     * precisely because {@code spec} is no longer always {@code ==} one of {@link VehicleSpec}'s stock
+     * constants once a per-car config override exists for it. {@link CarRenderer} and this class's own
+     * model/collision-privilege branches ({@code hitBlockAhead}) must key off this id, never off spec
+     * identity &mdash; keying off identity meant an override file for the truck (even an empty one) made
+     * {@code spec == VehicleSpec.TRUCK} silently false, which both picked the generic renderer fallback
+     * model and (more seriously) granted the truck's deliberately-narrow vegetation-only collision
+     * privilege to every other block type instead. */
+    private final String vehicleId;
     /** Per-entity tuning, initialized from the immutable vehicle type then retained in this entity's NBT. */
     private VehicleSpec.VehicleTuning vehicleTuning;
     /** Which seat each current passenger sits in (MINECRAFT-172); seat 0 is always the driver. */
@@ -129,17 +154,54 @@ public class CarEntity extends Entity {
 
     public CarEntity(EntityType<? extends CarEntity> type, Level level) {
         super(type, level);
-        this.spec = DynamicVehiclesMod.TRUCK.isBound() && type == DynamicVehiclesMod.TRUCK.get() ? VehicleSpec.TRUCK
-                : DynamicVehiclesMod.TROPHY.isBound() && type == DynamicVehiclesMod.TROPHY.get() ? VehicleSpec.TROPHY
-                : DynamicVehiclesMod.DRIFT.isBound() && type == DynamicVehiclesMod.DRIFT.get() ? VehicleSpec.DRIFT
-                : DynamicVehiclesMod.MUSCLE.isBound() && type == DynamicVehiclesMod.MUSCLE.get() ? VehicleSpec.MUSCLE
-                : DynamicVehiclesMod.ROCK_CRAWLER.isBound() && type == DynamicVehiclesMod.ROCK_CRAWLER.get() ? VehicleSpec.ROCK_CRAWLER
-                : DynamicVehiclesMod.MONSTER_TRUCK.isBound() && type == DynamicVehiclesMod.MONSTER_TRUCK.get() ? VehicleSpec.MONSTER_TRUCK
-                : DynamicVehiclesMod.INDY.isBound() && type == DynamicVehiclesMod.INDY.get() ? VehicleSpec.INDY
-                : DynamicVehiclesMod.BUS.isBound() && type == DynamicVehiclesMod.BUS.get() ? VehicleSpec.BUS
-                : DynamicVehiclesMod.CARGO_TRUCK.isBound() && type == DynamicVehiclesMod.CARGO_TRUCK.get() ? VehicleSpec.CARGO_TRUCK : VehicleSpec.CAR;
+        this.vehicleId = vehicleIdFor(type);
+        // MINECRAFT-443: the side-aware decision itself lives in VehicleSpecOverrides.resolveForSide
+        // (a pure function, not here), specifically so it is unit-testable without this class's own
+        // net.minecraft.world.entity.Entity superclass needing to load -- see that method's own javadoc.
+        this.spec = VehicleSpecOverrides.resolveForSide(level.isClientSide(), this.vehicleId, stockSpecFor(this.vehicleId));
         this.vehicleTuning = spec.vehicleTuning();
         this.seats = new SeatAssignment<>(spec.seatCount());
+        // MINECRAFT-443: each side's own local best guess at construction time (the server's is
+        // authoritative; a logical client's is only its own stock spec, same as #spec always is) -- the
+        // server's own value then overwrites the client's guess via the ordinary entity-data sync that
+        // follows, which is what CarRenderer actually ends up drawing from (see DATA_RIDE_HEIGHT's own
+        // javadoc for why #spec itself is never safe for a client to draw suspension height from).
+        entityData.set(DATA_RIDE_HEIGHT, (float) spec.rideHeight());
+    }
+
+    private static String vehicleIdFor(EntityType<? extends CarEntity> type) {
+        return DynamicVehiclesMod.TRUCK.isBound() && type == DynamicVehiclesMod.TRUCK.get() ? VehicleIds.TRUCK
+                : DynamicVehiclesMod.TROPHY.isBound() && type == DynamicVehiclesMod.TROPHY.get() ? VehicleIds.TROPHY_TRUCK
+                : DynamicVehiclesMod.DRIFT.isBound() && type == DynamicVehiclesMod.DRIFT.get() ? VehicleIds.DRIFT_CAR
+                : DynamicVehiclesMod.MUSCLE.isBound() && type == DynamicVehiclesMod.MUSCLE.get() ? VehicleIds.MUSCLE_CAR
+                : DynamicVehiclesMod.ROCK_CRAWLER.isBound() && type == DynamicVehiclesMod.ROCK_CRAWLER.get() ? VehicleIds.ROCK_CRAWLER
+                : DynamicVehiclesMod.MONSTER_TRUCK.isBound() && type == DynamicVehiclesMod.MONSTER_TRUCK.get() ? VehicleIds.MONSTER_TRUCK
+                : DynamicVehiclesMod.INDY.isBound() && type == DynamicVehiclesMod.INDY.get() ? VehicleIds.INDY_CAR
+                : DynamicVehiclesMod.BUS.isBound() && type == DynamicVehiclesMod.BUS.get() ? VehicleIds.BUS
+                : DynamicVehiclesMod.CARGO_TRUCK.isBound() && type == DynamicVehiclesMod.CARGO_TRUCK.get() ? VehicleIds.CARGO_TRUCK
+                : VehicleIds.CAR;
+    }
+
+    private static VehicleSpec stockSpecFor(String vehicleId) {
+        return switch (vehicleId) {
+            case VehicleIds.TRUCK -> VehicleSpec.TRUCK;
+            case VehicleIds.TROPHY_TRUCK -> VehicleSpec.TROPHY;
+            case VehicleIds.DRIFT_CAR -> VehicleSpec.DRIFT;
+            case VehicleIds.MUSCLE_CAR -> VehicleSpec.MUSCLE;
+            case VehicleIds.ROCK_CRAWLER -> VehicleSpec.ROCK_CRAWLER;
+            case VehicleIds.MONSTER_TRUCK -> VehicleSpec.MONSTER_TRUCK;
+            case VehicleIds.INDY_CAR -> VehicleSpec.INDY;
+            case VehicleIds.BUS -> VehicleSpec.BUS;
+            case VehicleIds.CARGO_TRUCK -> VehicleSpec.CARGO_TRUCK;
+            default -> VehicleSpec.CAR;
+        };
+    }
+
+    /** This car's registry id (see {@link VehicleIds}) -- the stable key {@link CarRenderer} and this
+     * class's own model/collision branches must dispatch on instead of {@link #spec}'s identity, which a
+     * per-car config override can legitimately change without changing which car this is. */
+    String vehicleId() {
+        return vehicleId;
     }
 
     /** This vehicle's shape and drivetrain: the car's or the truck's. */
@@ -150,6 +212,17 @@ public class CarEntity extends Entity {
     /** The current, per-instance tuning used by the server-side wheel physics. */
     VehicleSpec.VehicleTuning vehicleTuning() {
         return vehicleTuning;
+    }
+
+    /**
+     * The Sable rigid body handle, as the opaque {@code Object} {@link SableCompat} already takes --
+     * package-private so a same-package production-path {@code @GameTest} (MINECRAFT-450, review on
+     * PR #181) can read real per-wheel telemetry (speed/slip/wheelSpinRates/wheelTravel) straight off the
+     * body {@code SableCarBody.tick} itself just wrote, without duplicating any of that composition. Null
+     * until the first server tick creates it (see {@code tickSable}).
+     */
+    Object sableBody() {
+        return sableBody;
     }
 
     /**
@@ -187,7 +260,9 @@ public class CarEntity extends Entity {
         builder.define(DATA_LIGHTS, (byte) 0);
         builder.define(DATA_RADIO_URL, "");
         builder.define(DATA_SLIP, 0.0f);
+        builder.define(DATA_RPM, 0.0f);
         builder.define(DATA_WHEELS, new CompoundTag());
+        builder.define(DATA_RIDE_HEIGHT, 0.0f);
     }
 
     @Override
@@ -278,6 +353,113 @@ public class CarEntity extends Entity {
         return entityData.get(DATA_SLIP);
     }
 
+    /** Server test support only (MINECRAFT-401 production-path regressions): the gear ratio and automatic
+     * gear index the drivetrain actually engaged on the last real tick, or 0.0/-1 before the physics body
+     * exists. Package-private -- not part of the client-facing API. */
+    double debugGearRatio() {
+        return sableBody == null ? 0.0 : SableCompat.gearRatio(sableBody);
+    }
+
+    int debugAutomaticGearIndex() {
+        return sableBody == null ? -1 : SableCompat.automaticGearIndex(sableBody);
+    }
+
+    /** Server-authoritative speed, m/s -- unlike {@link #clientSpeed()}, which is only ever updated
+     * inside this entity's client-side tick branch and so always reads 0 from a server-side test. */
+    double debugSpeed() {
+        return sableBody == null ? 0.0 : SableCompat.speed(sableBody);
+    }
+
+    /** Server-authoritative RAW tire slip speed, m/s -- the exact value {@link SlipReporter}/erosion gate
+     * on (&gt; 0.3). Unlike this, {@link #clientSlip()} is the NORMALIZED 0..1 audio signal
+     * ({@link CarSoundMath#slipLevel}, {@code slipSpeed / 4.0} clamped) plus a handbrake/reverse-at-speed
+     * bonus for the skid sound alone -- comparing it against the erosion threshold is a unit mismatch
+     * (MINECRAFT-401 review, round 2). */
+    double debugSlipSpeed() {
+        return sableBody == null ? 0.0 : SableCompat.slip(sableBody);
+    }
+
+    /** Server test support only (MINECRAFT-401 review, round 4): the REAL (slipSpeed, loadKg, Result) the
+     * production tick last actually passed to and got back from {@code SlipReporter.report} -- observing
+     * the real production call, not a value a test recomputes itself from a peak reading and an assumed
+     * load. */
+    double debugLastErosionReportSlipSpeed() {
+        return sableBody == null ? 0.0 : SableCompat.lastErosionReportSlipSpeed(sableBody);
+    }
+
+    double debugLastErosionReportLoadKg() {
+        return sableBody == null ? 0.0 : SableCompat.lastErosionReportLoadKg(sableBody);
+    }
+
+    /** Server test support only (MINECRAFT-401 review, round 5): the engine RPM {@link DrivetrainMath}
+     * actually computed this tick, bypassing {@code DATA_RPM}'s own 0.02 network-sync gate in
+     * {@link #publishSoundState} -- that gate is a bandwidth optimisation for client-facing audio, and
+     * deliberately lets small per-tick drift accumulate before sending a single larger update, so reading
+     * through it (as {@link #clientEngineRpmFraction()} does) cannot distinguish a real on/off reset from
+     * an ordinary gradual change that the gate simply hadn't flushed yet. A caller checking gradualness of
+     * the underlying physics must read this instead. */
+    double debugEngineRpm() {
+        return sableBody == null ? DrivetrainMath.IDLE_RPM : SableCompat.engineRpm(sableBody);
+    }
+
+    /** Diagnostic only (MINECRAFT-401 review, round 5 ledge-test investigation): whether any wheel had
+     * a positive suspension force as of the end of the last tick -- distinguishes "genuinely airborne"
+     * from "still grounded" when a fall isn't showing up as expected in velocity. */
+    boolean debugTouching() {
+        return sableBody != null && SableCompat.touching(sableBody);
+    }
+
+    /** Server test support only (MINECRAFT-401 review, round 5): each wheel's own real contact-patch
+     * speed (m/s) and applied longitudinal force (N) as of the last tick it was grounded. */
+    double[] debugWheelContactSpeeds() {
+        return sableBody == null ? new double[0] : SableCompat.wheelContactSpeeds(sableBody);
+    }
+
+    /** Server test support only (MINECRAFT-401 review, round 5, second pass): each wheel's own spin rate
+     * (rad/s) read straight from SableCarBody, bypassing {@link #wheelSpin(int, float)}'s client-sync
+     * interpolation buffer -- that buffer is published once per tick but read back through its own
+     * previous/current double-buffer, which (like {@code DATA_RPM}'s own gate) cannot be assumed to reflect
+     * THIS tick's value the instant after it was set; a caller checking this tick's own physics state
+     * against this tick's own engine RPM must read both the same way, not mix a direct read with a
+     * sync-buffered one. */
+    double[] debugWheelSpins() {
+        return sableBody == null ? new double[0] : SableCompat.wheelSpinRates(sableBody);
+    }
+
+    double[] debugWheelForces() {
+        return sableBody == null ? new double[0] : SableCompat.wheelForces(sableBody);
+    }
+
+    /** Review, round 8: JUST the recovery reaction's own contribution to {@link #debugWheelForces()} (0
+     * when a wheel is not recovering this sub-step) - lets a test check the reaction's own
+     * momentum/Newton's-third-law identity against the real production application directly, not a
+     * reproduction of the formula that computed it. */
+    double[] debugWheelReactionForces() {
+        return sableBody == null ? new double[0] : SableCompat.wheelReactionForces(sableBody);
+    }
+
+    /** Review, round 9: each wheel's own lateral tire force this tick, so a test can check the friction
+     * circle's combined (hypot of longitudinal and lateral) ceiling instead of longitudinal alone. */
+    double[] debugWheelLateralForces() {
+        return sableBody == null ? new double[0] : SableCompat.wheelLateralForces(sableBody);
+    }
+
+    /** Review, round 10: each wheel's own actual mu*normalForce circle this tick, so a test can check the
+     * delivered force against the REAL per-tick budget instead of a fixed global worst-case ceiling. */
+    double[] debugWheelFrictionLimits() {
+        return sableBody == null ? new double[0] : SableCompat.wheelFrictionLimits(sableBody);
+    }
+
+    io.github.brooswitminecraft.dynamicterrain.Erosion.Result debugLastErosionResult() {
+        return sableBody == null ? io.github.brooswitminecraft.dynamicterrain.Erosion.Result.SKIPPED : SableCompat.lastErosionResult(sableBody);
+    }
+
+    /** Client: engine RPM fraction 0..1 between idle and the limiter, for the drivetrain-derived engine
+     * sound (MINECRAFT-401). */
+    public double clientEngineRpmFraction() {
+        return entityData.get(DATA_RPM);
+    }
+
     /** Server: publish every wheel's suspension travel (m), steer angle (rad) and spin rate (rad/s). */
     void publishWheelState(double[] travel, double[] steerAngle, double[] spin) {
         entityData.set(DATA_WHEELS, packWheels(WheelSync.encode(travel, steerAngle, spin)));
@@ -320,6 +502,15 @@ public class CarEntity extends Entity {
         return WheelSync.wheelCount(currentWheels);
     }
 
+    /** MINECRAFT-443: this car's AUTHORITATIVE ride height -- what {@link CarRenderer} must draw the body
+     * and wheels at, never {@link #spec}'s own {@code rideHeight()} (see {@link #DATA_RIDE_HEIGHT}'s own
+     * javadoc for why). On the server this is already {@code spec.rideHeight()}; on a client it starts at
+     * its own local stock guess and is corrected by the ordinary entity-data sync within a tick or two of
+     * tracking the entity. */
+    public float authoritativeRideHeight() {
+        return entityData.get(DATA_RIDE_HEIGHT);
+    }
+
     private float wheelField(int wheel, float partialTick, int field) {
         if (wheel >= syncedWheelCount()) {
             return 0.0f;
@@ -333,14 +524,19 @@ public class CarEntity extends Entity {
     }
 
     /** Server: publish what the sound system needs to hear on every client. */
-    void publishSoundState(double throttle, double slipSpeed) {
+    void publishSoundState(double throttle, double slipSpeed, double engineRpm) {
         float t = (float) Math.max(0.0, Math.min(1.0, throttle));
         float s = (float) CarSoundMath.slipLevel(slipSpeed);
+        float r = (float) Math.max(0.0, Math.min(1.0,
+                (engineRpm - DrivetrainMath.IDLE_RPM) / (DrivetrainMath.LIMITER_RPM - DrivetrainMath.IDLE_RPM)));
         if (Math.abs(entityData.get(DATA_THROTTLE) - t) > 0.05f) {
             entityData.set(DATA_THROTTLE, t);
         }
         if (Math.abs(entityData.get(DATA_SLIP) - s) > 0.05f) {
             entityData.set(DATA_SLIP, s);
+        }
+        if (Math.abs(entityData.get(DATA_RPM) - r) > 0.02f) {
+            entityData.set(DATA_RPM, r);
         }
     }
 
@@ -367,7 +563,7 @@ public class CarEntity extends Entity {
     /**
      * Server: the rider pressed the explicit reverse-gear input (MINECRAFT-228: keyboard or gamepad, sent
      * by {@link GearTogglePayload}). Toggles between reverse and the default forward gear -- keyboard and
-     * gamepad never need to pick a specific one of the six forward gears, only whether they're reversing --
+     * gamepad never need to pick a specific manual gear or automatic, only whether they're reversing --
      * and never anything the brake alone can trigger: see {@link CarPhysics.Gear} for the invariant this
      * protects.
      */
@@ -379,7 +575,10 @@ public class CarEntity extends Entity {
     /** Server: selects one state from the explicit MINECRAFT-228 gear interface. */
     String selectGear(CarPhysics.Gear selected) {
         gear = selected;
-        return selected == CarPhysics.Gear.REVERSE ? "reverse" : selected == CarPhysics.Gear.NEUTRAL ? "neutral" : selected.name().toLowerCase(java.util.Locale.ROOT);
+        return selected == CarPhysics.Gear.REVERSE ? "reverse"
+                : selected == CarPhysics.Gear.NEUTRAL ? "neutral"
+                : selected == CarPhysics.Gear.AUTOMATIC ? "automatic"
+                : selected.name().toLowerCase(java.util.Locale.ROOT);
     }
 
     /**
@@ -432,7 +631,7 @@ public class CarEntity extends Entity {
             boolean dirtOrSand = state.is(BlockTags.DIRT) || state.is(BlockTags.SAND);
             boolean glass = state.getBlock() instanceof TransparentBlock || state.getBlock() instanceof StainedGlassPaneBlock;
             ImpactRules.BlockImpactRoute route = ImpactRules.blockImpactRoute(
-                    spec == VehicleSpec.TRUCK, dirtOrSand, bamboo, breakable);
+                    VehicleModel.forId(vehicleId) == VehicleModel.TRUCK, dirtOrSand, bamboo, breakable);
 
             // Dynamic Terrain is the sole authority for loose terrain; it decides resistance and whether
             // material shifts downhill or degrades. This is selected before the truck-only return below,
@@ -444,7 +643,7 @@ public class CarEntity extends Entity {
 
             // The truck has a deliberately narrow vegetation interaction. It never gains the generic
             // block-breaking privilege merely by being heavier than a car.
-            if (spec == VehicleSpec.TRUCK) {
+            if (VehicleModel.forId(vehicleId) == VehicleModel.TRUCK) {
                 if (route == ImpactRules.BlockImpactRoute.TRUCK_BAMBOO) {
                     serverLevel.destroyBlock(pos, true, this);
                 }
@@ -1052,11 +1251,12 @@ public class CarEntity extends Entity {
             SableCompat.tick(sableBody, this, throttle, steer, handbrake, gear, DT);
             SableCompat.syncEntity(sableBody, this);
             publishWheelState(SableCompat.wheelTravel(sableBody), SableCompat.wheelSteerAngles(sableBody), SableCompat.wheelSpinRates(sableBody));
-            publishSoundState(Math.abs(throttle), SableCompat.slip(sableBody) + (handbrake || (throttle < 0 && SableCompat.speed(sableBody) > 8.0) ? 2.0 : 0.0));
+            publishSoundState(Math.abs(throttle), SableCompat.slip(sableBody) + (handbrake || (throttle < 0 && SableCompat.speed(sableBody) > 8.0) ? 2.0 : 0.0),
+                    SableCompat.engineRpm(sableBody));
             emitEffects(throttle, SableCompat.speed(sableBody), SableCompat.slip(sableBody));
             checkImpact(SableCompat.speed(sableBody));
             if (tickCount % 20 == 0) {
-                DynamicVehiclesMod.LOGGER.debug("car {} {}", getUUID(), SableCompat.describe(sableBody));
+                DynamicVehiclesMod.LOGGER.debug("car {} {}", getUUID(), SableCompat.describe(sableBody, gear, throttle));
             }
         } catch (RuntimeException dead) {
             // Sable released the physics body under us (its handle is null). Drop it so the next tick builds a fresh one

@@ -25,7 +25,14 @@ public class MotorboatRenderer extends EntityRenderer<MotorboatEntity> {
     public void render(MotorboatEntity boat, float yaw, float partialTick, PoseStack pose, MultiBufferSource buffers, int light) {
         pose.pushPose();
         pose.translate(0.0, MotorboatEntity.halfHeight(), 0.0);
-        pose.mulPose(com.mojang.math.Axis.YP.rotationDegrees(-yaw));
+        // MINECRAFT-410: once the rigid body is driving this boat, draw its full orientation (pitch/roll
+        // included, interpolated the same way CarRenderer does for the car) instead of yaw-only -- so the
+        // rider/observer rendering agrees with what the 4-point hull buoyancy actually computed.
+        if (boat.isRigidBody()) {
+            pose.mulPose(boat.renderOrientation(partialTick));
+        } else {
+            pose.mulPose(com.mojang.math.Axis.YP.rotationDegrees(-yaw));
+        }
         float hx = (float) MotorboatEntity.halfWidth();
         float hy = (float) MotorboatEntity.halfHeight();
         float hz = (float) MotorboatEntity.halfLength();

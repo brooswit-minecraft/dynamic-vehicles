@@ -24,11 +24,11 @@ public final class SkidMarksGameTests {
         car.setOnGround(false);
         try {
             int initial = SkidMarksClient.aliveMarks(System.currentTimeMillis()).size();
-            car.publishSoundState(1, 0);
+            car.publishSoundState(1, 0, DrivetrainMath.IDLE_RPM);
             SkidMarksClient.tick(car);
             helper.assertTrue(SkidMarksClient.aliveMarks(System.currentTimeMillis()).size() == initial,
                     "ordinary rolling produced marks");
-            car.publishSoundState(1, 10);
+            car.publishSoundState(1, 10, DrivetrainMath.IDLE_RPM);
             SkidMarksClient.tick(car);
             var marks = SkidMarksClient.aliveMarks(System.currentTimeMillis());
             helper.assertTrue(marks.size() == initial + car.spec().mounts().length,

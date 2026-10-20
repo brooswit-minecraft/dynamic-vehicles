@@ -26,11 +26,11 @@ final class CarSoundsClient {
     static Object start(CarEntity car) {
         var manager = Minecraft.getInstance().getSoundManager();
         var loops = new Loop[] {
-                new Loop(ModSounds.ENGINE_IDLE.get(), car, () -> engineOn(car) ? CarSoundMath.engineMix(car.clientSpeed())[0] * engineVolume(car) : 0.0,
+                new Loop(ModSounds.ENGINE_IDLE.get(), car, () -> engineOn(car) ? CarSoundMath.engineMix(car.clientEngineRpmFraction())[0] * engineVolume(car) : 0.0,
                         () -> enginePitch(car) * car.spec().enginePitch()),
-                new Loop(ModSounds.ENGINE_MID.get(), car, () -> engineOn(car) ? CarSoundMath.engineMix(car.clientSpeed())[1] * engineVolume(car) : 0.0,
+                new Loop(ModSounds.ENGINE_MID.get(), car, () -> engineOn(car) ? CarSoundMath.engineMix(car.clientEngineRpmFraction())[1] * engineVolume(car) : 0.0,
                         () -> enginePitch(car) * car.spec().enginePitch()),
-                new Loop(ModSounds.ENGINE_HIGH.get(), car, () -> engineOn(car) ? CarSoundMath.engineMix(car.clientSpeed())[2] * engineVolume(car) : 0.0,
+                new Loop(ModSounds.ENGINE_HIGH.get(), car, () -> engineOn(car) ? CarSoundMath.engineMix(car.clientEngineRpmFraction())[2] * engineVolume(car) : 0.0,
                         () -> enginePitch(car) * car.spec().enginePitch()),
                 new Loop(ModSounds.TIRE_ROUGH.get(), car, () -> surface(car) == Surface.ROUGH ? rolling(car) : 0.0, () -> CarSoundMath.rollingPitch(car.clientSpeed())),
                 new Loop(ModSounds.TIRE_SMOOTH.get(), car, () -> surface(car) == Surface.SMOOTH ? rolling(car) : 0.0, () -> CarSoundMath.rollingPitch(car.clientSpeed())),
@@ -60,7 +60,7 @@ final class CarSoundsClient {
     }
 
     private static double enginePitch(CarEntity car) {
-        return CarSoundMath.enginePitch(car.clientSpeed(), car.clientRev(), load(car));
+        return CarSoundMath.enginePitch(car.clientEngineRpmFraction(), car.clientRev(), load(car));
     }
 
     private static double rolling(CarEntity car) {

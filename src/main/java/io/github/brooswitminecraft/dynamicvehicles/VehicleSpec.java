@@ -26,7 +26,23 @@ public record VehicleSpec(
          * single-seat {@link #seats} list from exactly these two numbers. */
         double seatY, double seatZ,
         /** Grip on loose surfaces is multiplied by this (capped at the pavement's), and soft ground's rolling resistance by rollingScale. */
-        double looseGrip, double rollingScale,
+        double looseGrip,
+        /** Per-vehicle multiplier (MINECRAFT-62/450) on the surface's own {@code
+         * SurfaceProperties.rollingResistance()}, as consumed by {@link WheelMath#rollingCoefficient}:
+         * {@code rollingCoefficient = rollingResistance * rollingScale * (1 + deformability * DEFORMABILITY_ROLLING_GAIN)}.
+         * Dimensionless, intended range roughly 0.5..1.0 across the roster (e.g. {@code CAR}/{@code INDY}
+         * at the neutral {@code 1.0} &mdash; the surface's own coefficient applies unscaled; {@code
+         * ROCK_CRAWLER}/{@code MONSTER_TRUCK} down near {@code 0.5}..{@code 0.55} for tires tuned to roll
+         * easier on loose ground). {@code 1.0} is both the neutral value (no change from the surface's own
+         * number) and the value every vehicle that has not deliberately tuned this field away from it
+         * carries. There is no runtime "missing data" fallback for this field &mdash; it is a required
+         * constructor argument of this record, always supplied by a {@code VehicleSpec} constant below, so
+         * every vehicle always has a concrete value; the fallback that DOES exist is one layer up, in the
+         * terrain side of this multiplication: {@link io.github.brooswitminecraft.dynamicterrain.Surfaces#at}
+         * returns {@code SurfaceProperties.PAVEMENT} for air and otherwise falls back from a declared
+         * {@code SurfaceOverrides} entry to {@code SurfaceMath}'s automatic inference, never to a missing
+         * value this field would need to compensate for. */
+        double rollingScale,
         /** This vehicle's tire model tuning; {@link TireTuning#IDENTITY} for every vehicle that has not opted in. */
         TireTuning tireTuning,
         /** Downforce (MINECRAFT-184): extra tire grip per m/s of forward speed, applied as a multiplier on
@@ -56,12 +72,92 @@ public record VehicleSpec(
          * plumbing only (no LSD/vectoring/camber/toe behaviour yet). See {@link VehicleTuning} for why these
          * five fields are grouped into their own small type rather than folded into {@link TireTuning} or
          * left as bare fields on this record. */
-        VehicleTuning vehicleTuning) {
+        VehicleTuning vehicleTuning,
+        /** Per-vehicle handbrake strength multiplier (MINECRAFT-443): {@link SableCarBody#tick} computes
+         * {@code brake = HANDBRAKE_FORCE * forceScale() * handbrakeScale()} for a rear wheel while the
+         * handbrake is held, so a vehicle can get a stronger or weaker handbrake without touching the one
+         * shared {@code HANDBRAKE_FORCE} constant every vehicle used before this field existed. {@code 1.0}
+         * (identity, no extra scale) for every vehicle that has not opted in &mdash; today, every vehicle on
+         * the roster, so {@code SableCarBody.tick}'s handbrake branch is byte-for-byte unchanged for all of
+         * them. Distinct from (and does not touch) the separate, drift-only, already-live {@code
+         * TireTuning#handbrakeRearGripCut}, which scales the handbrake's lateral-grip cut, not its brake
+         * force, and is owned by {@code CarConfig}, not this per-vehicle field. */
+        double handbrakeScale,
+        /** Wing downforce (MINECRAFT-446): extra downward force per (m/s)^2 of forward airflow speed,
+         * applied as a genuine impulse in the real rigid-body path ({@link SableCarBody#tick}) at this
+         * vehicle's front/rear axle points. The APPLIED force is {@code coeff * forwardSpeed^2 *
+         * forceScale()} &mdash; this coefficient is scaled by the vehicle's own {@link #forceScale()} at
+         * the application site, like every other force in that method, so it is not a literal
+         * newtons-per-(m/s)^2 figure (review fix, comment 49064; see {@link #wingDownforceNewtons} and
+         * {@code docs/per-car-config.md}). Distinct from {@link #downforceGripPerSpeed}
+         * (MINECRAFT-184), which is a tire-grip multiplier with no downward force or moment at all. Applied
+         * off the CoG at each axle's own mount point, so a front/rear split also produces a genuine pitch
+         * moment, not just a vertical force. {@code 0.0} for every vehicle that has not opted in &mdash;
+         * today, every vehicle on the roster, so {@code SableCarBody.tick} applies no front wing downforce
+         * impulse for any of them. */
+        double frontWingDownforceCoeff,
+        /** As {@link #frontWingDownforceCoeff}, applied at the rear axle's own mount point instead. {@code
+         * 0.0} for every vehicle that has not opted in &mdash; today, every vehicle on the roster. */
+        double rearWingDownforceCoeff,
+        /** Aerodynamic drag (MINECRAFT-446): drag coefficient per (m/s)^2 of the body's own TOTAL speed
+         * (the full 3D velocity vector's magnitude, {@code subLinear.length()} in {@link
+         * SableCarBody#tick} &mdash; NOT just the forward component {@link #frontWingDownforceCoeff}/{@link
+         * #rearWingDownforceCoeff} use), opposing that same velocity vector exactly &mdash; the
+         * generalized, per-vehicle form of the single hardcoded {@code AIR_DRAG} constant {@code
+         * SableCarBody.tick} used before this field existed, at exactly the same point in that method,
+         * unchanged.
+         *
+         * <p>Applied force, stated exactly (review fix, comment 49064 &mdash; both factors below are
+         * pre-existing behaviour this ticket preserves, but neither was documented):
+         * <pre>  (wingDragCoeff + fluidDrag + foliageDrag) * forceScale() * |v| * v,
+         *   and nothing at all while |v| &lt;= SableCarBody.DRAG_SPEED_DEADBAND (0.5 m/s)</pre>
+         * So this coefficient is scaled by the vehicle's own {@link #forceScale()} and carries a low-speed
+         * dead band; it is not a literal newtons-per-(m/s)^2 figure, and drag is not merely "zero at a
+         * standstill" but absent below that threshold. {@code docs/per-car-config.md}'s `wing` section
+         * documents both.
+         *
+         * <p>{@code 0.4} (the old global constant's own value) for every vehicle that has not opted into a
+         * different value via its own wing config, so {@code SableCarBody.tick}'s drag impulse is
+         * byte-for-byte unchanged for the whole roster until an operator overrides it. */
+        double wingDragCoeff) {
 
-    /** As the full (canonical) constructor above, minus the trailing {@link #vehicleTuning} (MINECRAFT-227/245):
-     * exactly the field list every vehicle spec used before this ticket. {@code CAR}, {@code TRUCK},
-     * {@code TROPHY}, {@code DRIFT}, {@code BUS} and {@code CARGO_TRUCK} all still call this constructor
-     * unedited, with {@link #vehicleTuning} defaulted to {@link VehicleTuning#IDENTITY}. */
+    /** Legacy drag coefficient (MINECRAFT-446): every vehicle on the roster used this single hardcoded
+     * {@code AIR_DRAG} value in {@code SableCarBody} before {@link #wingDragCoeff} existed as a per-vehicle
+     * field; every constructor below that does not take an explicit {@link #wingDragCoeff} still defaults
+     * to exactly this value, so none of them change behaviour. Package-private rather than private so
+     * {@code VehicleSpecWingTest} can assert the roster still carries THIS value rather than restating the
+     * number and silently drifting from it. */
+    static final double LEGACY_AIR_DRAG = 0.4;
+
+    /** As the full (canonical) constructor above, minus the trailing {@link #handbrakeScale}, {@link
+     * #frontWingDownforceCoeff}, {@link #rearWingDownforceCoeff} and {@link #wingDragCoeff} (MINECRAFT-443/
+     * 446): exactly the field list every vehicle spec used before this ticket. Every existing vehicle still
+     * calls this constructor (directly or through a shorter overload below it), with {@link
+     * #handbrakeScale} defaulted to {@code 1.0} (identity), the two wing downforce coefficients defaulted
+     * to {@code 0.0} (no wing, identity) and {@link #wingDragCoeff} defaulted to {@link #LEGACY_AIR_DRAG}
+     * (byte-for-byte the old global drag constant). */
+    public VehicleSpec(double halfX, double halfY, double halfZ,
+            double[][] mounts, double wheelRadius, double wheelWidth,
+            double rideHeight, double restLength,
+            double massKg, double springRate, double dampingRate, double maxSpringForce,
+            double wheelbase, double maxSpeed,
+            double forceScale, double enginePitch,
+            double seatY, double seatZ,
+            double looseGrip, double rollingScale,
+            TireTuning tireTuning, double downforceGripPerSpeed, double antiRollScale,
+            List<Seat> seats, VehicleTuning vehicleTuning) {
+        this(halfX, halfY, halfZ, mounts, wheelRadius, wheelWidth, rideHeight, restLength,
+                massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
+                forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
+                downforceGripPerSpeed, antiRollScale, seats, vehicleTuning, 1.0,
+                0.0, 0.0, LEGACY_AIR_DRAG);
+    }
+
+    /** As the full (canonical) constructor above, minus the trailing {@link #vehicleTuning} and
+     * {@link #handbrakeScale} (MINECRAFT-227/245): exactly the field list every vehicle spec used before
+     * that ticket. {@code CAR}, {@code TRUCK}, {@code TROPHY}, {@code DRIFT}, {@code BUS} and {@code
+     * CARGO_TRUCK} all still call this constructor unedited, with {@link #vehicleTuning} defaulted to
+     * {@link VehicleTuning#IDENTITY} and {@link #handbrakeScale} to {@code 1.0}. */
     public VehicleSpec(double halfX, double halfY, double halfZ,
             double[][] mounts, double wheelRadius, double wheelWidth,
             double rideHeight, double restLength,
@@ -583,6 +679,28 @@ public record VehicleSpec(
      * vehicle whose {@code downforceGripPerSpeed} is 0.0 &mdash; see the field's own javadoc. */
     public double downforceGripMultiplier(double forwardSpeed) {
         return 1.0 + downforceGripPerSpeed * Math.abs(forwardSpeed);
+    }
+
+    /**
+     * One axle's wing downforce term (MINECRAFT-446) at this forward airflow speed (m/s, either direction
+     * -- squared, so direction never matters): {@code coeff * forwardSpeed^2}. {@code 0.0} at zero speed
+     * and for every vehicle whose coefficient is {@code 0.0} (the whole roster today), so {@code
+     * SableCarBody.tick} applies no impulse for them.
+     *
+     * <p><b>This is NOT the newtons that reach the body.</b> Review fix (comment 49064): {@code
+     * SableCarBody.tick} multiplies this result by the vehicle's own {@link #forceScale()} before applying
+     * it, exactly as it does for drive, brake, handbrake and drag forces in that same method, so the
+     * applied force is
+     * <pre>  coeff * forwardSpeed^2 * forceScale()</pre>
+     * An earlier version of this javadoc called the return value "the genuine downward wing force
+     * (newtons)", which was wrong for the eight roster cars whose {@code forceScale} is not 1.0 (only
+     * {@code CAR} and {@code DRIFT} are) -- the configured coefficient is a coefficient scaled by the
+     * car's own force scale, not a literal newton-per-(m/s)^2 figure. {@code docs/per-car-config.md}'s
+     * `wing` section documents the full applied formula, and {@code WingAeroGameTests} pins it against a
+     * car whose {@code forceScale} is deliberately NOT 1.0, so dropping the multiplication would fail.
+     */
+    public static double wingDownforceNewtons(double coeff, double forwardSpeed) {
+        return coeff * forwardSpeed * forwardSpeed;
     }
 
     public double wheelCentreY() {

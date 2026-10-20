@@ -26,16 +26,50 @@ final class SableCompat {
         return ((SableCarBody) body).orientationF();
     }
 
-    static String describe(Object body) {
-        return ((SableCarBody) body).describe();
+    static String describe(Object body, CarPhysics.Gear gear, double throttle) {
+        return ((SableCarBody) body).describe(gear, throttle);
     }
 
     static double slip(Object body) {
         return ((SableCarBody) body).lastSlipSpeed();
     }
 
+    /** The real slip speed/load/{@code Erosion.Result} the production tick last actually passed to and
+     * got back from {@code SlipReporter.report} (MINECRAFT-401 review, round 4) -- see
+     * {@link SableCarBody#lastErosionResult()}. */
+    static double lastErosionReportSlipSpeed(Object body) {
+        return ((SableCarBody) body).lastErosionReportSlipSpeed();
+    }
+
+    static double lastErosionReportLoadKg(Object body) {
+        return ((SableCarBody) body).lastErosionReportLoadKg();
+    }
+
+    static io.github.brooswitminecraft.dynamicterrain.Erosion.Result lastErosionResult(Object body) {
+        return ((SableCarBody) body).lastErosionResult();
+    }
+
+    /** Engine RPM implied by the drivetrain this tick (MINECRAFT-401). */
+    static double engineRpm(Object body) {
+        return ((SableCarBody) body).engineRpm();
+    }
+
+    /** Automatic mode's own currently held 0-based gear index, regardless of which gear is selected. */
+    static int automaticGearIndex(Object body) {
+        return ((SableCarBody) body).automaticGearIndex();
+    }
+
+    /** The gear ratio actually engaged this tick; see {@link SableCarBody#gearRatio()}. */
+    static double gearRatio(Object body) {
+        return ((SableCarBody) body).gearRatio();
+    }
+
     static double speed(Object body) {
         return ((SableCarBody) body).speed();
+    }
+
+    static boolean touching(Object body) {
+        return ((SableCarBody) body).touching();
     }
 
     /** Each wheel's suspension travel (m), steer angle (rad) and spin rate (rad/s), for client sync. */
@@ -51,7 +85,58 @@ final class SableCompat {
         return ((SableCarBody) body).wheelSpinRates();
     }
 
+    static double[] wheelContactSpeeds(Object body) {
+        return ((SableCarBody) body).wheelContactSpeeds();
+    }
+
+    static double[] wheelForces(Object body) {
+        return ((SableCarBody) body).wheelForces();
+    }
+
+    static double[] wheelReactionForces(Object body) {
+        return ((SableCarBody) body).wheelReactionForces();
+    }
+
+    static double[] wheelLateralForces(Object body) {
+        return ((SableCarBody) body).wheelLateralForces();
+    }
+
+    static double[] wheelFrictionLimits(Object body) {
+        return ((SableCarBody) body).wheelFrictionLimits();
+    }
+
     static void remove(Object body) {
         ((SableCarBody) body).remove();
+    }
+
+    // MINECRAFT-410: the motorboat's own rigid body, same door, same invariant -- nothing outside this
+    // class may mention SableMotorboatBody/Sable types either.
+
+    static Object createBoat(ServerLevel level, MotorboatEntity boat) {
+        return SableMotorboatBody.create(level, boat);
+    }
+
+    static void tickBoat(Object body, MotorboatEntity boat, double throttle, double steer, double dt) {
+        ((SableMotorboatBody) body).tick(boat, throttle, steer, dt);
+    }
+
+    static void syncEntityBoat(Object body, MotorboatEntity boat) {
+        ((SableMotorboatBody) body).syncEntity(boat);
+    }
+
+    static org.joml.Quaternionf orientationBoat(Object body) {
+        return ((SableMotorboatBody) body).orientationF();
+    }
+
+    static double speedBoat(Object body) {
+        return ((SableMotorboatBody) body).speed();
+    }
+
+    static String describeBoat(Object body) {
+        return ((SableMotorboatBody) body).describe();
+    }
+
+    static void removeBoat(Object body) {
+        ((SableMotorboatBody) body).remove();
     }
 }

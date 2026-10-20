@@ -242,7 +242,10 @@ class GearDriveTest {
         double ratio = DrivetrainMath.ratioFor(0);
         double omega = DrivetrainMath.rpmToOmega(3000.0);
         double engineTorque = DrivetrainMath.engineOutputTorque(1.0, 3000.0, omega, weakClutch);
-        double reflected = DrivetrainMath.reflectedWheelInertia(DRIVEN_WHEELS, WheelMath.WHEEL_INERTIA, ratio);
+        // Gripping, so the car's mass is on the shaft -- the case where the engine's full output would
+        // otherwise come through and the capacity is what has to bound it.
+        double reflected = DrivetrainMath.clutchLoadInertia(1200.0, WHEEL_RADIUS, DRIVEN_WHEELS,
+                WheelMath.WHEEL_INERTIA, ratio, true);
         double exchange = DrivetrainMath.clutchExchangeTorque(omega, omega, engineTorque, 0.0, reflected, 1.0 / 20.0, weakClutch);
         assertEquals(100.0, exchange, 1e-9,
                 "a clutch whose capacity is below the engine's output must bound the exchange");
@@ -259,7 +262,8 @@ class GearDriveTest {
         double topRatio = DrivetrainMath.ratioFor(DrivetrainMath.GEAR_RATIOS.length - 1);
         // Through the real locked exchange in top gear, where the car's own reflected inertia dominates
         // so nearly all of the engine's output reaches the road.
-        double reflected = DrivetrainMath.reflectedWheelInertia(DRIVEN_WHEELS, WheelMath.WHEEL_INERTIA, topRatio);
+        double reflected = DrivetrainMath.clutchLoadInertia(1200.0, WHEEL_RADIUS, DRIVEN_WHEELS,
+                WheelMath.WHEEL_INERTIA, topRatio, true);
         // Gripping: the tire's own reaction is what a steady 2300 N/wheel delivers, which is exactly the
         // state the tuned DRIVE_FORCE identity describes.
         double tireReaction = DrivetrainMath.wheelSideTorqueAtEngine(DRIVE_FORCE * DRIVEN_WHEELS, WHEEL_RADIUS, topRatio);

@@ -90,6 +90,13 @@ final class SableCarBody {
     // is right but the application at the call site is wrong (the same reason wheelReactionForce exists).
     private double clutchTorque;
     private double engineOutputTorque;
+    // MINECRAFT-444: whether the driven wheels' contact constraint held through the last sub-step -- every
+    // grounded driven wheel delivered what was commanded of it, i.e. the same zero-excess-force condition
+    // the recovery branch below already keys on. This is what decides whether the car's own mass is on the
+    // clutch's other shaft (held: the wheel is tied to the car) or not (slipping: only the wheels' own
+    // rotation). See DrivetrainMath.clutchLoadInertia for the measurements behind that. Starts true: a car
+    // that has not moved yet is sitting on its tires, not spinning them.
+    private boolean contactConstraintHeld = true;
     // The engine speed this tick STARTED from, kept beside engineOmega (which is where it ended) so the
     // reaction's own identity can be checked against the realized change WITHIN one tick, rather than by
     // differencing two external samples -- a sampler that misses, or doubles up on, an entity tick would
@@ -291,18 +298,14 @@ final class SableCarBody {
             // on that shaft, taken from the previous step's delivered longitudinal force -- the same
             // one-tick-lagged snapshot convention gearRatio and drivenWheelSpin already use.
             double deliveredWheelForce = 0.0;
-            double commandedWheelForce = 0.0;
             for (int w = 0; w < wheelCountForDrivetrain; w++) {
                 deliveredWheelForce += wheelForce[w];
-                commandedWheelForce += wheelDriveCommand[w];
             }
-            // How much of that shaft is still tied to the car through the contact patch, from the previous
-            // step's own delivered-vs-commanded force: the car's mass belongs on the shaft while the tire
-            // is holding and not while it is spinning. See clutchLoadInertia's own javadoc for the two
-            // measurements (one per extreme) that ruled out both unconditional answers.
-            double gripFraction = DrivetrainMath.gripFraction(deliveredWheelForce, commandedWheelForce);
+            // Whether the car's own mass is on the clutch's other shaft is decided by the contact
+            // constraint, not by a blend: see clutchLoadInertia's own javadoc for the measurements that
+            // ruled out both unconditional answers and for why this needs no extra integration resolution.
             double reflectedInertia = DrivetrainMath.clutchLoadInertia(spec.massKg(), spec.wheelRadius(),
-                    wheelCountForDrivetrain, WheelMath.WHEEL_INERTIA, gearRatio, gripFraction);
+                    wheelCountForDrivetrain, WheelMath.WHEEL_INERTIA, gearRatio, contactConstraintHeld);
             double wheelSideTorque = DrivetrainMath.wheelSideTorqueAtEngine(deliveredWheelForce,
                     spec.wheelRadius(), gearRatio);
             double wheelSideOmega = DrivetrainMath.wheelSideOmegaSigned(drivenWheelSpinSigned, gearRatio,
@@ -476,8 +479,16 @@ final class SableCarBody {
         double[] recoveryImpulseAccum = new double[wheelCount];
         double[] recoveryLoadForce = new double[wheelCount];
 
+        // MINECRAFT-444: rebuilt every sub-step from the same zero-excess-force condition the recovery
+        // branch below keys on, and read by the NEXT tick's clutch solve (the same one-tick-lagged
+        // snapshot convention gearRatio and drivenWheelSpin already use). A wheel that is airborne or
+        // unloaded cannot hold anything, so it simply does not vote; if no driven wheel is in contact at
+        // all the constraint reads as not held, which is correct -- nothing ties the shaft to the car.
+        boolean constraintHeldThisTick = false;
+        boolean anyDrivenWheelInContact = false;
         for (int sub = 0; sub < subSteps; sub++) {
             double forwardSpeed = subLinear.dot(carForward);
+            boolean constraintHeldThisSubStep = true;
 
             // Pass 1 of this sub-step: every wheel's suspension force from the CURRENT velocity snapshot,
             // computed for every wheel before any wheel's pass 2 runs below - so both wheels of an axle
@@ -685,6 +696,10 @@ final class SableCarBody {
                 // never paid that reaction, conjuring momentum. Second, that friction is drawn from the SAME
                 // circle this step's longitudinal/lateral tire forces already spent part of, not a second,
                 // independent mu*normalForce budget - bound by the circle's remaining headroom instead.
+                if (excessForce != 0.0) {
+                    constraintHeldThisSubStep = false;
+                }
+                anyDrivenWheelInContact = true;
                 double reactionImpulse = 0.0;
                 if (excessForce == 0.0) {
                     double frictionHeadroom = Math.max(0.0,
@@ -754,6 +769,7 @@ final class SableCarBody {
             }
             // Re-read velocity so the next sub-step's forces respond to the impulses just applied above -
             // see the note before this loop on why this, and not pose, is what makes sub-stepping matter.
+            constraintHeldThisTick = constraintHeldThisSubStep;
             subLinear = body.getLinearVelocity(new Vector3d());
             subAngular = body.getAngularVelocity(new Vector3d());
         }
@@ -839,6 +855,8 @@ final class SableCarBody {
             Vector3d drag = inverse.transform(new Vector3d(subLinear).mul(-dragCoeff * spec.forceScale() * speed * dt));
             body.applyImpulseAtPoint(new Vector3d(0, 0, 0), drag);
         }
+        // Hand the verdict to the next tick's clutch solve (see contactConstraintHeld's own comment).
+        contactConstraintHeld = anyDrivenWheelInContact && constraintHeldThisTick;
         lastSlipSpeed = slipThisTick;
         lastSpinSlip = spinSlipThisTick;
         if (CarDebug.enabled) {

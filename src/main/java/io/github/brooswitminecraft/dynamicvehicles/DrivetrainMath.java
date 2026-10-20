@@ -318,46 +318,42 @@ public final class DrivetrainMath {
     }
 
     /**
-     * The clutch's other shaft's inertia as the engine sees it, kg*m^2: the driven wheels' own rotation
-     * ({@link #reflectedWheelInertia}) plus as much of the car's translating mass as the contact patch is
-     * actually still holding.
+     * The clutch's other shaft's inertia as the engine sees it, kg*m^2 -- the second inertia in
+     * {@link #clutchExchangeTorque}'s solve, and the one place the chain
+     * engine -&gt; clutch -&gt; wheel rotation -&gt; tire -&gt; car mass decides how far along itself it
+     * reaches.
      *
-     * <p>Round 3's remaining correction, measured the same way as the rest. Reflecting the car's mass
-     * unconditionally is wrong during slip -- that was round 2's failure, where a slipping wheel collapsed
-     * the exchange and cost the car its drive force. But dropping it entirely is wrong during GRIP: with
-     * only the wheels' own 0.022 kg*m^2 on that shaft in D1, the clutch cannot hold the engine at all and
-     * it runs away past its own limiter, so torque is cut and the car stops accelerating (traced at 7866
-     * RPM and zero command by tick 30). A gripping wheel's shaft IS tied to the car through the contact
-     * patch, so the honest answer is the one the chain itself implies: the mass is present exactly to the
-     * extent the tire is still delivering what was asked of it.
+     * <p>It depends on the CONTACT CONSTRAINT, which is the resolution of this ticket's hardest question.
+     * While the tire is holding -- the production path's own zero-excess-force condition, the same flag its
+     * recovery branch already keys on -- the wheel is kinematically tied to the car, so the car's
+     * translating mass genuinely IS on this shaft and the clutch works against the whole vehicle. The
+     * moment the tire lets go that constraint is gone, and the shaft is only the wheels' own rotation,
+     * free to spin up away from the car.
      *
-     * <p>{@code gripFraction} is that extent, taken from the previous (sub-)step's own delivered force
-     * against what was commanded -- both already captured on the production path, no new estimate. 1
-     * means the tire delivered everything (fully coupled, the car's mass is on the shaft); 0 means it
-     * delivered none of it (free spin, only the wheels' own inertia).
+     * <p>Both unconditional answers were measured and both are wrong. Reflecting the car's mass always
+     * (round 2) collapses the exchange exactly when a tire slips, so the car loses drive force in a
+     * wheelspin -- CI caught a full-throttle car reaching 0.67 m/s after 90 ticks and a D1 launch losing to
+     * D5. Using the wheels' own inertia always (round 3) leaves the clutch nothing to work against in a low
+     * gear, and no integration resolution rescues it: sub-stepping the engine against a frozen partner gave
+     * 1.60/11.47/15.09/7.57/18.88 m/s at 1/4/8/16/32 inner steps, wheel spin reversing sign. Keying the
+     * inertia to the constraint converges at every resolution tested INCLUDING the production tick (D1
+     * 17.09 m/s at one step per tick vs 16.08 converged; D5 16.47 vs 16.41), which is why this needs no
+     * sub-stepping, no change to {@code wheelSubSteps} and no damping knob.
+     *
+     * @param contactHolding whether the driven wheels' contact constraint held through the previous step
+     *        (every grounded driven wheel delivered what was commanded of it)
      */
     public static double clutchLoadInertia(double massKg, double wheelRadius, int drivenWheels,
-            double wheelInertia, double ratio, double gripFraction) {
+            double wheelInertia, double ratio, boolean contactHolding) {
         double gearing = ratio * FINAL_DRIVE;
         if (!(gearing != 0.0) || !(wheelRadius > 0.0)) {
             return 0.0;
         }
-        double grip = Math.max(0.0, Math.min(1.0, gripFraction));
-        double carAtWheelShaft = massKg * wheelRadius * wheelRadius;
-        return reflectedWheelInertia(drivenWheels, wheelInertia, ratio)
-                + grip * carAtWheelShaft / (gearing * gearing);
-    }
-
-    /**
-     * How much of the drivetrain's own command the tire actually delivered last (sub-)step, 0..1 -- the
-     * {@code gripFraction} {@link #clutchLoadInertia} needs. Exactly 1 when nothing was commanded (there
-     * was nothing for the tire to fail to deliver, so the shaft is as coupled as it was).
-     */
-    public static double gripFraction(double deliveredForce, double commandedForce) {
-        if (!(Math.abs(commandedForce) > 0.0)) {
-            return 1.0;
+        double wheelsOwn = reflectedWheelInertia(drivenWheels, wheelInertia, ratio);
+        if (!contactHolding) {
+            return wheelsOwn;
         }
-        return Math.max(0.0, Math.min(1.0, Math.abs(deliveredForce) / Math.abs(commandedForce)));
+        return wheelsOwn + massKg * wheelRadius * wheelRadius / (gearing * gearing);
     }
 
     /**

@@ -264,8 +264,20 @@ class DrivetrainMathTest {
     private static final double CAR_MASS_KG = 1200.0;
     private static final double DRIVEN_WHEELS = 4;
 
+    /** The clutch's load inertia while the tire is holding -- the gripping case. */
+    private static double gripInertia(double ratio) {
+        return DrivetrainMath.clutchLoadInertia(CAR_MASS_KG, CarGeometry.WHEEL_RADIUS, (int) DRIVEN_WHEELS,
+                WheelMath.WHEEL_INERTIA, ratio, true);
+    }
+
+    /** ...and while it is slipping: the wheels' own rotation, nothing more. */
+    private static double slipInertia(double ratio) {
+        return DrivetrainMath.clutchLoadInertia(CAR_MASS_KG, CarGeometry.WHEEL_RADIUS, (int) DRIVEN_WHEELS,
+                WheelMath.WHEEL_INERTIA, ratio, false);
+    }
+
     private static double reflectedInertia(double ratio) {
-        return DrivetrainMath.reflectedWheelInertia((int) DRIVEN_WHEELS, WheelMath.WHEEL_INERTIA, ratio);
+        return gripInertia(ratio);
     }
 
     /** The tire reaction a gripping wheel delivering {@code forcePerWheel} puts back on the shaft. */
@@ -280,20 +292,39 @@ class DrivetrainMathTest {
     }
 
     @Test
-    void reflectedInertiaFallsWithTheSquareOfTheGearingAndCoversTheEnginesOwnOrderInFirst() {
-        double inFirst = reflectedInertia(DrivetrainMath.ratioFor(0));
-        double inTop = reflectedInertia(DrivetrainMath.ratioFor(DrivetrainMath.GEAR_RATIOS.length - 1));
-        assertTrue(inTop > inFirst * 10.0,
-                "a taller gear must reflect far MORE drivetrain inertia to the engine (ratio squared): first="
-                        + inFirst + " top=" + inTop);
-        assertTrue(inFirst > STOCK.engineInertia() * 2.0 && inFirst < STOCK.engineInertia() * 10.0,
-                "in first gear the reflected inertia should be the same order as the engine's own, which is why a low gear revs fast: "
-                        + inFirst + " vs " + STOCK.engineInertia());
+    void theLoadInertiaFollowsTheContactConstraintAndFallsWithTheSquareOfTheGearing() {
+        for (double ratio : DrivetrainMath.GEAR_RATIOS) {
+            double gearing = ratio * DrivetrainMath.FINAL_DRIVE;
+            double wheelsOwn = DRIVEN_WHEELS * WheelMath.WHEEL_INERTIA / (gearing * gearing);
+            assertEquals(wheelsOwn, slipInertia(ratio), 1e-12,
+                    "a slipping tire leaves only the wheels' own rotation on the shaft (ratio " + ratio + ")");
+            assertEquals(wheelsOwn + CAR_MASS_KG * CarGeometry.WHEEL_RADIUS * CarGeometry.WHEEL_RADIUS / (gearing * gearing),
+                    gripInertia(ratio), 1e-9,
+                    "a holding tire puts the car's own mass on the shaft too (ratio " + ratio + ")");
+            assertTrue(gripInertia(ratio) > slipInertia(ratio) * 10.0,
+                    "and that is a large difference, which is why keying it to the constraint matters (ratio " + ratio + ")");
+        }
+        assertTrue(gripInertia(DrivetrainMath.ratioFor(DrivetrainMath.GEAR_RATIOS.length - 1))
+                > gripInertia(DrivetrainMath.ratioFor(0)) * 10.0,
+                "a taller gear reflects far more of the car to the engine -- ratio SQUARED, not ratio");
+    }
+
+    /**
+     * Review round 2's requested case, now the headline property of the chain: zero grip must let the
+     * wheels accelerate, never zero the clutch torque. With the constraint broken the load inertia is the
+     * wheels' alone, so the engine still drives them hard -- which is what a wheelspin is.
+     */
+    @Test
+    void zeroGripStillTransmitsTorqueAndSpinsTheWheelsUp() {
         double ratio = DrivetrainMath.ratioFor(0);
-        double gearing = ratio * DrivetrainMath.FINAL_DRIVE;
-        double expected = (CAR_MASS_KG * CarGeometry.WHEEL_RADIUS * CarGeometry.WHEEL_RADIUS
-                + DRIVEN_WHEELS * WheelMath.WHEEL_INERTIA) / (gearing * gearing);
-        assertEquals(expected, inFirst, 1e-9);
+        double omega = DrivetrainMath.rpmToOmega(3000.0);
+        double engineTorque = DrivetrainMath.engineOutputTorque(1.0, 3000.0, omega, STOCK);
+        // No grip at all: no tire reaction on the shaft, constraint broken.
+        double exchange = DrivetrainMath.clutchExchangeTorque(omega, omega, engineTorque, 0.0, slipInertia(ratio), TICK_DT, STOCK);
+        assertTrue(exchange > 0.0,
+                "an engaged engine must still put torque into free wheels, not zero: " + exchange);
+        double wheelTorque = exchange * ratio * DrivetrainMath.FINAL_DRIVE;
+        assertTrue(wheelTorque > 0.0, "and that torque must reach the wheel shaft, spinning it up");
     }
 
     @Test

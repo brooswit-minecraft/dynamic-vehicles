@@ -134,6 +134,7 @@ public final class TownResidentAllocationHandler {
                 .filter(home -> home.dimension().equals(level.dimension()))
                 .filter(home -> inRegion(home.pos(), region))
                 .filter(home -> !storage.isReservedByADifferentVillager(level.dimension(), home.pos(), villager.getUUID()))
+                .filter(home -> !isCurrentlyClaimedByAnotherVillager(level, home.pos(), villager))
                 .map(home -> level.getPoiManager().exists(home.pos(), type -> type.is(PoiTypes.HOME))
                         && isTicketHeld(level, home.pos()))
                 .orElse(false);
@@ -181,6 +182,7 @@ public final class TownResidentAllocationHandler {
                 .filter(site -> site.dimension().equals(level.dimension()))
                 .filter(site -> inRegion(site.pos(), region))
                 .filter(site -> !storage.isReservedByADifferentVillager(level.dimension(), site.pos(), villager.getUUID()))
+                .filter(site -> !isCurrentlyClaimedByAnotherVillager(level, site.pos(), villager))
                 .map(site -> level.getPoiManager().getType(site.pos())
                         .map(type -> profession.heldJobSite().test(type))
                         .orElse(false)
@@ -295,10 +297,42 @@ public final class TownResidentAllocationHandler {
             if (storage.isReservedByADifferentVillager(globalPos.dimension(), globalPos.pos(), villager.getUUID())) {
                 return;
             }
+            // [Review round 20, follow-up finding #1] This mod's own records are necessarily
+            // INCOMPLETE - a reservation a villager holds via vanilla's own natural AI, or granted
+            // before this tracking existed, has no record here at all, yet is just as real as a
+            // tracked one. Absence of a record is never proof of absence of a real owner: a live
+            // scan of every OTHER currently alive villager's own actual memory is the one signal
+            // that is always correct, needs no bookkeeping, and catches exactly the case the
+            // registry alone cannot - "some untracked resident's real, current reservation".
+            if (isCurrentlyClaimedByAnotherVillager(oldLevel, globalPos.pos(), villager)) {
+                return;
+            }
             if (oldLevel.getPoiManager().exists(globalPos.pos(), type -> true)) {
                 oldLevel.getPoiManager().release(globalPos.pos());
             }
             storage.clearReservationOwner(globalPos.dimension(), globalPos.pos());
         });
+    }
+
+    /** {@code true} when some OTHER alive villager in {@code level} currently has {@code pos} as
+     *  its OWN {@code HOME} or {@code JOB_SITE} memory right now - the live, always-correct
+     *  complement to {@link TownStorage}'s own (necessarily incomplete) ownership record: a
+     *  reservation someone else's actual, current memory still references is never safe to
+     *  validate for a DIFFERENT villager, nor to release out from under its real occupant, no
+     *  matter what this mod's own bookkeeping does or doesn't know about it. */
+    static boolean isCurrentlyClaimedByAnotherVillager(ServerLevel level, BlockPos pos, Villager self) {
+        for (Entity entity : level.getEntities().getAll()) {
+            if (!(entity instanceof Villager other) || !other.isAlive() || other.getUUID().equals(self.getUUID())) {
+                continue;
+            }
+            boolean homeMatches = other.getBrain().getMemory(MemoryModuleType.HOME)
+                    .map(gp -> gp.dimension().equals(level.dimension()) && gp.pos().equals(pos)).orElse(false);
+            boolean jobSiteMatches = other.getBrain().getMemory(MemoryModuleType.JOB_SITE)
+                    .map(gp -> gp.dimension().equals(level.dimension()) && gp.pos().equals(pos)).orElse(false);
+            if (homeMatches || jobSiteMatches) {
+                return true;
+            }
+        }
+        return false;
     }
 }

@@ -689,4 +689,79 @@ public final class TownResidentAllocationHandlerGameTests {
                 "the sole bed's ticket must still be held after reconciling the second resident too");
         helper.succeed();
     }
+
+    /** [Review round 20, follow-up finding #1] {@link TownStorage}'s own ownership record only knows
+     *  about reservations THIS MOD itself granted - a resident that holds a real bed via vanilla's
+     *  own natural AI (or one granted before this tracking existed) has no record at all, yet its
+     *  reservation is just as real. A live scan of every OTHER currently alive villager's own actual
+     *  memory (see {@code TownResidentAllocationHandler#isCurrentlyClaimedByAnotherVillager}) is what
+     *  actually protects this case, since the registry alone cannot. */
+    @GameTest(template = "settlement_test")
+    public static void anUntrackedResidentsRealReservationIsNeverStolenByAnotherVillagersStaleMemory(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos bedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        placeValidBed(helper, bedHead);
+        BlockPos absoluteBedHead = helper.absolutePos(bedHead);
+        BlockPos secondBedHead = ANCHOR.offset(OLD_HOME_OFFSET.getX(), OLD_HOME_OFFSET.getY(), OLD_HOME_OFFSET.getZ());
+        placeValidBed(helper, secondBedHead);
+        BlockPos absoluteSecondBedHead = helper.absolutePos(secondBedHead);
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        markTownOwned(helper, storage, absoluteBedHead);
+        markTownOwned(helper, storage, absoluteSecondBedHead);
+        BlockPos townCenter = helper.absolutePos(ANCHOR);
+
+        // An UNTRACKED resident: its real reservation at the first bed was never granted through
+        // this mod's own ownership-recording code paths (standing in for vanilla's own natural AI,
+        // or one that predates this tracking) - TownStorage has no owner recorded for it at all.
+        Villager untrackedResident = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        takeTicketDirectly(helper.getLevel(), absoluteBedHead);
+        untrackedResident.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(helper.getLevel().dimension(), absoluteBedHead));
+
+        // A second, unrelated villager whose own memory also (incorrectly/stalely) points at that
+        // exact same, genuinely-occupied bed.
+        Villager impostor = spawnVillager(helper, ANCHOR.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+        impostor.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(helper.getLevel().dimension(), absoluteBedHead));
+
+        TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), impostor, townCenter, region, storage);
+
+        helper.assertTrue(impostor.getBrain().getMemory(MemoryModuleType.HOME)
+                        .map(gp -> gp.pos().equals(absoluteSecondBedHead)).orElse(false),
+                "a villager must never be treated as housed at a bed some OTHER real villager's own current memory still references, even with no tracked owner recorded for it, and must be reassigned the real, genuinely vacant alternative instead");
+        helper.assertTrue(helper.getLevel().getPoiManager().getFreeTickets(absoluteBedHead) == 0,
+                "an untracked resident's real ticket must never be stolen/released just because a different villager's stale memory also pointed at it, even with no ownership record to protect it");
+        helper.assertTrue(untrackedResident.getBrain().getMemory(MemoryModuleType.HOME)
+                        .map(gp -> gp.pos().equals(absoluteBedHead)).orElse(false),
+                "the untracked resident's own HOME memory must be completely unaffected by the impostor's reconciliation");
+        helper.succeed();
+    }
+
+    /** [Review round 20, follow-up finding #1] The reservation-ownership record itself must actually
+     *  survive a real save/load round trip (not merely a same-session in-memory check) - the same
+     *  durable-persistence proof this suite already requires of {@link TownStorage}'s other records
+     *  (see its own class doc on {@code blockedCells}). */
+    @GameTest(template = "settlement_test")
+    public static void reservationOwnershipRecordSurvivesASaveLoadRoundTrip(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos bedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        placeValidBed(helper, bedHead);
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        markTownOwned(helper, storage, helper.absolutePos(bedHead));
+        BlockPos townCenter = helper.absolutePos(ANCHOR);
+
+        Villager owner = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), owner, townCenter, region, storage);
+        helper.assertTrue(owner.getBrain().getMemory(MemoryModuleType.HOME).isPresent(),
+                "test setup: the owner must actually be assigned the bed first");
+        BlockPos ownedPos = owner.getBrain().getMemory(MemoryModuleType.HOME).get().pos();
+
+        net.minecraft.nbt.CompoundTag saved = storage.save(new net.minecraft.nbt.CompoundTag(), helper.getLevel().registryAccess());
+        TownStorage reloaded = TownStorage.load(saved, helper.getLevel().registryAccess());
+
+        Villager impostor = spawnVillager(helper, ANCHOR.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+        helper.assertTrue(reloaded.isReservedByADifferentVillager(helper.getLevel().dimension(), ownedPos, impostor.getUUID()),
+                "the reservation-ownership record must survive a save/load round trip, not silently reset on reload");
+        helper.succeed();
+    }
 }

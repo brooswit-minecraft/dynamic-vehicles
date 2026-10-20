@@ -530,7 +530,13 @@ public final class TownConstructionService {
                 // is now actually held by a DIFFERENT villager - occupancy alone is not proof it is
                 // still this claimant's own.
                 boolean knownDifferentOwner = storage.isReservedByADifferentVillager(old.dimension(), old.pos(), claimant.getUUID());
-                if (oldLevel != null && !sameAsNewReservation && !knownDifferentOwner) {
+                // [Review round 20, follow-up finding #1] The registry above only knows about
+                // reservations THIS MOD itself granted - a vanilla-origin or pre-tracking home is
+                // just as real but has no record at all. A live scan of every other currently alive
+                // villager's own actual memory catches exactly that case, with no bookkeeping needed.
+                boolean liveOwnedByAnother = oldLevel != null
+                        && TownResidentAllocationHandler.isCurrentlyClaimedByAnotherVillager(oldLevel, old.pos(), claimant);
+                if (oldLevel != null && !sameAsNewReservation && !knownDifferentOwner && !liveOwnedByAnother) {
                     releasePoiTicket(oldLevel, storage, old.pos());
                 }
                 // oldLevel == null: that dimension no longer exists/isn't loaded - there is no

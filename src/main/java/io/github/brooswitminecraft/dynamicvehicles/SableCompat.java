@@ -59,6 +59,79 @@ final class SableCompat {
         return ((SableCarBody) body).automaticGearIndex();
     }
 
+    /** MINECRAFT-444: this tick's own real clutch torque (N*m), the per-wheel force it transmitted (N)
+     * and the engine-axis reaction torque applied to the body (N*m). */
+    static double clutchTorque(Object body) {
+        return ((SableCarBody) body).clutchTorque();
+    }
+
+    /** The engine's own net output torque; see {@link SableCarBody#engineOutputTorque()}. */
+    static double engineOutputTorque(Object body) {
+        return ((SableCarBody) body).engineOutputTorque();
+    }
+
+    /** The body's measured world-space angular velocity; see {@link SableCarBody#bodyAngularVelocity()}. */
+    static double[] bodyAngularVelocity(Object body) {
+        return ((SableCarBody) body).bodyAngularVelocity();
+    }
+
+    static double clutchWheelForce(Object body) {
+        return ((SableCarBody) body).clutchWheelForce();
+    }
+
+    /** The coupled solve's lock torque; see {@link SableCarBody#clutchLockTorque()}. */
+    static double clutchLockTorque(Object body) {
+        return ((SableCarBody) body).clutchLockTorque();
+    }
+
+    /** The driver's governed demand at the engine; see {@link SableCarBody#clutchDemandTorque()}. */
+    static double clutchDemandTorque(Object body) {
+        return ((SableCarBody) body).clutchDemandTorque();
+    }
+
+    /** The wheel side the clutch was solved against; see {@link SableCarBody#clutchWheelSideOmega()}. */
+    static double clutchWheelSideOmega(Object body) {
+        return ((SableCarBody) body).clutchWheelSideOmega();
+    }
+
+    static double clutchWheelSideTorque(Object body) {
+        return ((SableCarBody) body).clutchWheelSideTorque();
+    }
+
+    /** The drivetrain impulse the wheels actually took; see {@link SableCarBody#realizedDriveImpulse()}. */
+    static double realizedDriveImpulse(Object body) {
+        return ((SableCarBody) body).realizedDriveImpulse();
+    }
+
+    /** The tires' delivered force the next solve will read; see {@link SableCarBody#drivenTireForce()}. */
+    static double drivenTireForce(Object body) {
+        return ((SableCarBody) body).drivenTireForce();
+    }
+
+    /** Per wheel, the same; see {@link SableCarBody#wheelRealizedDriveImpulses()}. */
+    static double[] wheelRealizedDriveImpulses(Object body) {
+        return ((SableCarBody) body).wheelRealizedDriveImpulses();
+    }
+
+    /** Per wheel, how many sub-steps its tire touched something; see {@link SableCarBody#wheelContactSubSteps()}. */
+    static int[] wheelContactSubSteps(Object body) {
+        return ((SableCarBody) body).wheelContactSubSteps();
+    }
+
+    static double engineReactionTorque(Object body) {
+        return ((SableCarBody) body).engineReactionTorque();
+    }
+
+    /** The engine's own unclamped angular speed, rad/s; see {@link SableCarBody#engineOmega()}. */
+    static double engineOmega(Object body) {
+        return ((SableCarBody) body).engineOmega();
+    }
+
+    /** The engine speed the last tick started from; see {@link SableCarBody#priorEngineOmega()}. */
+    static double priorEngineOmega(Object body) {
+        return ((SableCarBody) body).priorEngineOmega();
+    }
+
     /** The gear ratio actually engaged this tick; see {@link SableCarBody#gearRatio()}. */
     static double gearRatio(Object body) {
         return ((SableCarBody) body).gearRatio();
@@ -87,6 +160,11 @@ final class SableCompat {
 
     static double[] wheelContactSpeeds(Object body) {
         return ((SableCarBody) body).wheelContactSpeeds();
+    }
+
+    /** Each wheel's own drivetrain longitudinal command; see {@link SableCarBody#wheelDriveCommands()}. */
+    static double[] wheelDriveCommands(Object body) {
+        return ((SableCarBody) body).wheelDriveCommands();
     }
 
     static double[] wheelForces(Object body) {

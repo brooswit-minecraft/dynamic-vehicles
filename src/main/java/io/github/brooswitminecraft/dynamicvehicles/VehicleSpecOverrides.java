@@ -12,12 +12,14 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Per-car config files (MINECRAFT-443, wing fields MINECRAFT-446): {@code
- * config/dynamicvehicles/cars/<id>.json} overrides a subset of a stock {@link VehicleSpec}'s
+ * Per-car config files (MINECRAFT-443, wing fields MINECRAFT-446, engine/clutch coupling MINECRAFT-444):
+ * {@code config/dynamicvehicles/cars/<id>.json} overrides a subset of a stock {@link VehicleSpec}'s
  * already-implemented tuning fields &mdash; ride height, damping rate, anti-roll scale, rolling-resistance
  * scale, handbrake-strength scale, the five {@link VehicleSpec.VehicleTuning} dials (LSD lock, front/rear
- * torque split, torque-vectoring gain, camber, toe), and (MINECRAFT-446) the {@code wing} section's front/
- * rear downforce coefficients and drag coefficient. Everything else about a car (geometry, mass, seats, drive force, top speed, tire/downforce
+ * torque split, torque-vectoring gain, camber, toe), (MINECRAFT-446) the {@code wing} section's front/
+ * rear downforce coefficients and drag coefficient, and (MINECRAFT-444) the four
+ * {@link VehicleSpec.DrivetrainCoupling} engine/clutch coupling dials (engine inertia, peak torque, engine
+ * braking torque, clutch torque capacity). Everything else about a car (geometry, mass, seats, drive force, top speed, tire/downforce
  * tuning) is not file-configurable by this ticket; see {@code docs/per-car-config.md} for the full
  * rationale and schema.
  *
@@ -217,6 +219,23 @@ final class VehicleSpecOverrides {
                 file.toeDeg == null ? stockTuning.toeDeg() : file.toeDeg);
         VehicleSpec.VehicleTuning vehicleTuning = VehicleTuningLimits.clamp(requestedTuning, stockTuning);
 
+        // Engine/clutch coupling (MINECRAFT-444): same per-field contract as every field above -- absent
+        // keeps this car's stock value, non-finite falls back to it, finite-but-extreme is clamped.
+        VehicleSpec.DrivetrainCoupling stockCoupling = stock.drivetrainCoupling();
+        VehicleSpec.DrivetrainCoupling drivetrainCoupling = new VehicleSpec.DrivetrainCoupling(
+                file.engineInertia == null ? stockCoupling.engineInertia()
+                        : VehicleSpecLimits.clamp(file.engineInertia, VehicleSpecLimits.MIN_ENGINE_INERTIA,
+                                VehicleSpecLimits.MAX_ENGINE_INERTIA, stockCoupling.engineInertia()),
+                file.enginePeakTorque == null ? stockCoupling.enginePeakTorque()
+                        : VehicleSpecLimits.clamp(file.enginePeakTorque, VehicleSpecLimits.MIN_ENGINE_PEAK_TORQUE,
+                                VehicleSpecLimits.MAX_ENGINE_PEAK_TORQUE, stockCoupling.enginePeakTorque()),
+                file.engineBrakingTorque == null ? stockCoupling.engineBrakingTorque()
+                        : VehicleSpecLimits.clamp(file.engineBrakingTorque, VehicleSpecLimits.MIN_ENGINE_BRAKING_TORQUE,
+                                VehicleSpecLimits.MAX_ENGINE_BRAKING_TORQUE, stockCoupling.engineBrakingTorque()),
+                file.clutchTorqueCapacity == null ? stockCoupling.clutchTorqueCapacity()
+                        : VehicleSpecLimits.clamp(file.clutchTorqueCapacity, VehicleSpecLimits.MIN_CLUTCH_TORQUE_CAPACITY,
+                                VehicleSpecLimits.MAX_CLUTCH_TORQUE_CAPACITY, stockCoupling.clutchTorqueCapacity()));
+
         VehicleSpec.SuspensionTuning suspensionTuning = applyTireKit(file.tireKit, stock, dampingRate);
         VehicleSpec.SteeringTuning steeringTuning = applySteering(file.tireKit, stock);
         double tirePressureBar = file.tireKit == null || file.tireKit.tirePressureBar == null
@@ -237,7 +256,7 @@ final class VehicleSpecOverrides {
                 stock.tireTuning(), stock.downforceGripPerSpeed(), antiRollScale,
                 stock.seats(), vehicleTuning, handbrakeScale, suspensionTuning, steeringTuning,
                 tirePressureBar, pitchTuning,
-                frontWingDownforceCoeff, rearWingDownforceCoeff, wingDragCoeff);
+                frontWingDownforceCoeff, rearWingDownforceCoeff, wingDragCoeff, drivetrainCoupling);
     }
 
     /** MINECRAFT-445: the {@code tireKit} section's anti-dive/anti-squat fractions, clamped like every

@@ -624,4 +624,36 @@ class WheelMathTest {
             v = 10.0; // reset for the next subSteps count
         }
     }
+
+    /** MINECRAFT-444 review round 3: a wheel off the ground is turned by the whole drivetrain command (no
+     * tire reaction), by the same torque balance spinRate applies to the undelivered part of a command. */
+    @Test
+    void freeSpinRateTurnsAnAirborneWheelByTheWholeDriveCommand() {
+        double radius = 0.35;
+        double inertia = WheelMath.WHEEL_INERTIA;
+        double dt = 0.0125;
+        assertEquals(5.0 + 1000.0 * radius / inertia * dt, WheelMath.freeSpinRate(5.0, radius, 1000.0, 0.0, inertia, dt), 1e-12);
+        assertEquals(5.0 - 1000.0 * radius / inertia * dt, WheelMath.freeSpinRate(5.0, radius, -1000.0, 0.0, inertia, dt), 1e-12,
+                "engine braking slows a free wheel too");
+        assertEquals(5.0, WheelMath.freeSpinRate(5.0, radius, 0.0, 0.0, inertia, dt), 0.0, "no torque, no change");
+    }
+
+    /** ...and a brake, which replaces the drive exactly as it does in tire(), only ever slows it toward a
+     * stop -- it can never wind the wheel up the other way, however long it is held. */
+    @Test
+    void freeSpinRateBrakesAWheelToAStopButNeverPastIt() {
+        double radius = 0.35;
+        double inertia = WheelMath.WHEEL_INERTIA;
+        double dt = 0.0125;
+        double step = 3000.0 * radius / inertia * dt;
+        assertEquals(40.0 - step, WheelMath.freeSpinRate(40.0, radius, 2000.0, 3000.0, inertia, dt), 1e-12,
+                "a braked wheel slows by the brake torque and ignores the drive, like tire() does");
+        assertEquals(-40.0 + step, WheelMath.freeSpinRate(-40.0, radius, 0.0, 3000.0, inertia, dt), 1e-12);
+        double spin = 3.0;
+        for (int i = 0; i < 100; i++) {
+            spin = WheelMath.freeSpinRate(spin, radius, 0.0, 3000.0, inertia, dt);
+            assertTrue(spin >= 0.0, "a brake must never reverse a wheel: " + spin);
+        }
+        assertEquals(0.0, spin, 0.0, "it comes to a stop and stays there");
+    }
 }

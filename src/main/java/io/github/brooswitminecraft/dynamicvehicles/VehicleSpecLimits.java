@@ -33,6 +33,27 @@ final class VehicleSpecLimits {
     static final double MIN_HANDBRAKE_SCALE = 0.0;
     static final double MAX_HANDBRAKE_SCALE = 5.0;
 
+    /** Engine/clutch coupling (MINECRAFT-444). Stock for every car on the roster is
+     * {@link VehicleSpec.DrivetrainCoupling#STOCK} (i.e. {@link DrivetrainMath}'s own constants); these
+     * bounds are generous around it while keeping a configured engine physically meaningful. A zero or
+     * negative inertia is excluded outright rather than clamped loosely: it is a divisor in
+     * {@link DrivetrainMath#engineAngularVelocity}, so zero would produce a non-finite engine speed. */
+    static final double MIN_ENGINE_INERTIA = 0.01;
+    static final double MAX_ENGINE_INERTIA = 5.0;
+
+    /** Zero peak torque (an engine that cannot drive the car at all) is degenerate but finite and valid. */
+    static final double MIN_ENGINE_PEAK_TORQUE = 0.0;
+    static final double MAX_ENGINE_PEAK_TORQUE = 10_000.0;
+
+    /** Zero means a freewheeling engine: no engine braking at all, still a valid configuration. */
+    static final double MIN_ENGINE_BRAKING_TORQUE = 0.0;
+    static final double MAX_ENGINE_BRAKING_TORQUE = 5_000.0;
+
+    /** Zero capacity is a permanently slipping clutch that transmits nothing -- degenerate, but finite and
+     * well-defined (the car simply never drives), so it is allowed rather than special-cased. */
+    static final double MIN_CLUTCH_TORQUE_CAPACITY = 0.0;
+    static final double MAX_CLUTCH_TORQUE_CAPACITY = 20_000.0;
+
     /** MINECRAFT-445: same range as the existing {@code dampingRate} field above -- a fast-compression,
      * slow-rebound or fast-rebound rate is physically the same kind of quantity, just applied in a
      * different speed/direction regime. */

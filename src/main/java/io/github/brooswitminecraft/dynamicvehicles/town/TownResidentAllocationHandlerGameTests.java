@@ -30,7 +30,7 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
  * that resident's own town, transactionally, and with a Builder exemption that recognises claim loss.
  *
  * <p>Every fixture and villager here is placed within THIS test's own GameTest structure, via the
- * same proven-stable {@code helper.absolutePos(ANCHOR)}-based placement every other test in this
+ * same proven-stable {@code helper.absolutePos(anchor(helper))}-based placement every other test in this
  * codebase already relies on. A fixture (or villager) placed at an arbitrary, far-away, self-chosen
  * world position was tried extensively here and confirmed GENUINELY unreliable in this specific
  * GameTest harness - not specific to entities, nor to one block type over another (both beds and
@@ -56,7 +56,23 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 public final class TownResidentAllocationHandlerGameTests {
     private TownResidentAllocationHandlerGameTests() {}
 
-    private static final BlockPos ANCHOR = new BlockPos(5, 2, 5);
+    /** Keep every fixture offset (-2..2) inside one town and the prepared 10x10 floor.
+     * GameTest grid origins vary; a fixed local anchor can straddle a 384-block town edge. */
+    private static BlockPos anchor(GameTestHelper helper) {
+        int[] candidates = {5, 2, 3, 4, 6, 7};
+        for (int x : candidates) {
+            for (int z : candidates) {
+                BlockPos candidate = new BlockPos(x, 2, z);
+                BlockPos min = helper.absolutePos(candidate.offset(-2, 0, -2));
+                BlockPos max = helper.absolutePos(candidate.offset(2, 0, 2));
+                if (TownRegion.fromBlockCoords(min.getX(), min.getZ())
+                        .equals(TownRegion.fromBlockCoords(max.getX(), max.getZ()))) {
+                    return candidate;
+                }
+            }
+        }
+        throw new IllegalStateException("No same-town fixture footprint inside the test floor");
+    }
     private static final BlockPos FIRST_VILLAGER_OFFSET = new BlockPos(0, 1, 2);
     private static final BlockPos SECOND_VILLAGER_OFFSET = new BlockPos(0, 1, -2);
     private static final BlockPos BED_HEAD_OFFSET = new BlockPos(1, 1, 0);
@@ -118,7 +134,7 @@ public final class TownResidentAllocationHandlerGameTests {
     }
 
     private static RegionCoord regionOf(GameTestHelper helper) {
-        BlockPos absoluteAnchor = helper.absolutePos(ANCHOR);
+        BlockPos absoluteAnchor = helper.absolutePos(anchor(helper));
         return TownRegion.fromBlockCoords(absoluteAnchor.getX(), absoluteAnchor.getZ());
     }
 
@@ -148,17 +164,17 @@ public final class TownResidentAllocationHandlerGameTests {
     @GameTest(template = "settlement_test")
     public static void anUnhousedNonBuilderVillagerIsAssignedAVacantBed(GameTestHelper helper) {
         prepareFlatGround(helper);
-        BlockPos bedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        BlockPos bedHead = anchor(helper).offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
         placeValidBed(helper, bedHead);
         RegionCoord region = regionOf(helper);
         TownStorage storage = newStorageWithFoundedTown(helper, region);
         markTownOwned(helper, storage, helper.absolutePos(bedHead));
 
-        Villager villager = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        Villager villager = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         // No HOME memory at all, profession NONE by default - a real villager that simply exists in
         // this founded town, never claimed any campfire.
 
-        BlockPos townCenter = helper.absolutePos(ANCHOR);
+        BlockPos townCenter = helper.absolutePos(anchor(helper));
         TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), villager, townCenter, region, storage);
 
         helper.assertTrue(villager.getBrain().getMemory(MemoryModuleType.HOME).isPresent(),
@@ -175,16 +191,16 @@ public final class TownResidentAllocationHandlerGameTests {
     @GameTest(template = "settlement_test")
     public static void anUnemployedVillagerIsAssignedAVacantWorkstationAndItsMatchingProfession(GameTestHelper helper) {
         prepareFlatGround(helper);
-        BlockPos workstationPos = ANCHOR.offset(WORKSTATION_OFFSET.getX(), WORKSTATION_OFFSET.getY(), WORKSTATION_OFFSET.getZ());
+        BlockPos workstationPos = anchor(helper).offset(WORKSTATION_OFFSET.getX(), WORKSTATION_OFFSET.getY(), WORKSTATION_OFFSET.getZ());
         placeWorkstation(helper, workstationPos, Blocks.BLAST_FURNACE);
         RegionCoord region = regionOf(helper);
         TownStorage storage = newStorageWithFoundedTown(helper, region);
         markTownOwned(helper, storage, helper.absolutePos(workstationPos));
 
-        Villager villager = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        Villager villager = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         villager.setVillagerData(villager.getVillagerData().setProfession(VillagerProfession.NONE));
 
-        BlockPos townCenter = helper.absolutePos(ANCHOR);
+        BlockPos townCenter = helper.absolutePos(anchor(helper));
         TownResidentAllocationHandler.allocateWorkplaceIfNeeded(helper.getLevel(), villager, townCenter, region, storage);
 
         VillagerProfession assignedProfession = villager.getVillagerData().getProfession();
@@ -208,16 +224,16 @@ public final class TownResidentAllocationHandlerGameTests {
     @GameTest(template = "settlement_test")
     public static void onlyOneOfTwoCompetingVillagersIsAssignedTheSingleVacantBed(GameTestHelper helper) {
         prepareFlatGround(helper);
-        BlockPos bedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        BlockPos bedHead = anchor(helper).offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
         placeValidBed(helper, bedHead);
         RegionCoord region = regionOf(helper);
         TownStorage storage = newStorageWithFoundedTown(helper, region);
         markTownOwned(helper, storage, helper.absolutePos(bedHead));
 
-        Villager first = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
-        Villager second = spawnVillager(helper, ANCHOR.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+        Villager first = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        Villager second = spawnVillager(helper, anchor(helper).offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
 
-        BlockPos townCenter = helper.absolutePos(ANCHOR);
+        BlockPos townCenter = helper.absolutePos(anchor(helper));
         TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), first, townCenter, region, storage);
         TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), second, townCenter, region, storage);
 
@@ -255,15 +271,15 @@ public final class TownResidentAllocationHandlerGameTests {
     @GameTest(template = "settlement_test")
     public static void aBedOutsideTheGivenRegionIsNeverMatched(GameTestHelper helper) {
         prepareFlatGround(helper);
-        BlockPos bedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        BlockPos bedHead = anchor(helper).offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
         placeValidBed(helper, bedHead);
         BlockPos absoluteBedHead = helper.absolutePos(bedHead);
         TownStorage storage = newStorageWithFoundedTown(helper, regionOf(helper));
         markTownOwned(helper, storage, absoluteBedHead);
 
-        Villager villager = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        Villager villager = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
 
-        BlockPos townCenter = helper.absolutePos(ANCHOR);
+        BlockPos townCenter = helper.absolutePos(anchor(helper));
         TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), villager, townCenter, GUARANTEED_EMPTY_REGION, storage);
 
         helper.assertTrue(villager.getBrain().getMemory(MemoryModuleType.HOME).isEmpty(),
@@ -283,13 +299,13 @@ public final class TownResidentAllocationHandlerGameTests {
     @GameTest(template = "settlement_test")
     public static void replacingACrossDimensionHomeReleasesTheOldTicketTransactionally(GameTestHelper helper) {
         prepareFlatGround(helper);
-        BlockPos newBedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        BlockPos newBedHead = anchor(helper).offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
         placeValidBed(helper, newBedHead);
         RegionCoord region = regionOf(helper);
         TownStorage storage = newStorageWithFoundedTown(helper, region);
         markTownOwned(helper, storage, helper.absolutePos(newBedHead));
 
-        Villager villager = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        Villager villager = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
 
         // A real, pre-existing home in a DIFFERENT dimension - still intact, still genuinely held.
         ServerLevel otherDimensionLevel = helper.getLevel().getServer().getLevel(net.minecraft.world.level.Level.NETHER);
@@ -306,7 +322,7 @@ public final class TownResidentAllocationHandlerGameTests {
         // below to be expected at all.
         storage.setReservationOwner(net.minecraft.world.level.Level.NETHER, oldHomeInOtherDimension, villager.getUUID());
 
-        BlockPos townCenter = helper.absolutePos(ANCHOR);
+        BlockPos townCenter = helper.absolutePos(anchor(helper));
         TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), villager, townCenter, region, storage);
 
         helper.assertTrue(villager.getBrain().getMemory(MemoryModuleType.HOME)
@@ -333,23 +349,23 @@ public final class TownResidentAllocationHandlerGameTests {
         prepareFlatGround(helper);
         // A DIFFERENT profession's own vacant workstation (so an unconstrained "first vacancy wins"
         // search would wrongly prefer it) - a real fletcher's fletching table.
-        BlockPos wrongWorkstationPos = ANCHOR.offset(OLD_WORKSTATION_OFFSET.getX(), OLD_WORKSTATION_OFFSET.getY(), OLD_WORKSTATION_OFFSET.getZ());
+        BlockPos wrongWorkstationPos = anchor(helper).offset(OLD_WORKSTATION_OFFSET.getX(), OLD_WORKSTATION_OFFSET.getY(), OLD_WORKSTATION_OFFSET.getZ());
         placeWorkstation(helper, wrongWorkstationPos, Blocks.FLETCHING_TABLE);
         BlockPos absoluteWrongWorkstationPos = helper.absolutePos(wrongWorkstationPos);
         // This villager's OWN real profession's matching workstation - a real armorer's blast
         // furnace.
-        BlockPos matchingWorkstationPos = ANCHOR.offset(WORKSTATION_OFFSET.getX(), WORKSTATION_OFFSET.getY(), WORKSTATION_OFFSET.getZ());
+        BlockPos matchingWorkstationPos = anchor(helper).offset(WORKSTATION_OFFSET.getX(), WORKSTATION_OFFSET.getY(), WORKSTATION_OFFSET.getZ());
         placeWorkstation(helper, matchingWorkstationPos, Blocks.BLAST_FURNACE);
         RegionCoord region = regionOf(helper);
         TownStorage storage = newStorageWithFoundedTown(helper, region);
         markTownOwned(helper, storage, absoluteWrongWorkstationPos);
         markTownOwned(helper, storage, helper.absolutePos(matchingWorkstationPos));
 
-        Villager villager = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        Villager villager = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         villager.setVillagerData(villager.getVillagerData().setProfession(VillagerProfession.ARMORER));
         // No JOB_SITE memory at all - simulating "already Armorer, but its own workstation was lost".
 
-        BlockPos townCenter = helper.absolutePos(ANCHOR);
+        BlockPos townCenter = helper.absolutePos(anchor(helper));
         TownResidentAllocationHandler.allocateWorkplaceIfNeeded(helper.getLevel(), villager, townCenter, region, storage);
 
         helper.assertTrue(villager.getVillagerData().getProfession() == VillagerProfession.ARMORER,
@@ -377,10 +393,10 @@ public final class TownResidentAllocationHandlerGameTests {
     @GameTest(template = "settlement_test")
     public static void anActivelyClaimedBuilderIsNeverTouchedByResidentAllocation(GameTestHelper helper) {
         prepareFlatGround(helper);
-        BlockPos campfireCell = ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), 0, FIRST_VILLAGER_OFFSET.getZ());
+        BlockPos campfireCell = anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), 0, FIRST_VILLAGER_OFFSET.getZ());
         helper.setBlock(campfireCell, Blocks.CAMPFIRE);
         BlockPos absoluteCampfire = helper.absolutePos(campfireCell);
-        BlockPos absoluteAnchor = helper.absolutePos(ANCHOR);
+        BlockPos absoluteAnchor = helper.absolutePos(anchor(helper));
 
         TownStorage storage = new TownStorage();
         RegionCoord region = TownRegion.fromBlockCoords(absoluteAnchor.getX(), absoluteAnchor.getZ());
@@ -407,21 +423,21 @@ public final class TownResidentAllocationHandlerGameTests {
     @GameTest(template = "settlement_test")
     public static void anOrphanedBuilderWithALapsedClaimIsReconciledLikeAnyOtherVillager(GameTestHelper helper) {
         prepareFlatGround(helper);
-        BlockPos staleCampfireCell = ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), 0, FIRST_VILLAGER_OFFSET.getZ());
+        BlockPos staleCampfireCell = anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), 0, FIRST_VILLAGER_OFFSET.getZ());
         BlockPos absoluteStaleCampfire = helper.absolutePos(staleCampfireCell);
         // The remembered campfire position no longer holds a campfire at all (destroyed) - the
         // claim has genuinely lapsed, even though the profession field still says Builder.
         helper.setBlock(staleCampfireCell, Blocks.AIR);
-        BlockPos workstationPos = ANCHOR.offset(WORKSTATION_OFFSET.getX(), WORKSTATION_OFFSET.getY(), WORKSTATION_OFFSET.getZ());
+        BlockPos workstationPos = anchor(helper).offset(WORKSTATION_OFFSET.getX(), WORKSTATION_OFFSET.getY(), WORKSTATION_OFFSET.getZ());
         placeWorkstation(helper, workstationPos, Blocks.BLAST_FURNACE);
-        BlockPos absoluteAnchor = helper.absolutePos(ANCHOR);
+        BlockPos absoluteAnchor = helper.absolutePos(anchor(helper));
 
         TownStorage storage = new TownStorage();
         RegionCoord region = TownRegion.fromBlockCoords(absoluteAnchor.getX(), absoluteAnchor.getZ());
         storage.markTownFounded(TownKeys.keyFor(helper.getLevel().dimension(), region));
         markTownOwned(helper, storage, helper.absolutePos(workstationPos));
 
-        Villager orphan = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        Villager orphan = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         orphan.setVillagerData(orphan.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
         orphan.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteStaleCampfire));
 
@@ -452,13 +468,13 @@ public final class TownResidentAllocationHandlerGameTests {
     @GameTest(template = "settlement_test")
     public static void aResidentWhoseHomeIsOutsideItsCurrentRegionIsReassignedAndTheOldTicketReleased(GameTestHelper helper) {
         prepareFlatGround(helper);
-        BlockPos newBedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        BlockPos newBedHead = anchor(helper).offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
         placeValidBed(helper, newBedHead);
         RegionCoord region = regionOf(helper);
         TownStorage storage = newStorageWithFoundedTown(helper, region);
         markTownOwned(helper, storage, helper.absolutePos(newBedHead));
 
-        BlockPos absoluteAnchor = helper.absolutePos(ANCHOR);
+        BlockPos absoluteAnchor = helper.absolutePos(anchor(helper));
         BlockPos oldHomeInDifferentRegion = absoluteAnchor.offset(50_000, 65 - absoluteAnchor.getY(), 50_000);
         helper.assertTrue(!TownRegion.fromBlockCoords(oldHomeInDifferentRegion.getX(), oldHomeInDifferentRegion.getZ()).equals(region),
                 "test setup: the old home's own offset must actually land in a different region");
@@ -467,13 +483,13 @@ public final class TownResidentAllocationHandlerGameTests {
         helper.assertTrue(helper.getLevel().getPoiManager().getFreeTickets(oldHomeInDifferentRegion) == 0,
                 "test setup: the old (different-region) home's ticket must actually be held before reconciliation runs");
 
-        Villager villager = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        Villager villager = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         villager.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(helper.getLevel().dimension(), oldHomeInDifferentRegion));
         // [Review round 24] Release now requires POSITIVE proof of self-ownership - genuinely record
         // this old home as the villager's own (as production code would have on the original grant).
         storage.setReservationOwner(helper.getLevel().dimension(), oldHomeInDifferentRegion, villager.getUUID());
 
-        BlockPos townCenter = helper.absolutePos(ANCHOR);
+        BlockPos townCenter = helper.absolutePos(anchor(helper));
         TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), villager, townCenter, region, storage);
 
         helper.assertTrue(villager.getBrain().getMemory(MemoryModuleType.HOME)
@@ -491,21 +507,21 @@ public final class TownResidentAllocationHandlerGameTests {
     @GameTest(template = "settlement_test")
     public static void anUnticketedHomeMemoryIsNotTreatedAsHoused(GameTestHelper helper) {
         prepareFlatGround(helper);
-        BlockPos staleBedHead = ANCHOR.offset(OLD_HOME_OFFSET.getX(), OLD_HOME_OFFSET.getY(), OLD_HOME_OFFSET.getZ());
+        BlockPos staleBedHead = anchor(helper).offset(OLD_HOME_OFFSET.getX(), OLD_HOME_OFFSET.getY(), OLD_HOME_OFFSET.getZ());
         placeValidBed(helper, staleBedHead); // registered, but its ticket is never taken - fully free
-        BlockPos newBedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        BlockPos newBedHead = anchor(helper).offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
         placeValidBed(helper, newBedHead);
         RegionCoord region = regionOf(helper);
         TownStorage storage = newStorageWithFoundedTown(helper, region);
         markTownOwned(helper, storage, helper.absolutePos(newBedHead));
 
-        Villager villager = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        Villager villager = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         BlockPos absoluteStaleBedHead = helper.absolutePos(staleBedHead);
         villager.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(helper.getLevel().dimension(), absoluteStaleBedHead));
         helper.assertTrue(helper.getLevel().getPoiManager().getFreeTickets(absoluteStaleBedHead) > 0,
                 "test setup: the stale home's own ticket must NOT actually be held (fully free) before reconciliation runs");
 
-        BlockPos townCenter = helper.absolutePos(ANCHOR);
+        BlockPos townCenter = helper.absolutePos(anchor(helper));
         TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), villager, townCenter, region, storage);
 
         helper.assertTrue(villager.getBrain().getMemory(MemoryModuleType.HOME)
@@ -522,17 +538,17 @@ public final class TownResidentAllocationHandlerGameTests {
     @GameTest(template = "settlement_test")
     public static void aSameRegionNonTownOwnedWorkstationIsNeverMatched(GameTestHelper helper) {
         prepareFlatGround(helper);
-        BlockPos workstationPos = ANCHOR.offset(WORKSTATION_OFFSET.getX(), WORKSTATION_OFFSET.getY(), WORKSTATION_OFFSET.getZ());
+        BlockPos workstationPos = anchor(helper).offset(WORKSTATION_OFFSET.getX(), WORKSTATION_OFFSET.getY(), WORKSTATION_OFFSET.getZ());
         placeWorkstation(helper, workstationPos, Blocks.BLAST_FURNACE);
         // Deliberately NOT registered via storage.markCellPlaced - standing in for a real, vacant,
         // same-region workstation Dynamic Towns itself never built.
         RegionCoord region = regionOf(helper);
         TownStorage storage = newStorageWithFoundedTown(helper, region);
 
-        Villager villager = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        Villager villager = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         villager.setVillagerData(villager.getVillagerData().setProfession(VillagerProfession.NONE));
 
-        BlockPos townCenter = helper.absolutePos(ANCHOR);
+        BlockPos townCenter = helper.absolutePos(anchor(helper));
         TownResidentAllocationHandler.allocateWorkplaceIfNeeded(helper.getLevel(), villager, townCenter, region, storage);
 
         helper.assertTrue(villager.getVillagerData().getProfession() == VillagerProfession.NONE,
@@ -549,7 +565,7 @@ public final class TownResidentAllocationHandlerGameTests {
     @GameTest(template = "settlement_test")
     public static void aNonTownBuilderIsNeverTouchedByResidentAllocation(GameTestHelper helper) {
         prepareFlatGround(helper);
-        BlockPos staleCampfireCell = ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), 0, FIRST_VILLAGER_OFFSET.getZ());
+        BlockPos staleCampfireCell = anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), 0, FIRST_VILLAGER_OFFSET.getZ());
         helper.setBlock(staleCampfireCell, Blocks.AIR); // claim already lapsed - no real campfire
         BlockPos absoluteStaleCampfire = helper.absolutePos(staleCampfireCell);
 
@@ -557,7 +573,7 @@ public final class TownResidentAllocationHandlerGameTests {
         // current region - standing in for a Builder whose region Dynamic Towns has never founded.
         TownStorage storage = new TownStorage();
 
-        Villager builder = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        Villager builder = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         builder.setVillagerData(builder.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
         builder.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteStaleCampfire));
 
@@ -578,7 +594,7 @@ public final class TownResidentAllocationHandlerGameTests {
     @GameTest(template = "settlement_test")
     public static void anOrphanedBuilderWithACrossDimensionClaimReleasesItsOldReservation(GameTestHelper helper) {
         prepareFlatGround(helper);
-        BlockPos absoluteAnchor = helper.absolutePos(ANCHOR);
+        BlockPos absoluteAnchor = helper.absolutePos(anchor(helper));
         RegionCoord region = TownRegion.fromBlockCoords(absoluteAnchor.getX(), absoluteAnchor.getZ());
         TownStorage storage = newStorageWithFoundedTown(helper, region);
 
@@ -590,7 +606,7 @@ public final class TownResidentAllocationHandlerGameTests {
         helper.assertTrue(otherDimensionLevel.getPoiManager().getFreeTickets(oldClaimInOtherDimension) == 0,
                 "test setup: the cross-dimension old claim's ticket must actually be held before reconciliation runs");
 
-        Villager orphan = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        Villager orphan = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         orphan.setVillagerData(orphan.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
         orphan.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(net.minecraft.world.level.Level.NETHER, oldClaimInOtherDimension));
         // [Review round 24] Release now requires POSITIVE proof of self-ownership - genuinely record
@@ -617,7 +633,7 @@ public final class TownResidentAllocationHandlerGameTests {
     @GameTest(template = "settlement_test")
     public static void aStaleHomeMemoryNowOwnedByAnotherVillagerIsNeverStolenOrTreatedAsValid(GameTestHelper helper) {
         prepareFlatGround(helper);
-        BlockPos bedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        BlockPos bedHead = anchor(helper).offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
         placeValidBed(helper, bedHead);
         BlockPos absoluteBedHead = helper.absolutePos(bedHead);
         // A SECOND, genuinely different vacant bed - without this, an impostor correctly rejected
@@ -625,16 +641,16 @@ public final class TownResidentAllocationHandlerGameTests {
         // unchanged (nothing to overwrite it with) and making the rejection itself unobservable.
         // With a real alternative present, actually ending up reassigned HERE is the positive proof
         // the stale memory was genuinely treated as invalid, not merely left alone by coincidence.
-        BlockPos secondBedHead = ANCHOR.offset(OLD_HOME_OFFSET.getX(), OLD_HOME_OFFSET.getY(), OLD_HOME_OFFSET.getZ());
+        BlockPos secondBedHead = anchor(helper).offset(OLD_HOME_OFFSET.getX(), OLD_HOME_OFFSET.getY(), OLD_HOME_OFFSET.getZ());
         placeValidBed(helper, secondBedHead);
         BlockPos absoluteSecondBedHead = helper.absolutePos(secondBedHead);
         RegionCoord region = regionOf(helper);
         TownStorage storage = newStorageWithFoundedTown(helper, region);
         markTownOwned(helper, storage, absoluteBedHead);
         markTownOwned(helper, storage, absoluteSecondBedHead);
-        BlockPos townCenter = helper.absolutePos(ANCHOR);
+        BlockPos townCenter = helper.absolutePos(anchor(helper));
 
-        Villager rightfulOwner = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        Villager rightfulOwner = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), rightfulOwner, townCenter, region, storage);
         helper.assertTrue(rightfulOwner.getBrain().getMemory(MemoryModuleType.HOME).isPresent(),
                 "test setup: the rightful owner must actually be assigned one of the two beds by production code first");
@@ -648,7 +664,7 @@ public final class TownResidentAllocationHandlerGameTests {
         // A THIRD, unrelated villager whose own memory also (incorrectly/stalely) points at the
         // rightful owner's exact bed - standing in for some earlier, now-outdated state that was
         // never cleared.
-        Villager impostor = spawnVillager(helper, ANCHOR.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+        Villager impostor = spawnVillager(helper, anchor(helper).offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
         impostor.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(helper.getLevel().dimension(), rightfulOwnerHome));
 
         TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), impostor, townCenter, region, storage);
@@ -673,21 +689,21 @@ public final class TownResidentAllocationHandlerGameTests {
     @GameTest(template = "settlement_test")
     public static void reacquiringTheSoleEligibleFixtureAlreadyPointedToDoesNotFreeItsOwnNewTicket(GameTestHelper helper) {
         prepareFlatGround(helper);
-        BlockPos bedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        BlockPos bedHead = anchor(helper).offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
         placeValidBed(helper, bedHead); // registered, but its ticket is never taken - fully free
         BlockPos absoluteBedHead = helper.absolutePos(bedHead);
         RegionCoord region = regionOf(helper);
         TownStorage storage = newStorageWithFoundedTown(helper, region);
         markTownOwned(helper, storage, absoluteBedHead);
-        BlockPos townCenter = helper.absolutePos(ANCHOR);
+        BlockPos townCenter = helper.absolutePos(anchor(helper));
 
-        Villager first = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        Villager first = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         // A stale memory pointing at the SOLE eligible bed, whose ticket is NOT currently held -
         // exactly the sequence that previously caused a self-inflicted immediate release.
         first.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(helper.getLevel().dimension(), absoluteBedHead));
         // A second real resident, also unhoused, also searching the same space - proving the fix
         // holds with more than one villager present, not merely in isolation.
-        Villager second = spawnVillager(helper, ANCHOR.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+        Villager second = spawnVillager(helper, anchor(helper).offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
 
         TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), first, townCenter, region, storage);
         helper.assertTrue(helper.getLevel().getPoiManager().getFreeTickets(absoluteBedHead) == 0,
@@ -713,28 +729,28 @@ public final class TownResidentAllocationHandlerGameTests {
     @GameTest(template = "settlement_test")
     public static void anUntrackedResidentsRealReservationIsNeverStolenByAnotherVillagersStaleMemory(GameTestHelper helper) {
         prepareFlatGround(helper);
-        BlockPos bedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        BlockPos bedHead = anchor(helper).offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
         placeValidBed(helper, bedHead);
         BlockPos absoluteBedHead = helper.absolutePos(bedHead);
-        BlockPos secondBedHead = ANCHOR.offset(OLD_HOME_OFFSET.getX(), OLD_HOME_OFFSET.getY(), OLD_HOME_OFFSET.getZ());
+        BlockPos secondBedHead = anchor(helper).offset(OLD_HOME_OFFSET.getX(), OLD_HOME_OFFSET.getY(), OLD_HOME_OFFSET.getZ());
         placeValidBed(helper, secondBedHead);
         BlockPos absoluteSecondBedHead = helper.absolutePos(secondBedHead);
         RegionCoord region = regionOf(helper);
         TownStorage storage = newStorageWithFoundedTown(helper, region);
         markTownOwned(helper, storage, absoluteBedHead);
         markTownOwned(helper, storage, absoluteSecondBedHead);
-        BlockPos townCenter = helper.absolutePos(ANCHOR);
+        BlockPos townCenter = helper.absolutePos(anchor(helper));
 
         // An UNTRACKED resident: its real reservation at the first bed was never granted through
         // this mod's own ownership-recording code paths (standing in for vanilla's own natural AI,
         // or one that predates this tracking) - TownStorage has no owner recorded for it at all.
-        Villager untrackedResident = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        Villager untrackedResident = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         takeTicketDirectly(helper.getLevel(), absoluteBedHead);
         untrackedResident.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(helper.getLevel().dimension(), absoluteBedHead));
 
         // A second, unrelated villager whose own memory also (incorrectly/stalely) points at that
         // exact same, genuinely-occupied bed.
-        Villager impostor = spawnVillager(helper, ANCHOR.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+        Villager impostor = spawnVillager(helper, anchor(helper).offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
         impostor.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(helper.getLevel().dimension(), absoluteBedHead));
 
         TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), impostor, townCenter, region, storage);
@@ -757,14 +773,14 @@ public final class TownResidentAllocationHandlerGameTests {
     @GameTest(template = "settlement_test")
     public static void reservationOwnershipMarksTheStorageDirtyAndSurvivesASaveLoadRoundTrip(GameTestHelper helper) {
         prepareFlatGround(helper);
-        BlockPos bedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        BlockPos bedHead = anchor(helper).offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
         placeValidBed(helper, bedHead);
         RegionCoord region = regionOf(helper);
         TownStorage storage = newStorageWithFoundedTown(helper, region);
         markTownOwned(helper, storage, helper.absolutePos(bedHead));
-        BlockPos townCenter = helper.absolutePos(ANCHOR);
+        BlockPos townCenter = helper.absolutePos(anchor(helper));
 
-        Villager owner = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        Villager owner = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), owner, townCenter, region, storage);
         helper.assertTrue(owner.getBrain().getMemory(MemoryModuleType.HOME).isPresent(),
                 "test setup: the owner must actually be assigned the bed first");
@@ -780,7 +796,7 @@ public final class TownResidentAllocationHandlerGameTests {
         net.minecraft.nbt.CompoundTag saved = storage.save(new net.minecraft.nbt.CompoundTag(), helper.getLevel().registryAccess());
         TownStorage reloaded = TownStorage.load(saved, helper.getLevel().registryAccess());
 
-        Villager impostor = spawnVillager(helper, ANCHOR.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+        Villager impostor = spawnVillager(helper, anchor(helper).offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
         helper.assertTrue(reloaded.isReservedByADifferentVillager(helper.getLevel().dimension(), ownedPos, impostor.getUUID()),
                 "the reservation-ownership record must survive a save/load round trip, not silently reset on reload");
 
@@ -801,23 +817,23 @@ public final class TownResidentAllocationHandlerGameTests {
     @GameTest(template = "settlement_test")
     public static void anUnresolvedHomeIsPreservedNotBackfilledWhenItsRealOwnerDisappearsBeforeFirstValidation(GameTestHelper helper) {
         prepareFlatGround(helper);
-        BlockPos bedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        BlockPos bedHead = anchor(helper).offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
         placeValidBed(helper, bedHead);
         BlockPos absoluteBedHead = helper.absolutePos(bedHead);
         RegionCoord region = regionOf(helper);
         TownStorage storage = newStorageWithFoundedTown(helper, region);
         markTownOwned(helper, storage, absoluteBedHead);
-        BlockPos townCenter = helper.absolutePos(ANCHOR);
+        BlockPos townCenter = helper.absolutePos(anchor(helper));
 
         // B's real, genuinely-held reservation - gone (unloaded/despawned) before this reconciliation
         // has EVER once looked at it. No registry entry, no live villager left to confirm it either.
-        Villager neverValidatedOwner = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        Villager neverValidatedOwner = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         takeTicketDirectly(helper.getLevel(), absoluteBedHead);
         neverValidatedOwner.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(helper.getLevel().dimension(), absoluteBedHead));
         neverValidatedOwner.discard();
 
         // A's own stale memory also (incorrectly) points at that same, genuinely-occupied bed.
-        Villager stale = spawnVillager(helper, ANCHOR.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+        Villager stale = spawnVillager(helper, anchor(helper).offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
         stale.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(helper.getLevel().dimension(), absoluteBedHead));
 
         TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), stale, townCenter, region, storage);
@@ -840,23 +856,23 @@ public final class TownResidentAllocationHandlerGameTests {
     @GameTest(template = "settlement_test")
     public static void anUnresolvedWorkplaceIsPreservedNotBackfilledWhenItsRealOwnerDisappearsBeforeFirstValidation(GameTestHelper helper) {
         prepareFlatGround(helper);
-        BlockPos workstationPos = ANCHOR.offset(WORKSTATION_OFFSET.getX(), WORKSTATION_OFFSET.getY(), WORKSTATION_OFFSET.getZ());
+        BlockPos workstationPos = anchor(helper).offset(WORKSTATION_OFFSET.getX(), WORKSTATION_OFFSET.getY(), WORKSTATION_OFFSET.getZ());
         placeWorkstation(helper, workstationPos, Blocks.BLAST_FURNACE);
         BlockPos absoluteWorkstationPos = helper.absolutePos(workstationPos);
         RegionCoord region = regionOf(helper);
         TownStorage storage = newStorageWithFoundedTown(helper, region);
         markTownOwned(helper, storage, absoluteWorkstationPos);
-        BlockPos townCenter = helper.absolutePos(ANCHOR);
+        BlockPos townCenter = helper.absolutePos(anchor(helper));
 
         // B's real, genuinely-held workstation - gone before this reconciliation ever once validated it.
-        Villager neverValidatedOwner = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        Villager neverValidatedOwner = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         neverValidatedOwner.setVillagerData(neverValidatedOwner.getVillagerData().setProfession(VillagerProfession.ARMORER));
         takeTicketDirectly(helper.getLevel(), absoluteWorkstationPos);
         neverValidatedOwner.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteWorkstationPos));
         neverValidatedOwner.discard();
 
         // A's own stale memory and matching profession also (incorrectly) point at that same workstation.
-        Villager stale = spawnVillager(helper, ANCHOR.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+        Villager stale = spawnVillager(helper, anchor(helper).offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
         stale.setVillagerData(stale.getVillagerData().setProfession(VillagerProfession.ARMORER));
         stale.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteWorkstationPos));
 
@@ -880,19 +896,19 @@ public final class TownResidentAllocationHandlerGameTests {
     @GameTest(template = "settlement_test")
     public static void aStaleRegistryRecordNeverReleasesARealVillagerThatGenuinelyTookOverTheOldPosition(GameTestHelper helper) {
         prepareFlatGround(helper);
-        BlockPos oldBedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        BlockPos oldBedHead = anchor(helper).offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
         placeValidBed(helper, oldBedHead);
         BlockPos absoluteOldBedHead = helper.absolutePos(oldBedHead);
-        BlockPos newBedHead = ANCHOR.offset(OLD_HOME_OFFSET.getX(), OLD_HOME_OFFSET.getY(), OLD_HOME_OFFSET.getZ());
+        BlockPos newBedHead = anchor(helper).offset(OLD_HOME_OFFSET.getX(), OLD_HOME_OFFSET.getY(), OLD_HOME_OFFSET.getZ());
         placeValidBed(helper, newBedHead);
         BlockPos absoluteNewBedHead = helper.absolutePos(newBedHead);
         RegionCoord region = regionOf(helper);
         TownStorage storage = newStorageWithFoundedTown(helper, region);
         markTownOwned(helper, storage, absoluteOldBedHead);
         markTownOwned(helper, storage, absoluteNewBedHead);
-        BlockPos townCenter = helper.absolutePos(ANCHOR);
+        BlockPos townCenter = helper.absolutePos(anchor(helper));
 
-        Villager a = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        Villager a = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         // A's registry record at the old bed is genuinely established, exactly as a real prior grant
         // would have.
         storage.setReservationOwner(helper.getLevel().dimension(), absoluteOldBedHead, a.getUUID());
@@ -903,7 +919,7 @@ public final class TownResidentAllocationHandlerGameTests {
         // naturally takes it over - while the registry's own "A" record is never told, and so goes
         // stale.
         helper.getLevel().getPoiManager().release(absoluteOldBedHead);
-        Villager b = spawnVillager(helper, ANCHOR.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+        Villager b = spawnVillager(helper, anchor(helper).offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
         takeTicketDirectly(helper.getLevel(), absoluteOldBedHead);
         b.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(helper.getLevel().dimension(), absoluteOldBedHead));
 
@@ -943,20 +959,20 @@ public final class TownResidentAllocationHandlerGameTests {
     public static void aStaleRegistryRecordNeverReleasesAWorkstationAnotherVillagerGenuinelyTookOver(GameTestHelper helper) {
         prepareFlatGround(helper);
         ServerLevel level = helper.getLevel();
-        BlockPos oldWorkstation = ANCHOR.offset(WORKSTATION_OFFSET.getX(), WORKSTATION_OFFSET.getY(), WORKSTATION_OFFSET.getZ());
+        BlockPos oldWorkstation = anchor(helper).offset(WORKSTATION_OFFSET.getX(), WORKSTATION_OFFSET.getY(), WORKSTATION_OFFSET.getZ());
         placeWorkstation(helper, oldWorkstation, Blocks.BLAST_FURNACE);
         BlockPos absoluteOldWorkstation = helper.absolutePos(oldWorkstation);
-        BlockPos newWorkstation = ANCHOR.offset(OLD_WORKSTATION_OFFSET.getX(), OLD_WORKSTATION_OFFSET.getY(), OLD_WORKSTATION_OFFSET.getZ());
+        BlockPos newWorkstation = anchor(helper).offset(OLD_WORKSTATION_OFFSET.getX(), OLD_WORKSTATION_OFFSET.getY(), OLD_WORKSTATION_OFFSET.getZ());
         placeWorkstation(helper, newWorkstation, Blocks.BLAST_FURNACE);
         BlockPos absoluteNewWorkstation = helper.absolutePos(newWorkstation);
         RegionCoord region = regionOf(helper);
         TownStorage storage = newStorageWithFoundedTown(helper, region);
         markTownOwned(helper, storage, absoluteOldWorkstation);
         markTownOwned(helper, storage, absoluteNewWorkstation);
-        BlockPos townCenter = helper.absolutePos(ANCHOR);
+        BlockPos townCenter = helper.absolutePos(anchor(helper));
 
         // This mod originally granted the workstation to A: ticket taken, owner recorded.
-        Villager a = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        Villager a = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         a.setVillagerData(a.getVillagerData().setProfession(VillagerProfession.ARMORER));
         takeTicketDirectly(level, absoluteOldWorkstation);
         storage.setReservationOwner(level.dimension(), absoluteOldWorkstation, a.getUUID());
@@ -964,7 +980,7 @@ public final class TownResidentAllocationHandlerGameTests {
 
         // Vanilla releases it and re-grants it to B; the registry is never told.
         level.getPoiManager().release(absoluteOldWorkstation);
-        Villager b = spawnVillager(helper, ANCHOR.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+        Villager b = spawnVillager(helper, anchor(helper).offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
         b.setVillagerData(b.getVillagerData().setProfession(VillagerProfession.ARMORER));
         takeTicketDirectly(level, absoluteOldWorkstation);
         b.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), absoluteOldWorkstation));
@@ -1006,19 +1022,19 @@ public final class TownResidentAllocationHandlerGameTests {
         prepareFlatGround(helper);
         ServerLevel level = helper.getLevel();
         RegionCoord region = regionOf(helper);
-        BlockPos townCenter = helper.absolutePos(ANCHOR);
+        BlockPos townCenter = helper.absolutePos(anchor(helper));
 
         // A's replacement destinations in its CURRENT town (this test's own region).
-        BlockPos newBedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        BlockPos newBedHead = anchor(helper).offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
         placeValidBed(helper, newBedHead);
-        BlockPos newWorkstation = ANCHOR.offset(WORKSTATION_OFFSET.getX(), WORKSTATION_OFFSET.getY(), WORKSTATION_OFFSET.getZ());
+        BlockPos newWorkstation = anchor(helper).offset(WORKSTATION_OFFSET.getX(), WORKSTATION_OFFSET.getY(), WORKSTATION_OFFSET.getZ());
         placeWorkstation(helper, newWorkstation, Blocks.BLAST_FURNACE);
 
         // A's OLD home and workstation, in a genuinely different region, plus a vacant bed and
         // workstation there for B to be (wrongly) moved to. A distinct offset from
         // aResidentWhoseHomeIsOutsideItsCurrentRegionIsReassignedAndTheOldTicketReleased's own, so the
         // two tests' far fixtures can never land on each other.
-        BlockPos absoluteAnchor = helper.absolutePos(ANCHOR);
+        BlockPos absoluteAnchor = helper.absolutePos(anchor(helper));
         BlockPos oldHome = absoluteAnchor.offset(60_000, 65 - absoluteAnchor.getY(), -60_000);
         BlockPos oldWorkstation = oldHome.offset(4, 0, 0);
         BlockPos spareBed = oldHome.offset(-4, 0, 0);
@@ -1035,7 +1051,7 @@ public final class TownResidentAllocationHandlerGameTests {
 
         // This mod originally granted both to A: tickets taken, owners recorded in the REAL
         // server-wide storage - the one the registered unload listener reconciles.
-        Villager a = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        Villager a = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         a.setVillagerData(a.getVillagerData().setProfession(VillagerProfession.ARMORER));
         takeTicketDirectly(level, oldHome);
         takeTicketDirectly(level, oldWorkstation);
@@ -1048,7 +1064,7 @@ public final class TownResidentAllocationHandlerGameTests {
         // Vanilla releases both and re-grants them to B; the registry is never told.
         level.getPoiManager().release(oldHome);
         level.getPoiManager().release(oldWorkstation);
-        Villager b = spawnVillager(helper, ANCHOR.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+        Villager b = spawnVillager(helper, anchor(helper).offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
         b.setVillagerData(b.getVillagerData().setProfession(VillagerProfession.ARMORER));
         takeTicketDirectly(level, oldHome);
         takeTicketDirectly(level, oldWorkstation);
@@ -1128,21 +1144,21 @@ public final class TownResidentAllocationHandlerGameTests {
         ServerLevel level = helper.getLevel();
         RegionCoord region = regionOf(helper);
         TownStorage storage = newStorageWithFoundedTown(helper, region);
-        BlockPos townCenter = helper.absolutePos(ANCHOR);
+        BlockPos townCenter = helper.absolutePos(anchor(helper));
 
-        BlockPos absoluteAnchor = helper.absolutePos(ANCHOR);
+        BlockPos absoluteAnchor = helper.absolutePos(anchor(helper));
         BlockPos oldHome = absoluteAnchor.offset(-70_000, 65 - absoluteAnchor.getY(), 70_000);
         helper.assertTrue(!TownRegion.fromBlockCoords(oldHome.getX(), oldHome.getZ()).equals(region),
                 "test setup: the old home must be in a different region from A's current one");
         placeValidBedAt(level, oldHome);
 
-        Villager a = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        Villager a = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         takeTicketDirectly(level, oldHome);
         storage.setReservationOwner(level.dimension(), oldHome, a.getUUID());
         a.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), oldHome));
 
         level.getPoiManager().release(oldHome);
-        Villager b = spawnVillager(helper, ANCHOR.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+        Villager b = spawnVillager(helper, anchor(helper).offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
         takeTicketDirectly(level, oldHome);
         b.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), oldHome));
 
@@ -1157,7 +1173,7 @@ public final class TownResidentAllocationHandlerGameTests {
         // Restart in which B's chunk never loads again.
         TownStorage reloaded = TownStorage.load(storage.save(new CompoundTag(), level.registryAccess()), level.registryAccess());
         b.discard();
-        BlockPos newBedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        BlockPos newBedHead = anchor(helper).offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
         placeValidBed(helper, newBedHead);
         BlockPos absoluteNewBedHead = helper.absolutePos(newBedHead);
         markTownOwned(helper, reloaded, absoluteNewBedHead);
@@ -1188,26 +1204,26 @@ public final class TownResidentAllocationHandlerGameTests {
         ServerLevel level = helper.getLevel();
         RegionCoord region = regionOf(helper);
         TownStorage storage = newStorageWithFoundedTown(helper, region);
-        BlockPos townCenter = helper.absolutePos(ANCHOR);
+        BlockPos townCenter = helper.absolutePos(anchor(helper));
 
-        BlockPos paidWallCell = ANCHOR.offset(OLD_HOME_OFFSET.getX(), OLD_HOME_OFFSET.getY(), OLD_HOME_OFFSET.getZ());
+        BlockPos paidWallCell = anchor(helper).offset(OLD_HOME_OFFSET.getX(), OLD_HOME_OFFSET.getY(), OLD_HOME_OFFSET.getZ());
         BlockPos absolutePaidWallCell = helper.absolutePos(paidWallCell);
         markPaidNonFixtureCell(helper, storage, absolutePaidWallCell);
         placeValidBed(helper, paidWallCell); // the player's bed, its head on the paid wall cell
 
-        BlockPos townBed = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        BlockPos townBed = anchor(helper).offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
         placeValidBed(helper, townBed);
         BlockPos absoluteTownBed = helper.absolutePos(townBed);
         markTownOwned(helper, storage, absoluteTownBed);
 
         TownStorage reloaded = TownStorage.load(storage.save(new CompoundTag(), level.registryAccess()), level.registryAccess());
 
-        Villager first = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        Villager first = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         TownResidentAllocationHandler.allocateHomeIfNeeded(level, first, townCenter, region, reloaded);
         helper.assertTrue(first.getBrain().getMemory(MemoryModuleType.HOME).map(gp -> gp.pos().equals(absoluteTownBed)).orElse(false),
                 "an unchanged town-built bed must remain eligible");
 
-        Villager second = spawnVillager(helper, ANCHOR.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+        Villager second = spawnVillager(helper, anchor(helper).offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
         TownResidentAllocationHandler.allocateHomeIfNeeded(level, second, townCenter, region, reloaded);
         helper.assertTrue(second.getBrain().getMemory(MemoryModuleType.HOME).isEmpty(),
                 "a player's bed on a historically paid wall cell must never be reserved as town housing");
@@ -1226,39 +1242,39 @@ public final class TownResidentAllocationHandlerGameTests {
         ServerLevel level = helper.getLevel();
         RegionCoord region = regionOf(helper);
         TownStorage storage = newStorageWithFoundedTown(helper, region);
-        BlockPos townCenter = helper.absolutePos(ANCHOR);
+        BlockPos townCenter = helper.absolutePos(anchor(helper));
 
-        BlockPos paidFloorCell = ANCHOR.offset(OLD_WORKSTATION_OFFSET.getX(), OLD_WORKSTATION_OFFSET.getY(), OLD_WORKSTATION_OFFSET.getZ());
+        BlockPos paidFloorCell = anchor(helper).offset(OLD_WORKSTATION_OFFSET.getX(), OLD_WORKSTATION_OFFSET.getY(), OLD_WORKSTATION_OFFSET.getZ());
         BlockPos absolutePaidFloorCell = helper.absolutePos(paidFloorCell);
         markPaidNonFixtureCell(helper, storage, absolutePaidFloorCell);
         placeWorkstation(helper, paidFloorCell, Blocks.BLAST_FURNACE);
 
-        BlockPos swappedFixtureCell = ANCHOR.offset(2, 1, -2);
+        BlockPos swappedFixtureCell = anchor(helper).offset(2, 1, -2);
         BlockPos absoluteSwappedFixtureCell = helper.absolutePos(swappedFixtureCell);
         storage.markCellPlaced(level.dimension(), absoluteSwappedFixtureCell, "site:test-owner",
                 "COMMERCIAL:0:minecraft:butcher:minecraft:smoker:STONE", Blocks.SMOKER.defaultBlockState());
         placeWorkstation(helper, swappedFixtureCell, Blocks.BLAST_FURNACE);
 
-        BlockPos townWorkstation = ANCHOR.offset(WORKSTATION_OFFSET.getX(), WORKSTATION_OFFSET.getY(), WORKSTATION_OFFSET.getZ());
+        BlockPos townWorkstation = anchor(helper).offset(WORKSTATION_OFFSET.getX(), WORKSTATION_OFFSET.getY(), WORKSTATION_OFFSET.getZ());
         placeWorkstation(helper, townWorkstation, Blocks.BLAST_FURNACE);
         BlockPos absoluteTownWorkstation = helper.absolutePos(townWorkstation);
         markTownOwned(helper, storage, absoluteTownWorkstation);
 
         TownStorage reloaded = TownStorage.load(storage.save(new CompoundTag(), level.registryAccess()), level.registryAccess());
 
-        Villager unemployed = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        Villager unemployed = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         unemployed.setVillagerData(unemployed.getVillagerData().setProfession(VillagerProfession.NONE));
         TownResidentAllocationHandler.allocateWorkplaceIfNeeded(level, unemployed, townCenter, region, reloaded);
         helper.assertTrue(unemployed.getBrain().getMemory(MemoryModuleType.JOB_SITE).map(gp -> gp.pos().equals(absoluteTownWorkstation)).orElse(false)
                         && unemployed.getVillagerData().getProfession() == VillagerProfession.ARMORER,
                 "an unchanged town-built workstation must remain eligible");
 
-        Villager armorer = spawnVillager(helper, ANCHOR.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+        Villager armorer = spawnVillager(helper, anchor(helper).offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
         armorer.setVillagerData(armorer.getVillagerData().setProfession(VillagerProfession.ARMORER));
         TownResidentAllocationHandler.allocateWorkplaceIfNeeded(level, armorer, townCenter, region, reloaded);
         helper.assertTrue(armorer.getBrain().getMemory(MemoryModuleType.JOB_SITE).isEmpty(),
                 "neither a player workstation on a paid floor cell nor one swapped in for a different town fixture may be reserved");
-        Villager secondUnemployed = spawnVillager(helper, ANCHOR.offset(0, 1, 0));
+        Villager secondUnemployed = spawnVillager(helper, anchor(helper).offset(0, 1, 0));
         secondUnemployed.setVillagerData(secondUnemployed.getVillagerData().setProfession(VillagerProfession.NONE));
         TownResidentAllocationHandler.allocateWorkplaceIfNeeded(level, secondUnemployed, townCenter, region, reloaded);
         helper.assertTrue(secondUnemployed.getVillagerData().getProfession() == VillagerProfession.NONE
@@ -1280,7 +1296,7 @@ public final class TownResidentAllocationHandlerGameTests {
         ServerLevel level = helper.getLevel();
         RegionCoord region = regionOf(helper);
         TownStorage storage = newStorageWithFoundedTown(helper, region);
-        BlockPos bedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        BlockPos bedHead = anchor(helper).offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
         placeValidBed(helper, bedHead);
         BlockPos absoluteBedHead = helper.absolutePos(bedHead);
         markTownOwned(helper, storage, absoluteBedHead);
@@ -1293,8 +1309,8 @@ public final class TownResidentAllocationHandlerGameTests {
         }
         TownStorage legacy = TownStorage.load(saved, level.registryAccess());
 
-        Villager villager = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
-        TownResidentAllocationHandler.allocateHomeIfNeeded(level, villager, helper.absolutePos(ANCHOR), region, legacy);
+        Villager villager = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        TownResidentAllocationHandler.allocateHomeIfNeeded(level, villager, helper.absolutePos(anchor(helper)), region, legacy);
 
         helper.assertTrue(villager.getBrain().getMemory(MemoryModuleType.HOME).isEmpty()
                         && level.getPoiManager().getFreeTickets(absoluteBedHead) > 0,

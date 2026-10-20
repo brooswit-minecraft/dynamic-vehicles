@@ -142,7 +142,77 @@ public record VehicleSpec(
          * <p>{@code 0.4} (the old global constant's own value) for every vehicle that has not opted into a
          * different value via its own wing config, so {@code SableCarBody.tick}'s drag impulse is
          * byte-for-byte unchanged for the whole roster until an operator overrides it. */
-        double wingDragCoeff) {
+        double wingDragCoeff,
+        /** This vehicle's engine/clutch coupling settings (MINECRAFT-444): engine rotational inertia, peak
+         * engine torque, closed-throttle engine braking torque and clutch torque capacity. {@link
+         * DrivetrainCoupling#STOCK} for every vehicle on the roster today -- the shared stock engine
+         * hardware -- so every vehicle's coupling behaviour is byte-for-byte what it was before this field
+         * existed. Grouped into their own small type for the same reason {@link VehicleTuning} is: four
+         * related dials that are set together or not at all. See {@link DrivetrainCoupling}. */
+        DrivetrainCoupling drivetrainCoupling) {
+
+    /** Compatibility constructor: absent feature groups retain their identity defaults. */
+    public VehicleSpec(double halfX, double halfY, double halfZ,
+            double[][] mounts, double wheelRadius, double wheelWidth,
+            double rideHeight, double restLength,
+            double massKg, double springRate, double dampingRate, double maxSpringForce,
+            double wheelbase, double maxSpeed,
+            double forceScale, double enginePitch,
+            double seatY, double seatZ,
+            double looseGrip, double rollingScale,
+            TireTuning tireTuning, double downforceGripPerSpeed, double antiRollScale,
+            List<Seat> seats, VehicleTuning vehicleTuning, double handbrakeScale,
+            double frontWingDownforceCoeff, double rearWingDownforceCoeff, double wingDragCoeff) {
+        this(halfX, halfY, halfZ, mounts, wheelRadius, wheelWidth, rideHeight, restLength,
+                massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
+                forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
+                downforceGripPerSpeed, antiRollScale, seats, vehicleTuning, handbrakeScale,
+                SuspensionTuning.singleRate(dampingRate), SteeringTuning.IDENTITY,
+                WheelMath.NOMINAL_TIRE_PRESSURE_BAR, PitchTuning.IDENTITY,
+                frontWingDownforceCoeff, rearWingDownforceCoeff, wingDragCoeff, DrivetrainCoupling.STOCK);
+    }
+
+    /** Compatibility constructor: absent feature groups retain their identity defaults. */
+    public VehicleSpec(double halfX, double halfY, double halfZ,
+            double[][] mounts, double wheelRadius, double wheelWidth,
+            double rideHeight, double restLength,
+            double massKg, double springRate, double dampingRate, double maxSpringForce,
+            double wheelbase, double maxSpeed,
+            double forceScale, double enginePitch,
+            double seatY, double seatZ,
+            double looseGrip, double rollingScale,
+            TireTuning tireTuning, double downforceGripPerSpeed, double antiRollScale,
+            List<Seat> seats, VehicleTuning vehicleTuning, double handbrakeScale,
+            double frontWingDownforceCoeff, double rearWingDownforceCoeff, double wingDragCoeff, DrivetrainCoupling drivetrainCoupling) {
+        this(halfX, halfY, halfZ, mounts, wheelRadius, wheelWidth, rideHeight, restLength,
+                massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
+                forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
+                downforceGripPerSpeed, antiRollScale, seats, vehicleTuning, handbrakeScale,
+                SuspensionTuning.singleRate(dampingRate), SteeringTuning.IDENTITY,
+                WheelMath.NOMINAL_TIRE_PRESSURE_BAR, PitchTuning.IDENTITY,
+                frontWingDownforceCoeff, rearWingDownforceCoeff, wingDragCoeff, drivetrainCoupling);
+    }
+
+    /** Compatibility constructor: absent feature groups retain their identity defaults. */
+    public VehicleSpec(double halfX, double halfY, double halfZ,
+            double[][] mounts, double wheelRadius, double wheelWidth,
+            double rideHeight, double restLength,
+            double massKg, double springRate, double dampingRate, double maxSpringForce,
+            double wheelbase, double maxSpeed,
+            double forceScale, double enginePitch,
+            double seatY, double seatZ,
+            double looseGrip, double rollingScale,
+            TireTuning tireTuning, double downforceGripPerSpeed, double antiRollScale,
+            List<Seat> seats, VehicleTuning vehicleTuning, double handbrakeScale,
+            SuspensionTuning suspensionTuning, SteeringTuning steeringTuning, double tirePressureBar, PitchTuning pitchTuning,
+            double frontWingDownforceCoeff, double rearWingDownforceCoeff, double wingDragCoeff) {
+        this(halfX, halfY, halfZ, mounts, wheelRadius, wheelWidth, rideHeight, restLength,
+                massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
+                forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
+                downforceGripPerSpeed, antiRollScale, seats, vehicleTuning, handbrakeScale,
+                suspensionTuning, steeringTuning, tirePressureBar, pitchTuning,
+                frontWingDownforceCoeff, rearWingDownforceCoeff, wingDragCoeff, DrivetrainCoupling.STOCK);
+    }
 
     /**
      * Anti-dive and anti-squat (MINECRAFT-445): how much of a wheel's longitudinal tire force is carried
@@ -204,36 +274,6 @@ public record VehicleSpec(
                 SuspensionTuning.singleRate(dampingRate), SteeringTuning.IDENTITY,
                 WheelMath.NOMINAL_TIRE_PRESSURE_BAR, PitchTuning.IDENTITY,
                 0.0, 0.0, LEGACY_AIR_DRAG);
-    }
-
-    /**
-     * As the full (canonical) constructor above, minus only MINECRAFT-445's four trailing fields: this is
-     * exactly the signature that WAS canonical after MINECRAFT-446 added its wing fields and before
-     * MINECRAFT-445's suspension/steering/pressure/pitch fields were merged in on top of them. Kept so
-     * every 446-era call site -- {@code VehicleSpecWingTest} among them -- keeps compiling untouched, with
-     * {@link #suspensionTuning} defaulted to {@link SuspensionTuning#singleRate} of this spec's own
-     * {@code dampingRate}, {@link #steeringTuning} to {@link SteeringTuning#IDENTITY}, {@link
-     * #tirePressureBar} to {@link WheelMath#NOMINAL_TIRE_PRESSURE_BAR} and {@link #pitchTuning} to
-     * {@link PitchTuning#IDENTITY} -- every one of them the value that leaves behaviour unchanged.
-     */
-    public VehicleSpec(double halfX, double halfY, double halfZ,
-            double[][] mounts, double wheelRadius, double wheelWidth,
-            double rideHeight, double restLength,
-            double massKg, double springRate, double dampingRate, double maxSpringForce,
-            double wheelbase, double maxSpeed,
-            double forceScale, double enginePitch,
-            double seatY, double seatZ,
-            double looseGrip, double rollingScale,
-            TireTuning tireTuning, double downforceGripPerSpeed, double antiRollScale,
-            List<Seat> seats, VehicleTuning vehicleTuning, double handbrakeScale,
-            double frontWingDownforceCoeff, double rearWingDownforceCoeff, double wingDragCoeff) {
-        this(halfX, halfY, halfZ, mounts, wheelRadius, wheelWidth, rideHeight, restLength,
-                massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
-                forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
-                downforceGripPerSpeed, antiRollScale, seats, vehicleTuning, handbrakeScale,
-                SuspensionTuning.singleRate(dampingRate), SteeringTuning.IDENTITY,
-                WheelMath.NOMINAL_TIRE_PRESSURE_BAR, PitchTuning.IDENTITY,
-                frontWingDownforceCoeff, rearWingDownforceCoeff, wingDragCoeff);
     }
 
     /** Legacy drag coefficient (MINECRAFT-446): every vehicle on the roster used this single hardcoded
@@ -459,6 +499,38 @@ public record VehicleSpec(
         /** Whether this tuning is exactly {@link #IDENTITY}. */
         public boolean isIdentity() {
             return this.equals(IDENTITY);
+        }
+    }
+
+    /**
+     * Engine/clutch coupling settings (MINECRAFT-444), the per-car face of the physical coupling this
+     * ticket implements: the engine's own rotational inertia, the peak torque it produces at full throttle,
+     * the drag it applies to itself at closed throttle (engine braking), and how much torque its clutch can
+     * transmit before it slips. {@link DrivetrainMath} and {@link GearDrive} take these as arguments rather
+     * than reading their own constants, so a per-car file can change them (see
+     * {@code docs/per-car-config.md}) without a second engine model existing anywhere.
+     *
+     * <p>Scope boundary: these four are MINECRAFT-444's own coupling parameters. The rev limiter's RPM
+     * thresholds, turbo/nitrous boost and ballast belong to MINECRAFT-449 and are deliberately NOT here --
+     * that task owns adding them through this same contract.
+     *
+     * @param engineInertia crankshaft rotational inertia about its own axis, kg*m^2
+     * @param enginePeakTorque torque at full throttle before the clutch, N*m
+     * @param engineBrakingTorque closed-throttle drag the engine applies against its own rotation, N*m
+     * @param clutchTorqueCapacity torque the clutch transmits before slipping, N*m
+     */
+    public record DrivetrainCoupling(double engineInertia, double enginePeakTorque,
+            double engineBrakingTorque, double clutchTorqueCapacity) {
+
+        /** The shared stock engine every vehicle on the roster runs: exactly {@link DrivetrainMath}'s own
+         * constants, so a vehicle carrying this is identical to how it behaved before the field existed. */
+        public static final DrivetrainCoupling STOCK = new DrivetrainCoupling(
+                DrivetrainMath.ENGINE_INERTIA, DrivetrainMath.ENGINE_PEAK_TORQUE,
+                DrivetrainMath.ENGINE_BRAKING_TORQUE, DrivetrainMath.CLUTCH_TORQUE_CAPACITY);
+
+        /** Whether this coupling is exactly the shared {@link #STOCK} engine. */
+        public boolean isStock() {
+            return this.equals(STOCK);
         }
     }
 

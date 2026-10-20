@@ -3,6 +3,7 @@ package io.github.brooswitminecraft.dynamicvehicles;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
@@ -133,49 +134,48 @@ public final class RollingResistanceGameTests {
      * every wheel reading wheel 0's hit) would instead make the straddling car match one of the pure cases
      * exactly, not land between them.
      */
-    @GameTest(template = "settlement_test", timeoutTicks = 300)
+    @GameTest(template = "settlement_test", timeoutTicks = 300 + VehicleLanes.CHUNK_LOAD_ALLOWANCE)
     public static void mixedMaterialWheelsAggregatePerWheelSurfaces(GameTestHelper helper) {
-        fillFloor(helper, 5, 2, 5, Blocks.STONE.defaultBlockState());
-        fillFloor(helper, 5, 2, 13, Blocks.SAND.defaultBlockState());
-        int cx = 5;
-        int cz = 20;
-        BlockState stone = Blocks.STONE.defaultBlockState();
-        BlockState sand = Blocks.SAND.defaultBlockState();
-        for (int dx = -2; dx <= 2; dx++) {
-            // Front wheels (local z = +1.2) land at z in [cz, cz+1]; rear wheels (local z = -1.2) land at
-            // z in [cz-2, cz-1] -- see this test's own spawn point below. A few extra rows of margin on
-            // each side cover any settling drift without crossing the boundary.
-            for (int dz = 0; dz <= 3; dz++) {
-                helper.setBlock(new BlockPos(cx + dx, 2, cz + dz), stone);
-            }
-            for (int dz = -3; dz <= -1; dz++) {
-                helper.setBlock(new BlockPos(cx + dx, 2, cz + dz), sand);
-            }
-        }
+        VehicleLanes.build(helper, VehicleLanes.Site.MIXED_MATERIALS, lanes -> {
+            BlockState stone = Blocks.STONE.defaultBlockState();
+            BlockState sand = Blocks.SAND.defaultBlockState();
+            lanes.layLane(VehicleLanes.FIRST_LANE_X, stone);
+            lanes.layLane(VehicleLanes.SECOND_LANE_X, sand);
+            lanes.layLane(VehicleLanes.THIRD_LANE_X, stone, sand);
 
-        CarEntity onStone = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
-        CarEntity onSand = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 13));
-        CarEntity mixed = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(cx, 3, cz));
+            CarEntity onStone = lanes.spawn(DynamicVehiclesMod.CAR.get(), VehicleLanes.spawnPoint(VehicleLanes.FIRST_LANE_X));
+            CarEntity onSand = lanes.spawn(DynamicVehiclesMod.CAR.get(), VehicleLanes.spawnPoint(VehicleLanes.SECOND_LANE_X));
+            CarEntity mixed = lanes.spawn(DynamicVehiclesMod.CAR.get(), VehicleLanes.spawnPoint(VehicleLanes.THIRD_LANE_X));
 
-        onStone.forceDrive(GENTLE_THROTTLE, 0.0, DRIVE_TICKS);
-        onSand.forceDrive(GENTLE_THROTTLE, 0.0, DRIVE_TICKS);
-        mixed.forceDrive(GENTLE_THROTTLE, 0.0, DRIVE_TICKS);
-        helper.runAfterDelay((long) DRIVE_TICKS, () -> {
-            double stoneSpeed = horizontalSpeed(onStone);
-            double sandSpeed = horizontalSpeed(onSand);
-            double mixedSpeed = horizontalSpeed(mixed);
-            helper.assertTrue(!Double.isNaN(stoneSpeed) && !Double.isNaN(sandSpeed) && !Double.isNaN(mixedSpeed),
-                    "sustained throttle produced a NaN speed: stone=" + stoneSpeed + " sand=" + sandSpeed
-                            + " mixed=" + mixedSpeed);
-            helper.assertTrue(mixedSpeed < stoneSpeed,
-                    "a car with its rear wheels on real sand must reach a lower cruise speed than a car "
-                            + "entirely on stone -- its sand-side wheels may not be contributing their own "
-                            + "real resistance: stoneSpeed=" + stoneSpeed + " mixedSpeed=" + mixedSpeed);
-            helper.assertTrue(mixedSpeed > sandSpeed,
-                    "a car with its front wheels on real stone must reach a higher cruise speed than a car "
-                            + "entirely on sand -- its stone-side wheels may not be contributing their own "
-                            + "real resistance: sandSpeed=" + sandSpeed + " mixedSpeed=" + mixedSpeed);
-            helper.succeed();
+            // All three get the same lane-keeping driver (see VehicleLanes.driveAlongLane): the mixed car needs
+            // one to stay on its seam, and the single-material cars get identical treatment, which asks them
+            // for essentially no steering.
+            lanes.driveAlongLane(onStone, VehicleLanes.FIRST_LANE_X, GENTLE_THROTTLE, DRIVE_TICKS);
+            lanes.driveAlongLane(onSand, VehicleLanes.SECOND_LANE_X, GENTLE_THROTTLE, DRIVE_TICKS);
+            lanes.driveAlongLane(mixed, VehicleLanes.THIRD_LANE_X, GENTLE_THROTTLE, DRIVE_TICKS);
+            lanes.assertStaysOnLane(onStone, VehicleLanes.FIRST_LANE_X, VehicleLanes.allWheels(Blocks.STONE), VehicleLanes.Wear.SAME_SURFACE,
+                    2L, DRIVE_TICKS - 1L, "stone car");
+            lanes.assertStaysOnLane(onSand, VehicleLanes.SECOND_LANE_X, VehicleLanes.allWheels(Blocks.SAND), VehicleLanes.Wear.SAME_SURFACE,
+                    2L, DRIVE_TICKS - 1L, "sand car");
+            lanes.assertStaysOnLane(mixed, VehicleLanes.THIRD_LANE_X, new Block[] {Blocks.STONE, Blocks.SAND, Blocks.STONE, Blocks.SAND},
+                    VehicleLanes.Wear.SAME_SURFACE, 2L, DRIVE_TICKS - 1L, "mixed car");
+            helper.runAfterDelay((long) DRIVE_TICKS, () -> {
+                double stoneSpeed = horizontalSpeed(onStone);
+                double sandSpeed = horizontalSpeed(onSand);
+                double mixedSpeed = horizontalSpeed(mixed);
+                helper.assertTrue(!Double.isNaN(stoneSpeed) && !Double.isNaN(sandSpeed) && !Double.isNaN(mixedSpeed),
+                        "sustained throttle produced a NaN speed: stone=" + stoneSpeed + " sand=" + sandSpeed
+                                + " mixed=" + mixedSpeed);
+                helper.assertTrue(mixedSpeed < stoneSpeed,
+                        "a car with its x=+0.8 wheels on real sand must reach a lower cruise speed than a car "
+                                + "entirely on stone -- its sand-side wheels may not be contributing their own "
+                                + "real resistance: stoneSpeed=" + stoneSpeed + " mixedSpeed=" + mixedSpeed);
+                helper.assertTrue(mixedSpeed > sandSpeed,
+                        "a car with its x=-0.8 wheels on real stone must reach a higher cruise speed than a car "
+                                + "entirely on sand -- its stone-side wheels may not be contributing their own "
+                                + "real resistance: sandSpeed=" + sandSpeed + " mixedSpeed=" + mixedSpeed);
+                helper.succeed();
+            });
         });
     }
 

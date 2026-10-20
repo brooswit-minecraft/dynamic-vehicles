@@ -24,6 +24,15 @@ final class VehicleCarConfigFile {
     Double vectoringGain;
     Double camberDeg;
     Double toeDeg;
+    // Engine/clutch coupling (MINECRAFT-444). Deliberately flat top-level fields, like every field above,
+    // and deliberately NOT inside the reserved `engine` section: that section stays MINECRAFT-449's own
+    // (rev-limit thresholds, turbo, nitrous, ballast). These four are the coupling parameters
+    // MINECRAFT-444 itself implements -- see docs/per-car-config.md for the boundary.
+    Double engineInertia;
+    Double enginePeakTorque;
+    Double engineBrakingTorque;
+    Double clutchTorqueCapacity;
+
     TireKit tireKit;
 
     /**

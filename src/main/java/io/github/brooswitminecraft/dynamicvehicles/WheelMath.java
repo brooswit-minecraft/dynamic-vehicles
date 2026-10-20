@@ -314,12 +314,17 @@ public final class WheelMath {
      * <p>MINECRAFT-445 review fix (comment 49018): an un-split damper ({@code slowRate == fastRate}) takes
      * the single-multiply path at EVERY speed, not just at or below the knee. The two-segment expression is
      * algebraically equal there but not bit-equal -- {@code rate * knee + rate * (speed - knee)} rounds
-     * differently from {@code rate * speed} -- and a last-bits difference in a stock car's spawn-settling
-     * transient (which does exceed the knee) was enough to flip {@code CarDrivetrainGameTests
-     * #d1ReachesAHigherSpeedThanD5OverTheSameShortWindow}, a chaotic two-car comparison 80 ticks later.
-     * With this guard every vehicle carrying {@link VehicleSpec.SuspensionTuning#singleRate} is bit-for-bit
-     * identical to the pre-ticket single-rate formula, pinned by {@code WheelMathSuspensionTuningTest
-     * #reducesToSingleRateBitForBitAboveTheKneeWhereTheArithmeticDiffers}. */
+     * differently from {@code rate * speed} -- so without this guard a stock car's spawn-settling transient
+     * (which does exceed the knee) differed from the pre-ticket formula in its last bits. With the guard,
+     * every vehicle carrying {@link VehicleSpec.SuspensionTuning#singleRate} is bit-for-bit identical to
+     * that formula, pinned by {@code WheelMathSuspensionTuningTest
+     * #reducesToSingleRateBitForBitAboveTheKneeWhereTheArithmeticDiffers}.
+     *
+     * <p>No claim is made here that this rounding difference caused any particular test failure. An earlier
+     * revision of this comment blamed it for a drivetrain GameTest failure; that causation was retracted on
+     * MINECRAFT-445 (comment 49035) after CI showed the same test passing at one commit and failing at
+     * another whose production behaviour was identical. The justification for this guard is simply that
+     * "no existing car's stock feel changes" should be a mechanical fact rather than an algebraic argument. */
     private static double digressiveDamperForce(double speed, double slowRate, double fastRate, double kneeSpeed) {
         if (slowRate == fastRate || speed <= kneeSpeed) {
             return slowRate * speed;

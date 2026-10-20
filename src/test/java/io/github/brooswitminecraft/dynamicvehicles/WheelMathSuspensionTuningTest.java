@@ -62,17 +62,19 @@ class WheelMathSuspensionTuningTest {
     }
 
     /**
-     * MINECRAFT-445 review fix (comment 49018, the failing D1-vs-D5 drivetrain GameTest): the single-rate
-     * reduction must hold BIT FOR BIT, not merely to a tolerance. A tolerance-only equality still let the
-     * four-rate path return a last-bits-different force from the single-rate one for compression rates
-     * ABOVE the knee ({@code slowRate * knee + fastRate * (speed - knee)} is not the same floating-point
-     * expression as {@code rate * speed}, even when every rate is equal). That difference is far below any
-     * physical significance, but it is NOT nothing in a chaotic rigid-body sim: a car dropping onto its
-     * springs at spawn exceeds the knee, so every stock car's settling transient diverged in its last
-     * bits, and {@code CarDrivetrainGameTests#d1ReachesAHigherSpeedThanD5OverTheSameShortWindow} -- which
-     * applies throttle to a car that is merely "settled" to within 1.5 m/s and compares two cars' speeds
-     * 20 ticks later -- flipped as a result. Pinning raw bits here keeps "no existing car's stock feel
-     * changes" a mechanical fact rather than an algebraic argument.
+     * MINECRAFT-445 review fix (comment 49018): the single-rate reduction must hold BIT FOR BIT, not merely
+     * to a tolerance. A tolerance-only equality still let the four-rate path return a last-bits-different
+     * force from the single-rate one for compression rates ABOVE the knee ({@code slowRate * knee +
+     * fastRate * (speed - knee)} is not the same floating-point expression as {@code rate * speed}, even
+     * when every rate is equal). A car dropping onto its springs at spawn does exceed the knee, so every
+     * stock car's settling transient diverged from the pre-ticket formula in its last bits. Pinning raw
+     * bits here keeps "no existing car's stock feel changes" a mechanical fact rather than an algebraic
+     * argument -- which is the whole justification for the guard in {@code WheelMath}.
+     *
+     * <p>Deliberately NOT claimed: that this rounding difference caused any particular GameTest failure.
+     * An earlier revision of this javadoc blamed it for the D1-vs-D5 drivetrain failure; that causation was
+     * retracted on MINECRAFT-445 (comment 49035) once CI showed that test passing at one commit and failing
+     * at another with identical production behaviour, i.e. nondeterministic for reasons of its own.
      */
     @Test
     void reducesToSingleRateBitForBitAboveTheKneeWhereTheArithmeticDiffers() {

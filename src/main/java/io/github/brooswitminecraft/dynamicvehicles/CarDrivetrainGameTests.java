@@ -87,13 +87,18 @@ public final class CarDrivetrainGameTests {
         Player riderD5 = helper.makeMockPlayer(GameType.CREATIVE);
         helper.assertTrue(riderD5.startRiding(carD5), "mock player failed to board the D5 car");
         helper.runAfterDelay(SETTLE_TICKS, () -> {
-            // Tightened from "< 1.5": that gate passed a car still bouncing on its springs, and a bouncing
-            // car's instantaneous wheel load is what tipped D1 over the grip limit. debugSpeed() is the
-            // body's full 3D velocity magnitude, so this threshold is also what keeps residual vertical
-            // motion from contaminating the horizontal comparison below.
-            helper.assertTrue(carD1.debugSpeed() < SETTLED_SPEED && carD5.debugSpeed() < SETTLED_SPEED,
-                    "test setup invalid -- a car had not settled to a near-standstill before throttle was applied: D1="
-                            + carD1.debugSpeed() + " D5=" + carD5.debugSpeed());
+            // Gated on HORIZONTAL speed, not debugSpeed(). debugSpeed() is the body's full 3D velocity
+            // magnitude and it does not converge to zero: measured on CI, both cars sat at exactly
+            // 0.28257137537002563 after 80 settling ticks -- identical to every digit, so an irreducible
+            // floor rather than run-to-run bounce. A 3D gate therefore cannot be tightened past that floor
+            // at all, which is why the original "< 1.5" was so loose. Horizontal speed does converge, and
+            // it is the quantity that actually matters here: this test compares horizontal acceleration
+            // from a standstill, so what must be zero beforehand is horizontal motion.
+            helper.assertTrue(horizontalSpeed(carD1) < SETTLED_HORIZONTAL_SPEED
+                            && horizontalSpeed(carD5) < SETTLED_HORIZONTAL_SPEED,
+                    "test setup invalid -- a car had not settled to a near-standstill before throttle was applied:"
+                            + " D1 horizontal=" + horizontalSpeed(carD1) + " D5 horizontal=" + horizontalSpeed(carD5)
+                            + " (3D: D1=" + carD1.debugSpeed() + " D5=" + carD5.debugSpeed() + ")");
             riderD1.zza = (float) UNDER_GRIP_THROTTLE;
             riderD5.zza = (float) UNDER_GRIP_THROTTLE;
             helper.runAfterDelay(20L, () -> {
@@ -118,10 +123,19 @@ public final class CarDrivetrainGameTests {
      * the gate below is far tighter now, and a car needs the time to actually get there. */
     private static final long SETTLE_TICKS = 80L;
 
-    /** How slow a car must be (m/s, full 3D speed) to count as settled before throttle is applied. Well
-     * under the 1.5 this test used to accept, which was loose enough to pass a car still bouncing on its
-     * springs -- see this test's own javadoc for why that mattered. */
-    private static final double SETTLED_SPEED = 0.05;
+    /** How slow a car must be HORIZONTALLY (m/s) to count as settled before throttle is applied. 15x
+     * tighter than the 1.5 of full 3D speed this test used to accept, and tight relative to the speeds the
+     * comparison itself reads, while still being a threshold a real car converges to -- unlike a tight 3D
+     * gate, which the body's own irreducible ~0.283 m/s floor makes unreachable. */
+    private static final double SETTLED_HORIZONTAL_SPEED = 0.1;
+
+    /** Horizontal ground speed, m/s, from {@code CarEntity}'s own published {@code getDeltaMovement()}
+     * (blocks/tick) -- the same quantity and conversion {@code RollingResistanceGameTests} reads for its
+     * own cruise comparisons, rather than a reimplementation against internal state. */
+    private static double horizontalSpeed(CarEntity car) {
+        Vec3 velocity = car.getDeltaMovement();
+        return Math.hypot(velocity.x, velocity.z) * 20.0;
+    }
 
     /** Throttle for the ratio comparison: low enough that even D1's 4.0x force multiplier stays well under
      * the tire's grip limit (about 34% of the budget, against 85% at the old 0.3), so the test measures the

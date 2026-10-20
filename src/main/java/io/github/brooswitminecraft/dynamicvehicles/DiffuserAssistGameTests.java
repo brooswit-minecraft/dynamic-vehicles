@@ -108,6 +108,9 @@ public final class DiffuserAssistGameTests {
     private static final double MIN_YAW_RECOVERY_DEG = 0.5;
     /** Minimum initial yaw/travel gap for a trajectory fixture to be a meaningful test at all. */
     private static final double MIN_MEANINGFUL_GAP_DEG = 30.0;
+    /** Beyond this the car is tumbling rather than merely coupling a little off-axis: 45 degrees is far
+     * past any cross-axis bleed a bounded yaw torque can produce, and far short of a flip. */
+    private static final double NOT_TUMBLING_RAD = Math.toRadians(45.0);
     /** How inverted a car with the assist DISABLED must still be, to prove it did not self-right. */
     private static final double STILL_INVERTED_ROLL_RAD = 1.5;
 
@@ -471,9 +474,15 @@ public final class DiffuserAssistGameTests {
                 helper.assertTrue(moved <= 180.0,
                         "two assists at once drove the car past a half turn inside " + OBSERVE_TICKS
                                 + " ticks, which no bounded pair of torques should: moved=" + moved);
-                // Neither yaw assist applies any roll or pitch torque, so both must stay near level.
-                helper.assertTrue(Math.abs(roll) < MIN_START_TILT_RAD && Math.abs(pitch) < MIN_START_TILT_RAD,
-                        "yaw-only assists disturbed roll/pitch, so they are not acting on the axis they claim: "
+                // Deliberately NOT asserting that roll and pitch are untouched. An earlier version did,
+                // on the reasoning that a yaw-axis torque should produce yaw-axis motion only, and it
+                // failed at roll=-0.216 rad. That assertion was wrong, not the implementation: a rigid
+                // body with an asymmetric inertia tensor, already spinning about one axis, genuinely
+                // couples into the others (Euler's equations), so some roll/pitch bleed is real physics
+                // rather than the assists acting off-axis. What IS claimed, and what a regression here
+                // would break, is that two bounded torques cannot tumble the car.
+                helper.assertTrue(Math.abs(roll) < NOT_TUMBLING_RAD && Math.abs(pitch) < NOT_TUMBLING_RAD,
+                        "two yaw assists together tumbled the car, which no pair of bounded torques should: "
                                 + "roll=" + roll + " pitch=" + pitch);
                 helper.succeed();
             });
@@ -818,6 +827,42 @@ public final class DiffuserAssistGameTests {
     @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
     public static void backwardRollbackWithoutReverseSelectedLeavesHeadingAlone(GameTestHelper helper) {
         assertReverseTravelIsHandled(helper, false);
+    }
+
+    /** A slow straight reverse: below any threshold a classifier might use, which is exactly the case
+     * review round 2 found being handed the forward target and so a ~180 degree error. */
+    private static final double SLOW_REVERSE_SPEED = 1.2;
+
+    /** R19 reverse coverage, review round 2: a SLOW straight reverse must still be treated as a reverse.
+     *
+     * <p>This is the production-path half of the boundary problem. A stateless magnitude threshold put a
+     * slowly-reversing car on the "forward" side, handed it the travel direction -- which is behind the
+     * car -- and so asked for a half turn at full torque. The car here reverses in a straight line slewed
+     * {@value #REVERSE_SLEW_DEG} degrees off its reverse line, slowly enough to sit below any such
+     * threshold, and must be straightened toward that line rather than spun toward its velocity. */
+    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    public static void aSlowIntentionalReverseIsStillStraightenedNotSpun(GameTestHelper helper) {
+        CarEntity car = spawnCarWithCleanup(helper, DROP_SPAWN);
+        Player driver = helper.makeMockPlayer(GameType.CREATIVE);
+        helper.assertTrue(driver.startRiding(car), "mock driver failed to board the car");
+        helper.runAfterDelay(BODY_EXISTS_TICK, () -> {
+            helper.assertTrue(car.sableBody() != null, "car's Sable body was never created on its first real tick");
+            double startYaw = car.getYRot();
+            car.selectGear(CarPhysics.Gear.REVERSE);
+            seedVelocityAlongYaw(car, startYaw + 180.0 + REVERSE_SLEW_DEG, SLOW_REVERSE_SPEED);
+            car.setDiffuserTuningForTest(
+                    trajectoryOnly(ASSIST_MAX_TORQUE, ASSIST_GAIN, ASSIST_DAMPING, TRAJECTORY_MIN_SPEED));
+            helper.runAfterDelay(OBSERVE_TICKS, () -> {
+                double moved = wrapDeg(car.getYRot() - startYaw);
+                helper.assertTrue(Math.abs(moved) < 90.0,
+                        "a slow reverse was swung toward its own velocity instead of being straightened: "
+                                + "yaw moved " + moved + " degrees");
+                helper.assertTrue(moved > MIN_YAW_RECOVERY_DEG,
+                        "a slow intentional reverse should still be straightened toward its reverse line, "
+                                + "but yaw moved only " + moved + " degrees");
+                helper.succeed();
+            });
+        });
     }
 
     /** Telemetry (open item from the ticket's own acceptance criteria): {@code SableCarBody.describe()}'s

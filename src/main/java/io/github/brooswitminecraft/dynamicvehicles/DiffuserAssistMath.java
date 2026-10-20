@@ -104,58 +104,74 @@ public final class DiffuserAssistMath {
     }
 
     /**
-     * Forward-speed magnitude (m/s) below which the car is NOT classified as reversing, however the
-     * velocity happens to be pointing (MINECRAFT-447 reverse coverage). Without a deadband the
-     * forward/backward classification flips every time the forward component crosses zero -- during a
-     * near-sideways slide, a gear change, or the instant of a direction reversal -- and the assist's
-     * target would jump 180 degrees with it. Matching the spirit of {@code SableCarBody}'s own drag
-     * deadband: below this the car is treated as going forward, which is the existing behaviour.
+     * Width (m/s of forward speed) over which R19's target authority fades in and out around a
+     * forward/backward switch point (MINECRAFT-447 reverse coverage, review round 2).
+     *
+     * <p>A bare threshold cannot solve this. An earlier version simply classified anything above
+     * {@code -0.5} as forward, which moved the discontinuity rather than removing it: crossing
+     * {@code -0.499} to {@code -0.501} still flipped the target by 180 degrees at FULL torque, and that can
+     * happen while the car's actual speed is several m/s (a car travelling mostly sideways has a
+     * longitudinal component hovering near zero). It also meant a slow straight reverse -- below the
+     * threshold, so "forward" -- was handed the travel direction as its target, i.e. a 180 degree error
+     * and exactly the spin this coverage exists to prevent.
+     *
+     * <p>Fading the PROPORTIONAL authority to zero at every switch point fixes both without any stored
+     * state: the target may change identity there, but it carries no authority when it does, so the torque
+     * passes smoothly through zero instead of reversing sign at full magnitude, and there is nothing for
+     * an oscillating longitudinal speed to flap between. The damping term is deliberately left at full
+     * strength throughout -- it opposes real yaw rate and stays dissipative, which is the same reason the
+     * proportional-sign fix left it alone.
      */
-    public static final double REVERSE_CLASSIFICATION_DEADBAND = 0.5;
+    public static final double REVERSE_AUTHORITY_RAMP = 0.5;
 
     /**
      * R19's target, reverse-aware (MINECRAFT-447): the error to hand {@link #trajectoryAlignmentTorque},
-     * in the same physical convention its caller already uses ({@code current - target}).
+     * in the same physical convention its caller already uses ({@code current - target}), scaled by how
+     * confidently the car's direction of travel can be called.
      *
      * <p>Aligning the nose to the raw velocity direction is right going forwards and wrong going
      * backwards: a reversing car's velocity points behind it, so a naive target asks the assist to swing
-     * the car through 180 degrees, which is the opposite of helping someone reverse. The three cases this
-     * distinguishes, per the review's own scope:
+     * the car through 180 degrees, which is the opposite of helping someone reverse. The cases:
      *
      * <ul>
-     * <li><b>Forward</b> (forward speed above {@code -deadband}): target is the travel direction, exactly
-     *     as before. Unchanged behaviour, including for a near-sideways slide, where the forward component
-     *     is small but the car is not reversing.</li>
-     * <li><b>Intentional reverse</b> (genuinely moving backwards AND reverse actually selected): target is
-     *     the travel direction turned 180 degrees -- i.e. keep the car tracking straight along its line of
-     *     travel, nose trailing, rather than spinning it around. Reverse travel is preserved, not
-     *     corrected away.</li>
-     * <li><b>Backward rollback</b> (moving backwards WITHOUT reverse selected -- rolling back down a
-     *     slope, or still carrying backward momentum after a shift): {@link Double#NaN}, which
-     *     {@link #trajectoryAlignmentTorque} already turns into exactly zero torque. The driver has not
-     *     asked to travel backwards, so the assist neither spins the car nor pins it to a direction it is
-     *     only drifting in; it simply stays out of the way until the car is going somewhere deliberate.</li>
+     * <li><b>Reverse selected</b> -- the driver's intent is explicit, so ANY backward motion takes the
+     *     reversed target (the travel direction turned 180 degrees), with no magnitude threshold to fall
+     *     below. A slow straight reverse is therefore tracked straight, nose trailing, rather than spun.
+     *     Authority fades to zero as forward speed approaches zero from either side, so the target's
+     *     change of identity at that point costs nothing.</li>
+     * <li><b>No reverse selected, moving forwards</b> -- target is the travel direction at full authority.
+     *     Unchanged behaviour, including a near-sideways slide, where the longitudinal component is small
+     *     but the car is not reversing and the nose genuinely should be pulled toward travel.</li>
+     * <li><b>No reverse selected, rolling backwards</b> -- a rollback: the driver never asked to travel
+     *     backwards, so the target's authority fades out over {@code ramp} and is gone entirely beyond it.
+     *     The assist neither spins the car nor pins it to a direction it is only drifting in; with no
+     *     proportional term left it simply damps whatever yaw rate is present.</li>
      * </ul>
      *
      * <p>The classification is driven by MEASURED velocity, never by the selected gear alone: a car in
-     * reverse that is still rolling forwards is treated as going forwards. The gear only distinguishes an
-     * intentional reverse from a rollback once the car is genuinely moving backwards.
+     * reverse that is still rolling forwards is treated as going forwards.
      *
      * @param travelYawDeg direction of travel, degrees, Minecraft yaw convention
      * @param currentYawDeg the car's own heading, degrees, same convention
      * @param forwardSpeed the velocity's component along the car's own forward axis, m/s: negative when
      *        the car is moving backwards relative to where it points
      * @param reverseSelected whether the driver actually has reverse selected
-     * @param deadband see {@link #REVERSE_CLASSIFICATION_DEADBAND}
+     * @param ramp see {@link #REVERSE_AUTHORITY_RAMP}
      */
     public static double trajectoryErrorRad(double travelYawDeg, double currentYawDeg, double forwardSpeed,
-            boolean reverseSelected, double deadband) {
-        boolean movingBackwards = forwardSpeed < -Math.abs(deadband);
-        if (movingBackwards && !reverseSelected) {
-            return Double.NaN;
+            boolean reverseSelected, double ramp) {
+        double width = Math.abs(ramp);
+        if (reverseSelected) {
+            double targetYawDeg = forwardSpeed < 0.0 ? travelYawDeg + 180.0 : travelYawDeg;
+            double authority = width > 0.0 ? Math.min(1.0, Math.abs(forwardSpeed) / width) : 1.0;
+            return authority * wrapAngle(Math.toRadians(currentYawDeg - targetYawDeg));
         }
-        double targetYawDeg = movingBackwards ? travelYawDeg + 180.0 : travelYawDeg;
-        return wrapAngle(Math.toRadians(currentYawDeg - targetYawDeg));
+        double error = wrapAngle(Math.toRadians(currentYawDeg - travelYawDeg));
+        if (forwardSpeed >= 0.0) {
+            return error;
+        }
+        double authority = width > 0.0 ? Math.max(0.0, 1.0 - Math.abs(forwardSpeed) / width) : 0.0;
+        return authority * error;
     }
 
     /**

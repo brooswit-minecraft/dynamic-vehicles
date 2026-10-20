@@ -970,13 +970,13 @@ final class SableCarBody {
         // Same review fix as headingTorque above, same reasoning: swapped operands, not a rate change.
         // Reverse-aware target (MINECRAFT-447 reverse coverage): classified on MEASURED forward speed, with
         // the selected gear only separating an intentional reverse from a rollback -- see
-        // DiffuserAssistMath#trajectoryErrorRad. A rollback yields NaN there, which trajectoryAlignmentTorque
-        // already turns into exactly zero torque, so the assist stays out of the way rather than either
-        // spinning the car or pinning it to a direction it is merely drifting in.
+        // DiffuserAssistMath#trajectoryErrorRad, which fades the proportional authority to zero at every
+        // forward/backward switch point so the target can never flip 180 degrees at full torque, and a
+        // rollback's target simply fades out rather than spinning or pinning the car.
         double forwardSpeed = linear.dot(carForward);
         double trajectoryTorque = DiffuserAssistMath.trajectoryAlignmentTorque(
                 DiffuserAssistMath.trajectoryErrorRad(travelYawDeg, currentYawDeg, forwardSpeed,
-                        gear == CarPhysics.Gear.REVERSE, DiffuserAssistMath.REVERSE_CLASSIFICATION_DEADBAND),
+                        gear == CarPhysics.Gear.REVERSE, DiffuserAssistMath.REVERSE_AUTHORITY_RAMP),
                 yawRateRadPerSec, horizontalSpeed, intentionalSlide, diffuser);
 
         Vector3d totalTorque = new Vector3d(carForward).mul(rollTorque)

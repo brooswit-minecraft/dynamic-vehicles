@@ -205,61 +205,79 @@ class DiffuserAssistMathTest {
         assertEquals(-0.1, DiffuserAssistMath.wrapAngle(-2 * Math.PI - 0.1), 1e-9);
     }
 
-    private static final double DEADBAND = DiffuserAssistMath.REVERSE_CLASSIFICATION_DEADBAND;
+    private static final double RAMP = DiffuserAssistMath.REVERSE_AUTHORITY_RAMP;
+    /** Comfortably beyond the ramp, so authority is saturated and the target itself is what is under test. */
+    private static final double FULLY_MOVING = 12.0;
 
     @Test
     void goingForwardTheTrajectoryTargetIsSimplyTheTravelDirection() {
-        // Nose at 0, travelling 10 degrees off it, clearly forward: unchanged pre-reverse behaviour.
-        double error = DiffuserAssistMath.trajectoryErrorRad(10.0, 0.0, 12.0, false, DEADBAND);
+        double error = DiffuserAssistMath.trajectoryErrorRad(10.0, 0.0, FULLY_MOVING, false, RAMP);
         assertEquals(Math.toRadians(-10.0), error, 1e-9);
     }
 
     @Test
+    void aNearSidewaysSlideKeepsFullForwardAuthority() {
+        // Longitudinal component tiny, actual speed high: not reversing, and the nose genuinely should be
+        // pulled toward travel. An earlier threshold-based version suppressed this case.
+        assertEquals(Math.toRadians(-10.0),
+                DiffuserAssistMath.trajectoryErrorRad(10.0, 0.0, 0.01, false, RAMP), 1e-9);
+    }
+
+    @Test
     void anIntentionalReverseTargetsTheTravelDirectionTurnedAroundNotA180DegreeSpin() {
-        // Reversing straight back: nose at 0, velocity pointing behind the car (travel yaw 180).
-        // The naive target would be 180 degrees away -- a forced spin. Reverse-aware, the error is zero:
-        // the car is already tracking straight along its line of travel, nose trailing, which is exactly
-        // what reversing in a straight line looks like and must not be "corrected".
-        double error = DiffuserAssistMath.trajectoryErrorRad(180.0, 0.0, -12.0, true, DEADBAND);
+        double error = DiffuserAssistMath.trajectoryErrorRad(180.0, 0.0, -FULLY_MOVING, true, RAMP);
         assertEquals(0.0, error, 1e-9);
     }
 
     @Test
     void anIntentionalReverseStillStraightensARealMisalignment() {
-        // Reversing but slewed 10 degrees off the reverse line: a real error the assist should correct,
-        // and a small one -- not the ~180 a naive target would report for the same pose.
-        double error = DiffuserAssistMath.trajectoryErrorRad(190.0, 0.0, -12.0, true, DEADBAND);
+        double error = DiffuserAssistMath.trajectoryErrorRad(190.0, 0.0, -FULLY_MOVING, true, RAMP);
         assertEquals(Math.toRadians(-10.0), error, 1e-9);
     }
 
     @Test
-    void rollingBackwardsWithoutReverseSelectedSuppressesTheAssistEntirely() {
-        // Rolling back down a slope in a forward gear: the driver never asked to travel backwards, so the
-        // assist must neither spin the car nor pin it to a direction it is only drifting in. NaN is the
-        // suppression signal trajectoryAlignmentTorque already turns into exactly zero torque.
-        double error = DiffuserAssistMath.trajectoryErrorRad(180.0, 0.0, -12.0, false, DEADBAND);
-        assertTrue(Double.isNaN(error), "rollback should suppress, got " + error);
-        assertEquals(0.0, DiffuserAssistMath.trajectoryAlignmentTorque(error, 0.0, 12.0, false,
+    void aSlowStraightReverseIsNotHandedTheForwardTargetAndSoIsNeverSpun() {
+        // Review round 2: below any plausible threshold, so a threshold-based classifier called this
+        // "forward" and handed it a ~180 degree error. With reverse selected it must take the REVERSED
+        // target at reduced authority -- same sign as a fast reverse, nowhere near a half turn.
+        double slow = DiffuserAssistMath.trajectoryErrorRad(190.0, 0.0, -0.3, true, RAMP);
+        double fast = DiffuserAssistMath.trajectoryErrorRad(190.0, 0.0, -FULLY_MOVING, true, RAMP);
+        assertTrue(Math.abs(slow) < Math.abs(fast), "slow reverse should carry less authority: " + slow);
+        assertTrue(slow * fast > 0.0, "slow reverse must pull the same way as a fast one, got " + slow);
+        assertTrue(Math.abs(slow) < Math.toRadians(90.0), "slow reverse must never approach a half turn");
+    }
+
+    @Test
+    void theTargetNeverFlipsAtFullTorqueAcrossTheForwardBackwardBoundary() {
+        // Review round 2: the exact -0.499 / -0.501 pair that used to swing the target 180 degrees at full
+        // authority. Either side of every switch point the error must be continuous and near zero.
+        for (boolean reverseSelected : new boolean[] {true, false}) {
+            double justAbove = DiffuserAssistMath.trajectoryErrorRad(190.0, 0.0, -0.499, reverseSelected, RAMP);
+            double justBelow = DiffuserAssistMath.trajectoryErrorRad(190.0, 0.0, -0.501, reverseSelected, RAMP);
+            assertTrue(Math.abs(justAbove - justBelow) < 0.05,
+                    "error jumped across the boundary (reverseSelected=" + reverseSelected + "): "
+                            + justAbove + " vs " + justBelow);
+        }
+        // And across zero itself, where the reverse target changes identity.
+        double justForward = DiffuserAssistMath.trajectoryErrorRad(190.0, 0.0, 0.001, true, RAMP);
+        double justBackward = DiffuserAssistMath.trajectoryErrorRad(190.0, 0.0, -0.001, true, RAMP);
+        assertTrue(Math.abs(justForward) < 0.02 && Math.abs(justBackward) < 0.02,
+                "authority must vanish where the reverse target changes identity: " + justForward
+                        + " vs " + justBackward);
+    }
+
+    @Test
+    void rollingBackwardsWithoutReverseSelectedFadesTheTargetOutEntirely() {
+        double error = DiffuserAssistMath.trajectoryErrorRad(180.0, 0.0, -FULLY_MOVING, false, RAMP);
+        assertEquals(0.0, error, 1e-9);
+        assertEquals(0.0, DiffuserAssistMath.trajectoryAlignmentTorque(error, 0.0, FULLY_MOVING, false,
                 enabledTrajectory()), 1e-9);
     }
 
     @Test
     void reverseSelectedWhileStillRollingForwardIsTreatedAsForward() {
-        // Gear alone must never drive the classification: this car has reverse selected but is still
-        // moving forwards, so the forward target applies.
-        double error = DiffuserAssistMath.trajectoryErrorRad(10.0, 0.0, 12.0, true, DEADBAND);
+        double error = DiffuserAssistMath.trajectoryErrorRad(10.0, 0.0, FULLY_MOVING, true, RAMP);
         assertEquals(Math.toRadians(-10.0), error, 1e-9);
-    }
-
-    @Test
-    void nearZeroForwardSpeedDoesNotFlipTheTargetAround() {
-        // Inside the deadband -- a near-sideways slide, a gear change, the instant of a direction
-        // reversal -- the classification must stay put rather than swinging the target 180 degrees.
-        double justInside = -(DEADBAND / 2.0);
-        assertEquals(DiffuserAssistMath.trajectoryErrorRad(10.0, 0.0, 0.0, false, DEADBAND),
-                DiffuserAssistMath.trajectoryErrorRad(10.0, 0.0, justInside, false, DEADBAND), 1e-9);
-        assertTrue(!Double.isNaN(DiffuserAssistMath.trajectoryErrorRad(10.0, 0.0, justInside, false, DEADBAND)),
-                "a car inside the deadband is not reversing and must not be suppressed as a rollback");
     }
 
     private static VehicleSpec.DiffuserTuning enabledTrajectory() {

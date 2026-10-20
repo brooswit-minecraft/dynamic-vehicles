@@ -107,9 +107,24 @@ public final class DiffuserAssistGameTests {
     private static final double STILL_INVERTED_ROLL_RAD = 1.5;
 
     /** Negligible forced throttle, held for the fixture's whole duration, purely to keep the body awake --
-     * see {@link #startUpsideDown} for why this is necessary. */
+     * see {@link #startUpsideDown} for why this is necessary. Sized to cover the LONGEST fixture here
+     * ({@link #INVERTED_OBSERVE_TICKS}) with margin and no more: an over-long window used to leave cars
+     * force-driving for ~50s, long after their own test had finished, inside a GameTest level shared with
+     * every other test in the run. */
     private static final double KEEP_AWAKE_THROTTLE = 0.001;
-    private static final int KEEP_AWAKE_TICKS = 999;
+    private static final int KEEP_AWAKE_TICKS = (int) INVERTED_OBSERVE_TICKS + 10;
+
+    /** Ends a fixture: discards the car first, then reports success.
+     *
+     * <p>Not optional hygiene. These fixtures deliberately drop cars with no floor beneath them, so the car
+     * is still falling when the test finishes and has long since left its own structure's bounding box --
+     * which is exactly what GameTest's own post-test cleanup covers, so nothing reclaims it. Left alone it
+     * keeps ticking real physics in the level EVERY other test in the run shares, for as long as the run
+     * lasts. Discarding routes through {@code CarEntity#remove}, which releases the Sable body too. */
+    private static void succeedAndDiscard(GameTestHelper helper, CarEntity car) {
+        car.discard();
+        helper.succeed();
+    }
 
     /** Roll angle (radians, 0 = upright, &plusmn;&pi; = inverted) of a car's current real Sable body
      * orientation, using exactly the same {@code atan2(right.y, up.y)} formula
@@ -174,7 +189,7 @@ public final class DiffuserAssistGameTests {
             double roll = rollAngleRad(car);
             helper.assertTrue(Math.abs(roll) > STILL_INVERTED_ROLL_RAD,
                     "identity Diffuser tuning should not self-right an inverted car, but roll recovered to " + roll + " rad");
-            helper.succeed();
+            succeedAndDiscard(helper, car);
         });
     }
 
@@ -225,7 +240,7 @@ public final class DiffuserAssistGameTests {
                         "heading alignment should have turned the car toward its " + targetOffsetDeg
                                 + " degree target, not held still or turned away from it: errorBefore="
                                 + errorBefore + " errorAfter=" + errorAfter);
-                helper.succeed();
+                succeedAndDiscard(helper, car);
             });
         });
     }
@@ -279,7 +294,7 @@ public final class DiffuserAssistGameTests {
                         "trajectory alignment should have turned the car's nose toward its own real velocity "
                                 + "direction (vx=" + vx + "), not held still or turned away from it: errorBefore="
                                 + errorBefore + " errorAfter=" + errorAfter);
-                helper.succeed();
+                succeedAndDiscard(helper, car);
             });
         });
     }
@@ -348,7 +363,7 @@ public final class DiffuserAssistGameTests {
                 helper.assertTrue(pitchAfter < pitchBefore - MIN_TILT_RECOVERY_RAD,
                         "pitch landing help should have turned the car back toward level, not held still or "
                                 + "tipped further: pitchBefore=" + pitchBefore + " pitchAfter=" + pitchAfter);
-                helper.succeed();
+                succeedAndDiscard(helper, car);
             });
         });
     }
@@ -393,7 +408,7 @@ public final class DiffuserAssistGameTests {
                 helper.assertTrue(rollAfter < rollBefore - MIN_TILT_RECOVERY_RAD,
                         "roll self-righting should have rolled the car back toward upright, not held still or "
                                 + "banked further: rollBefore=" + rollBefore + " rollAfter=" + rollAfter);
-                helper.succeed();
+                succeedAndDiscard(helper, car);
             });
         });
     }
@@ -430,7 +445,7 @@ public final class DiffuserAssistGameTests {
                 helper.assertTrue(description.contains(key),
                         "describe() telemetry is missing its own \"" + key + "\" key, saw: " + description);
             }
-            helper.succeed();
+            succeedAndDiscard(helper, car);
         });
     }
 

@@ -65,9 +65,14 @@ final class SableCompat {
         return ((SableCarBody) body).clutchTorque();
     }
 
-    /** The torque the clutch handed the drivetrain; see {@link SableCarBody#transmittedClutchTorque()}. */
-    static double transmittedClutchTorque(Object body) {
-        return ((SableCarBody) body).transmittedClutchTorque();
+    /** The engine's own net output torque; see {@link SableCarBody#engineOutputTorque()}. */
+    static double engineOutputTorque(Object body) {
+        return ((SableCarBody) body).engineOutputTorque();
+    }
+
+    /** The body's measured world-space angular velocity; see {@link SableCarBody#bodyAngularVelocity()}. */
+    static double[] bodyAngularVelocity(Object body) {
+        return ((SableCarBody) body).bodyAngularVelocity();
     }
 
     static double clutchWheelForce(Object body) {

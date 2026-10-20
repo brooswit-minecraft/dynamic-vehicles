@@ -293,93 +293,132 @@ public final class DrivetrainMath {
     }
 
     /**
-     * The clutch's own transmitted torque this (sub-)step, N*m, positive meaning FROM the engine TO the
-     * drivetrain (i.e. slowing the engine down, speeding the wheel side up).
+     * The wheel/drivetrain side's own rotational inertia as the ENGINE's shaft sees it, kg*m^2: the car's
+     * translating mass and its wheels' own rotation, both at the wheel shaft, divided down by the square
+     * of the engaged gearing (a gearbox scales reflected inertia by the square of its ratio). This is the
+     * second inertia in {@link #clutchExchangeTorque}'s two-body solve -- without it a "clutch" can only
+     * ever be a one-sided solve against a wheel side assumed infinitely stiff, which is exactly what made
+     * the first attempt at this unstable.
      *
-     * <p>Same technique {@link #boundedSpinTowardSnap} already uses at the wheel/ground contact, applied
-     * here to the engine/drivetrain joint instead: compute the torque that would land {@code engineOmega}
-     * EXACTLY on {@code wheelSideOmega} after this one (sub-)step (accounting for {@code engineTorque} and
-     * engine braking's own contribution to that same step), then clamp it to
-     * {@link #CLUTCH_TORQUE_CAPACITY}. Within capacity, that IS "engaged": the two sides land on a common
-     * speed this step, same as a real locked clutch plate turning as one with the flywheel. Clamped, the
-     * clutch instead transmits exactly its own maximum and the two sides are left with a genuine,
-     * continuing speed difference -- "partial coupling"/slip, the explicit state the acceptance criteria
-     * ask for, not an implicit side effect of some other bound.
-     *
-     * <p>A straightforward proportional ("stiff spring") controller toward zero relative speed was tried
-     * first and rejected: with {@link #ENGINE_INERTIA} this small and a tick's {@code dt} this large
-     * (1/20s in production), any gain stiff enough to lock within a couple of ticks overshoots on EVERY
-     * step under plain explicit-Euler integration (the relative-speed error's own per-step multiplier,
-     * {@code 1 - gain*dt/ENGINE_INERTIA}, falls below -1), so the "locked" case oscillates and grows
-     * instead of converging -- unconditionally unstable for any gain large enough to feel locked, not a
-     * tuning problem. Solving for the exact required torque (this method) has no such gain to overshoot:
-     * it is only ever bounded by the SAME capacity the slipping case already needs.
-     *
-     * @param engineOmega the engine's own angular speed this (sub-)step, rad/s
-     * @param wheelSideOmega {@link #wheelSideOmega}'s own result for the currently engaged ratio
-     * @param engineTorque this step's own {@link #engineDriveTorque}, N*m -- the clutch's own target
-     *        accounts for it landing exactly on wheelSideOmega together with everything else moving
-     *        engineOmega this step, not for the clutch alone against a frozen engine
-     * @param dt this (sub-)step's own duration, seconds
+     * <p>In the stock car's own numbers this spans most of an order of magnitude across the gearbox:
+     * ~0.70 kg*m^2 in D1 (comparable to {@link #ENGINE_INERTIA}, so the engine absorbs a real share of its
+     * own torque there -- why a low gear revs up fast and delivers less than its ratio alone suggests) and
+     * ~11.2 kg*m^2 in top gear (the car dominates completely, so nearly all torque reaches the road).
      */
-    public static double clutchTorque(double engineOmega, double wheelSideOmega, double engineTorque, double dt,
-            VehicleSpec.DrivetrainCoupling coupling) {
-        double braking = engineOmega > 0.0 ? coupling.engineBrakingTorque() : 0.0;
-        double netTorqueBeforeClutch = engineTorque - braking;
-        double requiredTorque = netTorqueBeforeClutch
-                - (wheelSideOmega - engineOmega) * coupling.engineInertia() / dt;
-        double capacity = coupling.clutchTorqueCapacity();
-        return Math.max(-capacity, Math.min(capacity, requiredTorque));
+    public static double reflectedDrivetrainInertia(double massKg, double wheelRadius, int drivenWheels,
+            double wheelInertia, double ratio) {
+        double gearing = ratio * FINAL_DRIVE;
+        if (!(gearing != 0.0) || !(wheelRadius > 0.0)) {
+            return 0.0;
+        }
+        double atWheelShaft = massKg * wheelRadius * wheelRadius + Math.max(0, drivenWheels) * wheelInertia;
+        return atWheelShaft / (gearing * gearing);
     }
 
     /**
-     * The torque the clutch actually hands the DRIVETRAIN this (sub-)step, N*m -- what
-     * {@link GearDrive#clutchWheelForce} turns into a wheel force. Positive is engine -&gt; drivetrain
-     * (driving); negative is the engine's own drag retarding the car (engine braking).
+     * The drivetrain's speed at the engine's own shaft, rad/s, SIGNED in the engine's own rotation sense --
+     * unlike {@link #wheelSideOmega}, which takes the magnitude because the limiter and the display only
+     * ever care how fast the engine turns, not which way.
      *
-     * <p>Deliberately NOT {@link #clutchTorque}, and the distinction is the whole design. That method
-     * solves for the torque needed to SYNC the engine to the wheel side within one step -- the right
-     * question for the engine's own speed (and the one that makes it lock when it can and slip when it
-     * cannot), but dominated by an inertial term whose sign flips with the wheel side's own tick-to-tick
-     * acceleration. Billing the wheels that term was measured to be badly wrong twice over: full-throttle
-     * launches spent most ticks in the "engine momentarily slower than the wheel side" case and so got NO
-     * drive force at all (D1 reached 0.39 m/s where D5 reached 1.03, inverting
-     * {@code d1ReachesAHigherSpeedThanD5OverTheSameShortWindow}), and when that term saturated the
-     * capacity it reached the contact patch as ~12.6 kN per wheel in D1, dragging a full-throttle car
-     * backwards to -10.7 m/s ({@code opposingDirectionThrottleDecelerateAndReverseInBothMirroredDirections}).
+     * <p>The sign matters to the clutch and nowhere else: the gearbox's output shaft turns the engine
+     * forwards in a forward gear and backwards in REVERSE, so a car rolling FORWARD with REVERSE engaged
+     * is trying to turn its engine backwards. Taking the magnitude there (the first attempt) told the
+     * clutch the two sides nearly agreed when in truth they were opposed, and the resulting force pointed
+     * the wrong way -- it fought the reversal the driver had asked for, and the car stalled out at 2.5 m/s
+     * forward in {@code opposingDirectionThrottleDecelerateAndReverseInBothMirroredDirections} instead of
+     * reversing. Signed, that same case reads as a hard slip that drags the car toward reverse, which is
+     * both what really happens and what the regression expects.
      *
-     * <p>What the wheels get instead is the engine's own OUTPUT -- its throttle torque (already cut by the
-     * limiter, see {@link #engineDriveTorque}) less its own drag -- bounded by the clutch's friction
-     * capacity, which is what a slipping dry clutch physically transmits. That makes all four cases read
-     * directly off this one expression: full throttle delivers the calibrated stock drive force
-     * ({@link #ENGINE_PEAK_TORQUE}'s own javadoc), a closed throttle in gear delivers exactly the engine's
-     * drag (engine braking, propagating through the drivetrain), a capacity below peak torque bounds what
-     * the throttle can deliver (partial coupling), and the limiter cutting engine torque at redline leaves
-     * drag alone. The inertial sync term stays where it belongs: internal to the driveline, changing the
-     * engine's own speed, paid for on the engine axis by {@link #engineReactionTorque} -- the same split
-     * {@code SableCarBody}'s own {@code excessForce != 0} branch already makes for engine-sourced torque.
+     * @param wheelAngularSpeed the driven wheels' own spin rate, rad/s, signed positive for rolling
+     *        forward
+     * @param gearDirection +1 for a forward gear, -1 for REVERSE
      */
-    public static double transmittedClutchTorque(double engineTorque, double engineOmega,
-            VehicleSpec.DrivetrainCoupling coupling) {
-        double braking = engineOmega > 0.0 ? coupling.engineBrakingTorque() : 0.0;
-        double capacity = coupling.clutchTorqueCapacity();
-        return Math.max(-capacity, Math.min(capacity, engineTorque - braking));
+    public static double wheelSideOmegaSigned(double wheelAngularSpeed, double ratio, double gearDirection) {
+        return wheelAngularSpeed * ratio * FINAL_DRIVE * gearDirection;
     }
 
     /**
-     * Advances the engine's own angular speed one (sub-)step, rad/s: net torque -- {@code engineTorque}
-     * (the engine's own throttle demand) minus engine braking (only while the engine is actually turning;
-     * nothing to brake against a stalled one) minus whatever {@code clutchTorque} the clutch is drawing
-     * off toward the drivetrain -- divided by {@link #ENGINE_INERTIA}, integrated over {@code dt}. This IS
-     * the engine's rotational-inertia state (MINECRAFT-444): it no longer snaps to whatever the wheels
-     * imply, it accelerates/decelerates at a rate its own stored angular momentum bounds, exactly like
-     * {@link WheelMath#WHEEL_INERTIA} already bounds a wheel's own spin. Floored at 0: this model has no
-     * reverse-spinning engine -- a stalled engine sits at 0, it does not run backwards.
+     * The ONE torque the clutch exchanges between engine and drivetrain this (sub-)step, N*m: the engine
+     * loses exactly this and the drivetrain gains exactly this (positive = engine driving the drivetrain,
+     * negative = the drivetrain driving the engine, i.e. engine braking or spinning the engine up).
+     *
+     * <p>Review round 2's central finding, and the reason this method replaces the previous pair: the
+     * engine was being integrated against a one-step SYNC torque while the wheels were handed a different,
+     * "output minus drag" torque, so a changing relative speed loaded the engine without ever loading the
+     * other shaft -- {@code engineOmega} 400, {@code wheelSideOmega} 500, throttle 0 accelerated the engine
+     * by 100 rad/s in a tick on 415 N*m of sync torque while the wheels saw only -55. There is one shaft
+     * pair and one friction interface, so there is one torque; both sides now read this value.
+     *
+     * <p>It is the standard two-inertia clutch solve, which is what makes it stable without a tuned gain:
+     * <ul>
+     * <li>a FEED-FORWARD share, {@code I_w/(I_e+I_w) * engineTorque} -- the part of the engine's own output
+     * that reaches the drivetrain once the engine's inertia has taken its share of accelerating the pair
+     * together. This is the locked-clutch result for two inertias, and it carries no {@code 1/dt} term at
+     * all, which is precisely what the earlier one-step solve got wrong;
+     * <li>a RE-SYNC share, {@code (I_e*I_w/(I_e+I_w))/dt * slip}, the torque that closes the REMAINING
+     * relative speed over one step at the pair's own reduced inertia. That gain is derived from the two
+     * inertias and {@code dt} rather than tuned, which bounds it: with the wheel side free the slip closes
+     * exactly, and in the worst case (an infinitely stiff wheel side) the slip still decays by the strictly
+     * positive factor {@code I_e/(I_e+I_w)} per step -- monotone, never overshooting, at any {@code dt}.
+     * The earlier attempt's gain was independent of both inertias and overshot every step
+     * ({@code 1 - gain*dt/I_e} below -1), which is the instability this must not reintroduce.
+     * </ul>
+     *
+     * <p>Then {@link #CLUTCH_TORQUE_CAPACITY} bounds the result, because a friction clutch cannot transmit
+     * more than its own clamp force allows: saturation IS slip, and the slip then decays at the fastest
+     * rate the capacity permits instead of in one step. One asymmetry is deliberate and physical rather
+     * than a third-law violation: when the engine would be driven below zero it stalls at the floor
+     * ({@link #engineAngularVelocity}), and the difference between the exchanged torque and what the
+     * stalled engine actually absorbed is dissipated in the slipping friction interface as heat -- the
+     * pair is explicitly NOT locked in that case.
+     *
+     * @param engineOmega the engine's own speed this step, rad/s
+     * @param wheelSideOmega {@link #wheelSideOmegaSigned} for the engaged gear -- signed, not a magnitude
+     * @param engineTorque the engine's own net output before the clutch, N*m: {@link #engineDriveTorque}
+     *        less its own drag (see {@link #engineOutputTorque})
+     * @param reflectedInertia {@link #reflectedDrivetrainInertia} for the engaged gear
+     */
+    public static double clutchExchangeTorque(double engineOmega, double wheelSideOmega, double engineTorque,
+            double reflectedInertia, double dt, VehicleSpec.DrivetrainCoupling coupling) {
+        double engineInertia = coupling.engineInertia();
+        double totalInertia = engineInertia + reflectedInertia;
+        double capacity = coupling.clutchTorqueCapacity();
+        if (!(totalInertia > 0.0) || !(dt > 0.0)) {
+            return Math.max(-capacity, Math.min(capacity, engineTorque));
+        }
+        double feedForward = reflectedInertia / totalInertia * engineTorque;
+        double reducedInertia = engineInertia * reflectedInertia / totalInertia;
+        double reSync = reducedInertia / dt * (engineOmega - wheelSideOmega);
+        return Math.max(-capacity, Math.min(capacity, feedForward + reSync));
+    }
+
+    /**
+     * The engine's own net output torque before the clutch, N*m: its throttle torque less the drag it
+     * applies to its own rotation (nothing to drag against a stalled engine). The quantity both
+     * {@link #clutchExchangeTorque} and {@link #engineAngularVelocity} mean by {@code engineTorque}, named
+     * so the two can never disagree about whether drag was already subtracted.
+     */
+    public static double engineOutputTorque(double throttle, double engineRawRpm, double engineOmega,
+            VehicleSpec.DrivetrainCoupling coupling) {
+        double drag = engineOmega > 0.0 ? coupling.engineBrakingTorque() : 0.0;
+        return engineDriveTorque(throttle, engineRawRpm, coupling.enginePeakTorque()) - drag;
+    }
+
+    /**
+     * Advances the engine's own angular speed one (sub-)step, rad/s: its own net output
+     * ({@link #engineOutputTorque}, drag already subtracted) less the torque the clutch is exchanging with
+     * the drivetrain -- the SAME {@link #clutchExchangeTorque} value the wheels receive, which is what
+     * makes this an exchange rather than two independent loads -- divided by the engine's own inertia and
+     * integrated over {@code dt}. This IS the engine's rotational-inertia state (MINECRAFT-444): it no
+     * longer snaps to whatever the wheels imply, it accelerates/decelerates at a rate its own stored
+     * angular momentum bounds, exactly like {@link WheelMath#WHEEL_INERTIA} already bounds a wheel's own
+     * spin. Floored at 0: this model has no reverse-spinning engine -- a stalled engine sits at 0, it does
+     * not run backwards, and the clutch is then necessarily slipping (see
+     * {@link #clutchExchangeTorque}'s own note on where that torque goes).
      */
     public static double engineAngularVelocity(double priorOmega, double engineTorque, double clutchTorque,
             double dt, VehicleSpec.DrivetrainCoupling coupling) {
-        double braking = priorOmega > 0.0 ? coupling.engineBrakingTorque() : 0.0;
-        double netTorque = engineTorque - braking - clutchTorque;
+        double netTorque = engineTorque - clutchTorque;
         return Math.max(0.0, priorOmega + netTorque / coupling.engineInertia() * dt);
     }
 

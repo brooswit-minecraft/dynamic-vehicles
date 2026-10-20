@@ -411,11 +411,25 @@ public class CarEntity extends Entity {
         return sableBody == null ? 0.0 : SableCompat.clutchTorque(sableBody);
     }
 
-    /** Server test support only (MINECRAFT-444): the torque the clutch actually handed the drivetrain this
-     * tick (N*m) -- the engine's own output bounded by clutch capacity, as distinct from
-     * {@link #debugClutchTorque()}, which is the engine's internal one-step sync torque. */
-    double debugTransmittedClutchTorque() {
-        return sableBody == null ? 0.0 : SableCompat.transmittedClutchTorque(sableBody);
+    /** Server test support only (MINECRAFT-444): the engine's own net output torque this tick (N*m, drag
+     * already subtracted), so a test can check the engine side's own momentum balance against the clutch
+     * exchange it was integrated with. */
+    double debugEngineOutputTorque() {
+        return sableBody == null ? 0.0 : SableCompat.engineOutputTorque(sableBody);
+    }
+
+    /** Server test support only (MINECRAFT-444 review round 2): the body's MEASURED world-space angular
+     * velocity, rad/s (x, y, z) -- the only way to establish that the engine-axis reaction is actually
+     * applied to the chassis, in the right frame and sign, rather than merely computed. */
+    double[] debugBodyAngularVelocity() {
+        return sableBody == null ? new double[] {0.0, 0.0, 0.0} : SableCompat.bodyAngularVelocity(sableBody);
+    }
+
+    /** Server test support only (MINECRAFT-444): the clutch capacity this car's own spec actually carries
+     * (N*m) -- stock, or whatever its per-car config file configured. Lets a test prove the configured
+     * value really reached the spawned entity rather than assuming the loader ran. */
+    double debugConfiguredClutchCapacity() {
+        return spec.drivetrainCoupling().clutchTorqueCapacity();
     }
 
     double debugClutchWheelForce() {

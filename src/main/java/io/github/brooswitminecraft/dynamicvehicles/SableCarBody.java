@@ -82,14 +82,14 @@ final class SableCarBody {
     // to whatever drivenWheelSpin implies; engineRpm below is now DERIVED from this, not the other way
     // around.
     private double engineOmega = DrivetrainMath.rpmToOmega(DrivetrainMath.IDLE_RPM);
-    // MINECRAFT-444 review round 1: the REAL values this tick's engine/clutch block actually produced and
-    // applied -- the clutch torque transmitted (N*m), the per-wheel force it amounted to at the contact
-    // patch (N, signed in the car's forward frame) and the engine-axis reaction torque actually handed to
-    // the body (N*m). Captured at the single production call site, not recomputed by a test from inputs: a
-    // test reproducing the formula cannot catch a bug where the formula is right but the application at the
-    // call site is wrong (the same reason wheelReactionForce exists -- see its own comment).
+    // MINECRAFT-444: the REAL values this tick's engine/clutch block actually produced and applied -- the
+    // ONE clutch torque exchanged between engine and drivetrain (N*m), the per-wheel force that same
+    // exchange amounted to at the contact patch (N, signed in the car's forward frame) and the engine-axis
+    // reaction torque actually handed to the body (N*m). Captured at the single production call site, not
+    // recomputed by a test from inputs: a test reproducing the formula cannot catch a bug where the formula
+    // is right but the application at the call site is wrong (the same reason wheelReactionForce exists).
     private double clutchTorque;
-    private double transmittedClutchTorque;
+    private double engineOutputTorque;
     // The engine speed this tick STARTED from, kept beside engineOmega (which is where it ended) so the
     // reaction's own identity can be checked against the realized change WITHIN one tick, rather than by
     // differencing two external samples -- a sampler that misses, or doubles up on, an entity tick would
@@ -227,10 +227,16 @@ final class SableCarBody {
         // wheel keeps a single wheel's momentary wheelspin from single-handedly forcing an automatic shift.
         int wheelCountForDrivetrain = spec.mounts().length;
         double drivenWheelSpin = 0.0;
+        // MINECRAFT-444: the clutch needs the SIGNED average too -- which way the wheels are actually
+        // turning, not just how fast. The magnitude average below stays exactly as it was for the limiter
+        // and the automatic shift logic, which only ever care how fast the engine is turning.
+        double drivenWheelSpinSigned = 0.0;
         for (int w = 0; w < wheelCountForDrivetrain; w++) {
             drivenWheelSpin += Math.abs(wheelSpin[w]);
+            drivenWheelSpinSigned += wheelSpin[w];
         }
         drivenWheelSpin /= wheelCountForDrivetrain;
+        drivenWheelSpinSigned /= wheelCountForDrivetrain;
         // There is exactly one engine regardless of gear, so exactly one rawEngineRpm reading feeds the
         // limiter below -- computed from whichever ratio is actually engaged this tick (REVERSE's own
         // ratio, the resolved manual/automatic ratio, or NEUTRAL's decoupled free-rev, which bypasses the
@@ -248,17 +254,22 @@ final class SableCarBody {
         // limiterTorqueFactor gradual too (the gradual-recovery GameTest's own per-wheel assertions confirm
         // this end-to-end) -- so the separate engine-side smoothing step is now redundant and removed.
         // Clutch and engine inertia (MINECRAFT-444): the engine no longer snaps to whatever drivenWheelSpin
-        // implies. It carries its own angular speed (engineOmega, persisted above) advanced by its own
-        // torque balance; a clutch -- torque-limited, not rigid -- is the only thing coupling that state to
-        // the wheel side at all. NEUTRAL is the explicit "disengaged" case named in the acceptance criteria:
-        // there is no wheel-side speed to couple to, so clutchTorque is simply 0 and the engine free-revs
-        // purely off its own torque balance (engineDriveTorque vs. its own braking), exactly as
-        // freeRevRpm's pre-existing contract already assumed when nothing coupled it to a wheel.
+        // implies. It carries its own angular speed (engineOmega, persisted above), and ONE clutch torque
+        // is exchanged between it and the drivetrain: the engine loses exactly what the wheels gain.
+        // NEUTRAL is the explicit "disengaged" case the acceptance criteria name -- nothing is connected,
+        // so the exchange is exactly 0 and the engine free-revs on its own output alone, which is what
+        // freeRevRpm's pre-existing contract already assumed.
+        //
+        // Review round 2: this used to integrate the engine against a one-step SYNC torque while handing
+        // the wheels a DIFFERENT "output minus drag" torque -- two loads, not an exchange, so a changing
+        // relative speed loaded one shaft and not the other. There is now a single
+        // clutchExchangeTorque, read by both sides; see its javadoc for the two-inertia solve and why its
+        // re-sync gain (unlike the first attempt's) cannot overshoot.
         double rawEngineRpm = DrivetrainMath.omegaToRpm(engineOmega);
-        // MINECRAFT-444: the engine/clutch settings this car actually runs -- DrivetrainCoupling.STOCK for
-        // every stock vehicle, or whatever its own per-car config file set (docs/per-car-config.md).
+        // The engine/clutch settings this car actually runs -- DrivetrainCoupling.STOCK for every stock
+        // vehicle, or whatever its own per-car config file set (docs/per-car-config.md).
         VehicleSpec.DrivetrainCoupling coupling = spec.drivetrainCoupling();
-        double engineTorque = DrivetrainMath.engineDriveTorque(throttle, rawEngineRpm, coupling.enginePeakTorque());
+        double engineTorque = DrivetrainMath.engineOutputTorque(throttle, rawEngineRpm, engineOmega, coupling);
         double clutchTorqueThisTick;
         if (gear == CarPhysics.Gear.NEUTRAL) {
             gearRatio = 0.0;
@@ -272,12 +283,16 @@ final class SableCarBody {
             } else {
                 gearRatio = DrivetrainMath.ratioFor(gear.manualIndex());
             }
-            // Engaged/partial coupling: the clutch tries to pull engineOmega and the wheel side together,
-            // saturating (slipping) at DrivetrainMath.CLUTCH_TORQUE_CAPACITY -- see clutchTorque's own
-            // javadoc for why REVERSE needs no special case here: the wheel side's magnitude (abs, inside
-            // wheelSideOmega) is all this coupling ever reads, same as rawRpm/engineRpm always did.
-            double wheelSideOmega = DrivetrainMath.wheelSideOmega(drivenWheelSpin, gearRatio);
-            clutchTorqueThisTick = DrivetrainMath.clutchTorque(engineOmega, wheelSideOmega, engineTorque, dt, coupling);
+            // Both inertias of the pair, and the wheel side's speed SIGNED in the engine's own rotation
+            // sense (so REVERSE while rolling forward reads as opposed, not nearly-synced -- see
+            // wheelSideOmegaSigned's own javadoc for the regression that proved the magnitude wrong).
+            // drivenWheelSpinSigned, not the magnitude average the limiter/automatic shift logic reads.
+            double reflectedInertia = DrivetrainMath.reflectedDrivetrainInertia(spec.massKg(),
+                    spec.wheelRadius(), wheelCountForDrivetrain, WheelMath.WHEEL_INERTIA, gearRatio);
+            double wheelSideOmega = DrivetrainMath.wheelSideOmegaSigned(drivenWheelSpinSigned, gearRatio,
+                    gear == CarPhysics.Gear.REVERSE ? -1.0 : 1.0);
+            clutchTorqueThisTick = DrivetrainMath.clutchExchangeTorque(engineOmega, wheelSideOmega,
+                    engineTorque, reflectedInertia, dt, coupling);
         }
         // Engine-axis reaction torque (MINECRAFT-444): Newton's third law for the engine's own rotating
         // mass -- never a function of gear, so selecting REVERSE cannot flip its sign (acceptance
@@ -292,21 +307,16 @@ final class SableCarBody {
         priorEngineOmega = engineOmega;
         engineOmega = DrivetrainMath.engineAngularVelocity(engineOmega, engineTorque, clutchTorqueThisTick, dt, coupling);
         clutchTorque = clutchTorqueThisTick;
+        engineOutputTorque = engineTorque;
         engineReactionTorque = DrivetrainMath.engineReactionTorque(priorEngineOmega, engineOmega, dt, coupling);
         if (engineReactionTorque != 0.0) {
             body.applyAngularImpulse(new Vector3d(ENGINE_SPIN_AXIS_LOCAL).mul(engineReactionTorque * dt));
         }
-        // The clutch's own transmitted torque, as a force at one driven wheel's contact patch, signed in
-        // the car's forward frame (MINECRAFT-444 review round 1: the clutch must actually reach the
-        // wheels, not just the engine's own RPM). Fixed for the whole tick, like gearRatio/engineRpm and
-        // for the same reason -- it is derived from the same start-of-tick drivenWheelSpin snapshot.
-        // What the clutch hands the DRIVETRAIN (engine output, capacity-bounded) -- not the internal
-        // one-step sync torque above, which is the engine's own business. See
-        // DrivetrainMath.transmittedClutchTorque's own javadoc for the two measured regressions that
-        // separate these two quantities.
-        transmittedClutchTorque = gear == CarPhysics.Gear.NEUTRAL ? 0.0
-                : DrivetrainMath.transmittedClutchTorque(engineTorque, priorEngineOmega, coupling);
-        clutchWheelForce = GearDrive.clutchWheelForce(transmittedClutchTorque, gearRatio,
+        // The other half of that same exchange, as a force at one driven wheel's contact patch, signed in
+        // the car's forward frame: the drivetrain gains exactly what the engine lost. Fixed for the whole
+        // tick, like gearRatio/engineRpm and for the same reason -- derived from the same start-of-tick
+        // drivenWheelSpin snapshot.
+        clutchWheelForce = GearDrive.clutchWheelForce(clutchTorqueThisTick, gearRatio,
                 spec.wheelRadius(), wheelCountForDrivetrain, gear, spec.forceScale());
         engineRpm = DrivetrainMath.clampRpm(rawEngineRpm);
         // Couples the rev limiter to delivered torque, not just to the displayed RPM number: forceMultiplier
@@ -981,14 +991,23 @@ final class SableCarBody {
         return clutchTorque;
     }
 
-    /** MINECRAFT-444: the torque the clutch actually handed the drivetrain this tick (N*m) -- the engine's
-     * own output, capacity-bounded, as distinct from {@link #clutchTorque()}'s internal sync torque. */
-    double transmittedClutchTorque() {
-        return transmittedClutchTorque;
-    }
-
     double clutchWheelForce() {
         return clutchWheelForce;
+    }
+
+    /** MINECRAFT-444: the engine's own net output torque this tick (N*m, drag already subtracted) -- the
+     * other term in the engine side's own momentum balance alongside {@link #clutchTorque()}. */
+    double engineOutputTorque() {
+        return engineOutputTorque;
+    }
+
+    /** MINECRAFT-444 review round 2: the body's measured angular velocity in WORLD space, rad/s (x, y, z).
+     * Exposed as the raw world vector, deliberately not pre-projected onto the car's own axes, so a test
+     * can establish the engine-axis frame and sign itself from the car's own orientation -- a reaction
+     * applied in the wrong frame, or not applied at all, is invisible to the scalar reaction telemetry. */
+    double[] bodyAngularVelocity() {
+        Vector3d angular = body.getAngularVelocity(new Vector3d());
+        return new double[] {angular.x, angular.y, angular.z};
     }
 
     double engineReactionTorque() {

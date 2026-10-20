@@ -100,6 +100,7 @@ class GearDriveTest {
     /** All four wheels are driven -- see {@code SableCarBody.DRIVE_FORCE}'s own "all-wheel drive" note. */
     private static final int DRIVEN_WHEELS = 4;
 
+
     private static double clutchForce(double clutchTorque, double ratio, CarPhysics.Gear gear) {
         return GearDrive.clutchWheelForce(clutchTorque, ratio, WHEEL_RADIUS, DRIVEN_WHEELS, gear, 1.0);
     }
@@ -191,33 +192,32 @@ class GearDriveTest {
     }
 
     @Test
-    void theTransmittedTorqueIsTheEnginesOwnOutputNotItsInternalSyncTorque() {
-        // Regression for the two measured failures in transmittedClutchTorque's javadoc: whatever the
-        // engine's internal sync torque is doing (it flips sign with the wheel side's own acceleration and
-        // saturates at capacity), what reaches the wheels is the engine's output -- driving at throttle,
-        // exactly its drag while coasting.
-        VehicleSpec.DrivetrainCoupling stock = VehicleSpec.DrivetrainCoupling.STOCK;
-        double omega = DrivetrainMath.rpmToOmega(3000.0);
-        double fullThrottleTorque = DrivetrainMath.engineDriveTorque(1.0, 3000.0, stock.enginePeakTorque());
-        double driving = DrivetrainMath.transmittedClutchTorque(fullThrottleTorque, omega, stock);
-        assertEquals(stock.enginePeakTorque() - stock.engineBrakingTorque(), driving, 1e-9,
-                "full throttle must transmit the engine's own net output");
-        double coasting = DrivetrainMath.transmittedClutchTorque(0.0, omega, stock);
-        assertEquals(-stock.engineBrakingTorque(), coasting, 1e-9,
-                "a closed throttle in gear must transmit exactly the engine's own drag, not a sync term");
+    void theWheelForceIsTheOneExchangedClutchTorqueThroughThisGearsGearing() {
+        // Review round 2: there is one exchange, and the wheel side's share of it is exactly this
+        // conversion -- so whatever torque the engine lost, the drivetrain gained.
+        double exchange = 300.0;
+        double ratio = DrivetrainMath.ratioFor(0);
+        assertEquals(exchange * ratio * DrivetrainMath.FINAL_DRIVE / WHEEL_RADIUS / DRIVEN_WHEELS,
+                clutchForce(exchange, ratio, CarPhysics.Gear.D1), 1e-9);
     }
 
     @Test
-    void aLowCapacityClutchBoundsTheTransmittedTorque() {
+    void aLowCapacityClutchBoundsTheExchangeAndSoTheWheelForce() {
         VehicleSpec.DrivetrainCoupling weakClutch = new VehicleSpec.DrivetrainCoupling(
                 VehicleSpec.DrivetrainCoupling.STOCK.engineInertia(),
                 VehicleSpec.DrivetrainCoupling.STOCK.enginePeakTorque(),
                 VehicleSpec.DrivetrainCoupling.STOCK.engineBrakingTorque(),
                 100.0);
+        double ratio = DrivetrainMath.ratioFor(0);
         double omega = DrivetrainMath.rpmToOmega(3000.0);
-        double fullThrottleTorque = DrivetrainMath.engineDriveTorque(1.0, 3000.0, weakClutch.enginePeakTorque());
-        assertEquals(100.0, DrivetrainMath.transmittedClutchTorque(fullThrottleTorque, omega, weakClutch), 1e-9,
-                "a clutch whose capacity is below the engine's output must bound what the drivetrain receives");
+        double engineTorque = DrivetrainMath.engineOutputTorque(1.0, 3000.0, omega, weakClutch);
+        double reflected = DrivetrainMath.reflectedDrivetrainInertia(1200.0, WHEEL_RADIUS, DRIVEN_WHEELS,
+                WheelMath.WHEEL_INERTIA, ratio);
+        double exchange = DrivetrainMath.clutchExchangeTorque(omega, omega, engineTorque, reflected, 1.0 / 20.0, weakClutch);
+        assertEquals(100.0, exchange, 1e-9,
+                "a clutch whose capacity is below the engine's output must bound the exchange");
+        assertEquals(clutchForce(100.0, ratio, CarPhysics.Gear.D1), clutchForce(exchange, ratio, CarPhysics.Gear.D1), 1e-9,
+                "and the wheel force must follow that bounded exchange, not the engine's unbounded output");
     }
 
     @Test
@@ -227,7 +227,13 @@ class GearDriveTest {
         // driving feel is preserved rather than silently re-tuned by this ticket.
         double netTorque = DrivetrainMath.ENGINE_PEAK_TORQUE - DrivetrainMath.ENGINE_BRAKING_TORQUE;
         double topRatio = DrivetrainMath.ratioFor(DrivetrainMath.GEAR_RATIOS.length - 1);
-        double force = clutchForce(netTorque, topRatio, CarPhysics.Gear.D5);
+        // Through the real locked exchange in top gear, where the car's own reflected inertia dominates
+        // so nearly all of the engine's output reaches the road.
+        double reflected = DrivetrainMath.reflectedDrivetrainInertia(1200.0, WHEEL_RADIUS, DRIVEN_WHEELS,
+                WheelMath.WHEEL_INERTIA, topRatio);
+        double exchange = DrivetrainMath.clutchExchangeTorque(500.0, 500.0, netTorque, reflected, 1.0 / 20.0,
+                VehicleSpec.DrivetrainCoupling.STOCK);
+        double force = clutchForce(exchange, topRatio, CarPhysics.Gear.D5);
         assertEquals(DRIVE_FORCE, force, DRIVE_FORCE * 0.02,
                 "stock full-throttle top-gear clutch force must stay within 2% of the tuned DRIVE_FORCE identity");
     }

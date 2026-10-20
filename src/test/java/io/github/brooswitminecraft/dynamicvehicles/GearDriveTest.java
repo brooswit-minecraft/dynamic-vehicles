@@ -242,9 +242,8 @@ class GearDriveTest {
         double ratio = DrivetrainMath.ratioFor(0);
         double omega = DrivetrainMath.rpmToOmega(3000.0);
         double engineTorque = DrivetrainMath.engineOutputTorque(1.0, 3000.0, omega, weakClutch);
-        double reflected = DrivetrainMath.reflectedDrivetrainInertia(1200.0, WHEEL_RADIUS, DRIVEN_WHEELS,
-                WheelMath.WHEEL_INERTIA, ratio);
-        double exchange = DrivetrainMath.clutchExchangeTorque(omega, omega, engineTorque, reflected, 1.0 / 20.0, weakClutch);
+        double reflected = DrivetrainMath.reflectedWheelInertia(DRIVEN_WHEELS, WheelMath.WHEEL_INERTIA, ratio);
+        double exchange = DrivetrainMath.clutchExchangeTorque(omega, omega, engineTorque, 0.0, reflected, 1.0 / 20.0, weakClutch);
         assertEquals(100.0, exchange, 1e-9,
                 "a clutch whose capacity is below the engine's output must bound the exchange");
         assertEquals(clutchForce(100.0, ratio, CarPhysics.Gear.D1), clutchForce(exchange, ratio, CarPhysics.Gear.D1), 1e-9,
@@ -260,10 +259,12 @@ class GearDriveTest {
         double topRatio = DrivetrainMath.ratioFor(DrivetrainMath.GEAR_RATIOS.length - 1);
         // Through the real locked exchange in top gear, where the car's own reflected inertia dominates
         // so nearly all of the engine's output reaches the road.
-        double reflected = DrivetrainMath.reflectedDrivetrainInertia(1200.0, WHEEL_RADIUS, DRIVEN_WHEELS,
-                WheelMath.WHEEL_INERTIA, topRatio);
-        double exchange = DrivetrainMath.clutchExchangeTorque(500.0, 500.0, netTorque, reflected, 1.0 / 20.0,
-                VehicleSpec.DrivetrainCoupling.STOCK);
+        double reflected = DrivetrainMath.reflectedWheelInertia(DRIVEN_WHEELS, WheelMath.WHEEL_INERTIA, topRatio);
+        // Gripping: the tire's own reaction is what a steady 2300 N/wheel delivers, which is exactly the
+        // state the tuned DRIVE_FORCE identity describes.
+        double tireReaction = DrivetrainMath.wheelSideTorqueAtEngine(DRIVE_FORCE * DRIVEN_WHEELS, WHEEL_RADIUS, topRatio);
+        double exchange = DrivetrainMath.clutchExchangeTorque(500.0, 500.0, netTorque, tireReaction, reflected,
+                1.0 / 20.0, VehicleSpec.DrivetrainCoupling.STOCK);
         double force = clutchForce(exchange, topRatio, CarPhysics.Gear.D5);
         assertEquals(DRIVE_FORCE, force, DRIVE_FORCE * 0.02,
                 "stock full-throttle top-gear clutch force must stay within 2% of the tuned DRIVE_FORCE identity");

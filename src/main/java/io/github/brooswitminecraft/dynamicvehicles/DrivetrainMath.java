@@ -293,26 +293,95 @@ public final class DrivetrainMath {
     }
 
     /**
-     * The wheel/drivetrain side's own rotational inertia as the ENGINE's shaft sees it, kg*m^2: the car's
-     * translating mass and its wheels' own rotation, both at the wheel shaft, divided down by the square
-     * of the engaged gearing (a gearbox scales reflected inertia by the square of its ratio). This is the
-     * second inertia in {@link #clutchExchangeTorque}'s two-body solve -- without it a "clutch" can only
-     * ever be a one-sided solve against a wheel side assumed infinitely stiff, which is exactly what made
-     * the first attempt at this unstable.
+     * The driven wheels' own rotational inertia as the ENGINE's shaft sees it, kg*m^2: their rotation at
+     * the wheel shaft, divided down by the square of the engaged gearing (a gearbox scales reflected
+     * inertia by the square of its ratio). The second inertia in {@link #clutchExchangeTorque}'s two-body
+     * solve.
      *
-     * <p>In the stock car's own numbers this spans most of an order of magnitude across the gearbox:
-     * ~0.70 kg*m^2 in D1 (comparable to {@link #ENGINE_INERTIA}, so the engine absorbs a real share of its
-     * own torque there -- why a low gear revs up fast and delivers less than its ratio alone suggests) and
-     * ~11.2 kg*m^2 in top gear (the car dominates completely, so nearly all torque reaches the road).
+     * <p>Review round 3 corrected WHAT this is, and the distinction is the whole point of the chain
+     * engine -&gt; clutch -&gt; wheel rotation -&gt; tire -&gt; car mass. Round 2 reflected the car's
+     * TRANSLATING MASS onto this shaft, which is only valid while the tire grips: the instant a wheel
+     * slips, that shaft accelerates away from the car, and a solve built on the car's mass collapsed the
+     * exchange exactly when a tire let go -- measured in CI as a full-throttle car reaching 0.67 m/s after
+     * 90 ticks, and a D1 launch losing to D5. The clutch is bolted to the WHEELS, so this is the wheels'
+     * own inertia and nothing else; the car's mass enters the chain one link further along, through the
+     * contact patch, which {@code WheelMath.tire}'s friction circle already owns. What couples this shaft
+     * to the car is therefore not an inertia here at all but the tire's own reaction torque -- see
+     * {@link #wheelSideTorqueAtEngine}.
      */
-    public static double reflectedDrivetrainInertia(double massKg, double wheelRadius, int drivenWheels,
-            double wheelInertia, double ratio) {
+    public static double reflectedWheelInertia(int drivenWheels, double wheelInertia, double ratio) {
+        double gearing = ratio * FINAL_DRIVE;
+        if (!(gearing != 0.0)) {
+            return 0.0;
+        }
+        return Math.max(0, drivenWheels) * wheelInertia / (gearing * gearing);
+    }
+
+    /**
+     * The clutch's other shaft's inertia as the engine sees it, kg*m^2: the driven wheels' own rotation
+     * ({@link #reflectedWheelInertia}) plus as much of the car's translating mass as the contact patch is
+     * actually still holding.
+     *
+     * <p>Round 3's remaining correction, measured the same way as the rest. Reflecting the car's mass
+     * unconditionally is wrong during slip -- that was round 2's failure, where a slipping wheel collapsed
+     * the exchange and cost the car its drive force. But dropping it entirely is wrong during GRIP: with
+     * only the wheels' own 0.022 kg*m^2 on that shaft in D1, the clutch cannot hold the engine at all and
+     * it runs away past its own limiter, so torque is cut and the car stops accelerating (traced at 7866
+     * RPM and zero command by tick 30). A gripping wheel's shaft IS tied to the car through the contact
+     * patch, so the honest answer is the one the chain itself implies: the mass is present exactly to the
+     * extent the tire is still delivering what was asked of it.
+     *
+     * <p>{@code gripFraction} is that extent, taken from the previous (sub-)step's own delivered force
+     * against what was commanded -- both already captured on the production path, no new estimate. 1
+     * means the tire delivered everything (fully coupled, the car's mass is on the shaft); 0 means it
+     * delivered none of it (free spin, only the wheels' own inertia).
+     */
+    public static double clutchLoadInertia(double massKg, double wheelRadius, int drivenWheels,
+            double wheelInertia, double ratio, double gripFraction) {
         double gearing = ratio * FINAL_DRIVE;
         if (!(gearing != 0.0) || !(wheelRadius > 0.0)) {
             return 0.0;
         }
-        double atWheelShaft = massKg * wheelRadius * wheelRadius + Math.max(0, drivenWheels) * wheelInertia;
-        return atWheelShaft / (gearing * gearing);
+        double grip = Math.max(0.0, Math.min(1.0, gripFraction));
+        double carAtWheelShaft = massKg * wheelRadius * wheelRadius;
+        return reflectedWheelInertia(drivenWheels, wheelInertia, ratio)
+                + grip * carAtWheelShaft / (gearing * gearing);
+    }
+
+    /**
+     * How much of the drivetrain's own command the tire actually delivered last (sub-)step, 0..1 -- the
+     * {@code gripFraction} {@link #clutchLoadInertia} needs. Exactly 1 when nothing was commanded (there
+     * was nothing for the tire to fail to deliver, so the shaft is as coupled as it was).
+     */
+    public static double gripFraction(double deliveredForce, double commandedForce) {
+        if (!(Math.abs(commandedForce) > 0.0)) {
+            return 1.0;
+        }
+        return Math.max(0.0, Math.min(1.0, Math.abs(deliveredForce) / Math.abs(commandedForce)));
+    }
+
+    /**
+     * The torque the tire is applying BACK to the driveshaft, reflected to the engine's own shaft, N*m --
+     * the external load on the clutch's other shaft, and the link through which the car's mass is felt
+     * without ever appearing as an inertia in the coupling itself.
+     *
+     * <p>Negative while the tire resists a forward drive (its reaction to the traction force it is
+     * delivering), which is what makes the locked case come out right: with the wheels not accelerating,
+     * {@link #clutchExchangeTorque}'s solve reduces to passing essentially the engine's whole output to
+     * the road, while during a slip -- where the delivered force, and so this torque, is small -- the
+     * exchange is correspondingly smaller and the wheels spin up instead. Taken from the delivered
+     * longitudinal force of the previous (sub-)step, the same one-tick-lagged snapshot convention
+     * {@code SableCarBody} already uses for {@code drivenWheelSpin} and the gear ratio.
+     *
+     * @param totalWheelForce the sum of the driven wheels' own delivered longitudinal forces, N, signed in
+     *        the car's forward frame
+     */
+    public static double wheelSideTorqueAtEngine(double totalWheelForce, double wheelRadius, double ratio) {
+        double gearing = ratio * FINAL_DRIVE;
+        if (!(gearing != 0.0)) {
+            return 0.0;
+        }
+        return -totalWheelForce * wheelRadius / gearing;
     }
 
     /**
@@ -376,17 +445,25 @@ public final class DrivetrainMath {
      * @param wheelSideOmega {@link #wheelSideOmegaSigned} for the engaged gear -- signed, not a magnitude
      * @param engineTorque the engine's own net output before the clutch, N*m: {@link #engineDriveTorque}
      *        less its own drag (see {@link #engineOutputTorque})
-     * @param reflectedInertia {@link #reflectedDrivetrainInertia} for the engaged gear
+     * @param wheelSideTorque the external torque already acting on the other shaft, N*m at the engine --
+     *        {@link #wheelSideTorqueAtEngine}, i.e. the tire's own reaction. Round 3: this term is what
+     *        carries the car's mass into the solve without pretending it is an inertia on this shaft, and
+     *        it is what makes a gripping clutch pass nearly the engine's whole output while a slipping one
+     *        does not.
+     * @param reflectedInertia {@link #reflectedWheelInertia} for the engaged gear
      */
     public static double clutchExchangeTorque(double engineOmega, double wheelSideOmega, double engineTorque,
-            double reflectedInertia, double dt, VehicleSpec.DrivetrainCoupling coupling) {
+            double wheelSideTorque, double reflectedInertia, double dt,
+            VehicleSpec.DrivetrainCoupling coupling) {
         double engineInertia = coupling.engineInertia();
         double totalInertia = engineInertia + reflectedInertia;
         double capacity = coupling.clutchTorqueCapacity();
         if (!(totalInertia > 0.0) || !(dt > 0.0)) {
             return Math.max(-capacity, Math.min(capacity, engineTorque));
         }
-        double feedForward = reflectedInertia / totalInertia * engineTorque;
+        // The two-body locked solve with an external torque on each shaft, which reduces to the familiar
+        // (I_w*Te - I_e*Tw)/(I_e+I_w): the torque that leaves both shafts accelerating together.
+        double feedForward = (reflectedInertia * engineTorque - engineInertia * wheelSideTorque) / totalInertia;
         double reducedInertia = engineInertia * reflectedInertia / totalInertia;
         double reSync = reducedInertia / dt * (engineOmega - wheelSideOmega);
         return Math.max(-capacity, Math.min(capacity, feedForward + reSync));

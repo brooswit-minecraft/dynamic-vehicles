@@ -283,16 +283,32 @@ final class SableCarBody {
             } else {
                 gearRatio = DrivetrainMath.ratioFor(gear.manualIndex());
             }
-            // Both inertias of the pair, and the wheel side's speed SIGNED in the engine's own rotation
-            // sense (so REVERSE while rolling forward reads as opposed, not nearly-synced -- see
-            // wheelSideOmegaSigned's own javadoc for the regression that proved the magnitude wrong).
-            // drivenWheelSpinSigned, not the magnitude average the limiter/automatic shift logic reads.
-            double reflectedInertia = DrivetrainMath.reflectedDrivetrainInertia(spec.massKg(),
-                    spec.wheelRadius(), wheelCountForDrivetrain, WheelMath.WHEEL_INERTIA, gearRatio);
+            // The clutch's other shaft is the driven WHEELS' own rotation: its inertia is theirs alone
+            // (never the car's reflected mass -- see reflectedWheelInertia's own javadoc for the CI
+            // measurements that ruled that out), its speed is their own SIGNED spin in the engine's
+            // rotation sense (so REVERSE while rolling forward reads as opposed rather than
+            // nearly-synced), and the car's mass reaches the solve only as the tire's own reaction torque
+            // on that shaft, taken from the previous step's delivered longitudinal force -- the same
+            // one-tick-lagged snapshot convention gearRatio and drivenWheelSpin already use.
+            double deliveredWheelForce = 0.0;
+            double commandedWheelForce = 0.0;
+            for (int w = 0; w < wheelCountForDrivetrain; w++) {
+                deliveredWheelForce += wheelForce[w];
+                commandedWheelForce += wheelDriveCommand[w];
+            }
+            // How much of that shaft is still tied to the car through the contact patch, from the previous
+            // step's own delivered-vs-commanded force: the car's mass belongs on the shaft while the tire
+            // is holding and not while it is spinning. See clutchLoadInertia's own javadoc for the two
+            // measurements (one per extreme) that ruled out both unconditional answers.
+            double gripFraction = DrivetrainMath.gripFraction(deliveredWheelForce, commandedWheelForce);
+            double reflectedInertia = DrivetrainMath.clutchLoadInertia(spec.massKg(), spec.wheelRadius(),
+                    wheelCountForDrivetrain, WheelMath.WHEEL_INERTIA, gearRatio, gripFraction);
+            double wheelSideTorque = DrivetrainMath.wheelSideTorqueAtEngine(deliveredWheelForce,
+                    spec.wheelRadius(), gearRatio);
             double wheelSideOmega = DrivetrainMath.wheelSideOmegaSigned(drivenWheelSpinSigned, gearRatio,
                     gear == CarPhysics.Gear.REVERSE ? -1.0 : 1.0);
             clutchTorqueThisTick = DrivetrainMath.clutchExchangeTorque(engineOmega, wheelSideOmega,
-                    engineTorque, reflectedInertia, dt, coupling);
+                    engineTorque, wheelSideTorque, reflectedInertia, dt, coupling);
         }
         // Engine-axis reaction torque (MINECRAFT-444): Newton's third law for the engine's own rotating
         // mass -- never a function of gear, so selecting REVERSE cannot flip its sign (acceptance

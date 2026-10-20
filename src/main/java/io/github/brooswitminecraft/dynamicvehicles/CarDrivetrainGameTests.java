@@ -748,7 +748,7 @@ public final class CarDrivetrainGameTests {
      * (no instantaneous flip -- the chassis still has to coast down first) but MUST have gone negative by
      * well into the window (the opposing-direction force actually overcomes the roll eventually). The
      * mirror does the same starting in REVERSE and switching to D1. */
-    @GameTest(template = "settlement_test", timeoutTicks = 480)
+    @GameTest(template = "settlement_test", timeoutTicks = 340)
     public static void opposingDirectionThrottleDecelerateAndReverseInBothMirroredDirections(GameTestHelper helper) {
         helper.setBlock(new BlockPos(5, 2, 5), Blocks.STONE);
         helper.setBlock(new BlockPos(5, 3, 5), Blocks.AIR);
@@ -797,17 +797,7 @@ public final class CarDrivetrainGameTests {
                     // (never scaled by a gear ratio multiplier the way forward gears are) genuinely needs
                     // more real time to reverse a multi-m/s roll than the round-2 version of this test
                     // allowed for.
-                    // MINECRAFT-444: the window grows again, for the same kind of reason round 3 grew it,
-                    // and measured rather than guessed. The direction change is now opposed by two real
-                    // forces this ticket adds -- the engine's own drag reaching the tire through the
-                    // clutch, and the share of engine torque spent spinning the engine's own inertia up
-                    // in the new direction -- so the manoeuvre genuinely takes longer. At the old 250-tick
-                    // sample both cars were caught mid-crossing, 0.027 m/s and -0.0007 m/s from the
-                    // threshold respectively (with their separation back to the full spawn 10.0 blocks,
-                    // i.e. each had already driven out and come most of the way back). The assertion is
-                    // unchanged -- each car must genuinely cross into the opposing direction -- only the
-                    // time allowed for it is.
-                    helper.runAfterDelay(390L, () -> {
+                    helper.runAfterDelay(250L, () -> {
                         // These two cars are spawned 10 blocks apart in Z and spend the
                         // pre-switch phase driving TOWARD each other, so "never reversed" has two very
                         // different causes -- no opposing force reaching the tire, or the two cars simply

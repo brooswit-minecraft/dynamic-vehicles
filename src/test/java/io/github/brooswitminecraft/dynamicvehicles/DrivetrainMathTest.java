@@ -265,8 +265,12 @@ class DrivetrainMathTest {
     private static final double DRIVEN_WHEELS = 4;
 
     private static double reflectedInertia(double ratio) {
-        return DrivetrainMath.reflectedDrivetrainInertia(CAR_MASS_KG, CarGeometry.WHEEL_RADIUS,
-                (int) DRIVEN_WHEELS, WheelMath.WHEEL_INERTIA, ratio);
+        return DrivetrainMath.reflectedWheelInertia((int) DRIVEN_WHEELS, WheelMath.WHEEL_INERTIA, ratio);
+    }
+
+    /** The tire reaction a gripping wheel delivering {@code forcePerWheel} puts back on the shaft. */
+    private static double tireReaction(double forcePerWheel, double ratio) {
+        return DrivetrainMath.wheelSideTorqueAtEngine(forcePerWheel * DRIVEN_WHEELS, CarGeometry.WHEEL_RADIUS, ratio);
     }
 
     @Test
@@ -328,7 +332,7 @@ class DrivetrainMathTest {
         double wheelSideOmega = 500.0;
         double engineTorque = DrivetrainMath.engineOutputTorque(0.0, DrivetrainMath.omegaToRpm(engineOmega), engineOmega, STOCK);
         double exchange = DrivetrainMath.clutchExchangeTorque(engineOmega, wheelSideOmega, engineTorque,
-                reflectedInertia(ratio), TICK_DT, STOCK);
+                0.0, reflectedInertia(ratio), TICK_DT, STOCK);
         assertTrue(Math.abs(exchange) < STOCK.clutchTorqueCapacity(), "test premise: this case must not saturate");
         assertTrue(exchange < 0.0, "a wheel side turning faster than the engine must drive the engine, i.e. a negative exchange");
         double next = DrivetrainMath.engineAngularVelocity(engineOmega, engineTorque, exchange, TICK_DT, STOCK);
@@ -354,7 +358,7 @@ class DrivetrainMathTest {
                 for (int step = 0; step < 50; step++) {
                     double engineTorque = DrivetrainMath.engineOutputTorque(0.0, DrivetrainMath.omegaToRpm(omega), omega, STOCK);
                     double exchange = DrivetrainMath.clutchExchangeTorque(omega, wheelSideOmega, engineTorque,
-                            reflectedInertia(ratio), dt, STOCK);
+                            0.0, reflectedInertia(ratio), dt, STOCK);
                     omega = DrivetrainMath.engineAngularVelocity(omega, engineTorque, exchange, dt, STOCK);
                     double slip = Math.abs(omega - wheelSideOmega);
                     assertTrue(slip <= previousSlip + 1e-9,
@@ -382,8 +386,8 @@ class DrivetrainMathTest {
         // cut in first. Both are the locked-clutch result, neither is a tuned fudge.
         double engineTorque = STOCK.enginePeakTorque() - STOCK.engineBrakingTorque();
         double topRatio = DrivetrainMath.ratioFor(DrivetrainMath.GEAR_RATIOS.length - 1);
-        double inTop = DrivetrainMath.clutchExchangeTorque(500.0, 500.0, engineTorque, reflectedInertia(topRatio), TICK_DT, STOCK);
-        double inFirst = DrivetrainMath.clutchExchangeTorque(500.0, 500.0, engineTorque, reflectedInertia(DrivetrainMath.ratioFor(0)), TICK_DT, STOCK);
+        double inTop = DrivetrainMath.clutchExchangeTorque(500.0, 500.0, engineTorque, 0.0, reflectedInertia(topRatio), TICK_DT, STOCK);
+        double inFirst = DrivetrainMath.clutchExchangeTorque(500.0, 500.0, engineTorque, 0.0, reflectedInertia(DrivetrainMath.ratioFor(0)), TICK_DT, STOCK);
         assertTrue(inTop > engineTorque * 0.95 && inTop <= engineTorque,
                 "top gear should pass nearly all of the engine's output to the drivetrain: " + inTop + " of " + engineTorque);
         assertTrue(inFirst < inTop && inFirst > engineTorque * 0.5,
@@ -396,10 +400,10 @@ class DrivetrainMathTest {
                 STOCK.engineInertia(), STOCK.enginePeakTorque(), STOCK.engineBrakingTorque(), 60.0);
         double ratio = DrivetrainMath.ratioFor(0);
         double driving = DrivetrainMath.clutchExchangeTorque(500.0, 500.0,
-                lowCapacity.enginePeakTorque() - lowCapacity.engineBrakingTorque(), reflectedInertia(ratio), TICK_DT, lowCapacity);
+                lowCapacity.enginePeakTorque() - lowCapacity.engineBrakingTorque(), 0.0, reflectedInertia(ratio), TICK_DT, lowCapacity);
         assertEquals(60.0, driving, 1e-9, "a low capacity must bound what the engine can put through the clutch");
         double dragged = DrivetrainMath.clutchExchangeTorque(100.0, 900.0, -lowCapacity.engineBrakingTorque(),
-                reflectedInertia(ratio), TICK_DT, lowCapacity);
+                0.0, reflectedInertia(ratio), TICK_DT, lowCapacity);
         assertEquals(-60.0, dragged, 1e-9, "and must bound it symmetrically when the wheels drive the engine");
     }
 
@@ -410,7 +414,7 @@ class DrivetrainMathTest {
         double wheelSideOmega = omega; // locked, coasting
         double engineTorque = DrivetrainMath.engineOutputTorque(0.0, DrivetrainMath.omegaToRpm(omega), omega, STOCK);
         double exchange = DrivetrainMath.clutchExchangeTorque(omega, wheelSideOmega, engineTorque,
-                reflectedInertia(ratio), TICK_DT, STOCK);
+                0.0, reflectedInertia(ratio), TICK_DT, STOCK);
         assertTrue(exchange < 0.0, "coasting in gear must retard the drivetrain, not drive it");
         assertTrue(Math.abs(exchange) <= STOCK.engineBrakingTorque() + 1e-9,
                 "and never by more than the engine's own drag: " + exchange);
@@ -427,7 +431,7 @@ class DrivetrainMathTest {
         double omega = DrivetrainMath.rpmToOmega(DrivetrainMath.IDLE_RPM);
         double engineTorque = DrivetrainMath.engineOutputTorque(1.0, DrivetrainMath.omegaToRpm(omega), omega, STOCK);
         double exchange = DrivetrainMath.clutchExchangeTorque(omega, wheelSideOmega, engineTorque,
-                reflectedInertia(DrivetrainMath.REVERSE_RATIO), TICK_DT, STOCK);
+                0.0, reflectedInertia(DrivetrainMath.REVERSE_RATIO), TICK_DT, STOCK);
         assertEquals(STOCK.clutchTorqueCapacity(), exchange, 1e-9,
                 "opposed shafts at speed must saturate the clutch -- it is slipping hard here");
         assertTrue(GearDrive.clutchWheelForce(exchange, DrivetrainMath.REVERSE_RATIO, CarGeometry.WHEEL_RADIUS,
@@ -540,10 +544,10 @@ class DrivetrainMathTest {
         double reverseWheelSpin = -(priorOmega + 20.0) / (DrivetrainMath.REVERSE_RATIO * DrivetrainMath.FINAL_DRIVE);
         double forwardExchange = DrivetrainMath.clutchExchangeTorque(priorOmega,
                 DrivetrainMath.wheelSideOmegaSigned(forwardWheelSpin, DrivetrainMath.ratioFor(0), 1.0), engineTorque,
-                reflectedInertia(DrivetrainMath.ratioFor(0)), TICK_DT, STOCK);
+                0.0, reflectedInertia(DrivetrainMath.ratioFor(0)), TICK_DT, STOCK);
         double reverseExchange = DrivetrainMath.clutchExchangeTorque(priorOmega,
                 DrivetrainMath.wheelSideOmegaSigned(reverseWheelSpin, DrivetrainMath.REVERSE_RATIO, -1.0), engineTorque,
-                reflectedInertia(DrivetrainMath.REVERSE_RATIO), TICK_DT, STOCK);
+                0.0, reflectedInertia(DrivetrainMath.REVERSE_RATIO), TICK_DT, STOCK);
         double forwardNext = DrivetrainMath.engineAngularVelocity(priorOmega, engineTorque, forwardExchange, TICK_DT, STOCK);
         double reverseNext = DrivetrainMath.engineAngularVelocity(priorOmega, engineTorque, reverseExchange, TICK_DT, STOCK);
         assertTrue(forwardNext > priorOmega && reverseNext > priorOmega,

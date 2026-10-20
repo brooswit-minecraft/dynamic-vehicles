@@ -142,6 +142,13 @@ public class CarEntity extends Entity {
     private final String vehicleId;
     /** Per-entity tuning, initialized from the immutable vehicle type then retained in this entity's NBT. */
     private VehicleSpec.VehicleTuning vehicleTuning;
+    /** MINECRAFT-447: {@code null} (the normal case) means "use {@code spec.diffuserTuning()}" -- every
+     * existing car, unchanged. Non-null only for a GameTest exercising a non-identity Diffuser KIT tuning
+     * on a real, otherwise-stock entity without touching that car's own immutable {@link VehicleSpec}
+     * constant (which {@code spec} is keyed to by entity type, at construction, and must stay exactly as
+     * every other vehicle's stock identity) -- not NBT-persisted, not settable through any command, and not
+     * a second product-facing config path: see {@link #setDiffuserTuningForTest}. */
+    private VehicleSpec.DiffuserTuning diffuserTuningOverride;
     /** Which seat each current passenger sits in (MINECRAFT-172); seat 0 is always the driver. */
     private final SeatAssignment<Entity> seats;
     /** Saved UUID-to-seat assignments, consumed as vanilla reconstructs passenger entities on load. */
@@ -215,6 +222,57 @@ public class CarEntity extends Entity {
     /** The current, per-instance tuning used by the server-side wheel physics. */
     VehicleSpec.VehicleTuning vehicleTuning() {
         return vehicleTuning;
+    }
+
+    /** The Diffuser KIT tuning {@link SableCarBody#tick} actually reads (MINECRAFT-447): this car's own
+     * stock {@code spec.diffuserTuning()} unless a GameTest has called {@link #setDiffuserTuningForTest},
+     * exactly the way {@link #vehicleTuning()} always reads this entity's own field rather than the spec's. */
+    VehicleSpec.DiffuserTuning diffuserTuning() {
+        return diffuserTuningOverride != null ? diffuserTuningOverride : spec.diffuserTuning();
+    }
+
+    /** GameTest-only hook (MINECRAFT-447): lets a production-path test exercise a non-identity Diffuser KIT
+     * tuning on a real, ticking entity without changing any existing car's stock {@link VehicleSpec}
+     * constant. Deliberately package-private (no command, no NBT persistence, no player-facing path) --
+     * see {@link #diffuserTuningOverride}'s own javadoc for why this is not a second config mechanism. */
+    void setDiffuserTuningForTest(VehicleSpec.DiffuserTuning tuning) {
+        this.diffuserTuningOverride = tuning;
+    }
+
+    /** GameTest-only hook (MINECRAFT-447 review): seeds heading alignment's own frozen target directly, so
+     * a direction-only regression can use a clean single-axis setup (spawned airborne, no prior grounded
+     * tick, no tumble) instead of needing to first land and then relaunch the car. Requires {@code
+     * sableBody} to already exist (call after the entity's first real tick). See {@code SableCarBody
+     * #setLastGroundedYawDegForTest}'s own javadoc for why this is not a second config mechanism. */
+    void setLastGroundedYawDegForTest(double yawDeg) {
+        SableCompat.setLastGroundedYawDegForTest(sableBody, yawDeg);
+    }
+
+    /** GameTest-only hook (MINECRAFT-447 review): directly adds real horizontal (or any) velocity to this
+     * car's own Sable body (starts at zero), so a direction-only trajectory-alignment regression can
+     * satisfy {@code trajectoryAlignmentMinSpeed} without a grounded driving phase. Requires {@code
+     * sableBody} to already exist. See {@code SableCarBody#addLinearVelocityForTest}'s own javadoc for why
+     * this is not a second config mechanism. */
+    void addLinearVelocityForTest(double x, double y, double z) {
+        SableCompat.addLinearVelocityForTest(sableBody, new org.joml.Vector3d(x, y, z));
+    }
+
+    /** GameTest-only accessor (MINECRAFT-447): this entity's current Sable body orientation (including
+     * roll and pitch), or {@code null} before its physics body exists (before the first real tick).
+     * {@link #renderOrientation} exposes the client-interpolated version of this same quantity; nothing
+     * server-side exposed the live value before this ticket, since every other production consumer
+     * ({@code SableCarBody#syncEntity}/{@code setYRot}) only needed yaw. */
+    org.joml.Quaternionf currentOrientationForTest() {
+        return sableBody != null ? SableCompat.orientation(sableBody) : null;
+    }
+
+    /** GameTest-only accessor (MINECRAFT-447): whether any wheel was touching ground on the last real tick.
+     * Deliberately NOT {@link #onGround()} -- that vanilla flag is never updated for this entity, since its
+     * position is set directly from the Sable body rather than through vanilla's own move/collision path
+     * that normally maintains it (confirmed directly: a GameTest polling {@code onGround()} never saw it
+     * become true long after the car had visibly landed and settled). */
+    boolean isTouchingGroundForTest() {
+        return sableBody != null && SableCompat.touching(sableBody);
     }
 
     /**
@@ -365,6 +423,11 @@ public class CarEntity extends Entity {
 
     int debugAutomaticGearIndex() {
         return sableBody == null ? -1 : SableCompat.automaticGearIndex(sableBody);
+    }
+
+    /** Server test support only (MINECRAFT-447 steep-surface regression): R16's own last-applied torque. */
+    double debugDiffuserRollTorque() {
+        return sableBody == null ? 0.0 : SableCompat.lastDiffuserRollTorque(sableBody);
     }
 
     /** Server-authoritative speed, m/s -- unlike {@link #clientSpeed()}, which is only ever updated

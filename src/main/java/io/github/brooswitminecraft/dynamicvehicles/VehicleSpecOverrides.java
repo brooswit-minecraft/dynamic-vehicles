@@ -219,6 +219,15 @@ final class VehicleSpecOverrides {
                 file.toeDeg == null ? stockTuning.toeDeg() : file.toeDeg);
         VehicleSpec.VehicleTuning vehicleTuning = VehicleTuningLimits.clamp(requestedTuning, stockTuning);
 
+        VehicleSpec.SuspensionTuning suspensionTuning = applyTireKit(file.tireKit, stock, dampingRate);
+        VehicleSpec.SteeringTuning steeringTuning = applySteering(file.tireKit, stock);
+        double tirePressureBar = file.tireKit == null || file.tireKit.tirePressureBar == null
+                ? stock.tirePressureBar()
+                : VehicleSpecLimits.clamp(file.tireKit.tirePressureBar, VehicleSpecLimits.MIN_TIRE_PRESSURE_BAR,
+                        VehicleSpecLimits.MAX_TIRE_PRESSURE_BAR, stock.tirePressureBar());
+
+        VehicleSpec.PitchTuning pitchTuning = applyPitch(file.tireKit, stock);
+
         // Engine/clutch coupling (MINECRAFT-444): same per-field contract as every field above -- absent
         // keeps this car's stock value, non-finite falls back to it, finite-but-extreme is clamped.
         VehicleSpec.DrivetrainCoupling stockCoupling = stock.drivetrainCoupling();
@@ -236,14 +245,7 @@ final class VehicleSpecOverrides {
                         : VehicleSpecLimits.clamp(file.clutchTorqueCapacity, VehicleSpecLimits.MIN_CLUTCH_TORQUE_CAPACITY,
                                 VehicleSpecLimits.MAX_CLUTCH_TORQUE_CAPACITY, stockCoupling.clutchTorqueCapacity()));
 
-        VehicleSpec.SuspensionTuning suspensionTuning = applyTireKit(file.tireKit, stock, dampingRate);
-        VehicleSpec.SteeringTuning steeringTuning = applySteering(file.tireKit, stock);
-        double tirePressureBar = file.tireKit == null || file.tireKit.tirePressureBar == null
-                ? stock.tirePressureBar()
-                : VehicleSpecLimits.clamp(file.tireKit.tirePressureBar, VehicleSpecLimits.MIN_TIRE_PRESSURE_BAR,
-                        VehicleSpecLimits.MAX_TIRE_PRESSURE_BAR, stock.tirePressureBar());
-
-        VehicleSpec.PitchTuning pitchTuning = applyPitch(file.tireKit, stock);
+        VehicleSpec.DiffuserTuning diffuserTuning = applyDiffuserOverride(stock.diffuserTuning(), file.diffuser);
 
         return new VehicleSpec(stock.halfX(), stock.halfY(), stock.halfZ(),
                 stock.mounts(), stock.wheelRadius(), stock.wheelWidth(),
@@ -256,7 +258,42 @@ final class VehicleSpecOverrides {
                 stock.tireTuning(), stock.downforceGripPerSpeed(), antiRollScale,
                 stock.seats(), vehicleTuning, handbrakeScale, suspensionTuning, steeringTuning,
                 tirePressureBar, pitchTuning,
-                frontWingDownforceCoeff, rearWingDownforceCoeff, wingDragCoeff, drivetrainCoupling);
+                frontWingDownforceCoeff, rearWingDownforceCoeff, wingDragCoeff, drivetrainCoupling, diffuserTuning);
+    }
+
+    /** Builds this car's effective {@link VehicleSpec.DiffuserTuning} (MINECRAFT-447): {@code stock}
+     * unchanged if the file has no {@code "diffuser"} key at all, otherwise {@code stock}'s own value for
+     * every field the nested object did not itself set, clamped into {@link DiffuserTuningLimits}' safe
+     * range the same way every other field in this loader is. Diffuser tuning carries no per-entity saved
+     * state (unlike the five {@code VehicleTuning} fields), so there is no saved-car precedence question
+     * here: it always reflects whatever was loaded at the last server start, same as {@code rideHeight}/
+     * {@code dampingRate}/{@code antiRollScale}/{@code rollingScale}/{@code handbrakeScale}. */
+    private static VehicleSpec.DiffuserTuning applyDiffuserOverride(VehicleSpec.DiffuserTuning stock,
+            VehicleCarConfigFile.Diffuser file) {
+        if (file == null) {
+            return stock;
+        }
+        VehicleSpec.DiffuserTuning requested = new VehicleSpec.DiffuserTuning(
+                file.rollSelfRightingEnabled == null ? stock.rollSelfRightingEnabled() : file.rollSelfRightingEnabled,
+                file.rollSelfRightingMaxTorque == null ? stock.rollSelfRightingMaxTorque() : file.rollSelfRightingMaxTorque,
+                file.rollSelfRightingGain == null ? stock.rollSelfRightingGain() : file.rollSelfRightingGain,
+                file.rollSelfRightingDamping == null ? stock.rollSelfRightingDamping() : file.rollSelfRightingDamping,
+                file.pitchLandingEnabled == null ? stock.pitchLandingEnabled() : file.pitchLandingEnabled,
+                file.pitchLandingMaxTorque == null ? stock.pitchLandingMaxTorque() : file.pitchLandingMaxTorque,
+                file.pitchLandingHorizonSeconds == null ? stock.pitchLandingHorizonSeconds() : file.pitchLandingHorizonSeconds,
+                file.pitchLandingGain == null ? stock.pitchLandingGain() : file.pitchLandingGain,
+                file.pitchLandingDamping == null ? stock.pitchLandingDamping() : file.pitchLandingDamping,
+                file.headingAlignmentEnabled == null ? stock.headingAlignmentEnabled() : file.headingAlignmentEnabled,
+                file.headingAlignmentMaxTorque == null ? stock.headingAlignmentMaxTorque() : file.headingAlignmentMaxTorque,
+                file.headingAlignmentGain == null ? stock.headingAlignmentGain() : file.headingAlignmentGain,
+                file.headingAlignmentDamping == null ? stock.headingAlignmentDamping() : file.headingAlignmentDamping,
+                file.headingAlignmentSteerSuppression == null ? stock.headingAlignmentSteerSuppression() : file.headingAlignmentSteerSuppression,
+                file.trajectoryAlignmentEnabled == null ? stock.trajectoryAlignmentEnabled() : file.trajectoryAlignmentEnabled,
+                file.trajectoryAlignmentMaxTorque == null ? stock.trajectoryAlignmentMaxTorque() : file.trajectoryAlignmentMaxTorque,
+                file.trajectoryAlignmentGain == null ? stock.trajectoryAlignmentGain() : file.trajectoryAlignmentGain,
+                file.trajectoryAlignmentDamping == null ? stock.trajectoryAlignmentDamping() : file.trajectoryAlignmentDamping,
+                file.trajectoryAlignmentMinSpeed == null ? stock.trajectoryAlignmentMinSpeed() : file.trajectoryAlignmentMinSpeed);
+        return DiffuserTuningLimits.clamp(requested, stock);
     }
 
     /** MINECRAFT-445: the {@code tireKit} section's anti-dive/anti-squat fractions, clamped like every

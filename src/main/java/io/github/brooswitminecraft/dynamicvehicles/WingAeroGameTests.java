@@ -8,6 +8,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.tags.FluidTags;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.gametest.GameTestHolder;
@@ -145,13 +146,25 @@ public final class WingAeroGameTests {
     /** Half-width of the floor patch under each spawn point: wide enough that every one of a car's four
      * wheel raycasts lands on placed floor rather than the template's own terrain. */
     private static final int FLOOR_PATCH_RADIUS = 2;
+    /** Where the at-rest and water tests sit on {@code settlement_test}; neither drives anywhere. */
     private static final int LANE_X = 5;
     private static final int FLOOR_Y = 2;
     /** One block above {@link #FLOOR_Y} -- a car spawns resting on the floor patch, not inside it. */
     private static final int SPAWN_Y = FLOOR_Y + 1;
-    /** Two lanes far enough apart that two cars driven at once never interact. */
     private static final int FIRST_LANE_Z = 5;
-    private static final int SECOND_LANE_Z = 20;
+    /** The driving tests' own lanes on a {@link VehicleLanes} site: two cars driven at once never share one.
+     * These used to be two spots 15 blocks apart in a single lane of {@code settlement_test}, with the second
+     * car four blocks short of the template's barrier wall -- fine only while GameTest's placement kept the
+     * cars from really moving (see {@link VehicleLanes}); where they did move, the second car hit the wall
+     * within 14 ticks and the first rear-ended it at about 11 m/s. */
+    private static final int FIRST_CAR_LANE_X = VehicleLanes.FIRST_LANE_X;
+    private static final int SECOND_CAR_LANE_X = VehicleLanes.THIRD_LANE_X;
+    /** Ticks after spawn before the per-tick lane check starts: the body exists and its wheels are down. */
+    private static final long SETTLE_TICKS = 2L;
+    private static final Block[] STONE_WHEELS = VehicleLanes.allWheels(Blocks.STONE);
+    /** These fixtures are about aero loads, not the surface, and every one launches at full throttle, which
+     * wears a stone lane where it launches; a lane may show any of that wear short of being worn through. */
+    private static final VehicleLanes.Wear LANE_WEAR = VehicleLanes.Wear.ANY_STAGE;
 
     /** Read submersion as soon as the car has ticked at all: driving first would let buoyancy float it up
      * out of full submersion, which is orthogonal, expected behaviour rather than what this checks. */
@@ -212,6 +225,13 @@ public final class WingAeroGameTests {
         return new BlockPos(LANE_X, SPAWN_Y, laneZ);
     }
 
+    /** A stone lane along a {@link VehicleLanes} site and the spawn point on it, as a matched pair, so the two
+     * can never drift apart. */
+    private static Vec3 stoneLane(VehicleLanes lanes, int laneX) {
+        lanes.layLane(laneX, Blocks.STONE.defaultBlockState());
+        return VehicleLanes.spawnPoint(laneX);
+    }
+
     private static double horizontalSpeed(CarEntity car) {
         Vec3 v = car.getDeltaMovement();
         return Math.hypot(v.x, v.z) * TICKS_PER_SECOND;
@@ -250,33 +270,39 @@ public final class WingAeroGameTests {
      * exceeds rear travel outright and failed at front=0.124 rear=0.151 for exactly that reason), and both
      * cars carry the same stock drag coefficient here so they coast identically. An explicit margin is
      * required rather than a bare inequality, so a noise-sized difference cannot pass. */
-    @GameTest(template = "settlement_test", timeoutTicks = 400)
+    @GameTest(template = "settlement_test", timeoutTicks = 400 + VehicleLanes.CHUNK_LOAD_ALLOWANCE)
     public static void frontOnlyWingDownforceShiftsLoadForwardComparedToStock(GameTestHelper helper) {
-        BlockPos stockSpawn = prepareLane(helper, FIRST_LANE_Z);
-        BlockPos wingedSpawn = prepareLane(helper, SECOND_LANE_Z);
-        CarEntity stock = helper.spawn(DynamicVehiclesMod.CAR.get(), stockSpawn);
-        withLoadedOverride(VehicleIds.CAR, wingJsonWithOnly(FRONT_DOWNFORCE_KEY, STRONG_DOWNFORCE_COEFF), () -> {
-            CarEntity winged = helper.spawn(DynamicVehiclesMod.CAR.get(), wingedSpawn);
-            stock.forceDrive(FULL_THROTTLE, NO_STEER, COAST_SPIN_UP_TICKS);
-            winged.forceDrive(FULL_THROTTLE, NO_STEER, COAST_SPIN_UP_TICKS);
-            helper.runAfterDelay(COAST_SPIN_UP_TICKS, () -> {
-                stock.forceDrive(NO_THROTTLE, NO_STEER, LAUNCH_TRANSIENT_TICKS);
-                winged.forceDrive(NO_THROTTLE, NO_STEER, LAUNCH_TRANSIENT_TICKS);
-                helper.runAfterDelay(LAUNCH_TRANSIENT_TICKS, () -> {
-                    double stockSpeed = horizontalSpeed(stock);
-                    double wingedSpeed = horizontalSpeed(winged);
-                    helper.assertTrue(stockSpeed > REAL_SPEED_FLOOR && wingedSpeed > REAL_SPEED_FLOOR,
-                            "test setup never got both cars coasting at real speed: stock=" + stockSpeed
-                                    + " winged=" + wingedSpeed);
-                    double stockBalance = frontMinusRearTravel(stock);
-                    double wingedBalance = frontMinusRearTravel(winged);
-                    double shift = wingedBalance - stockBalance;
-                    helper.assertTrue(shift > MIN_BALANCE_SHIFT_MARGIN,
-                            "a front-only wing downforce config must shift load measurably forward relative "
-                                    + "to an identically-coasting stock car: stock(front-rear)=" + stockBalance
-                                    + " winged(front-rear)=" + wingedBalance + " shift=" + shift
-                                    + " required>" + MIN_BALANCE_SHIFT_MARGIN);
-                    helper.succeed();
+        VehicleLanes.build(helper, VehicleLanes.Site.FRONT_ONLY_WING, lanes -> {
+            Vec3 stockSpawn = stoneLane(lanes, FIRST_CAR_LANE_X);
+            Vec3 wingedSpawn = stoneLane(lanes, SECOND_CAR_LANE_X);
+            CarEntity stock = lanes.spawn(DynamicVehiclesMod.CAR.get(), stockSpawn);
+            withLoadedOverride(VehicleIds.CAR, wingJsonWithOnly(FRONT_DOWNFORCE_KEY, STRONG_DOWNFORCE_COEFF), () -> {
+                CarEntity winged = lanes.spawn(DynamicVehiclesMod.CAR.get(), wingedSpawn);
+                lanes.assertStaysOnLane(stock, FIRST_CAR_LANE_X, STONE_WHEELS, LANE_WEAR, SETTLE_TICKS,
+                        COAST_SPIN_UP_TICKS + LAUNCH_TRANSIENT_TICKS - 1L, "stock car");
+                lanes.assertStaysOnLane(winged, SECOND_CAR_LANE_X, STONE_WHEELS, LANE_WEAR, SETTLE_TICKS,
+                        COAST_SPIN_UP_TICKS + LAUNCH_TRANSIENT_TICKS - 1L, "winged car");
+                stock.forceDrive(FULL_THROTTLE, NO_STEER, COAST_SPIN_UP_TICKS);
+                winged.forceDrive(FULL_THROTTLE, NO_STEER, COAST_SPIN_UP_TICKS);
+                helper.runAfterDelay(COAST_SPIN_UP_TICKS, () -> {
+                    stock.forceDrive(NO_THROTTLE, NO_STEER, LAUNCH_TRANSIENT_TICKS);
+                    winged.forceDrive(NO_THROTTLE, NO_STEER, LAUNCH_TRANSIENT_TICKS);
+                    helper.runAfterDelay(LAUNCH_TRANSIENT_TICKS, () -> {
+                        double stockSpeed = horizontalSpeed(stock);
+                        double wingedSpeed = horizontalSpeed(winged);
+                        helper.assertTrue(stockSpeed > REAL_SPEED_FLOOR && wingedSpeed > REAL_SPEED_FLOOR,
+                                "test setup never got both cars coasting at real speed: stock=" + stockSpeed
+                                        + " winged=" + wingedSpeed);
+                        double stockBalance = frontMinusRearTravel(stock);
+                        double wingedBalance = frontMinusRearTravel(winged);
+                        double shift = wingedBalance - stockBalance;
+                        helper.assertTrue(shift > MIN_BALANCE_SHIFT_MARGIN,
+                                "a front-only wing downforce config must shift load measurably forward relative "
+                                        + "to an identically-coasting stock car: stock(front-rear)=" + stockBalance
+                                        + " winged(front-rear)=" + wingedBalance + " shift=" + shift
+                                        + " required>" + MIN_BALANCE_SHIFT_MARGIN);
+                        helper.succeed();
+                    });
                 });
             });
         });
@@ -296,49 +322,55 @@ public final class WingAeroGameTests {
      *
      * <p>Both carry the same wing AND the same stock drag coefficient, so the only material difference
      * between the two readings is the speed each is travelling at. */
-    @GameTest(template = "settlement_test", timeoutTicks = 400)
+    @GameTest(template = "settlement_test", timeoutTicks = 400 + VehicleLanes.CHUNK_LOAD_ALLOWANCE)
     public static void wingDownforceLoadsTheSuspensionMoreAtHigherSpeed(GameTestHelper helper) {
-        BlockPos fastSpawn = prepareLane(helper, FIRST_LANE_Z);
-        BlockPos slowSpawn = prepareLane(helper, SECOND_LANE_Z);
-        withLoadedOverride(VehicleIds.CAR,
-                wingJsonWithOnlyDownforce(STRONG_DOWNFORCE_COEFF, STRONG_DOWNFORCE_COEFF), () -> {
-                    CarEntity fastCar = helper.spawn(DynamicVehiclesMod.CAR.get(), fastSpawn);
-                    CarEntity slowCar = helper.spawn(DynamicVehiclesMod.CAR.get(), slowSpawn);
-                    fastCar.forceDrive(FULL_THROTTLE, NO_STEER, COAST_SPIN_UP_TICKS);
-                    slowCar.forceDrive(FULL_THROTTLE, NO_STEER, SHORT_SPIN_UP_TICKS);
-                    // Both are coasting with their launch transient decayed by this point: the slow car
-                    // released throttle earlier, which only widens the speed gap being tested.
-                    helper.runAfterDelay(COAST_SPIN_UP_TICKS + LAUNCH_TRANSIENT_TICKS, () -> {
-                        double fastSpeed = horizontalSpeed(fastCar);
-                        double slowSpeed = horizontalSpeed(slowCar);
-                        double fastCompression = totalTravel(fastCar);
-                        double slowCompression = totalTravel(slowCar);
+        VehicleLanes.build(helper, VehicleLanes.Site.WING_AT_TWO_SPEEDS, lanes -> {
+            Vec3 fastSpawn = stoneLane(lanes, FIRST_CAR_LANE_X);
+            Vec3 slowSpawn = stoneLane(lanes, SECOND_CAR_LANE_X);
+            withLoadedOverride(VehicleIds.CAR,
+                    wingJsonWithOnlyDownforce(STRONG_DOWNFORCE_COEFF, STRONG_DOWNFORCE_COEFF), () -> {
+                        CarEntity fastCar = lanes.spawn(DynamicVehiclesMod.CAR.get(), fastSpawn);
+                        CarEntity slowCar = lanes.spawn(DynamicVehiclesMod.CAR.get(), slowSpawn);
+                        lanes.assertStaysOnLane(fastCar, FIRST_CAR_LANE_X, STONE_WHEELS, LANE_WEAR, SETTLE_TICKS,
+                                COAST_SPIN_UP_TICKS + LAUNCH_TRANSIENT_TICKS - 1L, "faster car");
+                        lanes.assertStaysOnLane(slowCar, SECOND_CAR_LANE_X, STONE_WHEELS, LANE_WEAR, SETTLE_TICKS,
+                                COAST_SPIN_UP_TICKS + LAUNCH_TRANSIENT_TICKS - 1L, "slower car");
+                        fastCar.forceDrive(FULL_THROTTLE, NO_STEER, COAST_SPIN_UP_TICKS);
+                        slowCar.forceDrive(FULL_THROTTLE, NO_STEER, SHORT_SPIN_UP_TICKS);
+                        // Both are coasting with their launch transient decayed by this point: the slow car
+                        // released throttle earlier, which only widens the speed gap being tested.
+                        helper.runAfterDelay(COAST_SPIN_UP_TICKS + LAUNCH_TRANSIENT_TICKS, () -> {
+                            double fastSpeed = horizontalSpeed(fastCar);
+                            double slowSpeed = horizontalSpeed(slowCar);
+                            double fastCompression = totalTravel(fastCar);
+                            double slowCompression = totalTravel(slowCar);
 
-                        helper.assertTrue(slowSpeed > MOVING_SPEED_FLOOR,
-                                "test setup left the slower car with no real airflow at all, so it is not a "
-                                        + "speed comparison: slow=" + slowSpeed);
-                        helper.assertTrue(fastSpeed > slowSpeed * MIN_SPEED_GAP_RATIO,
-                                "test setup never opened a real speed gap between the two cars: fast="
-                                        + fastSpeed + " slow=" + slowSpeed + " required fast>slow*"
-                                        + MIN_SPEED_GAP_RATIO);
-                        double deepestCompression = 0.0;
-                        for (double compression : suspensionTravel(fastCar)) {
-                            deepestCompression = Math.max(deepestCompression, compression);
-                        }
-                        helper.assertTrue(deepestCompression < fastCar.spec().restLength() * BOTTOM_OUT_FRACTION,
-                                "the faster car's suspension is too close to bottoming out for a load "
-                                        + "comparison to mean anything: deepest compression="
-                                        + deepestCompression + " restLength=" + fastCar.spec().restLength());
-                        double extraLoad = fastCompression - slowCompression;
-                        helper.assertTrue(extraLoad > MIN_WING_COMPRESSION_MARGIN,
-                                "the same wing config must load the suspension measurably more at a higher "
-                                        + "speed (downforce is speed-squared, not a fixed load): fast="
-                                        + fastCompression + " (" + fastSpeed + " m/s) slow=" + slowCompression
-                                        + " (" + slowSpeed + " m/s) extra=" + extraLoad + " required>"
-                                        + MIN_WING_COMPRESSION_MARGIN);
-                        helper.succeed();
+                            helper.assertTrue(slowSpeed > MOVING_SPEED_FLOOR,
+                                    "test setup left the slower car with no real airflow at all, so it is not a "
+                                            + "speed comparison: slow=" + slowSpeed);
+                            helper.assertTrue(fastSpeed > slowSpeed * MIN_SPEED_GAP_RATIO,
+                                    "test setup never opened a real speed gap between the two cars: fast="
+                                            + fastSpeed + " slow=" + slowSpeed + " required fast>slow*"
+                                            + MIN_SPEED_GAP_RATIO);
+                            double deepestCompression = 0.0;
+                            for (double compression : suspensionTravel(fastCar)) {
+                                deepestCompression = Math.max(deepestCompression, compression);
+                            }
+                            helper.assertTrue(deepestCompression < fastCar.spec().restLength() * BOTTOM_OUT_FRACTION,
+                                    "the faster car's suspension is too close to bottoming out for a load "
+                                            + "comparison to mean anything: deepest compression="
+                                            + deepestCompression + " restLength=" + fastCar.spec().restLength());
+                            double extraLoad = fastCompression - slowCompression;
+                            helper.assertTrue(extraLoad > MIN_WING_COMPRESSION_MARGIN,
+                                    "the same wing config must load the suspension measurably more at a higher "
+                                            + "speed (downforce is speed-squared, not a fixed load): fast="
+                                            + fastCompression + " (" + fastSpeed + " m/s) slow=" + slowCompression
+                                            + " (" + slowSpeed + " m/s) extra=" + extraLoad + " required>"
+                                            + MIN_WING_COMPRESSION_MARGIN);
+                            helper.succeed();
+                        });
                     });
-                });
+        });
     }
 
     /** Mean suspension compression across every wheel &mdash; front and rear axles combined, the quantity
@@ -373,38 +405,43 @@ public final class WingAeroGameTests {
      * opposing the body's own velocity, so it can only remove kinetic energy, not add it. Sampled a few
      * times during the coast-down rather than only at the very end, so a transient speed-up partway through
      * (which a final-speed-only comparison could miss) is caught too. */
-    @GameTest(template = "settlement_test", timeoutTicks = 400)
+    @GameTest(template = "settlement_test", timeoutTicks = 400 + VehicleLanes.CHUNK_LOAD_ALLOWANCE)
     public static void elevatedDragOnlyEverSlowsACoastingCarDown(GameTestHelper helper) {
-        BlockPos spawn = prepareLane(helper, FIRST_LANE_Z);
-        withLoadedOverride(VehicleIds.CAR, wingJsonWithOnly(DRAG_KEY, ELEVATED_DRAG_COEFF), () -> {
-            CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), spawn);
-            car.forceDrive(FULL_THROTTLE, NO_STEER, COAST_SPIN_UP_TICKS);
-            helper.runAfterDelay(COAST_SPIN_UP_TICKS, () -> {
-                double speedAtThrottleRelease = horizontalSpeed(car);
-                helper.assertTrue(speedAtThrottleRelease > MOVING_SPEED_FLOOR,
-                        "test setup never got the car moving before coast-down: " + speedAtThrottleRelease);
-                car.forceDrive(NO_THROTTLE, NO_STEER, COAST_TICKS);
-                double[] lastSpeed = {speedAtThrottleRelease};
-                boolean[] everSpedUp = {false};
-                for (int delay = COAST_SAMPLE_INTERVAL_TICKS; delay <= COAST_TICKS;
-                        delay += COAST_SAMPLE_INTERVAL_TICKS) {
-                    helper.runAfterDelay(delay, () -> {
-                        double speed = horizontalSpeed(car);
-                        if (speed > lastSpeed[0] + NEGLIGIBLE) {
-                            everSpedUp[0] = true;
-                        }
-                        lastSpeed[0] = speed;
+        VehicleLanes.build(helper, VehicleLanes.Site.ELEVATED_DRAG, lanes -> {
+            Vec3 spawn = stoneLane(lanes, FIRST_CAR_LANE_X);
+            withLoadedOverride(VehicleIds.CAR, wingJsonWithOnly(DRAG_KEY, ELEVATED_DRAG_COEFF), () -> {
+                CarEntity car = lanes.spawn(DynamicVehiclesMod.CAR.get(), spawn);
+                // Spin-up plus the whole coast-down: about 97 m of real travel.
+                lanes.assertStaysOnLane(car, FIRST_CAR_LANE_X, STONE_WHEELS, LANE_WEAR, SETTLE_TICKS,
+                        COAST_SPIN_UP_TICKS + COAST_TICKS - 1L, "coasting car");
+                car.forceDrive(FULL_THROTTLE, NO_STEER, COAST_SPIN_UP_TICKS);
+                helper.runAfterDelay(COAST_SPIN_UP_TICKS, () -> {
+                    double speedAtThrottleRelease = horizontalSpeed(car);
+                    helper.assertTrue(speedAtThrottleRelease > MOVING_SPEED_FLOOR,
+                            "test setup never got the car moving before coast-down: " + speedAtThrottleRelease);
+                    car.forceDrive(NO_THROTTLE, NO_STEER, COAST_TICKS);
+                    double[] lastSpeed = {speedAtThrottleRelease};
+                    boolean[] everSpedUp = {false};
+                    for (int delay = COAST_SAMPLE_INTERVAL_TICKS; delay <= COAST_TICKS;
+                            delay += COAST_SAMPLE_INTERVAL_TICKS) {
+                        helper.runAfterDelay(delay, () -> {
+                            double speed = horizontalSpeed(car);
+                            if (speed > lastSpeed[0] + NEGLIGIBLE) {
+                                everSpedUp[0] = true;
+                            }
+                            lastSpeed[0] = speed;
+                        });
+                    }
+                    helper.runAfterDelay(COAST_TICKS, () -> {
+                        helper.assertTrue(!everSpedUp[0],
+                                "a coasting car with elevated aerodynamic drag must never speed back up, only "
+                                        + "slow down -- drag injected energy instead of only opposing velocity");
+                        helper.assertTrue(lastSpeed[0] < speedAtThrottleRelease,
+                                "a coasting car with elevated aerodynamic drag must end up slower than when "
+                                        + "throttle was released: released=" + speedAtThrottleRelease
+                                        + " final=" + lastSpeed[0]);
+                        helper.succeed();
                     });
-                }
-                helper.runAfterDelay(COAST_TICKS, () -> {
-                    helper.assertTrue(!everSpedUp[0],
-                            "a coasting car with elevated aerodynamic drag must never speed back up, only "
-                                    + "slow down -- drag injected energy instead of only opposing velocity");
-                    helper.assertTrue(lastSpeed[0] < speedAtThrottleRelease,
-                            "a coasting car with elevated aerodynamic drag must end up slower than when "
-                                    + "throttle was released: released=" + speedAtThrottleRelease
-                                    + " final=" + lastSpeed[0]);
-                    helper.succeed();
                 });
             });
         });
@@ -432,35 +469,46 @@ public final class WingAeroGameTests {
      * <p>Own isolated batch, restoring {@code CarConfig.WHEEL_SUB_STEPS} even on failure, for the reason
      * {@code CarDrivetrainGameTests#wheelSubStepCountDoesNotMateriallyChangeReachedSpeedAfterAFixedWindow}'s
      * own javadoc explains (it is a global, live value, not something a test can scope to its own car). */
-    @GameTest(template = "settlement_test", timeoutTicks = 300, batch = "wingAeroSubStepIsolated")
+    @GameTest(template = "settlement_test", timeoutTicks = 300 + VehicleLanes.CHUNK_LOAD_ALLOWANCE,
+            batch = "wingAeroSubStepIsolated")
     public static void appliedWingDownforceIsOncePerTickAndMatchesTheFormulaAtEverySubstepCount(
             GameTestHelper helper) {
-        BlockPos oneStepSpawn = prepareLane(helper, FIRST_LANE_Z);
-        BlockPos manyStepSpawn = prepareLane(helper, SECOND_LANE_Z);
-        int originalSubSteps = CarConfig.WHEEL_SUB_STEPS.get();
-        String wingJson = wingJsonWithOnlyDownforce(MODERATE_DOWNFORCE_COEFF, MODERATE_DOWNFORCE_COEFF);
-        try {
-            CarConfig.WHEEL_SUB_STEPS.set(ONE_SUB_STEP);
-            withLoadedOverride(FORCE_SCALED_CAR_ID, wingJson, () -> {
-                CarEntity oneStepCar = helper.spawn(DynamicVehiclesMod.MUSCLE.get(), oneStepSpawn);
-                oneStepCar.forceDrive(FULL_THROTTLE, NO_STEER, DRIVE_TICKS);
-                helper.runAfterDelay(DRIVE_TICKS, () -> {
-                    assertAppliedAeroMatchesFormula(helper, oneStepCar, ONE_SUB_STEP);
-                    runManySubStepAeroLegAndRestore(helper, originalSubSteps, wingJson, manyStepSpawn);
+        VehicleLanes.build(helper, VehicleLanes.Site.APPLIED_WING, lanes -> {
+            Vec3 oneStepSpawn = stoneLane(lanes, FIRST_CAR_LANE_X);
+            Vec3 manyStepSpawn = stoneLane(lanes, SECOND_CAR_LANE_X);
+            int originalSubSteps = CarConfig.WHEEL_SUB_STEPS.get();
+            lanes.restoreSubStepsOnEveryOutcome();
+            String wingJson = wingJsonWithOnlyDownforce(MODERATE_DOWNFORCE_COEFF, MODERATE_DOWNFORCE_COEFF);
+            try {
+                CarConfig.WHEEL_SUB_STEPS.set(ONE_SUB_STEP);
+                withLoadedOverride(FORCE_SCALED_CAR_ID, wingJson, () -> {
+                    CarEntity oneStepCar = lanes.spawn(DynamicVehiclesMod.MUSCLE.get(), oneStepSpawn);
+                    lanes.assertStaysOnLane(oneStepCar, FIRST_CAR_LANE_X, STONE_WHEELS, LANE_WEAR, SETTLE_TICKS,
+                            DRIVE_TICKS - 1L, "wheelSubSteps=" + ONE_SUB_STEP + " car");
+                    oneStepCar.forceDrive(FULL_THROTTLE, NO_STEER, DRIVE_TICKS);
+                    helper.runAfterDelay(DRIVE_TICKS, () -> {
+                        assertAppliedAeroMatchesFormula(helper, oneStepCar, ONE_SUB_STEP);
+                        // Done with: it leaves the leg at ~27 m/s and would otherwise coast on toward the end
+                        // of its lane while the other leg is still being measured.
+                        oneStepCar.discard();
+                        runManySubStepAeroLegAndRestore(helper, lanes, originalSubSteps, wingJson, manyStepSpawn);
+                    });
                 });
-            });
-        } catch (RuntimeException e) {
-            CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
-            throw e;
-        }
+            } catch (RuntimeException e) {
+                CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
+                throw e;
+            }
+        });
     }
 
-    private static void runManySubStepAeroLegAndRestore(GameTestHelper helper, int originalSubSteps,
-            String wingJson, BlockPos spawn) {
+    private static void runManySubStepAeroLegAndRestore(GameTestHelper helper, VehicleLanes lanes,
+            int originalSubSteps, String wingJson, Vec3 spawn) {
         try {
             CarConfig.WHEEL_SUB_STEPS.set(MANY_SUB_STEPS);
             withLoadedOverride(FORCE_SCALED_CAR_ID, wingJson, () -> {
-                CarEntity manyStepCar = helper.spawn(DynamicVehiclesMod.MUSCLE.get(), spawn);
+                CarEntity manyStepCar = lanes.spawn(DynamicVehiclesMod.MUSCLE.get(), spawn);
+                lanes.assertStaysOnLane(manyStepCar, SECOND_CAR_LANE_X, STONE_WHEELS, LANE_WEAR, SETTLE_TICKS,
+                        DRIVE_TICKS - 1L, "wheelSubSteps=" + MANY_SUB_STEPS + " car");
                 manyStepCar.forceDrive(FULL_THROTTLE, NO_STEER, DRIVE_TICKS);
                 helper.runAfterDelay(DRIVE_TICKS, () -> {
                     try {
@@ -559,53 +607,59 @@ public final class WingAeroGameTests {
      * difference under test, so the winged car's compression is asserted to stay clear of full travel. That
      * plus the margin assertion is what this offers on saturation; it does not claim to detect a
      * spring-force clamp that leaves compression below that bound. */
-    @GameTest(template = "settlement_test", timeoutTicks = 400)
+    @GameTest(template = "settlement_test", timeoutTicks = 400 + VehicleLanes.CHUNK_LOAD_ALLOWANCE)
     public static void wingDownforceMeasurablyLoadsTheSuspensionVersusAWingOffControl(GameTestHelper helper) {
-        BlockPos stockSpawn = prepareLane(helper, FIRST_LANE_Z);
-        BlockPos wingedSpawn = prepareLane(helper, SECOND_LANE_Z);
-        CarEntity stock = helper.spawn(DynamicVehiclesMod.CAR.get(), stockSpawn);
-        withLoadedOverride(VehicleIds.CAR, wingJsonWithOnlyDownforce(STRONG_DOWNFORCE_COEFF, STRONG_DOWNFORCE_COEFF),
-                () -> {
-                    CarEntity winged = helper.spawn(DynamicVehiclesMod.CAR.get(), wingedSpawn);
-                    stock.forceDrive(FULL_THROTTLE, NO_STEER, COAST_SPIN_UP_TICKS);
-                    winged.forceDrive(FULL_THROTTLE, NO_STEER, COAST_SPIN_UP_TICKS);
-                    helper.runAfterDelay(COAST_SPIN_UP_TICKS, () -> {
-                        // Throttle released: from here on neither car has drive torque, so neither carries
-                        // the launch weight transfer that defeated the earlier change-based drafts.
-                        stock.forceDrive(NO_THROTTLE, NO_STEER, LAUNCH_TRANSIENT_TICKS);
-                        winged.forceDrive(NO_THROTTLE, NO_STEER, LAUNCH_TRANSIENT_TICKS);
-                        helper.runAfterDelay(LAUNCH_TRANSIENT_TICKS, () -> {
-                            double stockLevel = totalTravel(stock);
-                            double wingedLevel = totalTravel(winged);
-                            double difference = wingedLevel - stockLevel;
-                            SableCarBody wingedBody = (SableCarBody) winged.sableBody();
+        VehicleLanes.build(helper, VehicleLanes.Site.WING_VS_CONTROL, lanes -> {
+            Vec3 stockSpawn = stoneLane(lanes, FIRST_CAR_LANE_X);
+            Vec3 wingedSpawn = stoneLane(lanes, SECOND_CAR_LANE_X);
+            CarEntity stock = lanes.spawn(DynamicVehiclesMod.CAR.get(), stockSpawn);
+            withLoadedOverride(VehicleIds.CAR, wingJsonWithOnlyDownforce(STRONG_DOWNFORCE_COEFF, STRONG_DOWNFORCE_COEFF),
+                    () -> {
+                        CarEntity winged = lanes.spawn(DynamicVehiclesMod.CAR.get(), wingedSpawn);
+                        lanes.assertStaysOnLane(stock, FIRST_CAR_LANE_X, STONE_WHEELS, LANE_WEAR, SETTLE_TICKS,
+                                COAST_SPIN_UP_TICKS + LAUNCH_TRANSIENT_TICKS - 1L, "wing-off control");
+                        lanes.assertStaysOnLane(winged, SECOND_CAR_LANE_X, STONE_WHEELS, LANE_WEAR, SETTLE_TICKS,
+                                COAST_SPIN_UP_TICKS + LAUNCH_TRANSIENT_TICKS - 1L, "winged car");
+                        stock.forceDrive(FULL_THROTTLE, NO_STEER, COAST_SPIN_UP_TICKS);
+                        winged.forceDrive(FULL_THROTTLE, NO_STEER, COAST_SPIN_UP_TICKS);
+                        helper.runAfterDelay(COAST_SPIN_UP_TICKS, () -> {
+                            // Throttle released: from here on neither car has drive torque, so neither carries
+                            // the launch weight transfer that defeated the earlier change-based drafts.
+                            stock.forceDrive(NO_THROTTLE, NO_STEER, LAUNCH_TRANSIENT_TICKS);
+                            winged.forceDrive(NO_THROTTLE, NO_STEER, LAUNCH_TRANSIENT_TICKS);
+                            helper.runAfterDelay(LAUNCH_TRANSIENT_TICKS, () -> {
+                                double stockLevel = totalTravel(stock);
+                                double wingedLevel = totalTravel(winged);
+                                double difference = wingedLevel - stockLevel;
+                                SableCarBody wingedBody = (SableCarBody) winged.sableBody();
 
-                            helper.assertTrue(Math.abs(wingedBody.lastAeroAirflowSpeed()) > REAL_SPEED_FLOOR,
-                                    "test setup never reached a real coasting airflow speed, so no meaningful "
-                                            + "wing load was under test: airflow="
-                                            + wingedBody.lastAeroAirflowSpeed());
-                            helper.assertTrue(horizontalSpeed(stock) > REAL_SPEED_FLOOR,
-                                    "test setup never got the wing-off control car coasting at real speed: "
-                                            + horizontalSpeed(stock));
-                            double deepestCompression = 0.0;
-                            for (double compression : suspensionTravel(winged)) {
-                                deepestCompression = Math.max(deepestCompression, compression);
-                            }
-                            helper.assertTrue(deepestCompression < winged.spec().restLength() * BOTTOM_OUT_FRACTION,
-                                    "the winged car's suspension is too close to bottoming out for an "
-                                            + "added-load measurement to mean anything: deepest compression="
-                                            + deepestCompression + " restLength=" + winged.spec().restLength());
-                            // Downforce pushes the body DOWN, so at speed the winged car must sit
-                            // measurably more compressed than the identically-driven wing-off control.
-                            helper.assertTrue(difference > MIN_WING_COMPRESSION_MARGIN,
-                                    "a real wing load must leave the car measurably more compressed at speed "
-                                            + "than an identically-driven wing-off control: winged="
-                                            + wingedLevel + " stock=" + stockLevel + " difference="
-                                            + difference + " required>" + MIN_WING_COMPRESSION_MARGIN);
-                            helper.succeed();
+                                helper.assertTrue(Math.abs(wingedBody.lastAeroAirflowSpeed()) > REAL_SPEED_FLOOR,
+                                        "test setup never reached a real coasting airflow speed, so no meaningful "
+                                                + "wing load was under test: airflow="
+                                                + wingedBody.lastAeroAirflowSpeed());
+                                helper.assertTrue(horizontalSpeed(stock) > REAL_SPEED_FLOOR,
+                                        "test setup never got the wing-off control car coasting at real speed: "
+                                                + horizontalSpeed(stock));
+                                double deepestCompression = 0.0;
+                                for (double compression : suspensionTravel(winged)) {
+                                    deepestCompression = Math.max(deepestCompression, compression);
+                                }
+                                helper.assertTrue(deepestCompression < winged.spec().restLength() * BOTTOM_OUT_FRACTION,
+                                        "the winged car's suspension is too close to bottoming out for an "
+                                                + "added-load measurement to mean anything: deepest compression="
+                                                + deepestCompression + " restLength=" + winged.spec().restLength());
+                                // Downforce pushes the body DOWN, so at speed the winged car must sit
+                                // measurably more compressed than the identically-driven wing-off control.
+                                helper.assertTrue(difference > MIN_WING_COMPRESSION_MARGIN,
+                                        "a real wing load must leave the car measurably more compressed at speed "
+                                                + "than an identically-driven wing-off control: winged="
+                                                + wingedLevel + " stock=" + stockLevel + " difference="
+                                                + difference + " required>" + MIN_WING_COMPRESSION_MARGIN);
+                                helper.succeed();
+                            });
                         });
                     });
-                });
+        });
     }
 
     /**

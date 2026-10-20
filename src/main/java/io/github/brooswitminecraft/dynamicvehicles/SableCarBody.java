@@ -151,6 +151,9 @@ final class SableCarBody {
     // suspension force was positive (the exact same `touching` condition that gates box.wakeUp() below)
     // as of the end of the last tick -- lets a caller distinguish "genuinely airborne" from "still grounded
     // but not yet falling fast" when a fall isn't showing up in velocity.
+    // Also MINECRAFT-447's own grounded signal: CarEntity's vanilla onGround() is never updated for this
+    // entity (its position is set straight from the Sable body, bypassing the move/collision path that
+    // normally maintains that flag), so a GameTest polling onGround() never sees it become true at all.
     private boolean lastTouching;
     // Per-wheel telemetry for /dtcar debug (MINECRAFT-401 review: the ticket's own acceptance criteria
     // calls these out by name -- contact speed, slip, applied force/torque -- not just gear/RPM). Written
@@ -231,6 +234,27 @@ final class SableCarBody {
     private final BlockPos[] lastContactBlockPos;
     private final Direction[] lastContactFace;
     private final Vec3[] lastContactLocal;
+    // MINECRAFT-447 R18 heading alignment's own target: the Minecraft yaw (degrees) this car last held
+    // while touching the ground, held fixed while airborne. NaN until the first grounded tick, meaning
+    // "no target yet" -- applyDiffuserAssists reads that as "heading alignment not yet active" rather than
+    // aligning to a bogus 0 degrees for a car that has never touched down (e.g. spawned mid-air).
+    private double lastGroundedYawDeg = Double.NaN;
+    // MINECRAFT-447: each assist's own last-applied torque (N*m, 0 for every stock car since none carries a
+    // non-identity DiffuserTuning), kept only for describe()'s own telemetry line below. Reported under its
+    // own per-assist key, and never folded into any aerodynamic quantity, so a reader of that debug line can
+    // attribute an observed moment to the system that actually produced it. Three DIFFERENT things are in
+    // play and this comment previously conflated two of them (review correction, PR #180):
+    //   - these diffuser values: deliberately artificial game-feel corrections, keyed to an orientation
+    //     error rather than to airflow, applied as a real torque by applyWorldTorqueAsCouple below;
+    //   - MINECRAFT-184's downforceGripPerSpeed (already shipped, Indy Car only): a tire-GRIP multiplier on
+    //     gripMu, not a force or a moment at all -- never read or written here;
+    //   - MINECRAFT-446's wing work: genuine applied aerodynamic forces and moments. A wing moment IS a
+    //     torque-like quantity, which is exactly why these need separate keys rather than one combined
+    //     number -- not, as this comment used to claim, because "the wing side isn't a torque".
+    private double lastDiffuserRollTorque;
+    private double lastDiffuserPitchTorque;
+    private double lastDiffuserHeadingTorque;
+    private double lastDiffuserTrajectoryTorque;
 
     private SableCarBody(VehicleSpec spec, ServerLevel level, BoxPhysicsObject box, RigidBodyHandle body) {
         this.spec = spec;
@@ -1171,6 +1195,11 @@ final class SableCarBody {
                 lastAeroApplications = applications;
             }
         }
+
+        if (!car.diffuserTuning().isIdentity()) {
+            applyDiffuserAssists(car, position, orientation, inverse, carForward, subLinear, subAngular,
+                    touching, steer, handbrake, gear, dt);
+        }
         lastSlipSpeed = slipThisTick;
         lastSpinSlip = spinSlipThisTick;
         if (CarDebug.enabled) {
@@ -1180,6 +1209,182 @@ final class SableCarBody {
             box.wakeUp();
         }
         lastTouching = touching;
+    }
+
+    /** Downward speed (m/s) below which a body counts as "not actually falling", so a time-to-touchdown
+     * estimate from it would be meaningless or point the probe the wrong way (MINECRAFT-447). */
+    private static final double DIFFUSER_FALLING_SPEED_EPSILON = 0.01;
+    /** How far down (m) R17's own touchdown probe looks before reporting "no ground in range"; generous
+     * enough to cover any realistic jump arc in this mod's own terrain without casting the full world
+     * height every tick. */
+    private static final double DIFFUSER_TOUCHDOWN_PROBE_RANGE = 256.0;
+
+    /** Ground probe for R17's time-to-touchdown (MINECRAFT-447): straight down in WORLD space -- unlike
+     * the per-wheel suspension raycasts above, which deliberately follow the body's own tilted "down" so
+     * suspension travel means the same thing on a slope, this assist is about gravity actually bringing the
+     * car down, so it must use true world-down regardless of the car's own attitude. One raycast per tick,
+     * from the body centre; {@link Double#NaN} (an explicitly invalid estimate, see
+     * {@link DiffuserAssistMath#pitchLandingTorque}) whenever no ground is found within range or the car
+     * is not currently falling (fma with a zero/positive {@code -fallSpeed} would point the probe upward or
+     * not move it at all, never a meaningful "time to touchdown"). */
+    private double timeToTouchdownSeconds(CarEntity car, Vector3d position, double verticalSpeed) {
+        if (!(verticalSpeed < -DIFFUSER_FALLING_SPEED_EPSILON)) {
+            return Double.NaN;
+        }
+        Vector3d worldDown = new Vector3d(0, -1, 0);
+        Vector3d probeTo = new Vector3d(position).fma(DIFFUSER_TOUCHDOWN_PROBE_RANGE, worldDown);
+        BlockHitResult hit = level.clip(new ClipContext(new Vec3(position.x, position.y, position.z),
+                new Vec3(probeTo.x, probeTo.y, probeTo.z), ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, car));
+        if (hit.getType() == HitResult.Type.MISS) {
+            return Double.NaN;
+        }
+        double heightAboveGround = hit.getLocation().distanceTo(new Vec3(position.x, position.y, position.z));
+        return heightAboveGround / -verticalSpeed;
+    }
+
+    /**
+     * MINECRAFT-447: the Diffuser KIT's four arcade orientation assists, applied once per tick (not
+     * sub-stepped -- these are chassis-level corrections, not per-wheel forces). Computes each assist's
+     * own angle/rate/error inputs from this tick's orientation and the post-wheel-impulse velocity, calls
+     * {@link DiffuserAssistMath} (which does all the activation/bounding) for each of the four, sums the
+     * four torques into one world-space vector, and realises it as a force couple through the same
+     * {@code applyImpulseAtPoint} mechanism the rest of this class already uses and trusts -- deliberately
+     * not {@code RigidBodyHandle.applyAngularImpulse}/{@code applyTorqueImpulse}, which (unlike
+     * {@code applyImpulseAtPoint}) have no prior call site anywhere in this repo establishing their frame
+     * convention against the native Sable code the way MINECRAFT-72's review did for the point-impulse path.
+     *
+     * <p>Angle/rate conventions (all radians, all read off this tick's held orientation/post-impulse
+     * velocity, so airborne or grounded alike): roll is the signed bank angle of the local right/up axes
+     * against world up ({@code atan2(right.y, up.y)}, exactly zero at both upright and the inverted
+     * equilibrium, independent of yaw); pitch is {@code asin(forward.y)} (positive = nose up); heading and
+     * trajectory error are both measured against the SAME Minecraft yaw convention {@link #yawOf} already
+     * uses, so they compose with it directly, but against two deliberately different targets -- heading
+     * against {@link #lastGroundedYawDeg} (held fixed while airborne), trajectory against the car's own
+     * horizontal velocity direction -- never against each other, matching MINECRAFT-395's explicit
+     * instruction not to collapse the two.
+     */
+    private void applyDiffuserAssists(CarEntity car, Vector3d position, Quaterniond orientation, Quaterniond inverse,
+            Vector3d carForward, Vector3d linear, Vector3d angular, boolean touching, double steer,
+            boolean handbrake, CarPhysics.Gear gear, double dt) {
+        VehicleSpec.DiffuserTuning diffuser = car.diffuserTuning();
+        Vector3d right = orientation.transform(new Vector3d(1, 0, 0));
+        Vector3d up = orientation.transform(new Vector3d(0, 1, 0));
+        double currentYawDeg = yawOf(orientation);
+
+        if (touching) {
+            lastGroundedYawDeg = currentYawDeg;
+        }
+
+        // MINECRAFT-447 review fix (steep-surface acceptance case): DiffuserAssistMath.rollSelfRightingTorque's
+        // own javadoc already documents the intended contract -- "an assist that only makes sense while
+        // airborne (recovering from a rollover) is gated by the caller checking contact state before
+        // calling this" -- but this call site never did. A car resting on a steep natural slope carries a
+        // real, PERMANENT bank angle that is correct for that slope, not a rollover; without this gate the
+        // assist would apply continuous torque trying to roll the car back to world-upright, fighting the
+        // ground it is correctly resting on. Gating here, not inside the pure function, matches every other
+        // assist's own convention (R17 self-gates on a NaN time-to-touchdown while grounded; R18 self-gates
+        // because lastGroundedYawDeg tracks the current yaw every grounded tick) rather than special-casing
+        // roll's math for a condition the caller already computes.
+        double rollAngleRad = Math.atan2(right.y, up.y);
+        double rollRateRadPerSec = angular.dot(carForward);
+        double rollTorque = touching ? 0.0
+                : DiffuserAssistMath.rollSelfRightingTorque(rollAngleRad, rollRateRadPerSec, diffuser);
+
+        // MINECRAFT-447 review fix (PR #180 comment 6278664198): pitchAngleRad here is a MEASURED angle
+        // (asin(forward.y), positive = nose up), but the torque below is applied about the PHYSICAL
+        // +right axis the engine actually rotates around -- and, exactly like yawOf/orientationOf's own
+        // documented rotateY(-yaw) convention below, this engine's pitch rotation is the NEGATION of the
+        // measured angle (a measured +10 degree nose-up pose is physically rotateX(-10 degrees)). Feeding
+        // the measured angle straight into pitchLandingTorque's own internal "-gain*pitch" therefore pushed
+        // the PHYSICAL angle further from level, not toward it -- confirmed by direct derivation, not just
+        // asserted: negating the angle argument here (not the rate argument, which is already read as the
+        // physical angular.dot(right) and must stay dissipative, per the review) is the fix.
+        double pitchAngleRad = Math.asin(Math.max(-1.0, Math.min(1.0, carForward.y)));
+        double pitchRateRadPerSec = angular.dot(right);
+        double timeToTouchdown = timeToTouchdownSeconds(car, position, linear.y);
+        double pitchTorque = DiffuserAssistMath.pitchLandingTorque(-pitchAngleRad, pitchRateRadPerSec, timeToTouchdown, diffuser);
+
+        // MINECRAFT-447 review fix (PR #180 comment 6278664198): headingAlignmentTorque/trajectoryAlignmentTorque
+        // are applied about the PHYSICAL world +Y axis, but their own "error" argument was built entirely
+        // out of Minecraft yaw degrees (currentYawDeg == yawOf(orientation)) -- and yawOf/orientationOf's
+        // own doc already states the physical convention is rotateY(-yaw), i.e. physical rotation = -yaw.
+        // A target-minus-current yaw error fed straight into a "+gain*error" proportional term therefore
+        // produced physical torque with the opposite sign of what moves yaw toward that target (confirmed
+        // by direct derivation: dY/dt = -d(physical)/dt, so driving the error to zero in yaw-space requires
+        // NEGATIVE physical torque for positive yaw-space error, not positive). Swapping the wrapAngle
+        // operands (current-minus-target instead of target-minus-current) is the fix -- the rate argument
+        // (angular.y, already the physical rate the applied torque's own damping must oppose) is unchanged.
+        double yawRateRadPerSec = angular.y;
+        double headingTorque = Double.isNaN(lastGroundedYawDeg) ? 0.0
+                : DiffuserAssistMath.headingAlignmentTorque(
+                        DiffuserAssistMath.wrapAngle(Math.toRadians(currentYawDeg - lastGroundedYawDeg)),
+                        yawRateRadPerSec, steer, diffuser);
+
+        double horizontalSpeed = Math.hypot(linear.x, linear.z);
+        // Intentional-sliding signal (R19): the handbrake is this vehicle's existing, player-driven
+        // deliberate-slide control (DriftTireModel/CamberToeGripModel already key off it the same way) --
+        // reusing it here is an implementation choice, not a new input, and keeps this assist from ever
+        // fighting a handbrake slide.
+        boolean intentionalSlide = handbrake;
+        // Same review fix as headingTorque above, same reasoning: swapped operands, not a rate change.
+        // Reverse-aware target (MINECRAFT-447 reverse coverage): classified on MEASURED forward speed, with
+        // the selected gear only separating an intentional reverse from a rollback -- see
+        // DiffuserAssistMath#trajectoryErrorRad, which fades the proportional authority to zero at every
+        // forward/backward switch point so the target can never flip 180 degrees at full torque, and a
+        // rollback's target simply fades out rather than spinning or pinning the car. Travel direction and
+        // forward speed both come from the HORIZONTAL velocity, so they agree: linear.dot(carForward) also
+        // picked up the fall speed through any pitch, so a falling nose-up car read as reversing while its
+        // horizontal travel was still ahead of it.
+        double trajectoryTorque = DiffuserAssistMath.trajectoryAlignmentTorque(
+                DiffuserAssistMath.trajectoryErrorRadForVelocity(linear.x, linear.z, currentYawDeg,
+                        gear == CarPhysics.Gear.REVERSE, DiffuserAssistMath.REVERSE_AUTHORITY_RAMP),
+                yawRateRadPerSec, horizontalSpeed, intentionalSlide, diffuser);
+
+        Vector3d totalTorque = new Vector3d(carForward).mul(rollTorque)
+                .fma(pitchTorque, right)
+                .fma(headingTorque + trajectoryTorque, new Vector3d(0, 1, 0));
+        applyWorldTorqueAsCouple(totalTorque, inverse, dt);
+
+        lastDiffuserRollTorque = rollTorque;
+        lastDiffuserPitchTorque = pitchTorque;
+        lastDiffuserHeadingTorque = headingTorque;
+        lastDiffuserTrajectoryTorque = trajectoryTorque;
+    }
+
+    /** Realises a world-space torque vector as an equal-and-opposite force couple at body-local points
+     * {@code LEVER} either side of the body centre, converted to the body-local frame
+     * {@code applyImpulseAtPoint} requires (MINECRAFT-447) -- see {@code applyDiffuserAssists}'s own
+     * javadoc for why a couple through this already-proven mechanism was chosen over the untested-frame
+     * {@code applyAngularImpulse}/{@code applyTorqueImpulse}. {@code LEVER} is a pure mathematical device
+     * (any nonzero choice realises the same net torque, since the force below is scaled by
+     * {@code 1/(2*LEVER)|} to compensate) -- it carries no physical meaning and is unrelated to vehicle size. */
+    private static final double DIFFUSER_COUPLE_LEVER = 1.0;
+    /** Torque magnitudes (N*m) at or below this are treated as exactly zero -- below any physically
+     * meaningful correction, and it keeps the couple construction from normalizing a near-zero vector. */
+    private static final double DIFFUSER_TORQUE_EPSILON = 1e-6;
+    /** How closely the torque axis may align with world up before the couple construction picks a different
+     * helper axis for its cross product (any value short of parallel works; this keeps the cross product
+     * well conditioned). */
+    private static final double DIFFUSER_COUPLE_AXIS_ALIGNMENT_LIMIT = 0.9;
+
+    private void applyWorldTorqueAsCouple(Vector3d torqueWorld, Quaterniond inverse, double dt) {
+        double magnitude = torqueWorld.length();
+        if (!(magnitude > DIFFUSER_TORQUE_EPSILON)) {
+            return;
+        }
+        Vector3d axis = new Vector3d(torqueWorld).normalize();
+        Vector3d helper = Math.abs(axis.dot(new Vector3d(0, 1, 0))) < DIFFUSER_COUPLE_AXIS_ALIGNMENT_LIMIT
+                ? new Vector3d(0, 1, 0) : new Vector3d(1, 0, 0);
+        Vector3d n = new Vector3d(axis).cross(helper).normalize();
+        Vector3d leverWorld = new Vector3d(n).mul(DIFFUSER_COUPLE_LEVER);
+        Vector3d forceWorld = new Vector3d(torqueWorld).cross(n).mul(1.0 / (2.0 * DIFFUSER_COUPLE_LEVER));
+
+        Vector3d leverLocalPos = inverse.transform(new Vector3d(leverWorld));
+        Vector3d leverLocalNeg = inverse.transform(new Vector3d(leverWorld).negate());
+        Vector3d impulseLocalPos = inverse.transform(new Vector3d(forceWorld).mul(dt));
+        Vector3d impulseLocalNeg = inverse.transform(new Vector3d(forceWorld).mul(-dt));
+        body.applyImpulseAtPoint(leverLocalPos, impulseLocalPos);
+        body.applyImpulseAtPoint(leverLocalNeg, impulseLocalNeg);
     }
 
     /** Move the entity to the body's current pose (position and yaw; pitch and roll come with the sync work). */
@@ -1373,6 +1578,26 @@ final class SableCarBody {
         return lastSlipSpeed;
     }
 
+    /** GameTest-only hook (MINECRAFT-447 review): seeds {@link #lastGroundedYawDeg} directly, so a
+     * direction-only heading-alignment regression can exercise a clean single-axis case (spawned airborne,
+     * zero initial angular velocity, no tumble) without needing an actual prior grounded tick to establish
+     * the target the normal production path requires. Not a second way to configure a real car -- same
+     * category as {@code CarEntity#setDiffuserTuningForTest}. */
+    void setLastGroundedYawDegForTest(double yawDeg) {
+        this.lastGroundedYawDeg = yawDeg;
+    }
+
+    /** GameTest-only hook (MINECRAFT-447 review): directly adds to this body's own linear/angular velocity
+     * (starts at exactly zero, see {@link #create}), the same {@code RigidBodyHandle#addLinearAndAngularVelocity}
+     * entry point the physics pipeline itself exposes. Lets a direction-only trajectory-alignment regression
+     * establish real, known horizontal motion (so {@code DiffuserAssistMath#trajectoryAlignmentTorque}'s own
+     * speed gate is genuinely satisfied) without a grounded driving phase, avoiding the "launched mid-turn"
+     * fixture's own real-tire-slip/3-axis-tumble chaos that sank the earlier R19 attempt. Not a second way
+     * to configure a real car -- same category as {@code CarEntity#setDiffuserTuningForTest}. */
+    void addLinearVelocityForTest(Vector3d linear) {
+        body.addLinearAndAngularVelocity(linear, new Vector3d());
+    }
+
     /** The REAL slip speed (m/s), load (kg) and {@link Erosion.Result} the production tick last actually
      * passed to/got back from {@link SlipReporter#report} -- not a value a caller recomputes itself. */
     double lastErosionReportSlipSpeed() {
@@ -1390,6 +1615,13 @@ final class SableCarBody {
     /** Each wheel's suspension travel as of the last tick's single raycast, metres (a copy; not live state). */
     double[] suspensionTravel() {
         return suspensionTravel.clone();
+    }
+
+    /** Server test support: the block each wheel's own raycast hit on the last tick, {@code null} for a
+     * miss -- the same per-wheel contact {@code Surfaces.at} resolves that wheel's material from. A copy,
+     * not live state. */
+    BlockPos[] wheelContactBlocks() {
+        return lastContactBlockPos.clone();
     }
 
     /** MINECRAFT-446 review (comment 49019): the forward airflow speed (m/s, signed) the last applied wing
@@ -1451,9 +1683,7 @@ final class SableCarBody {
     /** Each wheel's own contact-patch speed (m/s) and applied longitudinal force (N) as of the last tick
      * it was grounded (MINECRAFT-401 review, round 5: evidence for actual wheel/contact torque-cut
      * recovery, not just smoothed engine audio). Copies; not live state. */
-    BlockPos[] wheelContactBlocks() {
-        return lastContactBlockPos.clone();
-    }
+
 
     double[] wheelContactSpeeds() {
         return wheelContactSpeed.clone();
@@ -1587,6 +1817,13 @@ final class SableCarBody {
         return body.getLinearVelocity(new Vector3d()).length();
     }
 
+    /** Server test support only (MINECRAFT-447 steep-surface regression): R16's own last-applied torque,
+     * same value {@code describe()} reports under {@code diffuserRoll}, exposed directly rather than
+     * parsed back out of that debug string. */
+    double lastDiffuserRollTorque() {
+        return lastDiffuserRollTorque;
+    }
+
     /** Diagnostic only (MINECRAFT-401 review, round 5): whether any wheel had a positive suspension
      * force as of the end of the last tick -- see {@link #lastTouching}. */
     boolean touching() {
@@ -1600,7 +1837,19 @@ final class SableCarBody {
         return new org.joml.Quaternionf((float) q.x(), (float) q.y(), (float) q.z(), (float) q.w());
     }
 
-    /** Debug summary: height of the body centre above the ground below it, pitch and roll in degrees. */
+    /** Debug summary: height of the body centre above the ground below it, pitch and roll in degrees, the
+     * drivetrain state (MINECRAFT-401, see below), and (MINECRAFT-447) each Diffuser KIT assist's own
+     * last-applied torque, N*m -- {@code diffuserRoll} (R16), {@code diffuserPitch} (R17),
+     * {@code diffuserHeading} (R18), {@code diffuserTrajectory} (R19), always 0.0 for every stock car today
+     * (none carries a non-identity {@code DiffuserTuning}).
+     *
+     * <p>These four are reported under their own keys and never folded into any aerodynamic quantity, so an
+     * observed moment can be attributed to whichever system produced it: a diffuser value is an artificial
+     * game-feel correction keyed to an orientation error, MINECRAFT-446's wing work produces genuine
+     * aerodynamic forces and moments, and MINECRAFT-184's {@code downforceGripPerSpeed} is a third thing
+     * again -- a tire-grip multiplier on {@code gripMu}, not a force or moment, and not reported here. See
+     * {@link #lastDiffuserRollTorque}'s own comment for why separate keys matter precisely BECAUSE a wing
+     * moment is itself torque-like. */
     String describe(CarPhysics.Gear gear, double throttle) {
         box.updatePose();
         Pose3d pose = new Pose3d(box.getPose());
@@ -1629,8 +1878,11 @@ final class SableCarBody {
                     wheelForce[wheel], torque));
         }
         return String.format("body y=%.3f pitch=%.2f roll=%.2f speed=%.2f spinSlip=%.2f slip=%.2f "
-                + "requestedGear=%s effectiveGear=%s ratio=%.2f rpm=%.0f throttle=%.2f brake=%.2f%s",
+                + "requestedGear=%s effectiveGear=%s ratio=%.2f rpm=%.0f throttle=%.2f brake=%.2f"
+                + " diffuserRoll=%.1f diffuserPitch=%.1f diffuserHeading=%.1f diffuserTrajectory=%.1f%s",
                 pose.position().y, pitch, roll, v.length(), lastSpinSlip, lastSlipSpeed,
-                gear.name(), effective, gearRatio, engineRpm, throttleInput, brakeInput, wheels);
+                gear.name(), effective, gearRatio, engineRpm, throttleInput, brakeInput,
+                lastDiffuserRollTorque, lastDiffuserPitchTorque, lastDiffuserHeadingTorque,
+                lastDiffuserTrajectoryTorque, wheels);
     }
 }

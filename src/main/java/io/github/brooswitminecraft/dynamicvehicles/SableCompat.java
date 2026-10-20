@@ -34,6 +34,16 @@ final class SableCompat {
         return ((SableCarBody) body).lastSlipSpeed();
     }
 
+    /** MINECRAFT-447 GameTest-only hooks; see each {@code SableCarBody} method's own javadoc for why
+     * neither is a second way to configure a real car. */
+    static void setLastGroundedYawDegForTest(Object body, double yawDeg) {
+        ((SableCarBody) body).setLastGroundedYawDegForTest(yawDeg);
+    }
+
+    static void addLinearVelocityForTest(Object body, org.joml.Vector3d linear) {
+        ((SableCarBody) body).addLinearVelocityForTest(linear);
+    }
+
     /** The real slip speed/load/{@code Erosion.Result} the production tick last actually passed to and
      * got back from {@code SlipReporter.report} (MINECRAFT-401 review, round 4) -- see
      * {@link SableCarBody#lastErosionResult()}. */
@@ -137,6 +147,10 @@ final class SableCompat {
         return ((SableCarBody) body).gearRatio();
     }
 
+    static double lastDiffuserRollTorque(Object body) {
+        return ((SableCarBody) body).lastDiffuserRollTorque();
+    }
+
     static double speed(Object body) {
         return ((SableCarBody) body).speed();
     }
@@ -148,6 +162,11 @@ final class SableCompat {
     /** Each wheel's suspension travel (m), steer angle (rad) and spin rate (rad/s), for client sync. */
     static double[] wheelTravel(Object body) {
         return ((SableCarBody) body).suspensionTravel();
+    }
+
+    /** The block each wheel's raycast hit on the last tick ({@code null} for a miss), for GameTests. */
+    static net.minecraft.core.BlockPos[] wheelContactBlocks(Object body) {
+        return ((SableCarBody) body).wheelContactBlocks();
     }
 
     static double[] wheelSteerAngles(Object body) {

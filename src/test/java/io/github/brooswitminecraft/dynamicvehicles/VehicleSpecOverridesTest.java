@@ -36,7 +36,8 @@ class VehicleSpecOverridesTest {
         writeCarsFile(configDir, "car", """
                 {"engineInertia":0.4,"clutchTorqueCapacity":800,
                  "tireKit":{"rearSteerRatio":-0.3,"tirePressureBar":1.5,"antiDive":0.4,"antiSquat":0.2,"reboundDampingFast":6000},
-                 "wing":{"frontDownforceCoeff":2.0}}
+                 "wing":{"frontDownforceCoeff":2.0},
+                 "diffuser":{"rollSelfRightingEnabled":true,"rollSelfRightingMaxTorque":100}}
                 """);
         VehicleSpecOverrides.load(configDir);
         VehicleSpec spec = VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR);
@@ -48,8 +49,9 @@ class VehicleSpecOverridesTest {
         assertEquals(0.4, spec.pitchTuning().antiDive(), 1e-9);
         assertEquals(0.2, spec.pitchTuning().antiSquat(), 1e-9);
         assertEquals(2.0, spec.frontWingDownforceCoeff(), 1e-9);
+        assertTrue(spec.diffuserTuning().rollSelfRightingEnabled());
+        assertEquals(100.0, spec.diffuserTuning().rollSelfRightingMaxTorque(), 1e-9);
     }
-
     @Test
     void beforeLoadIsCalledResolveReturnsTheExactStockInstance() {
         assertSame(VehicleSpec.CAR, VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR));
@@ -212,6 +214,40 @@ class VehicleSpecOverridesTest {
         assertDoesNotThrow(() -> VehicleSpecOverrides.load(configDir));
 
         assertSame(VehicleSpec.CAR, VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR));
+    }
+
+    @Test
+    void aDiffuserSectionOverridesOnlyTheFieldsItSetsAndClampsThem(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", """
+                {
+                  "diffuser": {
+                    "rollSelfRightingEnabled": true,
+                    "rollSelfRightingMaxTorque": 5000.0,
+                    "headingAlignmentSteerSuppression": 7.0
+                  }
+                }
+                """);
+
+        VehicleSpecOverrides.load(configDir);
+        VehicleSpec.DiffuserTuning resolved = VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR).diffuserTuning();
+
+        assertEquals(true, resolved.rollSelfRightingEnabled());
+        assertEquals(5000.0, resolved.rollSelfRightingMaxTorque());
+        // 7.0 is out of DiffuserTuningLimits' 0-1 range for this field -- clamped, not rejected outright.
+        assertEquals(DiffuserTuningLimits.MAX_STEER_SUPPRESSION, resolved.headingAlignmentSteerSuppression());
+        // Fields the file never mentioned stay on CAR's own stock diffuser tuning (IDENTITY).
+        assertEquals(VehicleSpec.DiffuserTuning.IDENTITY.pitchLandingMaxTorque(), resolved.pitchLandingMaxTorque());
+        assertEquals(VehicleSpec.DiffuserTuning.IDENTITY.trajectoryAlignmentEnabled(), resolved.trajectoryAlignmentEnabled());
+    }
+
+    @Test
+    void anAbsentDiffuserKeyLeavesTheCarOnIdentityDiffuserTuning(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", "{\"rideHeight\": 1.2}");
+
+        VehicleSpecOverrides.load(configDir);
+        VehicleSpec resolved = VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR);
+
+        assertEquals(VehicleSpec.DiffuserTuning.IDENTITY, resolved.diffuserTuning());
     }
 
     @Test

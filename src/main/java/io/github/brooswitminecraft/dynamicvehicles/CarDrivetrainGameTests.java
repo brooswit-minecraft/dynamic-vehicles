@@ -102,58 +102,69 @@ public final class CarDrivetrainGameTests {
      * rather than a comment. If a future production change pushes D1 back over the limit at this throttle,
      * this test now says so directly instead of flaking.
      */
-    @GameTest(template = "settlement_test", timeoutTicks = 100)
+    @GameTest(template = "settlement_test", timeoutTicks = 260 + VehicleLanes.CHUNK_LOAD_ALLOWANCE)
     public static void d1ReachesAHigherSpeedThanD5OverTheSameShortWindow(GameTestHelper helper) {
-        helper.setBlock(new BlockPos(5, 2, 2), Blocks.STONE);
-        helper.setBlock(new BlockPos(5, 3, 2), Blocks.AIR);
-        helper.setBlock(new BlockPos(5, 2, 10), Blocks.STONE);
-        helper.setBlock(new BlockPos(5, 3, 10), Blocks.AIR);
-        CarEntity carD1 = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 2));
-        carD1.setYRot(0.0f);
-        carD1.selectGear(CarPhysics.Gear.D1);
-        CarEntity carD5 = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 10));
-        carD5.setYRot(0.0f);
-        carD5.selectGear(CarPhysics.Gear.D5);
-        Player riderD1 = helper.makeMockPlayer(GameType.CREATIVE);
-        helper.assertTrue(riderD1.startRiding(carD1), "mock player failed to board the D1 car");
-        Player riderD5 = helper.makeMockPlayer(GameType.CREATIVE);
-        helper.assertTrue(riderD5.startRiding(carD5), "mock player failed to board the D5 car");
-        helper.runAfterDelay(GEAR_RATIO_SETTLE_TICKS, () -> {
-            // Gated on HORIZONTAL speed, not debugSpeed(). debugSpeed() is the body's full 3D velocity
-            // magnitude and it does not converge to zero: measured on CI, both cars sat at exactly
-            // 0.28257137537002563 after 80 settling ticks -- identical to every digit, so an irreducible
-            // floor rather than run-to-run bounce. A 3D gate therefore cannot be tightened past that floor
-            // at all, which is why the original "< 1.5" was so loose. Horizontal speed does converge, and
-            // it is the quantity that actually matters here: this test compares horizontal acceleration
-            // from a standstill, so what must be zero beforehand is horizontal motion.
-            helper.assertTrue(horizontalSpeed(carD1) < SETTLED_HORIZONTAL_SPEED
-                            && horizontalSpeed(carD5) < SETTLED_HORIZONTAL_SPEED,
-                    "test setup invalid -- a car had not settled to a near-standstill before throttle was applied:"
-                            + " D1 horizontal=" + horizontalSpeed(carD1) + " D5 horizontal=" + horizontalSpeed(carD5)
-                            + " (3D: D1=" + carD1.debugSpeed() + " D5=" + carD5.debugSpeed() + ")");
-            riderD1.zza = (float) UNDER_GRIP_THROTTLE;
-            riderD5.zza = (float) UNDER_GRIP_THROTTLE;
-            helper.runAfterDelay(20L, () -> {
-                helper.assertTrue(carD1.debugGearRatio() == DrivetrainMath.ratioFor(0),
-                        "D1 did not resolve to its own ratio on the production tick path: " + carD1.debugGearRatio());
-                helper.assertTrue(carD5.debugGearRatio() == DrivetrainMath.ratioFor(4),
-                        "D5 did not resolve to its own ratio on the production tick path: " + carD5.debugGearRatio());
-                // The premise, now asserted rather than assumed: neither car may be traction-limited, or
-                // this is not a measurement of the ratio multiplier at all.
-                assertNotSlipping(helper, carD1, "D1");
-                assertNotSlipping(helper, carD5, "D5");
-                helper.assertTrue(carD1.debugSpeed() > carD5.debugSpeed() * 1.3,
-                        "D1's extra torque multiplier did not produce a measurably higher speed than D5 from a settled standstill: D1="
-                                + carD1.debugSpeed() + " D5=" + carD5.debugSpeed()
-                                + " [D1 slip=" + carD1.debugSlipSpeed() + " D5 slip=" + carD5.debugSlipSpeed() + "]");
-                helper.succeed();
+        VehicleLanes.build(helper, VehicleLanes.Site.GEAR_RATIO, lanes -> {
+            lanes.layLane(VehicleLanes.FIRST_LANE_X, Blocks.STONE.defaultBlockState());
+            lanes.layLane(VehicleLanes.THIRD_LANE_X, Blocks.STONE.defaultBlockState());
+            CarEntity carD1 = lanes.spawn(DynamicVehiclesMod.CAR.get(), VehicleLanes.spawnPoint(VehicleLanes.FIRST_LANE_X));
+            carD1.setYRot(0.0f);
+            carD1.selectGear(CarPhysics.Gear.D1);
+            CarEntity carD5 = lanes.spawn(DynamicVehiclesMod.CAR.get(), VehicleLanes.spawnPoint(VehicleLanes.THIRD_LANE_X));
+            carD5.setYRot(0.0f);
+            carD5.selectGear(CarPhysics.Gear.D5);
+            Player riderD1 = helper.makeMockPlayer(GameType.CREATIVE);
+            helper.assertTrue(riderD1.startRiding(carD1), "mock player failed to board the D1 car");
+            Player riderD5 = helper.makeMockPlayer(GameType.CREATIVE);
+            helper.assertTrue(riderD5.startRiding(carD5), "mock player failed to board the D5 car");
+            helper.startSequence().thenIdle(GEAR_RATIO_SETTLE_TICKS).thenWaitUntil(() -> {
+                // Gated on HORIZONTAL speed, not debugSpeed(). debugSpeed() is the body's full 3D velocity
+                // magnitude and it does not converge to zero: measured on CI, both cars sat at exactly
+                // 0.28257137537002563 after 80 settling ticks -- identical to every digit, so an irreducible
+                // floor rather than run-to-run bounce. A 3D gate therefore cannot be tightened past that floor
+                // at all, which is why the original "< 1.5" was so loose. Horizontal speed does converge, and
+                // it is the quantity that actually matters here: this test compares horizontal acceleration
+                // from a standstill, so what must be zero beforehand is horizontal motion.
+                helper.assertTrue(horizontalSpeed(carD1) < SETTLED_HORIZONTAL_SPEED
+                                && horizontalSpeed(carD5) < SETTLED_HORIZONTAL_SPEED,
+                        "test setup invalid -- a car had not settled to a near-standstill before throttle was applied:"
+                                + " D1 horizontal=" + horizontalSpeed(carD1) + " D5 horizontal=" + horizontalSpeed(carD5)
+                                + " (3D: D1=" + carD1.debugSpeed() + " D5=" + carD5.debugSpeed() + ")");
+            }).thenExecute(() -> {
+                riderD1.zza = (float) UNDER_GRIP_THROTTLE;
+                riderD5.zza = (float) UNDER_GRIP_THROTTLE;
+                lanes.assertStaysOnLane(carD1, VehicleLanes.FIRST_LANE_X, VehicleLanes.allWheels(Blocks.STONE),
+                        VehicleLanes.Wear.SAME_SURFACE, 1L, 19L, "D1 ratio comparison");
+                lanes.assertStaysOnLane(carD5, VehicleLanes.THIRD_LANE_X, VehicleLanes.allWheels(Blocks.STONE),
+                        VehicleLanes.Wear.SAME_SURFACE, 1L, 19L, "D5 ratio comparison");
+                for (int tick = 1; tick < 20; tick++) {
+                    helper.runAfterDelay(tick, () -> {
+                        assertNotSlipping(helper, carD1, "D1");
+                        assertNotSlipping(helper, carD5, "D5");
+                    });
+                }
+                helper.runAfterDelay(20L, () -> {
+                    helper.assertTrue(carD1.debugGearRatio() == DrivetrainMath.ratioFor(0),
+                            "D1 did not resolve to its own ratio on the production tick path: " + carD1.debugGearRatio());
+                    helper.assertTrue(carD5.debugGearRatio() == DrivetrainMath.ratioFor(4),
+                            "D5 did not resolve to its own ratio on the production tick path: " + carD5.debugGearRatio());
+                    // The premise, now asserted rather than assumed: neither car may be traction-limited, or
+                    // this is not a measurement of the ratio multiplier at all.
+                    assertNotSlipping(helper, carD1, "D1");
+                    assertNotSlipping(helper, carD5, "D5");
+                    helper.assertTrue(carD1.debugSpeed() > carD5.debugSpeed() * 1.3,
+                            "D1's extra torque multiplier did not produce a measurably higher speed than D5 from a settled standstill: D1="
+                                    + carD1.debugSpeed() + " D5=" + carD5.debugSpeed()
+                                    + " [D1 slip=" + carD1.debugSlipSpeed() + " D5 slip=" + carD5.debugSlipSpeed() + "]");
+                    helper.succeed();
+                });
             });
         });
     }
 
     /** Ticks the cars are left at zero throttle before anything is measured. Longer than the original 60:
      * the gate below is far tighter now, and a car needs the time to actually get there. */
-    private static final long GEAR_RATIO_SETTLE_TICKS = 80L;
+    private static final int GEAR_RATIO_SETTLE_TICKS = 80;
 
     /** How slow a car must be HORIZONTALLY (m/s) to count as settled before throttle is applied. 15x
      * tighter than the 1.5 of full 3D speed this test used to accept, and tight relative to the speeds the
@@ -455,6 +466,11 @@ public final class CarDrivetrainGameTests {
             helper.succeed();
         });
     }
+
+    /** The driving fixtures below are about the drivetrain, not the surface, and launch at full throttle,
+     * which wears their grass lanes where they launch and where they reverse; a lane may show any of that wear
+     * short of being worn through (see {@link VehicleLanes.Wear}). */
+    private static final VehicleLanes.Wear LANE_WEAR = VehicleLanes.Wear.ANY_STAGE;
 
     /** Review P2: keyboard/gamepad (which can only ever select {@link CarPhysics.Gear#DEFAULT_FORWARD} or
      * reverse -- never an individual manual gear) must not be silently pinned in D1 forever now that D1's
@@ -877,17 +893,34 @@ public final class CarDrivetrainGameTests {
      * (no instantaneous flip -- the chassis still has to coast down first) but MUST have gone negative by
      * well into the window (the opposing-direction force actually overcomes the roll eventually). The
      * mirror does the same starting in REVERSE and switching to D1. */
-    @GameTest(template = "settlement_test", timeoutTicks = 340)
+    @GameTest(template = "settlement_test", timeoutTicks = 340 + VehicleLanes.CHUNK_LOAD_ALLOWANCE)
     public static void opposingDirectionThrottleDecelerateAndReverseInBothMirroredDirections(GameTestHelper helper) {
-        helper.setBlock(new BlockPos(5, 2, 5), Blocks.STONE);
-        helper.setBlock(new BlockPos(5, 3, 5), Blocks.AIR);
-        helper.setBlock(new BlockPos(5, 2, 15), Blocks.STONE);
-        helper.setBlock(new BlockPos(5, 3, 15), Blocks.AIR);
-        CarEntity forwardFirst = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
+        // Each car on its own full-length lane (see VehicleLanes). These two used to sit ten blocks apart in
+        // one lane of settlement_test, both facing +z, and were driven TOWARD each other, one forward and one
+        // in reverse: wherever GameTest's placement let them really move, the forward-first car's nose met
+        // the reverse-first car's tail around tick 50 -- right at the gear switch -- and the collision, not
+        // the drivetrain, set the sign of the next tick's velocity. The reverse-first car backs up ~4.5 m
+        // and then, in D1, drives ~86 m, so it starts further along. The lanes are the floor's own grass,
+        // the surface these cars' wheels were always really on (the stone blocks the old rig placed sat under
+        // each car's centre, between its wheels). That matters here: on a stone lane the forward-first car,
+        // wheels rolling at ground speed, was still doing 4.6 m/s forward after the full 250 ticks of reverse
+        // throttle.
+        VehicleLanes.build(helper, VehicleLanes.Site.OPPOSING_THROTTLE,
+                lanes -> runOpposingDirectionThrottle(helper, lanes));
+    }
+
+    private static void runOpposingDirectionThrottle(GameTestHelper helper, VehicleLanes lanes) {
+        CarEntity forwardFirst = lanes.spawn(DynamicVehiclesMod.CAR.get(),
+                VehicleLanes.spawnPoint(VehicleLanes.FIRST_LANE_X));
         forwardFirst.setYRot(0.0f);
         forwardFirst.selectGear(CarPhysics.Gear.D1);
-        CarEntity reverseFirst = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 15));
+        CarEntity reverseFirst = lanes.spawn(DynamicVehiclesMod.CAR.get(),
+                VehicleLanes.spawnPoint(VehicleLanes.THIRD_LANE_X, REVERSE_FIRST_SPAWN_Z));
         reverseFirst.setYRot(0.0f);
+        lanes.assertStaysOnLane(forwardFirst, VehicleLanes.FIRST_LANE_X, VehicleLanes.allWheels(Blocks.GRASS_BLOCK),
+                LANE_WEAR, 2L, 310L, "forward-first car");
+        lanes.assertStaysOnLane(reverseFirst, VehicleLanes.THIRD_LANE_X, VehicleLanes.allWheels(Blocks.GRASS_BLOCK),
+                LANE_WEAR, 2L, 310L, "reverse-first car");
         reverseFirst.selectGear(CarPhysics.Gear.REVERSE);
         Player riderForwardFirst = helper.makeMockPlayer(GameType.CREATIVE);
         helper.assertTrue(riderForwardFirst.startRiding(forwardFirst), "mock player failed to board the forward-first car");
@@ -948,6 +981,9 @@ public final class CarDrivetrainGameTests {
             });
         });
     }
+
+    /** Far enough along its lane that the reverse-first car's initial ~4.5 m back-up stays on it. */
+    private static final int REVERSE_FIRST_SPAWN_Z = 12;
 
     /** The car's own signed forward velocity, m/s: at the yaw this file always spawns at (0 degrees), the
      * car faces world +Z ({@code SableCarBody.orientationOf}'s own identity-at-zero convention), so the

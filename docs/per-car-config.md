@@ -350,13 +350,62 @@ drag than stock:
     "frontDownforceCoeff": 1.5,
     "rearDownforceCoeff": 0.8,
     "dragCoeff": 0.6
+
+### Diffuser KIT (MINECRAFT-447): the `diffuser` section
+
+The optional `"diffuser": { ... }` nested object configures four independent
+orientation assists realized as Sable rigid-body torques (applied through
+`SableCarBody#applyWorldTorqueAsCouple`, a force-couple built from the same
+`applyImpulseAtPoint` API the rest of the car's physics already uses — not
+the unverified angular-impulse API). Every field is optional, same
+null-means-keep-stock convention as the rest of this file; an absent
+`diffuser` key (or any field within it) keeps that car's stock value, which
+is `DiffuserTuning.IDENTITY` (all four assists disabled, every bound/gain
+zero) for every one of this roster's 10 existing cars. A present field that
+is out of range is clamped, not rejected, the same as the rest of this
+schema; `enabled` flags are booleans and are never clamped.
+
+| Key | Unit | Range | Assist | Notes |
+|---|---|---|---|---|
+| `rollSelfRightingEnabled` | bool | — | R16 | Enables roll self-righting. |
+| `rollSelfRightingMaxTorque` | N·m | 0.0 – 100,000.0 | R16 | 0 disables the assist outright even if `Enabled` is true. |
+| `rollSelfRightingGain` | N·m/rad | 0.0 – 100,000.0 | R16 | Proportional gain pulling roll toward upright. Airborne only: a car resting on a slope keeps its bank. |
+| `rollSelfRightingDamping` | N·m/(rad/s) | 0.0 – 20,000.0 | R16 | Derivative gain resisting roll rate. |
+| `pitchLandingEnabled` | bool | — | R17 | Enables time-to-touchdown pitch assist. |
+| `pitchLandingMaxTorque` | N·m | 0.0 – 100,000.0 | R17 | 0 disables the assist outright. |
+| `pitchLandingHorizonSeconds` | s | 0.0 – 10.0 | R17 | Authority ramps in as estimated time-to-touchdown falls inside this window; 0 means the assist never activates. |
+| `pitchLandingGain` | N·m/rad | 0.0 – 100,000.0 | R17 | Proportional gain pulling pitch level for landing. |
+| `pitchLandingDamping` | N·m/(rad/s) | 0.0 – 20,000.0 | R17 | Derivative gain resisting pitch rate. |
+| `headingAlignmentEnabled` | bool | — | R18 | Enables heading-alignment assist. |
+| `headingAlignmentMaxTorque` | N·m | 0.0 – 100,000.0 | R18 | 0 disables the assist outright. |
+| `headingAlignmentGain` | N·m/rad | 0.0 – 100,000.0 | R18 | Proportional gain pulling heading toward its target. |
+| `headingAlignmentDamping` | N·m/(rad/s) | 0.0 – 20,000.0 | R18 | Derivative gain resisting yaw rate. |
+| `headingAlignmentSteerSuppression` | fraction | 0.0 – 1.0 | R18 | Authority given up per unit of player steering input; 1 = full player override at full steer, 0 = steering never reduces this assist. |
+| `trajectoryAlignmentEnabled` | bool | — | R19 | Enables trajectory-alignment assist, kept fully separate from `headingAlignment*` per MINECRAFT-395's instruction not to collapse the two. |
+| `trajectoryAlignmentMaxTorque` | N·m | 0.0 – 100,000.0 | R19 | 0 disables the assist outright. |
+| `trajectoryAlignmentGain` | N·m/rad | 0.0 – 100,000.0 | R19 | Proportional gain pulling the nose toward the velocity vector. With reverse selected and the car moving backwards it pulls the tail toward it instead, so a reverse tracks straight; rolling backwards in a forward gear it fades out rather than turning the car round. |
+| `trajectoryAlignmentDamping` | N·m/(rad/s) | 0.0 – 20,000.0 | R19 | Derivative gain resisting yaw rate. |
+| `trajectoryAlignmentMinSpeed` | m/s | 0.0 – 60.0 | R19 | Below this horizontal speed the velocity direction is too noisy to trust as a target and this assist goes silent. |
+
+Ranges live in code as `DiffuserTuningLimits`; the torque math itself is
+`DiffuserAssistMath` (pure functions, unit-tested headlessly in
+`DiffuserAssistMathTest`). Example, giving the rock crawler roll
+self-righting only, leaving the other three assists disabled:
+
+```json
+{
+  "diffuser": {
+    "rollSelfRightingEnabled": true,
+    "rollSelfRightingMaxTorque": 8000.0,
+    "rollSelfRightingGain": 6000.0,
+    "rollSelfRightingDamping": 1500.0
   }
 }
 ```
 
 ### Reserved for downstream tasks
 
-The schema reserves three more top-level keys for the sibling tasks that own
+The schema reserves two more top-level keys for the sibling tasks that own
 those systems; this loader tolerates them existing in a file today (Gson
 ignores any key with no matching field) but does not read, validate or apply
 any of them — adding a field under one of these sections with no behaviour
@@ -373,7 +422,6 @@ reserved and are still read by nothing:
 
 | Key | Owner |
 |---|---|
-| `diffuser` | MINECRAFT-447 (orientation assists) |
 | `computer` | MINECRAFT-448 (assists/auto-shift) |
 | `engine` | MINECRAFT-449 (engine limits/turbo/nitrous/ballast) |
 

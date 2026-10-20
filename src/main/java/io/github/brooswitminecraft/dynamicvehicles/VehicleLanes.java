@@ -97,7 +97,8 @@ final class VehicleLanes {
         OPPOSING_THROTTLE,
         SUB_STEP_SPEED,
         GEAR_RATIO,
-        LIMITER_WALL, INTEGRATION_CONTACT;
+        LIMITER_WALL,
+        INTEGRATION_CONTACT;
 
         BlockPos origin() {
             return new BlockPos(0, SITE_Y, FIRST_SITE_Z + ordinal() * SITE_SPACING);
@@ -334,9 +335,9 @@ final class VehicleLanes {
             long at = tick;
             helper.runAfterDelay(tick, () -> {
                 helper.assertTrue(car.sableBody() != null, label + ": car has no Sable body at tick " + at);
-                helper.assertTrue(car.debugTouching(),
+                helper.assertTrue(car.isTouchingGroundForTest(),
                         label + ": car lost the ground at tick " + at + " (" + describe(car) + ")");
-                BlockPos[] contacts = ((SableCarBody) car.sableBody()).wheelContactBlocks();
+                BlockPos[] contacts = SableCompat.wheelContactBlocks(car.sableBody());
                 for (int wheel = 0; wheel < contacts.length; wheel++) {
                     helper.assertTrue(contacts[wheel] != null, label + ": wheel " + wheel
                             + "'s raycast found no ground at tick " + at + " (" + describe(car) + ")");

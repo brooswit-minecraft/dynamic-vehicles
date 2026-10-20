@@ -125,10 +125,19 @@ public final class TownConstants {
      * resident (not only a construction site's own claimant) against the town's own vacant,
      * already-built beds/workplaces - the same per-minute cadence as passive production, since this
      * is an ongoing background reconciliation, not something that needs to react within the same
-     * tick a fixture frees up. The search radius is half {@link #REGION_SIZE_BLOCKS} (the town's own
-     * full width out from its centre), so it can reach every fixture this mod could ever have built
-     * anywhere in the town, never further.
+     * tick a fixture frees up.
+     *
+     * <p>[Review round 18, finding #1] The search radius alone is NOT what keeps a resident's match
+     * inside its own town: {@code TownPlan}'s own town centre is randomized WITHIN its region, never
+     * fixed at the geometric centre, so a radius of merely half {@link #REGION_SIZE_BLOCKS} can both
+     * reach past the region's own edge into a NEIGHBOURING one and still fail to reach that SAME
+     * region's own far corner from an off-centre town centre. The radius here is sized generously
+     * enough (comfortably past the full region's own diagonal, {@code REGION_SIZE_BLOCKS * sqrt(2)})
+     * to reach every corner of the region from ANY town centre that could fall within it; the caller
+     * is responsible for then filtering candidates to the EXACT founded region itself (see
+     * {@code TownResidentAllocationHandler}'s own region-membership predicate), which is what
+     * actually excludes a neighbouring region's content.
      */
     public static final long RESIDENT_ALLOCATION_INTERVAL_TICKS = 1200L; // one Minecraft minute
-    public static final int RESIDENT_ALLOCATION_SEARCH_RADIUS = REGION_SIZE_BLOCKS / 2;
+    public static final int RESIDENT_ALLOCATION_SEARCH_RADIUS = REGION_SIZE_BLOCKS * 2;
 }

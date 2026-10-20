@@ -74,6 +74,12 @@ final class VehicleSpecLimits {
     static final double MIN_TIRE_PRESSURE_BAR = 0.5;
     static final double MAX_TIRE_PRESSURE_BAR = 8.0;
 
+    /** MINECRAFT-445: anti-dive / anti-squat fractions. 0.0 is today's behaviour (full weight transfer)
+     * and 1.0 cancels the pitch couple entirely; beyond 1.0 would apply the force ABOVE the body and
+     * invert the pitch, which is not a geometry any real suspension has. */
+    static final double MIN_PITCH_RESIST = 0.0;
+    static final double MAX_PITCH_RESIST = 1.0;
+
     private VehicleSpecLimits() {}
 
     /** A non-finite value falls back to {@code fallback} so malformed config can never leak NaN/Infinity

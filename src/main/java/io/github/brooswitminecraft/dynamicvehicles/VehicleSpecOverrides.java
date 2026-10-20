@@ -206,6 +206,8 @@ final class VehicleSpecOverrides {
                 : VehicleSpecLimits.clamp(file.tireKit.tirePressureBar, VehicleSpecLimits.MIN_TIRE_PRESSURE_BAR,
                         VehicleSpecLimits.MAX_TIRE_PRESSURE_BAR, stock.tirePressureBar());
 
+        VehicleSpec.PitchTuning pitchTuning = applyPitch(file.tireKit, stock);
+
         return new VehicleSpec(stock.halfX(), stock.halfY(), stock.halfZ(),
                 stock.mounts(), stock.wheelRadius(), stock.wheelWidth(),
                 rideHeight, restLength,
@@ -216,7 +218,24 @@ final class VehicleSpecOverrides {
                 stock.looseGrip(), rollingScale,
                 stock.tireTuning(), stock.downforceGripPerSpeed(), antiRollScale,
                 stock.seats(), vehicleTuning, handbrakeScale, suspensionTuning, steeringTuning,
-                tirePressureBar);
+                tirePressureBar, pitchTuning);
+    }
+
+    /** MINECRAFT-445: the {@code tireKit} section's anti-dive/anti-squat fractions, clamped like every
+     * other field here. A section that mentions neither keeps this car's stock {@link
+     * VehicleSpec.PitchTuning}, instance identity included. */
+    private static VehicleSpec.PitchTuning applyPitch(VehicleCarConfigFile.TireKit tireKit, VehicleSpec stock) {
+        if (tireKit == null || (tireKit.antiDive == null && tireKit.antiSquat == null)) {
+            return stock.pitchTuning();
+        }
+        VehicleSpec.PitchTuning stockPitch = stock.pitchTuning();
+        double antiDive = tireKit.antiDive == null ? stockPitch.antiDive()
+                : VehicleSpecLimits.clamp(tireKit.antiDive, VehicleSpecLimits.MIN_PITCH_RESIST,
+                        VehicleSpecLimits.MAX_PITCH_RESIST, stockPitch.antiDive());
+        double antiSquat = tireKit.antiSquat == null ? stockPitch.antiSquat()
+                : VehicleSpecLimits.clamp(tireKit.antiSquat, VehicleSpecLimits.MIN_PITCH_RESIST,
+                        VehicleSpecLimits.MAX_PITCH_RESIST, stockPitch.antiSquat());
+        return new VehicleSpec.PitchTuning(antiDive, antiSquat);
     }
 
     /**

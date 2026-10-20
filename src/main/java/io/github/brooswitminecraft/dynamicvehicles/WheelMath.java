@@ -438,6 +438,32 @@ public final class WheelMath {
     }
 
     /**
+     * MINECRAFT-445: the height a wheel's HORIZONTAL tire force is applied at, blended between the contact
+     * patch and the body, to model anti-dive and anti-squat suspension geometry.
+     *
+     * <p>Why this is the right seam rather than a new force: applying a tire's longitudinal force at the
+     * contact patch is precisely what gives it a moment arm about the body's centre, and therefore what
+     * makes the car dive under braking and squat under power ({@code SableCarBody.tick}'s own comment at
+     * that call site says so: "The tire's horizontal force does too, so braking and cornering transfer
+     * weight"). Real anti-dive/anti-squat geometry works by letting the suspension links carry part of
+     * that longitudinal load into the chassis directly, which shortens exactly that moment arm. Blending
+     * the application height toward the body reproduces that, and needs no invented force term.
+     *
+     * @param contactY the wheel's contact-patch height in the body frame (what the code uses today)
+     * @param bodyY the height a force applied straight into the chassis would act at
+     * @param antiFraction 0 applies the force fully at the contact patch -- today's behaviour exactly, and
+     *        bit-for-bit so, since the blend reduces to {@code contactY} when this is 0; 1 applies it
+     *        fully at the body, cancelling the pitch couple entirely
+     * @return the height to apply this wheel's horizontal tire force at
+     */
+    public static double pitchResistApplicationHeight(double contactY, double bodyY, double antiFraction) {
+        if (antiFraction == 0.0) {
+            return contactY;
+        }
+        return contactY + (bodyY - contactY) * antiFraction;
+    }
+
+    /**
      * Anti-roll bar: a force that resists the two wheels of an axle being compressed differently.
      * @param compression this wheel's spring compression, metres (0 when airborne)
      * @param otherCompression the other wheel of the axle

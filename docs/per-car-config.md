@@ -180,6 +180,8 @@ whenever all four rates match, for any knee speed — pinned by
 | `bumpStopTravel` | metres | 0.0 – 5.0 | Compression travel beyond which the progressive bump stop engages, on top of the regular spring/damper force. Unlike `rideHeight` this needs no per-car geometry check: a value a car's own suspension can never actually reach is simply inert (the stop never engages), not degenerate. Defaults to `SuspensionTuning.BUMP_STOP_DISABLED_TRAVEL`, which is unreachable, so the stop never engages. |
 | `bumpStopRate` | N/m | 0.0 – 500,000.0 | Applied only to the compression PAST `bumpStopTravel`. `SuspensionTuning.NO_BUMP_STOP_RATE` (zero) disables the bump stop regardless of `bumpStopTravel`, and is the default. |
 | `tirePressureBar` | bar | 0.5 – 8.0 | Tire pressure. Default is `WheelMath.NOMINAL_TIRE_PRESSURE_BAR` (2.2), every stock car's value, at which both pressure multipliers are exactly 1.0 and grip/rolling resistance are bit-for-bit unchanged. **Below nominal buys grip and costs rolling drag; above nominal does the reverse** — the two effects deliberately pull opposite ways, so it is a trade-off rather than a free win. Grip responds much less than proportionally (exponent `WheelMath.TIRE_PRESSURE_GRIP_EXPONENT` = 0.3, so halving pressure is worth about +23% grip, not +100%), while rolling drag responds inversely and in full. Applied in the production tick at both `gripMu` sites and the `rollingCoefficient` site in `SableCarBody.tick`. |
+| `antiDive` | fraction | 0.0 – 1.0 | Anti-dive geometry: how much of a wheel's longitudinal force is carried into the chassis directly instead of through a moment arm about the body centre, **while that force opposes the car's motion** (braking). `0.0` (every stock car) applies the force at the contact patch, which is what makes a car dive — unchanged from before this field. `1.0` cancels the pitch couple entirely. |
+| `antiSquat` | fraction | 0.0 – 1.0 | The same, **while the wheel's force drives the car** (acceleration), resisting the tail dropping. Separate from `antiDive` because they are separate geometries on a real car; the production tick picks between them per wheel by whether that wheel's own longitudinal force opposes or drives the motion, so a braking wheel uses `antiDive` even mid-corner. |
 | `rearSteerRatio` | fraction | -1.0 – 1.0 | Fraction of the FRONT wheels' steer angle applied to the rear wheels. `0.0` (the default, and every stock car's value) keeps the rear axle straight — exactly what the production code did before this field existed. **Negative is opposite-phase**: the rear steers against the front, tightening the turn (classic low-speed four-wheel steering). **Positive is same-phase**: the rear follows the front, pushing the car sideways rather than rotating it as sharply. This is real physics, not a rendered pose — the angle rotates each tire's own forward axis, which is what the tire's longitudinal/lateral force directions are measured against. |
 
 Ranges live in code as `VehicleSpecLimits`' `MIN/MAX_TIRE_KIT_DAMPING`,
@@ -198,9 +200,10 @@ one**: `compressionDampingFast`/`reboundDampingSlow`/`reboundDampingFast` all
 equal that car's own `dampingRate` from the table above, and the remaining three
 fields take the named defaults in the table (`DEFAULT_DAMPING_KNEE_SPEED`, which
 is inert at equal rates, plus the two that disable the bump stop),
-`rearSteerRatio` is `0.0`, and `tirePressureBar` is nominal (2.2). No car has
-opted into two-rate damping, a bump stop, rear steering or a non-nominal tire
-pressure, so stock driving feel is unchanged.
+`rearSteerRatio` is `0.0`, `tirePressureBar` is nominal (2.2), and `antiDive`/
+`antiSquat` are both `0.0`. No car has opted into two-rate damping, a bump stop,
+rear steering, a non-nominal tire pressure or pitch resistance, so stock driving
+feel is unchanged.
 
 Example, giving the trophy truck a soft slow-compression stroke that firms up
 over fast hits, a stiffer rebound so it does not pogo on landings, and a bump
@@ -230,9 +233,9 @@ behind it would be "unused config fields," which MINECRAFT-443's acceptance
 explicitly rules out and MINECRAFT-445's repeats. Each task adds its own fields
 here when it implements real behaviour, rather than inventing a parallel file
 or format. The same rule applies within `tireKit` above: its remaining
-MINECRAFT-445 fields (caster, roll center, anti-dive/anti-squat) appear there
-only as that behaviour lands. Rear steering and tire pressure have now landed
-and are documented in the table above.
+MINECRAFT-445 fields (caster, roll center) appear there only as that behaviour
+lands. Rear steering, tire pressure and anti-dive/anti-squat have now landed and
+are documented in the table above.
 
 | Key | Owner |
 |---|---|

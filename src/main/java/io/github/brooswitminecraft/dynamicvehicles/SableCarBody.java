@@ -35,6 +35,10 @@ final class SableCarBody {
     private static final double BRAKE_FORCE = 3_000.0;
     private static final double HANDBRAKE_FORCE = 6_000.0;
     private static final double AIR_DRAG = 0.4; // N per (m/s)^2
+    /** The body-frame height a horizontal tire force acts at when it is NOT applied at the contact patch:
+     * the pre-existing literal behind {@code CarConfig.TIRE_FORCE_AT_CONTACT}'s off branch, named so
+     * MINECRAFT-445's anti-dive/anti-squat blend has something meaningful to blend TOWARD. */
+    private static final double BODY_TIRE_FORCE_HEIGHT = -0.1;
 
     private final VehicleSpec spec;
     private final Vector3d halfExtents;
@@ -656,7 +660,19 @@ final class SableCarBody {
                 Vector3d suspensionLocal = inverse.transform(new Vector3d(up).mul(force * subDt));
                 body.applyImpulseAtPoint(contactLocal, suspensionLocal);
                 Vector3d horizontalLocal = new Vector3d(impulseLocal).sub(suspensionLocal);
-                double tireY = CarConfig.TIRE_FORCE_AT_CONTACT.get() ? contactLocal.y : -0.1;
+                double tireY = CarConfig.TIRE_FORCE_AT_CONTACT.get() ? contactLocal.y : BODY_TIRE_FORCE_HEIGHT;
+                // MINECRAFT-445: anti-dive/anti-squat geometry raises where that horizontal force acts,
+                // shortening its moment arm about the body centre -- which is exactly what makes a real
+                // car dive or squat less. Anti-DIVE applies while this wheel's own longitudinal force
+                // opposes the car's motion, anti-SQUAT while it drives it, so a braking wheel uses
+                // anti-dive even mid-corner. Both fractions are 0.0 for every roster car, and the blend
+                // returns contactLocal.y unchanged at 0.0, so this is bit-for-bit the previous line
+                // for them.
+                boolean opposingMotion = tire.longitudinal() * forwardSpeed < 0;
+                double antiFraction = opposingMotion
+                        ? spec.pitchTuning().antiDive()
+                        : spec.pitchTuning().antiSquat();
+                tireY = WheelMath.pitchResistApplicationHeight(tireY, BODY_TIRE_FORCE_HEIGHT, antiFraction);
                 body.applyImpulseAtPoint(new Vector3d(local.x, tireY, local.z), horizontalLocal);
             }
             // Re-read velocity so the next sub-step's forces respond to the impulses just applied above -

@@ -326,6 +326,42 @@ class VehicleSpecOverridesTest {
     }
 
     @Test
+    void antiDiveAndAntiSquatOverrideIndependentlyAndClamp(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", "{\"tireKit\": {\"antiDive\": 0.6, \"antiSquat\": 9.0}}");
+
+        VehicleSpecOverrides.load(configDir);
+        VehicleSpec.PitchTuning pitch =
+                VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR).pitchTuning();
+
+        assertEquals(0.6, pitch.antiDive());
+        // 9.0 is past the range -- clamped, not rejected, same as every other field in this format.
+        assertEquals(VehicleSpecLimits.MAX_PITCH_RESIST, pitch.antiSquat());
+    }
+
+    @Test
+    void settingOnlyAntiDiveLeavesAntiSquatAtStock(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", "{\"tireKit\": {\"antiDive\": 0.4}}");
+
+        VehicleSpecOverrides.load(configDir);
+        VehicleSpec.PitchTuning pitch =
+                VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR).pitchTuning();
+
+        assertEquals(0.4, pitch.antiDive());
+        assertEquals(VehicleSpec.CAR.pitchTuning().antiSquat(), pitch.antiSquat());
+    }
+
+    @Test
+    void aTireKitMentioningNeitherPitchFieldKeepsTheStockPitchInstance(@TempDir Path configDir)
+            throws IOException {
+        writeCarsFile(configDir, "car", "{\"tireKit\": {\"tirePressureBar\": 2.0}}");
+
+        VehicleSpecOverrides.load(configDir);
+
+        assertSame(VehicleSpec.CAR.pitchTuning(),
+                VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR).pitchTuning());
+    }
+
+    @Test
     void oneCorruptFileDoesNotAffectAnotherCarsValidFile(@TempDir Path configDir) throws IOException {
         writeCarsFile(configDir, "car", "{ not valid json");
         writeCarsFile(configDir, "truck", "{\"rideHeight\": 2.0}");

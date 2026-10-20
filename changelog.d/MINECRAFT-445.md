@@ -12,8 +12,8 @@ bump: minor
   outcome dozens of ticks later. Every car on the roster ships with that identity tuning, so stock
   driving feel is unchanged. Out-of-range values are clamped and non-finite ones fall back to stock,
   the same as every other field in this format. See `docs/per-car-config.md` for units, ranges and
-  defaults, including which parts of MINECRAFT-445's scope (caster, roll center, anti-dive/anti-squat)
-  are **not** in this section yet.
+  defaults, including which parts of MINECRAFT-445's scope (caster, roll center) are **not** in this
+  section yet.
 - **Rear-wheel steering** (MINECRAFT-445): a car's `tireKit` section can now set `rearSteerRatio`, the
   fraction of the front wheels' steer angle applied to the rear wheels. Negative steers the rear against
   the front to tighten a turn (low-speed four-wheel steering); positive steers it with the front. The
@@ -30,3 +30,10 @@ bump: minor
   1.0 at nominal, so every stock car's grip and rolling resistance are bit-for-bit unchanged. A
   non-positive or non-finite pressure can never reach the friction circle: the loader clamps to a positive
   range and the multipliers themselves fall back to neutral.
+- **Anti-dive and anti-squat** (MINECRAFT-445): a car's `tireKit` section can now set `antiDive` and
+  `antiSquat`, each the fraction of a wheel's longitudinal force carried into the chassis directly rather
+  than through a moment arm about the body centre — which is what makes a real car dive under braking and
+  squat under power. Anti-dive applies while a wheel's force opposes the car's motion and anti-squat while
+  it drives it, chosen per wheel, so a braking wheel resists dive even mid-corner. Both are `0.0` for every
+  stock car, and the blend returns the contact-patch height bit-for-bit at `0.0`, so no existing car's
+  pitch behaviour changes.

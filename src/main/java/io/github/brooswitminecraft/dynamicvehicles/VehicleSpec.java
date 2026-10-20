@@ -101,7 +101,32 @@ public record VehicleSpec(
          * WheelMath}'s pressure multipliers are exactly 1.0, so grip and rolling resistance are
          * bit-for-bit what they were before this field existed. Lower than nominal buys grip and costs
          * rolling drag; higher does the reverse. */
-        double tirePressureBar) {
+        double tirePressureBar,
+        /** Per-vehicle anti-dive / anti-squat geometry (MINECRAFT-445). {@link PitchTuning#IDENTITY} for
+         * every vehicle that has not opted in -- today, every vehicle on the roster -- which applies each
+         * tire's horizontal force at the contact patch exactly as before this field existed. */
+        PitchTuning pitchTuning) {
+
+    /**
+     * Anti-dive and anti-squat (MINECRAFT-445): how much of a wheel's longitudinal tire force is carried
+     * into the chassis directly rather than through a moment arm about the body centre. Both are
+     * fractions, 0 meaning "no geometric resistance, full weight transfer" (today's behaviour) and 1
+     * meaning "the pitch couple is cancelled entirely".
+     *
+     * <p>Two fields rather than one because the two are genuinely separate geometries on a real car, and
+     * a car can have plenty of one and none of the other: anti-DIVE resists the nose dropping when the
+     * tires are decelerating the car, anti-SQUAT resists the tail dropping when they are driving it.
+     * {@code SableCarBody.tick} picks between them by whether this wheel's own longitudinal force is
+     * opposing or driving the car's motion, so a wheel that is braking uses anti-dive even mid-corner.
+     *
+     * @param antiDive fraction applied while this wheel's longitudinal force OPPOSES the car's motion
+     * @param antiSquat fraction applied while it DRIVES the car's motion
+     */
+    public record PitchTuning(double antiDive, double antiSquat) {
+
+        /** No geometric pitch resistance at all: tire forces act at the contact patch, full weight transfer. */
+        public static final PitchTuning IDENTITY = new PitchTuning(0.0, 0.0);
+    }
 
     /**
      * Per-vehicle steering geometry (MINECRAFT-445), grouped for the same reason {@link TireTuning},
@@ -140,7 +165,7 @@ public record VehicleSpec(
                 forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
                 downforceGripPerSpeed, antiRollScale, seats, vehicleTuning, handbrakeScale,
                 SuspensionTuning.singleRate(dampingRate), SteeringTuning.IDENTITY,
-                WheelMath.NOMINAL_TIRE_PRESSURE_BAR);
+                WheelMath.NOMINAL_TIRE_PRESSURE_BAR, PitchTuning.IDENTITY);
     }
 
     /** As the full (canonical) constructor above, minus the trailing {@link #handbrakeScale} (MINECRAFT-443)

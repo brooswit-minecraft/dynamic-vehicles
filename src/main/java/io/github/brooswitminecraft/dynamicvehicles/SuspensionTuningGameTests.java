@@ -503,6 +503,102 @@ public final class SuspensionTuningGameTests {
     /** The stock control must exceed this (m/s) or the comparison is measuring two stationary cars. */
     private static final double MIN_MEANINGFUL_CRUISE_SPEED = 0.5;
 
+    /**
+     * Anti-dive, through the production tick: a car with full anti-dive geometry must DIVE LESS under the
+     * same braking than a matched stock control, measured as the front-to-rear spring-compression
+     * difference that dive physically is.
+     *
+     * <p>Both cars are driven up to speed and then braked hard, and the front-minus-rear compression gap
+     * is sampled every tick with the PEAK taken -- the technique that made the earlier fixtures in this
+     * class reliable, since it removes any dependence on which single tick the comparison lands on. Under
+     * braking a car is pressed firmly onto its springs, so this is the one pitch regime where every wheel
+     * is solidly loaded and the compression reading is meaningful.
+     */
+    @GameTest(template = "settlement_test", timeoutTicks = 300, batch = "suspensionTuningAntiDiveIsolated")
+    public static void fullAntiDiveDivesLessUnderBrakingThanTheStockControl(GameTestHelper helper) {
+        pad(helper, 5);
+        pad(helper, 15);
+        CarEntity stock = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
+        CarEntity configured = spawnWithOverride(helper, FULL_ANTI_DIVE, new BlockPos(5, 3, 15));
+        stock.forceDrive(GENTLE_THROTTLE, 0.0, (int) ACCELERATE_TICKS);
+        configured.forceDrive(GENTLE_THROTTLE, 0.0, (int) ACCELERATE_TICKS);
+
+        helper.runAfterDelay(ACCELERATE_TICKS, () -> {
+            helper.assertTrue(configured.spec().pitchTuning().antiDive() == VehicleSpecLimits.MAX_PITCH_RESIST,
+                    "the configured car did not receive the antiDive override at construction: "
+                            + configured.spec().pitchTuning());
+            helper.assertTrue(stock.spec().pitchTuning().equals(VehicleSpec.PitchTuning.IDENTITY),
+                    "the control car was not stock -- an override leaked into it: " + stock.spec().pitchTuning());
+            helper.assertTrue(horizontalSpeed(stock) > MIN_MEANINGFUL_CRUISE_SPEED,
+                    "test setup never got the stock control moving before braking, so there would be no "
+                            + "dive to measure: " + horizontalSpeed(stock) + " " + where(stock));
+
+            // Brake hard: negative throttle is brake-only, the same input CarDrivetrainGameTests uses.
+            stock.forceDrive(-1.0, 0.0, (int) BRAKE_TICKS);
+            configured.forceDrive(-1.0, 0.0, (int) BRAKE_TICKS);
+            PeakDive stockDive = peakDiveOverBraking(helper, stock, ACCELERATE_TICKS);
+            PeakDive configuredDive = peakDiveOverBraking(helper, configured, ACCELERATE_TICKS);
+
+            helper.runAfterDelay(BRAKE_TICKS, () -> {
+                helper.assertTrue(stockDive.peak > 0.0,
+                        "the stock control never dived at all under braking, so this comparison would be "
+                                + "vacuous: peak=" + stockDive.peak + " " + where(stock));
+                helper.assertTrue(configuredDive.peak < stockDive.peak,
+                        "full anti-dive geometry must reduce the front-to-rear compression gap under braking "
+                                + "-- its application-height blend may not be reaching the real tire impulse: "
+                                + "stock=" + stockDive.peak + " configured=" + configuredDive.peak);
+                helper.succeed();
+            });
+        });
+    }
+
+    /** Samples front-minus-rear mean spring compression every tick of the braking window and keeps the
+     * peak: dive IS that gap, so a geometry that resists dive must shrink it. Front/rear is decided the
+     * way production decides it ({@code mounts()[wheel][2] > 0}). */
+    private static PeakDive peakDiveOverBraking(GameTestHelper helper, CarEntity car, long fromTick) {
+        PeakDive dive = new PeakDive();
+        for (long tick = fromTick + 1; tick <= fromTick + BRAKE_TICKS; tick++) {
+            helper.runAtTickTime(tick, () -> {
+                double[] travel = SableCompat.wheelTravel(car.sableBody());
+                double[][] mounts = car.spec().mounts();
+                double front = 0.0;
+                double rear = 0.0;
+                int frontCount = 0;
+                int rearCount = 0;
+                for (int wheel = 0; wheel < travel.length; wheel++) {
+                    if (mounts[wheel][2] > 0) {
+                        front += travel[wheel];
+                        frontCount++;
+                    } else {
+                        rear += travel[wheel];
+                        rearCount++;
+                    }
+                }
+                if (frontCount > 0 && rearCount > 0) {
+                    dive.peak = Math.max(dive.peak, front / frontCount - rear / rearCount);
+                }
+            });
+        }
+        return dive;
+    }
+
+    /** Mutable accumulator for {@link #peakDiveOverBraking}; GameTest's per-tick callbacks are the only
+     * way to sample across ticks. */
+    private static final class PeakDive {
+        double peak = Double.NEGATIVE_INFINITY;
+    }
+
+    /** Full anti-dive and nothing else, so any difference against the control is that geometry alone. */
+    private static final String FULL_ANTI_DIVE = """
+            {"tireKit": {"antiDive": %s}}
+            """.formatted(VehicleSpecLimits.MAX_PITCH_RESIST);
+
+    /** Ticks of throttle before braking starts; enough to build real speed so there is dive to resist. */
+    private static final long ACCELERATE_TICKS = 60L;
+
+    /** Ticks of braking over which the dive peak is sampled. */
+    private static final long BRAKE_TICKS = 30L;
+
     /** A flat stone pad under a spawn point at y = 2, under a spawn at y = 3 -- the same arrangement
      * {@code RollingResistanceGameTests#fillFloor} uses for the cars it successfully asserts {@code
      * suspensionTravel > 0} on, widened from its 5x5 to 4 blocks in every direction so a car that shifts

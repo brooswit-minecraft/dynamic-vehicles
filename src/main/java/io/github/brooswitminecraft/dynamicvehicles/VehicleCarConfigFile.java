@@ -43,5 +43,7 @@ final class VehicleCarConfigFile {
         Double bumpStopRate;
         Double rearSteerRatio;
         Double tirePressureBar;
+        Double antiDive;
+        Double antiSquat;
     }
 }

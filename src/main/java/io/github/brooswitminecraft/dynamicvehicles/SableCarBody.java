@@ -972,7 +972,6 @@ final class SableCarBody {
                         yawRateRadPerSec, steer, diffuser);
 
         double horizontalSpeed = Math.hypot(linear.x, linear.z);
-        double travelYawDeg = Math.toDegrees(Math.atan2(-linear.x, linear.z));
         // Intentional-sliding signal (R19): the handbrake is this vehicle's existing, player-driven
         // deliberate-slide control (DriftTireModel/CamberToeGripModel already key off it the same way) --
         // reusing it here is an implementation choice, not a new input, and keeps this assist from ever
@@ -983,10 +982,12 @@ final class SableCarBody {
         // the selected gear only separating an intentional reverse from a rollback -- see
         // DiffuserAssistMath#trajectoryErrorRad, which fades the proportional authority to zero at every
         // forward/backward switch point so the target can never flip 180 degrees at full torque, and a
-        // rollback's target simply fades out rather than spinning or pinning the car.
-        double forwardSpeed = linear.dot(carForward);
+        // rollback's target simply fades out rather than spinning or pinning the car. Travel direction and
+        // forward speed both come from the HORIZONTAL velocity, so they agree: linear.dot(carForward) also
+        // picked up the fall speed through any pitch, so a falling nose-up car read as reversing while its
+        // horizontal travel was still ahead of it.
         double trajectoryTorque = DiffuserAssistMath.trajectoryAlignmentTorque(
-                DiffuserAssistMath.trajectoryErrorRad(travelYawDeg, currentYawDeg, forwardSpeed,
+                DiffuserAssistMath.trajectoryErrorRadForVelocity(linear.x, linear.z, currentYawDeg,
                         gear == CarPhysics.Gear.REVERSE, DiffuserAssistMath.REVERSE_AUTHORITY_RAMP),
                 yawRateRadPerSec, horizontalSpeed, intentionalSlide, diffuser);
 

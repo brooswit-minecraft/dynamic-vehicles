@@ -269,7 +269,7 @@ schema; `enabled` flags are booleans and are never clamped.
 |---|---|---|---|---|
 | `rollSelfRightingEnabled` | bool | — | R16 | Enables roll self-righting. |
 | `rollSelfRightingMaxTorque` | N·m | 0.0 – 100,000.0 | R16 | 0 disables the assist outright even if `Enabled` is true. |
-| `rollSelfRightingGain` | N·m/rad | 0.0 – 100,000.0 | R16 | Proportional gain pulling roll toward upright. |
+| `rollSelfRightingGain` | N·m/rad | 0.0 – 100,000.0 | R16 | Proportional gain pulling roll toward upright. Airborne only: a car resting on a slope keeps its bank. |
 | `rollSelfRightingDamping` | N·m/(rad/s) | 0.0 – 20,000.0 | R16 | Derivative gain resisting roll rate. |
 | `pitchLandingEnabled` | bool | — | R17 | Enables time-to-touchdown pitch assist. |
 | `pitchLandingMaxTorque` | N·m | 0.0 – 100,000.0 | R17 | 0 disables the assist outright. |
@@ -283,7 +283,7 @@ schema; `enabled` flags are booleans and are never clamped.
 | `headingAlignmentSteerSuppression` | fraction | 0.0 – 1.0 | R18 | Authority given up per unit of player steering input; 1 = full player override at full steer, 0 = steering never reduces this assist. |
 | `trajectoryAlignmentEnabled` | bool | — | R19 | Enables trajectory-alignment assist, kept fully separate from `headingAlignment*` per MINECRAFT-395's instruction not to collapse the two. |
 | `trajectoryAlignmentMaxTorque` | N·m | 0.0 – 100,000.0 | R19 | 0 disables the assist outright. |
-| `trajectoryAlignmentGain` | N·m/rad | 0.0 – 100,000.0 | R19 | Proportional gain pulling the nose toward the velocity vector. |
+| `trajectoryAlignmentGain` | N·m/rad | 0.0 – 100,000.0 | R19 | Proportional gain pulling the nose toward the velocity vector. With reverse selected and the car moving backwards it pulls the tail toward it instead, so a reverse tracks straight; rolling backwards in a forward gear it fades out rather than turning the car round. |
 | `trajectoryAlignmentDamping` | N·m/(rad/s) | 0.0 – 20,000.0 | R19 | Derivative gain resisting yaw rate. |
 | `trajectoryAlignmentMinSpeed` | m/s | 0.0 – 60.0 | R19 | Below this horizontal speed the velocity direction is too noisy to trust as a target and this assist goes silent. |
 

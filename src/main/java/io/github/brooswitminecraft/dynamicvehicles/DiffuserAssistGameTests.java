@@ -1,5 +1,7 @@
 package io.github.brooswitminecraft.dynamicvehicles;
 
+import java.util.function.DoubleConsumer;
+
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
@@ -10,6 +12,7 @@ import net.minecraft.nbt.CompoundTag;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 import org.joml.Quaternionf;
@@ -37,10 +40,14 @@ import org.joml.Vector3f;
  * own earlier sessions had misdiagnosed as physics-solver nondeterminism; these fixtures are what pins the
  * direction now.
  *
- * <p>Still NOT covered here, and deliberately not claimed: R16's own full "inverted car recovers AND lands
- * upright" scenario (as opposed to the bank-angle direction check), which runs into a separate, genuine
- * chaotic-equilibrium-capture problem -- see the comment block at the end of this class for the full
- * account of that and of what each earlier attempt actually ran into.
+ * <p>R16's full "inverted car recovers AND lands upright" scenario is covered too, by
+ * {@link #rollSelfRightingRightsAnInvertedCarInTheAirAndItLandsOnItsWheels} -- see the comment block at the
+ * end of this class for what the earlier attempt at it actually ran into.
+ *
+ * <p>GameTest runs every structure at a random position up to &plusmn;15,000,000 blocks out, where
+ * single-precision positions only resolve to 0.5 m beyond about 4.2M and to a whole block beyond about 8.4M.
+ * A fixture whose outcome depends on exactly where a car sits relative to blocks must spawn it on
+ * whole-block coordinates -- see {@link #STEEP_SEAM_X}.
  */
 @GameTestHolder(DynamicVehiclesMod.MODID)
 @PrefixGameTestTemplate(false)
@@ -139,6 +146,11 @@ public final class DiffuserAssistGameTests {
      * mask the failure: the result is already recorded by the time a listener runs, and this only removes
      * the car. Discarding routes through {@code CarEntity#remove}, which releases the Sable body too. */
     private static CarEntity spawnCarWithCleanup(GameTestHelper helper, BlockPos at) {
+        return spawnCarWithCleanup(helper, Vec3.atBottomCenterOf(at));
+    }
+
+    /** {@link #spawnCarWithCleanup(GameTestHelper, BlockPos)} at an exact template-relative position. */
+    private static CarEntity spawnCarWithCleanup(GameTestHelper helper, Vec3 at) {
         CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), at);
         helper.testInfo.addListener(new GameTestListener() {
             @Override
@@ -179,7 +191,7 @@ public final class DiffuserAssistGameTests {
      * this SAME entity before its first tick (while {@code sableBody} is still null, so
      * {@code SableCarBody.create} reads this as the body's actual starting pose) rather than a fresh one.
      *
-     * <p>Offset 0.5 rad off exactly &pi;, not exactly &pi;: {@link DiffuserAssistMathTest#exactlyUpsideDownIsAnUnstableEquilibriumWithNoSpuriousKick}
+     * <p>Offset {@value #INVERTED_START_OFFSET_RAD} rad off exactly &pi;, not exactly &pi;: {@link DiffuserAssistMathTest#exactlyUpsideDownIsAnUnstableEquilibriumWithNoSpuriousKick}
      * already proves {@code rollSelfRightingTorque} returns EXACTLY zero at the true inverted equilibrium
      * (by design -- a real restoring force must vanish there too, or it is not actually an equilibrium).
      * A first version of this fixture used exactly {@code Math.PI} with zero initial angular velocity and
@@ -566,15 +578,12 @@ public final class DiffuserAssistGameTests {
     /** R16 (roll self-righting), the assist this ticket's acceptance criteria leads with -- covered here as
      * a direction-only check for the same reason {@link #pitchLandingTurnsTowardLevelNotAwayFromIt} is.
      *
-     * <p>This is NOT the full "upside-down car recovers and lands upright" scenario: that fixture
-     * (documented in the comment block at the end of this class) really did fail 3 times in 7 runs by
-     * getting captured near the roll=&pi; unstable equilibrium during a genuine 3-axis tumble, and nothing
-     * here claims to have solved that. What this does cover is the part that failure mode obscured and that
-     * no production-path test covered at all: a car banked a modest amount off upright, in clean single-axis
+     * <p>This is NOT the full "upside-down car recovers and lands upright" scenario -- that is
+     * {@link #rollSelfRightingRightsAnInvertedCarInTheAirAndItLandsOnItsWheels} below. What this covers is
+     * the sign, for both roll directions: a car banked a modest amount off upright, in clean single-axis
      * freefall with zero initial angular velocity, must have its real Sable body rolled back TOWARD upright
-     * by the real assist -- a bank angle nowhere near the degenerate point, so there is no capture risk, and
-     * no landing in the window, so there is no landing-tick question either. Both roll directions, same
-     * reasoning as the heading/pitch/trajectory pairs above. */
+     * by the real assist, with no landing in the window, so there is no landing-tick question either. Both
+     * roll directions, same reasoning as the heading/pitch/trajectory pairs above. */
     private static void assertRollReturnsTowardUpright(GameTestHelper helper, float startRollRad) {
         CarEntity car = spawnCarWithCleanup(helper, DROP_SPAWN);
         car.setDiffuserTuningForTest(rollOnly(ASSIST_MAX_TORQUE, ASSIST_GAIN, ASSIST_DAMPING));
@@ -601,6 +610,66 @@ public final class DiffuserAssistGameTests {
     @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
     public static void rollSelfRightingRollsBackTowardUprightFromTheOtherSideToo(GameTestHelper helper) {
         assertRollReturnsTowardUpright(helper, -START_TILT_RAD);
+    }
+
+    /** High enough that the full recovery finishes long before the car can reach the ground: roughly a
+     * 26 m fall, about 2.3 s (46 ticks) of air, against the ~1 s the recovery tuning below needs. */
+    private static final BlockPos INVERTED_RECOVERY_SPAWN = new BlockPos(5, 30, 5);
+    /** Where the recovery fixture lands: the template's own ground level, replaced with a solid pad so the
+     * car comes down on flat stone whatever the template has there. */
+    private static final BlockPos LANDING_PAD = new BlockPos(5, 2, 5);
+    /** Decisive, still well inside {@link DiffuserTuningLimits}: at these values a rigid box of this car's
+     * mass and size (roll inertia ~460 kg*m^2) comes round from {@link #INVERTED_START_OFFSET_RAD} off
+     * inverted to within {@link #UPRIGHT_ROLL_RAD} in about 1 s and has settled by about 1.25 s. The
+     * moderate shared {@link #ASSIST_GAIN} needs 1.4-2.5 s for the same swing, which a drop from
+     * {@link #DROP_SPAWN} (about 1.2 s of air) cannot give it. */
+    private static final double RECOVERY_MAX_TORQUE = 25000.0;
+    private static final double RECOVERY_GAIN = 20000.0;
+    private static final double RECOVERY_DAMPING = 4000.0;
+    /** Sampled while still well clear of the ground (about 11 m fallen of ~26), and ~10 ticks after the
+     * recovery should have completed. */
+    private static final long RECOVERED_IN_AIR_TICKS = 30L;
+    /** Well after landing (~46 ticks) and settling. */
+    private static final long LANDED_TICKS = 110L;
+    /** Upright, for the recovery fixture's purposes: an order of magnitude past the measurement noise and
+     * an order of magnitude short of the inverted start. */
+    private static final double UPRIGHT_ROLL_RAD = 0.3;
+
+    /** R16's full scenario on the production path: a car that starts upside down in the air is rolled all
+     * the way back upright BEFORE it reaches the ground, and then lands on its wheels and stays there.
+     *
+     * <p>The earlier attempt at this (see the closing comment of this class) dropped from
+     * {@link #DROP_SPAWN} at the shared moderate tuning, and so landed mid-recovery, on its side, with the
+     * outcome then decided by how it hit the ground -- including coming to rest on its roof, at the
+     * roll=&pi; point where this assist (correctly) has no restoring torque left to give. This version gives
+     * the recovery the airtime it needs and asserts on both halves separately: upright while still
+     * airborne, so a pass cannot come from the ground knocking the car over the right way, and on its
+     * wheels after landing. Still started {@link #INVERTED_START_OFFSET_RAD} off exactly inverted, for the
+     * reason {@link #startUpsideDown} gives. */
+    @GameTest(template = TEMPLATE, timeoutTicks = INVERTED_TIMEOUT_TICKS)
+    public static void rollSelfRightingRightsAnInvertedCarInTheAirAndItLandsOnItsWheels(GameTestHelper helper) {
+        setPad(helper, LANDING_PAD, Blocks.STONE);
+        CarEntity car = spawnCarWithCleanup(helper, INVERTED_RECOVERY_SPAWN);
+        car.setDiffuserTuningForTest(rollOnly(RECOVERY_MAX_TORQUE, RECOVERY_GAIN, RECOVERY_DAMPING));
+        startUpsideDown(car);
+        helper.runAfterDelay(BODY_EXISTS_TICK, () -> helper.assertTrue(Math.abs(rollAngleRad(car)) > STILL_INVERTED_ROLL_RAD,
+                "sanity: car did not actually start inverted, roll=" + rollAngleRad(car)));
+        helper.runAfterDelay(RECOVERED_IN_AIR_TICKS, () -> {
+            helper.assertTrue(!car.isTouchingGroundForTest(),
+                    "fixture needs the car still airborne when it checks the in-air recovery");
+            helper.assertTrue(Math.abs(rollAngleRad(car)) < UPRIGHT_ROLL_RAD,
+                    "roll self-righting should have brought an inverted car upright before it landed, but roll="
+                            + rollAngleRad(car) + " rad");
+        });
+        helper.runAfterDelay(LANDED_TICKS, () -> {
+            helper.assertTrue(car.isTouchingGroundForTest(),
+                    "a car righted in the air should have landed on its wheels, but none is touching; roll="
+                            + rollAngleRad(car) + " rad");
+            helper.assertTrue(Math.abs(rollAngleRad(car)) < UPRIGHT_ROLL_RAD,
+                    "a car righted in the air should still be upright after landing, but roll=" + rollAngleRad(car)
+                            + " rad");
+            helper.succeed();
+        });
     }
 
     /** Downward speed (m/s) seeded to make time-to-touchdown SHORT and deterministic, rather than waiting
@@ -696,9 +765,14 @@ public final class DiffuserAssistGameTests {
     private static final BlockPos CONTACT_SPAWN = new BlockPos(5, 10, 5);
 
     private static void setFloorPad(GameTestHelper helper, net.minecraft.world.level.block.Block block) {
+        setPad(helper, CONTACT_PAD, block);
+    }
+
+    /** A square pad of {@code block}, {@link #FLOOR_PAD_RADIUS} either side of {@code centre}. */
+    private static void setPad(GameTestHelper helper, BlockPos centre, net.minecraft.world.level.block.Block block) {
         for (int dx = -FLOOR_PAD_RADIUS; dx <= FLOOR_PAD_RADIUS; dx++) {
             for (int dz = -FLOOR_PAD_RADIUS; dz <= FLOOR_PAD_RADIUS; dz++) {
-                helper.setBlock(CONTACT_PAD.offset(dx, 0, dz), block);
+                helper.setBlock(centre.offset(dx, 0, dz), block);
             }
         }
     }
@@ -786,37 +860,24 @@ public final class DiffuserAssistGameTests {
      * case as a rollback -- which is also a fair statement of the product behaviour: a car rolling
      * backwards with nobody in it is a rollback, never an intentional reverse. */
     private static void assertReverseTravelIsHandled(GameTestHelper helper, boolean reverseSelected) {
-        CarEntity car = spawnCarWithCleanup(helper, DROP_SPAWN);
-        Player driver = helper.makeMockPlayer(GameType.CREATIVE);
-        helper.assertTrue(driver.startRiding(car), "mock driver failed to board the car");
-        helper.runAfterDelay(BODY_EXISTS_TICK, () -> {
-            helper.assertTrue(car.sableBody() != null, "car's Sable body was never created on its first real tick");
-            double startYaw = car.getYRot();
-            // Must be re-selected with the driver aboard: see this method's javadoc on the driverless reset.
-            car.selectGear(reverseSelected ? CarPhysics.Gear.REVERSE : CarPhysics.Gear.D1);
-            seedVelocityAlongYaw(car, startYaw + 180.0 + REVERSE_SLEW_DEG, SEEDED_SPEED);
-            car.setDiffuserTuningForTest(
-                    trajectoryOnly(ASSIST_MAX_TORQUE, ASSIST_GAIN, ASSIST_DAMPING, TRAJECTORY_MIN_SPEED));
-            helper.runAfterDelay(OBSERVE_TICKS, () -> {
-                double moved = wrapDeg(car.getYRot() - startYaw);
-                // Either way the car must NOT be swung toward its velocity: that is the forced half-turn
-                // this coverage exists to rule out.
-                helper.assertTrue(Math.abs(moved) < 90.0,
-                        "the assist swung a reversing car toward its own velocity instead of preserving the "
-                                + "reverse: yaw moved " + moved + " degrees");
-                if (reverseSelected) {
-                    helper.assertTrue(moved > MIN_YAW_RECOVERY_DEG,
-                            "an INTENTIONAL reverse should still have its " + REVERSE_SLEW_DEG
-                                    + " degree slew straightened toward the reverse line, but yaw moved only "
-                                    + moved + " degrees");
-                } else {
-                    helper.assertTrue(Math.abs(moved) < MIN_YAW_RECOVERY_DEG,
-                            "a backward ROLLBACK in a forward gear must leave the car's heading alone, but "
-                                    + "yaw moved " + moved + " degrees");
-                }
-                helper.succeed();
-            });
-        });
+        runSeededTravelFixture(helper, reverseSelected ? CarPhysics.Gear.REVERSE : CarPhysics.Gear.D1,
+                180.0 + REVERSE_SLEW_DEG, SEEDED_SPEED, TRAJECTORY_MIN_SPEED, moved -> {
+                    // Either way the car must NOT be swung toward its velocity: that is the forced half-turn
+                    // this coverage exists to rule out.
+                    helper.assertTrue(Math.abs(moved) < 90.0,
+                            "the assist swung a reversing car toward its own velocity instead of preserving the "
+                                    + "reverse: yaw moved " + moved + " degrees");
+                    if (reverseSelected) {
+                        helper.assertTrue(moved > MIN_YAW_RECOVERY_DEG,
+                                "an INTENTIONAL reverse should still have its " + REVERSE_SLEW_DEG
+                                        + " degree slew straightened toward the reverse line, but yaw moved only "
+                                        + moved + " degrees");
+                    } else {
+                        helper.assertTrue(Math.abs(moved) < MIN_YAW_RECOVERY_DEG,
+                                "a backward ROLLBACK in a forward gear must leave the car's heading alone, but "
+                                        + "yaw moved " + moved + " degrees");
+                    }
+                });
     }
 
     @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
@@ -829,70 +890,134 @@ public final class DiffuserAssistGameTests {
         assertReverseTravelIsHandled(helper, false);
     }
 
-    /** A slow straight reverse: below any threshold a classifier might use, which is exactly the case
+    /** A slow straight reverse: below {@link DiffuserAssistMath#REVERSE_AUTHORITY_RAMP}, the 0.5 m/s case
      * review round 2 found being handed the forward target and so a ~180 degree error. */
-    private static final double SLOW_REVERSE_SPEED = 1.2;
+    private static final double SLOW_REVERSE_SPEED = 0.3;
+    /** An activation floor below {@link #SLOW_REVERSE_SPEED} (and inside {@link DiffuserTuningLimits}'
+     * range), so the slow fixtures exercise the reverse/rollback target rather than R19's own speed gate --
+     * {@link #TRAJECTORY_MIN_SPEED} would switch the assist off entirely at these speeds (review round 3). */
+    private static final double SLOW_TRAJECTORY_MIN_SPEED = 0.1;
 
-    /** R19 reverse coverage, review round 2: a SLOW straight reverse must still be treated as a reverse.
-     *
-     * <p>This is the production-path half of the boundary problem. A stateless magnitude threshold put a
-     * slowly-reversing car on the "forward" side, handed it the travel direction -- which is behind the
-     * car -- and so asked for a half turn at full torque. The car here reverses in a straight line slewed
-     * {@value #REVERSE_SLEW_DEG} degrees off its reverse line, slowly enough to sit below any such
-     * threshold, and must be straightened toward that line rather than spun toward its velocity. */
-    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
-    public static void aSlowIntentionalReverseIsStillStraightenedNotSpun(GameTestHelper helper) {
+    /** Seats a mock driver (see {@link #assertReverseTravelIsHandled} on why reverse needs one), then on the
+     * first tick selects {@code gear} -- after boarding, so the driverless reset cannot undo it -- seeds real
+     * velocity along {@code travelOffsetDeg} off the car's own spawn yaw at {@code speed}, enables trajectory
+     * alignment with {@code minSpeed} as its floor, and hands the yaw change after {@link #OBSERVE_TICKS} to
+     * {@code check}. */
+    private static void runSeededTravelFixture(GameTestHelper helper, CarPhysics.Gear gear, double travelOffsetDeg,
+            double speed, double minSpeed, DoubleConsumer check) {
         CarEntity car = spawnCarWithCleanup(helper, DROP_SPAWN);
         Player driver = helper.makeMockPlayer(GameType.CREATIVE);
         helper.assertTrue(driver.startRiding(car), "mock driver failed to board the car");
         helper.runAfterDelay(BODY_EXISTS_TICK, () -> {
             helper.assertTrue(car.sableBody() != null, "car's Sable body was never created on its first real tick");
             double startYaw = car.getYRot();
-            car.selectGear(CarPhysics.Gear.REVERSE);
-            seedVelocityAlongYaw(car, startYaw + 180.0 + REVERSE_SLEW_DEG, SLOW_REVERSE_SPEED);
-            car.setDiffuserTuningForTest(
-                    trajectoryOnly(ASSIST_MAX_TORQUE, ASSIST_GAIN, ASSIST_DAMPING, TRAJECTORY_MIN_SPEED));
+            car.selectGear(gear);
+            seedVelocityAlongYaw(car, startYaw + travelOffsetDeg, speed);
+            car.setDiffuserTuningForTest(trajectoryOnly(ASSIST_MAX_TORQUE, ASSIST_GAIN, ASSIST_DAMPING, minSpeed));
             helper.runAfterDelay(OBSERVE_TICKS, () -> {
-                double moved = wrapDeg(car.getYRot() - startYaw);
-                helper.assertTrue(Math.abs(moved) < 90.0,
-                        "a slow reverse was swung toward its own velocity instead of being straightened: "
-                                + "yaw moved " + moved + " degrees");
-                helper.assertTrue(moved > MIN_YAW_RECOVERY_DEG,
-                        "a slow intentional reverse should still be straightened toward its reverse line, "
-                                + "but yaw moved only " + moved + " degrees");
+                check.accept(wrapDeg(car.getYRot() - startYaw));
                 helper.succeed();
             });
         });
     }
 
-    /** A one-block step under half the car's own track width (wheel mounts at x=+-0.8, see
-     * {@code CarGeometry}), spanning the whole wheelbase in z: low on one side, high on the other. The
-     * resulting static bank angle, atan(1 block / ~1.6 m track) ~= 32 degrees, is steep and permanent --
-     * exactly the "steep surface" case, not a transient tilt suspension alone would absorb. */
-    /** The X coordinate of the step itself: everything left of this is low, everything at or right of it
-     * is high. The car spawns straddling it. */
-    private static final int STEEP_SEAM_X = 5;
-    private static final int STEEP_LOW_Y = 2;
-    private static final int STEEP_HIGH_Y = 3;
-    /** Wide margin on each side of the seam, not just enough to cover the stationary wheel footprint: a
-     * narrower first version occasionally missed both platforms during landing (observed directly --
-     * "not touching" at the end of the settle window run to run, inconsistent with the ~13-tick landing
-     * time a 2-block drop implies, which points at a bounce/skid off a narrow platform's edge rather than
-     * a timing margin). */
-    private static final int STEEP_PLATFORM_HALF_SPAN = 4;
-    private static final int STEEP_SPAWN_Z = 4;
-    private static final BlockPos STEEP_SPAWN = new BlockPos(STEEP_SEAM_X, 6, STEEP_SPAWN_Z);
-    /** Long enough for suspension to settle the car onto the step before anything is measured, with real
-     * margin beyond the ~15-25 ticks a clean landing actually takes. */
-    private static final long STEEP_SETTLE_TICKS = 80L;
+    /** R19 reverse coverage, review round 2: a SLOW straight reverse must still be treated as a reverse.
+     *
+     * <p>This is the production-path half of the boundary problem. A stateless magnitude threshold put a
+     * slowly-reversing car on the "forward" side, handed it the travel direction -- which is behind the
+     * car -- and so asked for a half turn at full torque. The car here reverses in a straight line slewed
+     * {@value #REVERSE_SLEW_DEG} degrees off its reverse line at {@value #SLOW_REVERSE_SPEED} m/s -- below
+     * the 0.5 m/s the original threshold sat at, with the activation floor lowered so R19 is genuinely live
+     * there -- and must be straightened toward that line rather than spun toward its velocity. */
+    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    public static void aSlowIntentionalReverseIsStillStraightenedNotSpun(GameTestHelper helper) {
+        runSeededTravelFixture(helper, CarPhysics.Gear.REVERSE, 180.0 + REVERSE_SLEW_DEG, SLOW_REVERSE_SPEED,
+                SLOW_TRAJECTORY_MIN_SPEED, moved -> {
+                    helper.assertTrue(Math.abs(moved) < 90.0,
+                            "a slow reverse was swung toward its own velocity instead of being straightened: "
+                                    + "yaw moved " + moved + " degrees");
+                    helper.assertTrue(moved > MIN_YAW_RECOVERY_DEG,
+                            "a slow intentional reverse should still be straightened toward its reverse line, "
+                                    + "but yaw moved only " + moved + " degrees");
+                });
+    }
 
-    /** A single clean seam at {@link #STEEP_SEAM_X}: one block per (x, z), never two at the same x, so
-     * there is no risk of one platform's own placement silently overwriting or stacking on the other's. */
+    /** How far off straight-behind the slow-rollback fixtures put the travel direction: at
+     * {@value #SLOW_ROLLBACK_SPEED} m/s that is a lateral velocity of about 0.001 m/s, either side -- review
+     * round 3's own worked example. */
+    private static final double ROLLBACK_LATERAL_SLEW_DEG = 0.25;
+    private static final double SLOW_ROLLBACK_SPEED = 0.25;
+
+    /** R19 rollback coverage, review round 3: a car rolling slowly, almost straight backwards, with a
+     * forward gear selected must be left alone whichever side of straight-behind its travel lies.
+     *
+     * <p>Straight behind is where the forward target's error wraps through &plusmn;180 degrees. The previous
+     * rollback fade kept half its authority at this speed, so a 0.002 m/s difference in lateral velocity
+     * swung the torque between +{@value #ASSIST_MAX_TORQUE} and -{@value #ASSIST_MAX_TORQUE} N*m -- either
+     * sign of this pair would then have been yawed hard. Run for both sides, at a speed below the ramp and
+     * with the activation floor lowered so the assist is genuinely live. */
+    private static void assertSlowRollbackLeavesHeadingAlone(GameTestHelper helper, double lateralSlewDeg) {
+        runSeededTravelFixture(helper, CarPhysics.Gear.D1, 180.0 + lateralSlewDeg, SLOW_ROLLBACK_SPEED,
+                SLOW_TRAJECTORY_MIN_SPEED, moved -> helper.assertTrue(Math.abs(moved) < MIN_YAW_RECOVERY_DEG,
+                        "a slow, nearly straight rollback (travel " + lateralSlewDeg + " degrees off straight "
+                                + "behind) must leave the heading alone, but yaw moved " + moved + " degrees"));
+    }
+
+    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    public static void aSlowRollbackJustOffStraightBehindLeavesHeadingAlone(GameTestHelper helper) {
+        assertSlowRollbackLeavesHeadingAlone(helper, ROLLBACK_LATERAL_SLEW_DEG);
+    }
+
+    @GameTest(template = TEMPLATE, timeoutTicks = DIRECTION_TIMEOUT_TICKS)
+    public static void aSlowRollbackJustOffStraightBehindLeavesHeadingAloneOnTheOtherSideToo(GameTestHelper helper) {
+        assertSlowRollbackLeavesHeadingAlone(helper, -ROLLBACK_LATERAL_SLEW_DEG);
+    }
+
+    /** A half-block step across the car's track (wheel mounts at x=+-0.8, see {@code CarGeometry}),
+     * spanning the whole wheelbase in z: full blocks on the low side, a bottom slab on top of them on the
+     * high side. The resulting static bank angle, atan(0.5 block / 1.6 m track) ~= 17 degrees (0.30 rad),
+     * is permanent and carried entirely on the car's own wheels -- the "steep surface" case, not a transient
+     * tilt suspension alone would absorb.
+     *
+     * <p>Why a slab under the centreline rather than a full block: GameTest runs each structure at a random
+     * position up to &plusmn;15,000,000 blocks out, where single-precision positions only resolve to 0.5 m
+     * beyond about 4.2M and to a whole block beyond about 8.4M. Observed directly: a car spawned at x.5 sat
+     * a half block off where it was put on some runs and not others, which is what intermittently put BOTH
+     * wheel tracks of the original full-block step on its high side (roll=0.0 at the sanity check). So the
+     * car spawns on WHOLE-block coordinates, exact at any of those positions, which leaves any block-aligned
+     * seam either under its centreline or outside its track. A full-block seam under the centreline puts the
+     * high block's corner about 0.7 m above the line through the two tire contacts, deeper than the body
+     * box's own 0.4 m ground clearance, so the box lands on that corner (observed: the car balanced on it,
+     * wheels flickering in and out of contact). A half-block seam leaves that corner about 0.16 m clear of
+     * the box. */
+    private static final int STEEP_SEAM_X = 6;
+    private static final int STEEP_GROUND_Y = 2;
+    private static final int STEEP_SLAB_Y = 3;
+    /** Wide margin on each side of the seam, not just enough to cover the stationary wheel footprint: a
+     * narrower first version occasionally missed both platforms during landing. */
+    private static final int STEEP_PLATFORM_HALF_SPAN = 4;
+    private static final int STEEP_CENTRE_Z = 5;
+    /** Centred exactly on the seam, whole-block x and z (see above), low enough that the wheels are only
+     * about a metre off the step when the car is let go. */
+    private static final Vec3 STEEP_SPAWN = new Vec3(STEEP_SEAM_X, 5.0, STEEP_CENTRE_Z);
+    /** The gate-check window: from just after the car lands on the step (about 10-13 ticks from a drop
+     * this short) for a little over two seconds. */
+    private static final long STEEP_FIRST_SAMPLE_TICK = 15L;
+    private static final long STEEP_LAST_SAMPLE_TICK = 60L;
+    /** At least this many of the window's 46 ticks must find the car grounded AND banked past
+     * {@link #MIN_START_TILT_RAD}, or the gate was never really put to the test. Observed: all 46 where the
+     * car settles, 23 where it rocks (see the fixture's own javadoc). */
+    private static final int STEEP_MIN_BANKED_GROUNDED_TICKS = 10;
+
+    /** A single clean seam at {@link #STEEP_SEAM_X}: stone across the whole pad, with a bottom slab on top
+     * of it from the seam onwards. */
     private static void buildSteepStep(GameTestHelper helper) {
         for (int x = STEEP_SEAM_X - STEEP_PLATFORM_HALF_SPAN; x < STEEP_SEAM_X + STEEP_PLATFORM_HALF_SPAN; x++) {
-            int y = x < STEEP_SEAM_X ? STEEP_LOW_Y : STEEP_HIGH_Y;
-            for (int dz = -STEEP_PLATFORM_HALF_SPAN; dz <= STEEP_PLATFORM_HALF_SPAN; dz++) {
-                helper.setBlock(new BlockPos(x, y, STEEP_SPAWN_Z + dz), Blocks.STONE);
+            for (int z = STEEP_CENTRE_Z - STEEP_PLATFORM_HALF_SPAN; z <= STEEP_CENTRE_Z + STEEP_PLATFORM_HALF_SPAN; z++) {
+                helper.setBlock(new BlockPos(x, STEEP_GROUND_Y, z), Blocks.STONE);
+                if (x >= STEEP_SEAM_X) {
+                    helper.setBlock(new BlockPos(x, STEEP_SLAB_Y, z), Blocks.STONE_SLAB);
+                }
             }
         }
     }
@@ -903,12 +1028,21 @@ public final class DiffuserAssistGameTests {
      * contact state"), but {@code SableCarBody.applyDiffuserAssists} never actually gated its call on
      * {@code touching} -- found while covering this exact acceptance case, not asserted from the source.
      *
-     * <p>A car settled on the step built by {@link #buildSteepStep} carries a real, large, PERMANENT bank
-     * angle (confirmed non-trivial by the sanity check below) that is correct for that slope, not a
-     * rollover to recover from. With the gate, the real {@code diffuserRoll} telemetry this ticket's own
-     * acceptance criteria calls for must read exactly zero while the car is resting there, regardless of
-     * how large that bank angle is -- the direct, production-path proof that the assist is inactive,
-     * stronger than inferring it from the car simply not moving further. */
+     * <p>A car on the step built by {@link #buildSteepStep} carries a real bank angle that comes from the
+     * ground it is standing on, not a rollover to recover from -- large enough that an ungated assist would
+     * answer it with well over 1,000 N*m at this fixture's tuning. With the gate, the real
+     * {@code diffuserRoll} telemetry this ticket's own acceptance criteria calls for must read exactly zero
+     * on every tick the car is grounded and banked -- the direct, production-path proof that the assist is
+     * inactive, stronger than inferring it from the car simply not moving further.
+     *
+     * <p>Checked on every tick of a window rather than once at the end, because whether the car comes to
+     * rest depends on where GameTest put the structure. With fine position resolution it settles at about
+     * 0.34 rad on its wheels for the whole window. Where its horizontal position is pinned to whole blocks
+     * (see {@link #STEEP_SEAM_X}) it cannot shift sideways as it banks, so it rocks instead: about eight
+     * ticks on its wheels, then about eight resting on the body's low corner with no wheel loaded -- and
+     * there, correctly, the airborne-gated assist acts and rolls it back onto its wheels. What this asserts
+     * is the gate itself -- zero torque on every tick a wheel is down and the car is banked -- not that the
+     * car stays parked. */
     @GameTest(template = TEMPLATE, timeoutTicks = INVERTED_TIMEOUT_TICKS)
     public static void rollSelfRightingDoesNotFightACarRestingOnASteepSlope(GameTestHelper helper) {
         buildSteepStep(helper);
@@ -921,15 +1055,23 @@ public final class DiffuserAssistGameTests {
         // with the step's.
         car.setYRot(0.0f);
         car.setDiffuserTuningForTest(rollOnly(ASSIST_MAX_TORQUE, ASSIST_GAIN, ASSIST_DAMPING));
-        helper.runAfterDelay(STEEP_SETTLE_TICKS, () -> {
-            helper.assertTrue(car.isTouchingGroundForTest(),
-                    "fixture needs the car actually settled on the steep step before asserting anything");
-            double roll = rollAngleRad(car);
-            helper.assertTrue(Math.abs(roll) > MIN_START_TILT_RAD,
-                    "sanity: the step did not actually produce a real static bank angle, roll=" + roll);
-            helper.assertTrue(car.debugDiffuserRollTorque() == 0.0,
-                    "roll self-righting must be inactive for a car resting on a steep slope, but it applied "
-                            + car.debugDiffuserRollTorque() + " N*m against a " + roll + " rad bank angle");
+        int[] bankedGroundedTicks = {0};
+        for (long tick = STEEP_FIRST_SAMPLE_TICK; tick <= STEEP_LAST_SAMPLE_TICK; tick++) {
+            helper.runAfterDelay(tick, () -> {
+                double roll = rollAngleRad(car);
+                if (car.isTouchingGroundForTest() && Math.abs(roll) > MIN_START_TILT_RAD) {
+                    bankedGroundedTicks[0]++;
+                    helper.assertTrue(car.debugDiffuserRollTorque() == 0.0,
+                            "roll self-righting must be inactive for a car standing on a steep slope, but it "
+                                    + "applied " + car.debugDiffuserRollTorque() + " N*m against a " + roll
+                                    + " rad bank angle");
+                }
+            });
+        }
+        helper.runAfterDelay(STEEP_LAST_SAMPLE_TICK + 1, () -> {
+            helper.assertTrue(bankedGroundedTicks[0] >= STEEP_MIN_BANKED_GROUNDED_TICKS,
+                    "sanity: the car was grounded with a real bank angle on only " + bankedGroundedTicks[0]
+                            + " ticks of the window, too few for the gate check to mean anything");
             helper.succeed();
         });
     }
@@ -976,20 +1118,15 @@ public final class DiffuserAssistGameTests {
     //
     // R16 (roll self-righting): a `rollSelfRightingRecoversFromUpsideDownBeforeLanding` fixture (full
     // upside-down recovery, landing included) failed 3 times in 7 full ./gradlew runGameTestServer runs,
-    // every time with the final roll landing within ~0.001 rad of exactly +-pi -- the roll=pi unstable
-    // equilibrium DiffuserAssistMath.rollSelfRightingTorque correctly returns zero restoring torque at.
-    // Since roll's own code path has no sign defect (see above), this still stands as what it looked like
-    // at the time: genuine chaotic sensitivity in a real 3-axis tumble occasionally coasting into the one
-    // point a correctly-signed restoring force cannot (and should not) pull away from, not a bug in this
-    // ticket's own code. Ruled out directly, not guessed: widening the landing pad 1x1 to 7x7, and a fully
-    // fresh run/world before a run -- neither changed the failure signature. No GameTest for the full
-    // upside-down-to-landed recovery is included here for that reason. What IS covered, by
-    // rollSelfRightingRollsBackTowardUpright* above, is the part that failure mode was obscuring: a modest
-    // bank angle (nowhere near the degenerate point) in clean single-axis freefall really is rolled back
-    // toward upright by the real assist, both directions. A reliable FULL-recovery production check would
-    // still need either a non-chaotic tumble fixture (a 2D-only drop with no yaw/pitch coupling, if this
-    // engine's wrapper exposes one) or a verified deterministic-stepping solver configuration this repo
-    // does not currently have a call site for.
+    // every time with the final roll within ~0.001 rad of exactly +-pi. That was put down at the time to
+    // chaotic capture at the roll=pi unstable equilibrium during a 3-axis tumble. The simpler account: that
+    // fixture dropped from DROP_SPAWN (about 1.2 s of air) at the shared moderate tuning, and a rigid box of
+    // this car's mass and size needs roughly 1.4-2.5 s at that tuning to come round from 0.2 rad off
+    // inverted, so the car landed mid-recovery, on its side, and how it hit the ground decided the rest --
+    // including coming to rest flat on its roof, where roll is pinned at pi and the assist (correctly) has
+    // no restoring torque left to give. rollSelfRightingRightsAnInvertedCarInTheAirAndItLandsOnItsWheels
+    // gives the recovery the airtime and authority it needs and asserts upright BEFORE landing as well as
+    // after.
     //
     // R17 (pitch/landing): over a dozen runs with several fixture designs, the actual TICK at which a
     // pitched car's wheels first contacted ground varied run to run (observed anywhere from tick ~6 to past

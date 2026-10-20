@@ -284,4 +284,68 @@ class DiffuserAssistMathTest {
         return new VehicleSpec.DiffuserTuning(false, 0, 0, 0, false, 0, 0, 0, 0,
                 false, 0, 0, 0, 0, true, 8000.0, 6000.0, 1200.0, 1.0);
     }
+
+    // ---- physically consistent velocity inputs (review round 3) ----
+
+    /** Review round 3's own tuning: gain 6000, cap 8000, no damping (yaw rate is zero throughout anyway),
+     * and the lowest activation floor that review called allowed, so slow motion is genuinely live. */
+    private static final VehicleSpec.DiffuserTuning SLOW_LIVE = new VehicleSpec.DiffuserTuning(false, 0, 0, 0,
+            false, 0, 0, 0, 0, false, 0, 0, 0, 0, true, 8000.0, 6000.0, 0.0, 0.1);
+
+    /** The production torque for a car at {@code yawDeg} moving with horizontal velocity (vx, vz): travel
+     * direction and forward speed both derived from that one velocity, exactly as SableCarBody does. */
+    private static double torqueFor(double vx, double vz, double yawDeg, boolean reverseSelected) {
+        double error = DiffuserAssistMath.trajectoryErrorRadForVelocity(vx, vz, yawDeg, reverseSelected, RAMP);
+        return DiffuserAssistMath.trajectoryAlignmentTorque(error, 0.0, Math.hypot(vx, vz), false, SLOW_LIVE);
+    }
+
+    @Test
+    void velocityDerivedInputsFollowTheYawOfForwardConvention() {
+        // forward = (-sin(yaw), cos(yaw)): travelling exactly along the nose is zero error in either gear,
+        // and so is reversing exactly along the tail with reverse selected.
+        double yaw = 30.0;
+        double vx = -Math.sin(Math.toRadians(yaw)) * 5.0;
+        double vz = Math.cos(Math.toRadians(yaw)) * 5.0;
+        assertEquals(0.0, DiffuserAssistMath.trajectoryErrorRadForVelocity(vx, vz, yaw, false, RAMP), 1e-9);
+        assertEquals(0.0, DiffuserAssistMath.trajectoryErrorRadForVelocity(vx, vz, yaw, true, RAMP), 1e-9);
+        assertEquals(0.0, DiffuserAssistMath.trajectoryErrorRadForVelocity(-vx, -vz, yaw, true, RAMP), 1e-9);
+    }
+
+    @Test
+    void aSlowRollbackNearlyStraightBackNeverFlipsFullTorqueWithItsLateralSign() {
+        // Review round 3's worked example: yaw 0, vx = +-0.001, vz = -0.25, no reverse selected. The old
+        // rollback fade kept half authority here, so the target error read +-89.9 degrees and the torque
+        // saturated at +8000 or -8000 depending only on the sign of a 0.001 m/s lateral velocity.
+        double left = torqueFor(0.001, -0.25, 0.0, false);
+        double right = torqueFor(-0.001, -0.25, 0.0, false);
+        assertTrue(Math.abs(left) < 80.0 && Math.abs(right) < 80.0,
+                "a slow straight-back rollback must carry essentially no torque: " + left + " / " + right);
+        assertEquals(0.0, torqueFor(0.0, -0.25, 0.0, false), 1e-9);
+    }
+
+    @Test
+    void trajectoryTorqueIsContinuousAllTheWayRoundAtSlowSpeedsInEitherGear() {
+        // Every physically consistent travel direction, in 0.01 degree steps: no neighbouring pair may differ
+        // by more than a sliver of the cap. A target flip at any switch point -- straight behind, the
+        // forward/backward boundary either side, or the reverse target's change of identity -- would show
+        // up here as a jump of thousands of N*m.
+        double yaw = 0.0;
+        for (boolean reverseSelected : new boolean[] {false, true}) {
+            for (double speed : new double[] {0.15, 0.25, 0.45}) {
+                double previous = Double.NaN;
+                for (int step = 0; step <= 36_000; step++) {
+                    double travel = Math.toRadians(step / 100.0);
+                    double torque = torqueFor(-Math.sin(travel) * speed, Math.cos(travel) * speed, yaw,
+                            reverseSelected);
+                    if (!Double.isNaN(previous)) {
+                        assertTrue(Math.abs(torque - previous) < 100.0,
+                                "torque jumped at travel " + step / 100.0 + " degrees (speed " + speed
+                                        + ", reverseSelected=" + reverseSelected + "): " + previous + " -> "
+                                        + torque);
+                    }
+                    previous = torque;
+                }
+            }
+        }
+    }
 }

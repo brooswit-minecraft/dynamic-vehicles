@@ -145,16 +145,25 @@ public final class DiffuserAssistMath {
      * <li><b>No reverse selected, rolling backwards</b> -- a rollback: the driver never asked to travel
      *     backwards, so the target's authority fades out over {@code ramp} and is gone entirely beyond it.
      *     The assist neither spins the car nor pins it to a direction it is only drifting in; with no
-     *     proportional term left it simply damps whatever yaw rate is present.</li>
+     *     proportional term left it simply damps whatever yaw rate is present. Within the ramp the
+     *     authority is ALSO scaled by the sideways fraction of travel ({@code |sin(error)|}), so it vanishes
+     *     as the travel direction approaches straight behind the car (review round 3): that is exactly
+     *     where the forward target's error wraps through &plusmn;&pi;, and any authority left there flipped
+     *     the full torque with the sign of a vanishing lateral velocity.</li>
      * </ul>
      *
      * <p>The classification is driven by MEASURED velocity, never by the selected gear alone: a car in
      * reverse that is still rolling forwards is treated as going forwards.
      *
+     * <p>{@code forwardSpeed} must be consistent with the two angles -- the HORIZONTAL velocity's component
+     * along the car's horizontal heading, so that it is negative exactly when the travel direction is more
+     * than 90 degrees off the nose. Every switch point above relies on that; a production caller should go
+     * through {@link #trajectoryErrorRadForVelocity}, which derives all three from one velocity.
+     *
      * @param travelYawDeg direction of travel, degrees, Minecraft yaw convention
      * @param currentYawDeg the car's own heading, degrees, same convention
-     * @param forwardSpeed the velocity's component along the car's own forward axis, m/s: negative when
-     *        the car is moving backwards relative to where it points
+     * @param forwardSpeed the horizontal velocity's component along the car's own heading, m/s: negative
+     *        when the car is moving backwards relative to where it points
      * @param reverseSelected whether the driver actually has reverse selected
      * @param ramp see {@link #REVERSE_AUTHORITY_RAMP}
      */
@@ -171,7 +180,24 @@ public final class DiffuserAssistMath {
             return error;
         }
         double authority = width > 0.0 ? Math.max(0.0, 1.0 - Math.abs(forwardSpeed) / width) : 0.0;
-        return authority * error;
+        return authority * Math.abs(Math.sin(error)) * error;
+    }
+
+    /**
+     * {@link #trajectoryErrorRad} for a horizontal world velocity ({@code velocityX}, {@code velocityZ},
+     * m/s): the travel direction and the forward speed are both derived here from that one vector and the
+     * car's own heading, using the same forward convention as {@code SableCarBody.yawOf}
+     * ({@code forward = (-sin(yaw), 0, cos(yaw))}), so they can never disagree about which side of the car
+     * the car is travelling toward. A 3D forward speed would: a falling car pitched nose-up reads as moving
+     * backwards while its horizontal travel is still ahead of it, which hands the reversed target a
+     * near-180-degree error at full authority.
+     */
+    public static double trajectoryErrorRadForVelocity(double velocityX, double velocityZ, double currentYawDeg,
+            boolean reverseSelected, double ramp) {
+        double travelYawDeg = Math.toDegrees(Math.atan2(-velocityX, velocityZ));
+        double yawRad = Math.toRadians(currentYawDeg);
+        double forwardSpeed = -Math.sin(yawRad) * velocityX + Math.cos(yawRad) * velocityZ;
+        return trajectoryErrorRad(travelYawDeg, currentYawDeg, forwardSpeed, reverseSelected, ramp);
     }
 
     /**

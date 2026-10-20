@@ -169,6 +169,19 @@ public final class TownStorage extends SavedData {
         return owner != null && !owner.equals(villagerId);
     }
 
+    /**
+     * [Review round 24] {@code true} only when {@code villagerId} is POSITIVELY, currently on
+     * record as {@code pos}'s reservation owner - the one thing this mod can actually prove safe to
+     * act on. Unlike {@link #isReservedByADifferentVillager}, an ABSENT record returns {@code false}
+     * here too (not just when a different villager owns it): releasing a reservation requires real
+     * proof it is {@code villagerId}'s own, not merely the absence of proof it is someone else's -
+     * see {@code TownResidentAllocationHandler#releaseOldReservation}'s own doc for why those two
+     * are not the same thing, and why conflating them was itself a past review finding.
+     */
+    public boolean isReservedBySelf(ResourceKey<Level> dimension, BlockPos pos, UUID villagerId) {
+        return villagerId.equals(reservationOwners.get(cellKey(dimension, pos)));
+    }
+
     /** Records that {@code villagerId} is now the one this mod granted the reservation at
      *  {@code pos} to - called exactly once, right after this mod's own code actually secures a new
      *  ticket there, so a later stale-memory check against a DIFFERENT villager has something real

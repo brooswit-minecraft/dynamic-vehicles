@@ -297,6 +297,11 @@ public final class TownResidentAllocationHandlerGameTests {
         helper.assertTrue(otherDimensionLevel.getPoiManager().getFreeTickets(oldHomeInOtherDimension) == 0,
                 "test setup: the cross-dimension old home's ticket must actually be held before reconciliation runs");
         villager.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(net.minecraft.world.level.Level.NETHER, oldHomeInOtherDimension));
+        // [Review round 24] Release now requires POSITIVE proof of self-ownership, not merely the
+        // absence of counter-evidence - this old home must be genuinely recorded as THIS villager's
+        // own (exactly as production code would have, had it originally granted it) for the release
+        // below to be expected at all.
+        storage.setReservationOwner(net.minecraft.world.level.Level.NETHER, oldHomeInOtherDimension, villager.getUUID());
 
         BlockPos townCenter = helper.absolutePos(ANCHOR);
         TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), villager, townCenter, region, storage);
@@ -461,6 +466,9 @@ public final class TownResidentAllocationHandlerGameTests {
 
         Villager villager = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         villager.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(helper.getLevel().dimension(), oldHomeInDifferentRegion));
+        // [Review round 24] Release now requires POSITIVE proof of self-ownership - genuinely record
+        // this old home as the villager's own (as production code would have on the original grant).
+        storage.setReservationOwner(helper.getLevel().dimension(), oldHomeInDifferentRegion, villager.getUUID());
 
         BlockPos townCenter = helper.absolutePos(ANCHOR);
         TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), villager, townCenter, region, storage);
@@ -582,6 +590,9 @@ public final class TownResidentAllocationHandlerGameTests {
         Villager orphan = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         orphan.setVillagerData(orphan.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
         orphan.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(net.minecraft.world.level.Level.NETHER, oldClaimInOtherDimension));
+        // [Review round 24] Release now requires POSITIVE proof of self-ownership - genuinely record
+        // this old claim as the orphan's own (as production code would have on the original grant).
+        storage.setReservationOwner(net.minecraft.world.level.Level.NETHER, oldClaimInOtherDimension, orphan.getUUID());
 
         TownResidentAllocationHandler.runResidentAllocationTick(helper.getLevel(), storage);
 
@@ -777,55 +788,81 @@ public final class TownResidentAllocationHandlerGameTests {
         helper.succeed();
     }
 
-    /** [Review round 22 follow-up] {@link TownResidentAllocationHandler#isCurrentlyClaimedByAnotherVillager}
-     *  can only ever see currently-loaded, alive villagers - an untracked (vanilla-origin) owner
-     *  that later becomes unloaded (or despawns) is invisible to it, exactly like it is invisible to
-     *  {@code level.getEntities()} either way. Proves the fix: once that owner's OWN real
-     *  reservation has been validated at least once by this reconciliation (backfilling the
-     *  ownership registry as a side effect - see {@code hasValidHome}'s own doc), the PERSISTED
-     *  registry entry alone keeps protecting it even after it becomes unscannable, with no live scan
-     *  needed at all. {@code discard()} stands in for "no longer visible to a live villager scan"
-     *  (unloaded or despawned - this mod's own scan cannot tell the two apart either). */
+    /** [Review round 24: replaces round 22's since-reverted backfill test] An untracked reservation
+     *  whose real owner disappears (unloaded/despawned) BEFORE this reconciliation ever once
+     *  validates it is the hardest case: there is no registry entry (no backfill happens on
+     *  validation any more - see {@code hasValidHome}'s own doc on why that was unsound) AND no
+     *  live villager left to find either. The only safe behaviour is to PRESERVE this unresolved
+     *  reservation - never release it on a stale villager's memory, and never fabricate an ownership
+     *  record for anyone either. A real save/load round trip must not manufacture one later. */
     @GameTest(template = "settlement_test")
-    public static void aLazilyBackfilledOwnerStillProtectsItsReservationAfterBecomingUnscannable(GameTestHelper helper) {
+    public static void anUnresolvedHomeIsPreservedNotBackfilledWhenItsRealOwnerDisappearsBeforeFirstValidation(GameTestHelper helper) {
         prepareFlatGround(helper);
         BlockPos bedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
         placeValidBed(helper, bedHead);
         BlockPos absoluteBedHead = helper.absolutePos(bedHead);
-        BlockPos secondBedHead = ANCHOR.offset(OLD_HOME_OFFSET.getX(), OLD_HOME_OFFSET.getY(), OLD_HOME_OFFSET.getZ());
-        placeValidBed(helper, secondBedHead);
-        BlockPos absoluteSecondBedHead = helper.absolutePos(secondBedHead);
         RegionCoord region = regionOf(helper);
         TownStorage storage = newStorageWithFoundedTown(helper, region);
         markTownOwned(helper, storage, absoluteBedHead);
-        markTownOwned(helper, storage, absoluteSecondBedHead);
         BlockPos townCenter = helper.absolutePos(ANCHOR);
 
-        // An UNTRACKED resident (standing in for vanilla-origin: no ownership record at all at
-        // first) whose real, genuinely-held home is validated by this reconciliation once - which
-        // backfills the registry - before becoming unscannable.
-        Villager untrackedResident = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        // B's real, genuinely-held reservation - gone (unloaded/despawned) before this reconciliation
+        // has EVER once looked at it. No registry entry, no live villager left to confirm it either.
+        Villager neverValidatedOwner = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         takeTicketDirectly(helper.getLevel(), absoluteBedHead);
-        untrackedResident.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(helper.getLevel().dimension(), absoluteBedHead));
-        TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), untrackedResident, townCenter, region, storage);
-        helper.assertTrue(untrackedResident.getBrain().getMemory(MemoryModuleType.HOME)
-                        .map(gp -> gp.pos().equals(absoluteBedHead)).orElse(false),
-                "test setup: the untracked resident must still validly keep its own real home on this first check (and get backfilled into the registry as a side effect)");
-        untrackedResident.discard();
+        neverValidatedOwner.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(helper.getLevel().dimension(), absoluteBedHead));
+        neverValidatedOwner.discard();
 
-        // A second, unrelated villager whose own memory also (incorrectly/stalely) points at that
-        // exact same bed - now that its real owner is unscannable, ONLY the backfilled registry
-        // entry (not a live scan) can still protect it.
-        Villager impostor = spawnVillager(helper, ANCHOR.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
-        impostor.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(helper.getLevel().dimension(), absoluteBedHead));
+        // A's own stale memory also (incorrectly) points at that same, genuinely-occupied bed.
+        Villager stale = spawnVillager(helper, ANCHOR.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+        stale.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(helper.getLevel().dimension(), absoluteBedHead));
 
-        TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), impostor, townCenter, region, storage);
+        TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), stale, townCenter, region, storage);
 
-        helper.assertTrue(impostor.getBrain().getMemory(MemoryModuleType.HOME)
-                        .map(gp -> gp.pos().equals(absoluteSecondBedHead)).orElse(false),
-                "the backfilled ownership record must still protect the real owner's reservation even after it becomes unscannable (unloaded/despawned) - the impostor must be reassigned the real alternative instead");
         helper.assertTrue(helper.getLevel().getPoiManager().getFreeTickets(absoluteBedHead) == 0,
-                "the now-unscannable owner's real ticket must never be stolen just because a live scan can no longer confirm it");
+                "an unresolved reservation (no tracked owner, no live claimant left to confirm it) must never be released just because a stale memory also pointed at it");
+        helper.assertTrue(!storage.isReservedByADifferentVillager(helper.getLevel().dimension(), absoluteBedHead, stale.getUUID())
+                        && !storage.isReservedBySelf(helper.getLevel().dimension(), absoluteBedHead, stale.getUUID()),
+                "no ownership record must be fabricated for anyone just because this reservation could not be resolved");
+
+        net.minecraft.nbt.CompoundTag saved = storage.save(new net.minecraft.nbt.CompoundTag(), helper.getLevel().registryAccess());
+        TownStorage reloaded = TownStorage.load(saved, helper.getLevel().registryAccess());
+        helper.assertTrue(!reloaded.isReservedBySelf(helper.getLevel().dimension(), absoluteBedHead, stale.getUUID()),
+                "a real save/load round trip must not manufacture an ownership record either");
+        helper.succeed();
+    }
+
+    /** [Review round 24] The same preserve-not-backfill guarantee for {@code JOB_SITE}/workplaces,
+     *  explicitly required alongside the {@code HOME} case above. */
+    @GameTest(template = "settlement_test")
+    public static void anUnresolvedWorkplaceIsPreservedNotBackfilledWhenItsRealOwnerDisappearsBeforeFirstValidation(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos workstationPos = ANCHOR.offset(WORKSTATION_OFFSET.getX(), WORKSTATION_OFFSET.getY(), WORKSTATION_OFFSET.getZ());
+        placeWorkstation(helper, workstationPos, Blocks.BLAST_FURNACE);
+        BlockPos absoluteWorkstationPos = helper.absolutePos(workstationPos);
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        markTownOwned(helper, storage, absoluteWorkstationPos);
+        BlockPos townCenter = helper.absolutePos(ANCHOR);
+
+        // B's real, genuinely-held workstation - gone before this reconciliation ever once validated it.
+        Villager neverValidatedOwner = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        neverValidatedOwner.setVillagerData(neverValidatedOwner.getVillagerData().setProfession(VillagerProfession.ARMORER));
+        takeTicketDirectly(helper.getLevel(), absoluteWorkstationPos);
+        neverValidatedOwner.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteWorkstationPos));
+        neverValidatedOwner.discard();
+
+        // A's own stale memory and matching profession also (incorrectly) point at that same workstation.
+        Villager stale = spawnVillager(helper, ANCHOR.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+        stale.setVillagerData(stale.getVillagerData().setProfession(VillagerProfession.ARMORER));
+        stale.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteWorkstationPos));
+
+        TownResidentAllocationHandler.allocateWorkplaceIfNeeded(helper.getLevel(), stale, townCenter, region, storage);
+
+        helper.assertTrue(helper.getLevel().getPoiManager().getFreeTickets(absoluteWorkstationPos) == 0,
+                "an unresolved workstation reservation must never be released just because a stale memory also pointed at it");
+        helper.assertTrue(!storage.isReservedBySelf(helper.getLevel().dimension(), absoluteWorkstationPos, stale.getUUID()),
+                "no ownership record must be fabricated for anyone just because this reservation could not be resolved");
         helper.succeed();
     }
 }

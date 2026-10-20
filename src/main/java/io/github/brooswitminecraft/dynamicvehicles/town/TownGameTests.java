@@ -715,6 +715,10 @@ public final class TownGameTests {
         claimant.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(helper.getLevel().dimension(), absoluteOldHome));
 
         TownStorage storage = new TownStorage();
+        // [Review round 24] Releasing an old home now requires POSITIVE proof of self-ownership -
+        // genuinely record it as this claimant's own, as production code would have on the
+        // original grant.
+        storage.setReservationOwner(helper.getLevel().dimension(), absoluteOldHome, claimant.getUUID());
         TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
 
         RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
@@ -788,6 +792,10 @@ public final class TownGameTests {
         claimant.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(Level.NETHER, oldHomeInOtherDimension));
 
         TownStorage storage = new TownStorage();
+        // [Review round 24] Releasing an old home now requires POSITIVE proof of self-ownership -
+        // genuinely record it as this claimant's own, as production code would have on the
+        // original grant.
+        storage.setReservationOwner(Level.NETHER, oldHomeInOtherDimension, claimant.getUUID());
         TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
 
         RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());

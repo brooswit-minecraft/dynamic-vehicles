@@ -526,17 +526,16 @@ public final class TownConstructionService {
                 ServerLevel oldLevel = old.dimension().equals(level.dimension())
                         ? level : level.getServer().getLevel(old.dimension());
                 boolean sameAsNewReservation = old.dimension().equals(level.dimension()) && old.pos().equals(reserved.bedPos());
-                // [Review round 20, finding #1] Never released when this mod's own records show it
-                // is now actually held by a DIFFERENT villager - occupancy alone is not proof it is
-                // still this claimant's own.
-                boolean knownDifferentOwner = storage.isReservedByADifferentVillager(old.dimension(), old.pos(), claimant.getUUID());
-                // [Review round 20, follow-up finding #1] The registry above only knows about
-                // reservations THIS MOD itself granted - a vanilla-origin or pre-tracking home is
-                // just as real but has no record at all. A live scan of every other currently alive
-                // villager's own actual memory catches exactly that case, with no bookkeeping needed.
-                boolean liveOwnedByAnother = oldLevel != null
-                        && TownResidentAllocationHandler.isCurrentlyClaimedByAnotherVillager(oldLevel, old.pos(), claimant);
-                if (oldLevel != null && !sameAsNewReservation && !knownDifferentOwner && !liveOwnedByAnother) {
+                // [Review round 24: requires POSITIVE proof, mirroring TownResidentAllocationHandler's
+                // own identical fix] Only release when this mod's own registry POSITIVELY records
+                // this claimant as the current owner - "not known to be someone else's" (registry
+                // silent) is not proof it is this claimant's own: an untracked, currently-unloaded
+                // real owner would pass that check too, and a stale claimant memory could then steal
+                // its reservation. Preferring to PRESERVE an unresolved old home (never releasing it
+                // without positive proof) over risking that theft is the deliberate trade-off.
+                boolean provenOwner = oldLevel != null
+                        && storage.isReservedBySelf(old.dimension(), old.pos(), claimant.getUUID());
+                if (oldLevel != null && !sameAsNewReservation && provenOwner) {
                     releasePoiTicket(oldLevel, storage, old.pos());
                 }
                 // oldLevel == null: that dimension no longer exists/isn't loaded - there is no

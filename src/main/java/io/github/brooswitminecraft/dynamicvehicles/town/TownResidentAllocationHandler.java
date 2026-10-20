@@ -130,29 +130,24 @@ public final class TownResidentAllocationHandler {
      *  records show is now actually held by a DIFFERENT villager (round 20, finding #1 - occupancy
      *  alone never proves it is still THIS villager's) is treated as "needs a new one".
      *
-     * <p>[Review round 22 follow-up] A reservation that validates here but has no tracked owner yet
-     * (vanilla-origin, or simply never checked before) is backfilled into the registry as
-     * {@code villager}'s own right now - the one moment this mod can be SURE who it belongs to.
-     * This is what lets the registry alone (no live scan needed) keep protecting it later even if
-     * {@code villager} becomes unloaded/unscannable by then: {@link #isCurrentlyClaimedByAnotherVillager}
-     * can only ever see currently-loaded villagers, so an untracked owner that is ALSO unloaded at
-     * the moment some other villager's stale memory is reconciled would otherwise be invisible to
-     * both checks at once - backfilling here closes that gap for every reservation this mod has
-     * validated at least once since this tracking existed. */
+     * <p>[Review round 24: reverts round 22's backfill] Deliberately does NOT write anything to the
+     * ownership registry, even when every check here passes. Backfilling "no evidence this belongs
+     * to someone else" into a durable "this belongs to {@code villager}" record was unsound:
+     * ABSENCE of observed ownership is never PROOF of this villager's ownership - a stale A whose
+     * memory happens to point at untracked, unloaded B's real reservation would pass every one of
+     * these same checks, and the backfill would then durably (even across save/reload) misattribute
+     * B's reservation to A, which a later release could act on. An unresolved reservation (no
+     * tracked owner, no currently-loaded claimant either way) is therefore left exactly as
+     * unresolved as it was found - good enough to leave this villager's memory alone for now
+     * (see the return value below), but never promoted to a positive ownership claim. */
     private static boolean hasValidHome(ServerLevel level, Villager villager, RegionCoord region, TownStorage storage) {
         return villager.getBrain().getMemory(MemoryModuleType.HOME)
                 .filter(home -> home.dimension().equals(level.dimension()))
                 .filter(home -> inRegion(home.pos(), region))
                 .filter(home -> !storage.isReservedByADifferentVillager(level.dimension(), home.pos(), villager.getUUID()))
                 .filter(home -> !isCurrentlyClaimedByAnotherVillager(level, home.pos(), villager))
-                .map(home -> {
-                    boolean valid = level.getPoiManager().exists(home.pos(), type -> type.is(PoiTypes.HOME))
-                            && isTicketHeld(level, home.pos());
-                    if (valid) {
-                        storage.setReservationOwner(level.dimension(), home.pos(), villager.getUUID());
-                    }
-                    return valid;
-                })
+                .map(home -> level.getPoiManager().exists(home.pos(), type -> type.is(PoiTypes.HOME))
+                        && isTicketHeld(level, home.pos()))
                 .orElse(false);
     }
 
@@ -199,17 +194,10 @@ public final class TownResidentAllocationHandler {
                 .filter(site -> inRegion(site.pos(), region))
                 .filter(site -> !storage.isReservedByADifferentVillager(level.dimension(), site.pos(), villager.getUUID()))
                 .filter(site -> !isCurrentlyClaimedByAnotherVillager(level, site.pos(), villager))
-                .map(site -> {
-                    // [Review round 22 follow-up] Same backfill as hasValidHome - see its own doc.
-                    boolean valid = level.getPoiManager().getType(site.pos())
-                            .map(type -> profession.heldJobSite().test(type))
-                            .orElse(false)
-                            && isTicketHeld(level, site.pos());
-                    if (valid) {
-                        storage.setReservationOwner(level.dimension(), site.pos(), villager.getUUID());
-                    }
-                    return valid;
-                })
+                .map(site -> level.getPoiManager().getType(site.pos())
+                        .map(type -> profession.heldJobSite().test(type))
+                        .orElse(false)
+                        && isTicketHeld(level, site.pos()))
                 .orElse(false);
     }
 
@@ -291,19 +279,19 @@ public final class TownResidentAllocationHandler {
      *  made against the WRONG level's {@link PoiManager} would silently do nothing, permanently
      *  leaking a cross-dimension reservation with no memory left to ever release it from.
      *
-     * <p>[Review round 20] Two further guards beyond existence:
-     * <ul>
-     *   <li>finding #1 - never released when this mod's own records show it is now actually held by
-     *       a DIFFERENT villager: {@code PoiManager} occupancy alone is not proof it is still
-     *       {@code villager}'s own, and releasing another villager's genuinely-held reservation would
-     *       evict/strand its real occupant.</li>
-     *   <li>finding #2 - never released when it is the EXACT SAME reservation as {@code newReservation}
-     *       (the one just secured this same call): re-acquiring the sole eligible fixture (a stale,
-     *       since-freed memory pointing at the only vacancy available) must not immediately free the
-     *       ticket it just took.</li>
-     * </ul>
-     * The ownership record itself is cleared on an actual release, so a later occupant is never
-     * read as still "owned" by whoever held it before. */
+     * <p>[Review round 24: requires POSITIVE proof, not merely absence of counter-evidence] Only
+     * ever releases when this mod's own registry POSITIVELY records {@code villager} itself as the
+     * current owner. Earlier rounds released whenever ownership was merely "not known to be
+     * someone else's" (registry silent) AND "not currently claimed live" - but silence is not
+     * proof: an untracked, currently-unloaded real owner is invisible to BOTH of those checks at
+     * once, so a stale villager's memory could still steal its reservation. Preferring to PRESERVE
+     * an unresolved reservation (never releasing it without positive proof) over risking exactly
+     * that theft is the deliberate, documented trade-off here - at the cost of a genuine leak if the
+     * old reservation really was this villager's own but was never tracked. The same-reservation
+     * guard (never releasing the exact position just re-acquired this same call) is kept
+     * regardless, since that is a pure identity check, not an ownership inference. The ownership
+     * record itself is cleared on an actual release, so a later occupant is never read as still
+     * "owned" by whoever held it before. */
     private static void releaseOldReservation(ServerLevel level, TownStorage storage, Villager villager,
             Optional<GlobalPos> old, Optional<GlobalPos> newReservation) {
         old.ifPresent(globalPos -> {
@@ -317,18 +305,8 @@ public final class TownResidentAllocationHandler {
                 // release anything from; nothing further can be done safely.
                 return;
             }
-            if (storage.isReservedByADifferentVillager(globalPos.dimension(), globalPos.pos(), villager.getUUID())) {
-                return;
-            }
-            // [Review round 20, follow-up finding #1] This mod's own records are necessarily
-            // INCOMPLETE - a reservation a villager holds via vanilla's own natural AI, or granted
-            // before this tracking existed, has no record here at all, yet is just as real as a
-            // tracked one. Absence of a record is never proof of absence of a real owner: a live
-            // scan of every OTHER currently alive villager's own actual memory is the one signal
-            // that is always correct, needs no bookkeeping, and catches exactly the case the
-            // registry alone cannot - "some untracked resident's real, current reservation".
-            if (isCurrentlyClaimedByAnotherVillager(oldLevel, globalPos.pos(), villager)) {
-                return;
+            if (!storage.isReservedBySelf(globalPos.dimension(), globalPos.pos(), villager.getUUID())) {
+                return; // unresolved (or positively someone else's) - preserve, never release
             }
             if (oldLevel.getPoiManager().exists(globalPos.pos(), type -> true)) {
                 oldLevel.getPoiManager().release(globalPos.pos());

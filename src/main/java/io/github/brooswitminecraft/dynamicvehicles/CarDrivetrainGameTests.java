@@ -253,6 +253,7 @@ public final class CarDrivetrainGameTests {
             helper.assertTrue(rider.startRiding(car), "mock player failed to board the car");
             rider.zza = 1.0f;
             float[] worstSpinHolder = {0.0f};
+            double[] peakAudio = {0.0};
             float[] worstSlipHolder = {0.0f};
             float[] worstSpeedHolder = {0.0f};
             double[] bestRealSlip = {0.0};
@@ -265,6 +266,7 @@ public final class CarDrivetrainGameTests {
                         worstSpinHolder[0] = Math.max(worstSpinHolder[0], Math.abs(car.wheelSpin(wheel, 1.0f)));
                     }
                     worstSlipHolder[0] = Math.max(worstSlipHolder[0], (float) car.debugSlipSpeed());
+                    peakAudio[0] = Math.max(peakAudio[0], CarSoundMath.skidVolume(car.clientSlip()));
                     worstSpeedHolder[0] = Math.max(worstSpeedHolder[0], (float) car.debugSpeed());
                     // The REAL production call's own arguments and own result, not a recomputation -- see
                     // SableCarBody.lastErosionResult()'s own javadoc.
@@ -287,6 +289,7 @@ public final class CarDrivetrainGameTests {
                 // spin EVERY tick indefinitely, which after 130 ticks of full D1 throttle is orders of
                 // magnitude past this. A correctly limiter-coupled drivetrain's peak stays near where the
                 // engaged ratio's own RPM reaches the limiter -- comfortably under 150 rad/s for D1's ratio.
+                helper.assertTrue(peakAudio[0] > 0.1, "full-throttle no-brake wheelspin never reached audible synchronized squeal: " + peakAudio[0]);
                 helper.assertTrue(worstSpinHolder[0] < 150.0,
                         "a driven wheel's spin rate grew without bound instead of being capped by the rev limiter: " + worstSpinHolder[0] + " rad/s");
                 helper.assertTrue(worstSlipHolder[0] > 0.3,

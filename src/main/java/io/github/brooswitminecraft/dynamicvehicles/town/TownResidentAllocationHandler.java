@@ -287,11 +287,20 @@ public final class TownResidentAllocationHandler {
      * once, so a stale villager's memory could still steal its reservation. Preferring to PRESERVE
      * an unresolved reservation (never releasing it without positive proof) over risking exactly
      * that theft is the deliberate, documented trade-off here - at the cost of a genuine leak if the
-     * old reservation really was this villager's own but was never tracked. The same-reservation
-     * guard (never releasing the exact position just re-acquired this same call) is kept
-     * regardless, since that is a pure identity check, not an ownership inference. The ownership
-     * record itself is cleared on an actual release, so a later occupant is never read as still
-     * "owned" by whoever held it before. */
+     * old reservation really was this villager's own but was never tracked.
+     *
+     * <p>[Review round 25] The registry's "self" record is a HISTORICAL fact (true at the moment it
+     * was written), not a live one - it can go stale: if the physical ticket is later released and
+     * re-acquired by some vanilla villager entirely outside this mod's own bookkeeping (the registry
+     * is never told), the registry still says {@code villager}, even though a real OTHER villager
+     * now genuinely, currently holds it. Positive registry proof is therefore necessary but NOT
+     * sufficient - the live scan is restored here as an additional veto: even a "self"-recorded
+     * reservation is never released if some OTHER currently-loaded villager's own live memory also
+     * claims it right now, since that is definitive, un-stale proof the registry's history no longer
+     * matches reality. The same-reservation guard (never releasing the exact position just
+     * re-acquired this same call) is kept regardless, since that is a pure identity check, not an
+     * ownership inference. The ownership record itself is cleared on an actual release, so a later
+     * occupant is never read as still "owned" by whoever held it before. */
     private static void releaseOldReservation(ServerLevel level, TownStorage storage, Villager villager,
             Optional<GlobalPos> old, Optional<GlobalPos> newReservation) {
         old.ifPresent(globalPos -> {
@@ -307,6 +316,9 @@ public final class TownResidentAllocationHandler {
             }
             if (!storage.isReservedBySelf(globalPos.dimension(), globalPos.pos(), villager.getUUID())) {
                 return; // unresolved (or positively someone else's) - preserve, never release
+            }
+            if (isCurrentlyClaimedByAnotherVillager(oldLevel, globalPos.pos(), villager)) {
+                return; // the registry's history no longer matches reality - someone else genuinely holds it now
             }
             if (oldLevel.getPoiManager().exists(globalPos.pos(), type -> true)) {
                 oldLevel.getPoiManager().release(globalPos.pos());

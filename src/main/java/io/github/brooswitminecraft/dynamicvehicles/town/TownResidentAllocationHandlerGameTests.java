@@ -865,4 +865,58 @@ public final class TownResidentAllocationHandlerGameTests {
                 "no ownership record must be fabricated for anyone just because this reservation could not be resolved");
         helper.succeed();
     }
+
+    /** [Review round 25] The registry's "self" record is a HISTORICAL fact, not a live one - it can
+     *  go stale: if the physical ticket is later released and re-acquired by a real, different
+     *  villager entirely outside this mod's own bookkeeping (standing in for vanilla's own natural
+     *  AI naturally taking over an abandoned fixture), the registry still says the ORIGINAL owner,
+     *  even though someone else now genuinely, currently holds it. Positive registry proof alone is
+     *  therefore not sufficient for release - actually exercises the replacement-release path (the
+     *  round-24 tests never did: their "old" reservation had no genuine new, live occupant to
+     *  protect), proving the live-scan veto restored this round actually fires. */
+    @GameTest(template = "settlement_test")
+    public static void aStaleRegistryRecordNeverReleasesARealVillagerThatGenuinelyTookOverTheOldPosition(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos oldBedHead = ANCHOR.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        placeValidBed(helper, oldBedHead);
+        BlockPos absoluteOldBedHead = helper.absolutePos(oldBedHead);
+        BlockPos newBedHead = ANCHOR.offset(OLD_HOME_OFFSET.getX(), OLD_HOME_OFFSET.getY(), OLD_HOME_OFFSET.getZ());
+        placeValidBed(helper, newBedHead);
+        BlockPos absoluteNewBedHead = helper.absolutePos(newBedHead);
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        markTownOwned(helper, storage, absoluteOldBedHead);
+        markTownOwned(helper, storage, absoluteNewBedHead);
+        BlockPos townCenter = helper.absolutePos(ANCHOR);
+
+        Villager a = spawnVillager(helper, ANCHOR.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        // A's registry record at the old bed is genuinely established, exactly as a real prior grant
+        // would have.
+        storage.setReservationOwner(helper.getLevel().dimension(), absoluteOldBedHead, a.getUUID());
+        a.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(helper.getLevel().dimension(), absoluteOldBedHead));
+
+        // The ticket is released OUTSIDE this mod's own tracked API (standing in for some real-world
+        // event this mod never observes), and a REAL, different, alive villager B genuinely,
+        // naturally takes it over - while the registry's own "A" record is never told, and so goes
+        // stale.
+        helper.getLevel().getPoiManager().release(absoluteOldBedHead);
+        Villager b = spawnVillager(helper, ANCHOR.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+        takeTicketDirectly(helper.getLevel(), absoluteOldBedHead);
+        b.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(helper.getLevel().dimension(), absoluteOldBedHead));
+
+        // A must now be reassigned (its own stale memory fails validation: the live scan already
+        // shows B's own, different, current claim on that exact position) - triggering an attempted
+        // release of A's OLD, now stale, registry-recorded home.
+        TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), a, townCenter, region, storage);
+
+        helper.assertTrue(a.getBrain().getMemory(MemoryModuleType.HOME)
+                        .map(gp -> gp.pos().equals(absoluteNewBedHead)).orElse(false),
+                "A must be reassigned the real, genuinely vacant alternative instead of keeping its stale memory");
+        helper.assertTrue(helper.getLevel().getPoiManager().getFreeTickets(absoluteOldBedHead) == 0,
+                "B's real, current ticket must never be released just because the registry's own stale history still says A owns it");
+        helper.assertTrue(b.getBrain().getMemory(MemoryModuleType.HOME)
+                        .map(gp -> gp.pos().equals(absoluteOldBedHead)).orElse(false),
+                "B's own HOME memory must be completely unaffected by A's reconciliation");
+        helper.succeed();
+    }
 }

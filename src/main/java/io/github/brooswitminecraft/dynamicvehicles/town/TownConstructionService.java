@@ -533,9 +533,16 @@ public final class TownConstructionService {
                 // real owner would pass that check too, and a stale claimant memory could then steal
                 // its reservation. Preferring to PRESERVE an unresolved old home (never releasing it
                 // without positive proof) over risking that theft is the deliberate trade-off.
+                // [Review round 25] That registry "self" record is HISTORICAL, not live - it can go
+                // stale if the ticket is later released and re-acquired by some vanilla villager
+                // entirely outside this mod's own bookkeeping. The live scan is restored as an
+                // additional veto: even a "self"-recorded reservation is never released if some OTHER
+                // currently-loaded villager's own live memory also claims it right now.
                 boolean provenOwner = oldLevel != null
                         && storage.isReservedBySelf(old.dimension(), old.pos(), claimant.getUUID());
-                if (oldLevel != null && !sameAsNewReservation && provenOwner) {
+                boolean liveOwnedByAnother = oldLevel != null
+                        && TownResidentAllocationHandler.isCurrentlyClaimedByAnotherVillager(oldLevel, old.pos(), claimant);
+                if (oldLevel != null && !sameAsNewReservation && provenOwner && !liveOwnedByAnother) {
                     releasePoiTicket(oldLevel, storage, old.pos());
                 }
                 // oldLevel == null: that dimension no longer exists/isn't loaded - there is no

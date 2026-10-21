@@ -8,39 +8,90 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.world.level.block.Blocks;
+import net.neoforged.neoforge.gametest.GameTestHolder;
+import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
-/** Production-path checks for bounded dust from actual loaded wheel contacts. */
+/**
+ * MINECRAFT-480 production-path checks. These deliberately drive a real entity through Sable's raycast,
+ * suspension-load and slip path; they do not inject invented contact arrays into {@link CarEntity#emitDust}.
+ */
+@GameTestHolder(DynamicVehiclesMod.MODID)
+@PrefixGameTestTemplate(false)
 public final class CarWheelDustGameTests {
     private CarWheelDustGameTests() {}
 
-    @GameTest(template = "settlement_test", timeoutTicks = 20)
-    public static void dustUsesOnlyLoadedWheelContactsAndTheAtmosphereDeliveryPath(GameTestHelper helper) {
-        BlockPos leftContact = new BlockPos(4, 2, 5);
-        BlockPos rightContact = new BlockPos(6, 2, 5);
-        helper.setBlock(leftContact, Blocks.DIRT);
-        helper.setBlock(rightContact, Blocks.STONE);
-        CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
-        List<AtmosphereCompat.Emission> emissions = new ArrayList<>();
-        AtmosphereCompat.EmissionObserver.install(emissions::add);
-        try {
-            // The final wheel has a raycast block but carried no suspension load, the lost-contact/airborne
-            // case. It must not produce dust just because it has a stale or speculative contact position.
-            car.emitDust(helper.getLevel(), CarConfig.DUST_SPEED_START.get(),
-                    new BlockPos[] {leftContact, rightContact, new BlockPos(5, 2, 4), null},
-                    new int[] {1, 3, 0, 0}, new double[] {0.0, CarConfig.DUST_SLIP_START.get(), 20.0, 20.0});
-            helper.assertTrue(emissions.size() == 2,
-                    "dust did not stay limited to the two loaded wheel contacts: " + emissions.size());
-            for (AtmosphereCompat.Emission emission : emissions) {
-                helper.assertTrue(emission.material() == AtmosphereMaterial.DUST,
-                        "wheel dust did not use the Dynamic Atmosphere dust material singleton");
-                helper.assertTrue(emission.pos().equals(leftContact) || emission.pos().equals(rightContact),
-                        "dust was not emitted at an actual loaded wheel contact: " + emission.pos());
-                helper.assertTrue(emission.amount() > 0 && emission.amount() <= CarConfig.DUST_MAX_AMOUNT.get(),
-                        "wheel dust escaped its configured per-emission bounds: " + emission.amount());
+    /**
+     * A real car, on a real dirt lane, must emit through Dynamic Atmosphere only from a wheel that the same
+     * production tick raycast, loaded and found eligible for dust. The observer is called by
+     * {@link AtmosphereCompat#dust} after the actual emitter invocation, while this entity's current Sable
+     * telemetry still describes that tick, so it proves the world-space delivery position rather than merely
+     * echoing a test-supplied relative position.
+     */
+    @GameTest(template = "settlement_test", timeoutTicks = 150 + VehicleLanes.CHUNK_LOAD_ALLOWANCE)
+    public static void groundedRollingCarDeliversDustAtRealLoadedWheelContacts(GameTestHelper helper) {
+        VehicleLanes.build(helper, VehicleLanes.Site.GEAR_RATIO, lanes -> {
+            lanes.layLane(VehicleLanes.FIRST_LANE_X, Blocks.DIRT.defaultBlockState());
+            CarEntity car = lanes.spawn(DynamicVehiclesMod.CAR.get(), VehicleLanes.spawnPoint(VehicleLanes.FIRST_LANE_X));
+            List<Observation> dust = new ArrayList<>();
+            AtmosphereCompat.EmissionObserver.install(emission -> {
+                if (emission.material() == AtmosphereMaterial.DUST) {
+                    dust.add(new Observation(emission, car.debugSpeed(), car.debugWheelContactBlocks(),
+                            car.debugWheelContactSubSteps(), car.debugWheelSlipSpeeds()));
+                }
+            });
+            helper.testInfo.addListener(new GameTestCleanup(AtmosphereCompat.EmissionObserver::clear));
+            lanes.assertStaysOnLane(car, VehicleLanes.FIRST_LANE_X,
+                    new net.minecraft.world.level.block.Block[] {Blocks.DIRT, Blocks.DIRT, Blocks.DIRT, Blocks.DIRT},
+                    VehicleLanes.Wear.SAME_SURFACE, 4, 125, "dust rolling lane");
+            helper.runAfterDelay(8, () -> car.forceDrive(1.0, 0.0, 110));
+            helper.runAfterDelay(135, () -> {
+                helper.assertTrue(!dust.isEmpty(), "real grounded driving never delivered a dust emission");
+                for (Observation observed : dust) {
+                    AtmosphereCompat.Emission emission = observed.emission();
+                    helper.assertTrue(helper.getLevel().getBlockState(emission.pos()).is(Blocks.DIRT),
+                            "dust delivery was not at the real dirt lane block: " + emission.pos());
+                    int wheel = loadedWheelAt(observed, emission.pos());
+                    helper.assertTrue(wheel >= 0, "dust source was not a positive-load current wheel contact: "
+                            + emission.pos());
+                    helper.assertTrue(Math.abs(observed.speed()) >= CarConfig.DUST_SPEED_START.get()
+                                    || observed.slips()[wheel] >= CarConfig.DUST_SLIP_START.get(),
+                            "dust ignored both real speed and slip thresholds: speed=" + observed.speed()
+                                    + " slip=" + observed.slips()[wheel]);
+                    helper.assertTrue(emission.amount() > 0 && emission.amount() <= CarConfig.DUST_MAX_AMOUNT.get(),
+                            "dust escaped its configured per-wheel bounds: " + emission.amount());
+                }
+                helper.succeed();
+            });
+        });
+    }
+
+    private static int loadedWheelAt(Observation observed, BlockPos position) {
+        int count = Math.min(observed.contacts().length,
+                Math.min(observed.contactSubSteps().length, observed.slips().length));
+        for (int wheel = 0; wheel < count; wheel++) {
+            if (position.equals(observed.contacts()[wheel]) && observed.contactSubSteps()[wheel] > 0) {
+                return wheel;
             }
-            helper.succeed();
-        } finally {
-            AtmosphereCompat.EmissionObserver.clear();
         }
+        return -1;
+    }
+
+    private record Observation(AtmosphereCompat.Emission emission, double speed, BlockPos[] contacts,
+            int[] contactSubSteps, double[] slips) {}
+
+    private static final class GameTestCleanup implements net.minecraft.gametest.framework.GameTestListener {
+        private final Runnable cleanup;
+        private boolean done;
+
+        private GameTestCleanup(Runnable cleanup) { this.cleanup = cleanup; }
+        private void run() { if (!done) { done = true; cleanup.run(); } }
+        @Override public void testStructureLoaded(net.minecraft.gametest.framework.GameTestInfo info) {}
+        @Override public void testPassed(net.minecraft.gametest.framework.GameTestInfo info,
+                net.minecraft.gametest.framework.GameTestRunner runner) { run(); }
+        @Override public void testFailed(net.minecraft.gametest.framework.GameTestInfo info,
+                net.minecraft.gametest.framework.GameTestRunner runner) { run(); }
+        @Override public void testAddedForRerun(net.minecraft.gametest.framework.GameTestInfo info,
+                net.minecraft.gametest.framework.GameTestInfo retry,
+                net.minecraft.gametest.framework.GameTestRunner runner) { run(); }
     }
 }

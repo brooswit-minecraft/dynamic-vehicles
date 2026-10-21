@@ -561,6 +561,18 @@ public class CarEntity extends Entity {
         return sableBody == null ? new int[0] : SableCompat.wheelContactSubSteps(sableBody);
     }
 
+    /** Server test support for MINECRAFT-480: the real world-space ray-hit block for each wheel in the
+     * just-completed physics tick, or {@code null} for a miss. Copies are returned by the body adapter. */
+    BlockPos[] debugWheelContactBlocks() {
+        return sableBody == null ? new BlockPos[0] : SableCompat.wheelContactBlocks(sableBody);
+    }
+
+    /** Server test support for MINECRAFT-480: each wheel's real raw slip speed from the just-completed
+     * physics tick. This is the same telemetry passed to the wheel-contact dust calculation. */
+    double[] debugWheelSlipSpeeds() {
+        return sableBody == null ? new double[0] : SableCompat.wheelSlipSpeeds(sableBody);
+    }
+
     /** Server test support only: this car's own wheel radius (m) and drive-force scale, so a test can take
      * the realized drive impulse back through the same gearing the production path used. */
     double debugWheelRadius() {

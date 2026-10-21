@@ -21,11 +21,10 @@ import org.junit.jupiter.api.Test;
 class VehicleSpecVehicleTuningTest {
 
     /** Every vehicle on the roster, the same set {@code VehicleSpecRockCrawlerAntiRollTest} iterates. */
-    private static final VehicleSpec[] OPEN_DIFFERENTIAL_VEHICLES = {VehicleSpec.CAR, VehicleSpec.TRUCK, VehicleSpec.TROPHY,
-            VehicleSpec.DRIFT, VehicleSpec.MUSCLE, VehicleSpec.MONSTER_TRUCK,
+    private static final VehicleSpec[] OPEN_DIFFERENTIAL_VEHICLES = {VehicleSpec.MUSCLE, VehicleSpec.MONSTER_TRUCK,
             VehicleSpec.INDY, VehicleSpec.BUS, VehicleSpec.CARGO_TRUCK};
     private static final VehicleSpec[] ALL_VEHICLES = {VehicleSpec.CAR, VehicleSpec.TRUCK, VehicleSpec.TROPHY,
-            VehicleSpec.DRIFT, VehicleSpec.MUSCLE, VehicleSpec.ROCK_CRAWLER, VehicleSpec.MONSTER_TRUCK,
+            VehicleSpec.DRIFT, VehicleSpec.RALLY, VehicleSpec.MUSCLE, VehicleSpec.ROCK_CRAWLER, VehicleSpec.MONSTER_TRUCK,
             VehicleSpec.INDY, VehicleSpec.BUS, VehicleSpec.CARGO_TRUCK};
 
     @Test
@@ -41,8 +40,9 @@ class VehicleSpecVehicleTuningTest {
 
     @Test
     void everyNonOptInVehicleKeepsTheIdentityVehicleTuning() {
-        // MINECRAFT-296 deliberately opts only ROCK_CRAWLER into LSD. Every other existing VehicleSpec
-        // must retain the exact identity tuning, whose zero lock takes LimitedSlipDifferential's exact
+        // MINECRAFT-296 deliberately opts only ROCK_CRAWLER into LSD. The frozen drive-layout cars use
+        // non-identity splits but keep their LSD setting at zero.
+        // The unchanged cars retain the exact identity tuning, whose zero lock takes LimitedSlipDifferential's exact
         // early-return path and leaves today's open-differential drive values byte-for-byte unchanged.
         for (VehicleSpec spec : OPEN_DIFFERENTIAL_VEHICLES) {
             assertTrue(spec.vehicleTuning().isIdentity(),
@@ -54,6 +54,24 @@ class VehicleSpecVehicleTuningTest {
     void rockCrawlerIsTheOnlyLsdOptIn() {
         assertEquals(0.65, VehicleSpec.ROCK_CRAWLER.vehicleTuning().lsdLockPercent(), 1e-12);
         assertTrue(!VehicleSpec.ROCK_CRAWLER.vehicleTuning().isIdentity());
+    }
+
+    @Test
+    void frozenDriveLayoutsReachTheActualFrontAndRearWheelCommandsInBothDirections() {
+        assertSplit(VehicleSpec.CAR, 1.0, "base car FWD");
+        assertSplit(VehicleSpec.TRUCK, 0.5, "truck configurable 4WD default");
+        assertSplit(VehicleSpec.TROPHY, 0.4, "trophy truck 40/60 AWD");
+        assertSplit(VehicleSpec.DRIFT, 0.4, "drift car 40/60 AWD");
+        assertSplit(VehicleSpec.RALLY, 0.2, "rally car 20/80 AWD");
+    }
+
+    private static void assertSplit(VehicleSpec spec, double frontShare, String label) {
+        for (double drive : new double[] {100.0, -100.0}) {
+            double front = TorqueDistribution.distribute(drive, true, true, spec.vehicleTuning(), 0.0);
+            double rear = TorqueDistribution.distribute(drive, false, true, spec.vehicleTuning(), 0.0);
+            assertEquals(2.0 * frontShare * drive, front, 1e-12, label + " front wheel command");
+            assertEquals(2.0 * (1.0 - frontShare) * drive, rear, 1e-12, label + " rear wheel command");
+        }
     }
 
     @Test

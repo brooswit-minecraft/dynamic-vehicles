@@ -30,10 +30,11 @@ class PerCarConfigDocsDefaultsTest {
 
     @Test
     void everyDocumentedCarDefaultMatchesItsVehicleSpec() {
-        assertRow("car", VehicleSpec.CAR, new Expected(0.9, 3400.0, 1.0, 1.0, 1.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.4));
+        assertRow("car", VehicleSpec.CAR, new Expected(0.9, 3400.0, 1.0, 1.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.4));
         assertRow("truck", VehicleSpec.TRUCK, new Expected(1.3, 5390.0, 1.0, 1.0, 1.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.4));
-        assertRow("trophy_truck", VehicleSpec.TROPHY, new Expected(1.6, 2570.0, 1.5, 0.6, 1.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.4));
-        assertRow("drift_car", VehicleSpec.DRIFT, new Expected(0.75, 3117.0, 1.0, 1.0, 1.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.4));
+        assertRow("trophy_truck", VehicleSpec.TROPHY, new Expected(1.6, 2570.0, 1.5, 0.6, 1.0, 0.0, 0.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.4));
+        assertRow("drift_car", VehicleSpec.DRIFT, new Expected(0.75, 3117.0, 1.0, 1.0, 1.0, 0.0, 0.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.4));
+        assertRow("rally_car", VehicleSpec.RALLY, new Expected(0.82, 3550.0, 1.1, 0.85, 1.0, 0.0, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.4));
         assertRow("muscle_car", VehicleSpec.MUSCLE, new Expected(0.95, 4816.67, 1.0, 1.0, 1.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.4));
         assertRow("rock_crawler", VehicleSpec.ROCK_CRAWLER, new Expected(1.9, 5383.33, 2.0, 0.5, 1.0, 0.65, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.4));
         assertRow("monster_truck", VehicleSpec.MONSTER_TRUCK, new Expected(2.3, 4500.0, 1.0, 0.55, 1.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.4));

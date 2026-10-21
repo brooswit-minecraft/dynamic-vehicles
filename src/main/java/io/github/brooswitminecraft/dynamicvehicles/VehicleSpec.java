@@ -676,7 +676,8 @@ public record VehicleSpec(
                     new Seat(0.0, 0.55, -0.1),
                     new Seat(-0.5, 0.55, -0.1),
                     new Seat(-0.5, 0.55, -1.0),
-                    new Seat(0.5, 0.55, -1.0)));
+                    new Seat(0.5, 0.55, -1.0)),
+            new VehicleTuning(0.0, 1.0, 0.0, 0.0, 0.0));
 
     /**
      * MINECRAFT-182: same 2+2 layout as {@link #CAR} (driver seat 0 unmoved at x = 0, a front passenger
@@ -694,7 +695,8 @@ public record VehicleSpec(
                     new Seat(0.0, 0.75, 0.3),
                     new Seat(-0.55, 0.75, 0.3),
                     new Seat(-0.55, 0.75, -0.7),
-                    new Seat(0.55, 0.75, -0.7)));
+                    new Seat(0.55, 0.75, -0.7)),
+            new VehicleTuning(0.0, 0.5, 0.0, 0.0, 0.0));
 
     /**
      * An offroad racer: 2.6 m wide (a wide track keeps it from rolling), a low 1.0 m body riding 1.1 m off
@@ -726,7 +728,8 @@ public record VehicleSpec(
             2.8, 40.0, 1.8, 1.25, 0.5, 0.1, 1.35, 0.6, TireTuning.IDENTITY, 0.0, 1.5,
             List.of(
                     new Seat(0.0, 0.5, 0.1),
-                    new Seat(-0.65, 0.5, 0.1)));
+                    new Seat(-0.65, 0.5, 0.1)),
+            new VehicleTuning(0.0, 0.4, 0.0, 0.0, 0.0));
 
     /**
      * DRIFT's own opt-in marker (see {@link TireTuning#isIdentity()}): these exact numbers are never read
@@ -766,7 +769,19 @@ public record VehicleSpec(
             2.4, 32.0, 1.0, 1.0, 0.5, -0.1, 1.0, 1.0, TIRE_TUNING, 0.0, 1.0,
             List.of(
                     new Seat(0.0, 0.5, -0.1),
-                    new Seat(-0.45, 0.5, -0.1)));
+                    new Seat(-0.45, 0.5, -0.1)),
+            new VehicleTuning(0.0, 0.4, 0.0, 0.0, 0.0));
+
+    /** Compact, four-seat rally sedan with a rear-biased 20/80 all-wheel-drive split. */
+    public static final VehicleSpec RALLY = new VehicleSpec(
+            0.98, 0.48, 1.58,
+            new double[][] {{-0.82, -0.38, 1.22}, {0.82, -0.38, 1.22}, {-0.82, -0.38, -1.22}, {0.82, -0.38, -1.22}},
+            0.37, 0.32, 0.82,
+            0.68, 1250.0, 20_440.0, 3_550.0, 43_000.0,
+            2.44, 35.0, 1.25, 1.05, 0.56, -0.05, 1.2, 0.85, TireTuning.IDENTITY, 0.0, 1.1,
+            List.of(new Seat(0.0, 0.56, -0.05), new Seat(-0.48, 0.56, -0.05),
+                    new Seat(-0.48, 0.56, -0.95), new Seat(0.48, 0.56, -0.95)),
+            new VehicleTuning(0.0, 0.2, 0.0, 0.0, 0.0));
 
     /**
      * A heavy, rear-biased-feeling muscle car (MINECRAFT-165): 1700 kg, a 2.3 m wheelbase shorter than the

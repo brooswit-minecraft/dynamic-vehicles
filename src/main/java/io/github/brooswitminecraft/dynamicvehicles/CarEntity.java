@@ -572,12 +572,12 @@ public class CarEntity extends DriverVehicleEntity {
         return sableBody == null ? new BlockPos[0] : SableCompat.wheelContactBlocks(sableBody);
     }
 
-    /** Server test support for MINECRAFT-480: each wheel's terrain-wear slip speed from the just-completed
-     * physics tick. */
+    /** Server test support: actual loaded patch slip passed to the dust calculation. */
     double[] debugWheelDustSlipSpeeds() {
         return sableBody == null ? new double[0] : SableCompat.wheelDustSlipSpeeds(sableBody);
     }
 
+    /** Server test support: the separate terrain-wear slip report. */
     double[] debugWheelSlipSpeeds() {
         return sableBody == null ? new double[0] : SableCompat.wheelSlipSpeeds(sableBody);
     }

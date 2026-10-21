@@ -191,6 +191,54 @@ public final class WheelErosionGameTests {
         helper.succeed();
     }
 
+    @GameTest(template = "settlement_test", batch = "wheelDustMixedContactsIsolated")
+    public static void actualMixedContactsEmitDustAndClearItAfterContactLoss(GameTestHelper helper) {
+        int originalSteps = CarConfig.WHEEL_SUB_STEPS.get();
+        try {
+            for (int steps : new int[] {1, 4}) {
+                CarConfig.WHEEL_SUB_STEPS.set(steps);
+                try (Fixture f = fixture(helper, Blocks.STONE, false)) {
+                    BlockPos centre = helper.absolutePos(new BlockPos(5, 2, 5));
+                    for (int x=-3;x<0;x++) for (int z=-3;z<=3;z++) for (int y=-3;y<=0;y++)
+                        helper.getLevel().setBlock(centre.offset(x,y,z),Blocks.AIR.defaultBlockState(),3);
+                    f.body.tick(f.car,0,0,false,CarPhysics.Gear.NEUTRAL,.05);
+                    int[] loaded = f.body.wheelContactSubSteps();
+                    helper.assertTrue(java.util.Arrays.stream(loaded).filter(n -> n>0).count()==2,
+                            "fixture must have exactly two physically loaded wheels");
+                    List<AtmosphereCompat.Emission> emissions = new ArrayList<>();
+                    AtmosphereCompat.EmissionObserver.install(emissions::add);
+                    f.car.emitDust(helper.getLevel(),f.body.speed(),f.body.wheelContactBlocks(),
+                            loaded,f.body.wheelDustSlipSpeeds());
+                    helper.assertTrue(emissions.size()==2,"real lateral slip must emit only at two loaded contacts");
+                    for (var emission : emissions) {
+                        boolean matched = false;
+                        for (int w=0;w<loaded.length;w++) {
+                            if (loaded[w]>0 && emission.pos().equals(f.body.wheelContactBlocks()[w])) matched=true;
+                            if (loaded[w]==0) helper.assertTrue(f.body.wheelDustSlipSpeeds()[w]==0,
+                                    "unloaded wheel retained dust slip");
+                        }
+                        helper.assertTrue(matched,"mixed-contact dust came from an unloaded wheel");
+                    }
+                    for (int x=-3;x<=3;x++) for (int z=-3;z<=3;z++) for (int y=-3;y<=0;y++)
+                        helper.getLevel().setBlock(centre.offset(x,y,z),Blocks.AIR.defaultBlockState(),3);
+                    f.body.tick(f.car,1,0,false,CarPhysics.Gear.D1,.05);
+                    helper.assertTrue(java.util.Arrays.stream(f.body.wheelContactSubSteps()).allMatch(n -> n==0),
+                            "fixture did not lose all contacts");
+                    helper.assertTrue(java.util.Arrays.stream(f.body.wheelDustSlipSpeeds()).allMatch(v -> v==0),
+                            "contact loss retained prior tick dust slip");
+                    emissions.clear();
+                    f.car.emitDust(helper.getLevel(),f.body.speed(),f.body.wheelContactBlocks(),
+                            f.body.wheelContactSubSteps(),f.body.wheelDustSlipSpeeds());
+                    helper.assertTrue(emissions.isEmpty(),"airborne spinning wheels emitted dust");
+                }
+            }
+        } finally {
+            AtmosphereCompat.EmissionObserver.clear();
+            CarConfig.WHEEL_SUB_STEPS.set(originalSteps);
+        }
+        helper.succeed();
+    }
+
     private static Fixture fixture(GameTestHelper helper, Block surface, boolean airborne) {
         CarEntity car = DynamicVehiclesMod.CAR.get().create(helper.getLevel());
         helper.assertTrue(car != null, "could not construct erosion fixture");

@@ -5,7 +5,8 @@ MINECRAFT-480 keeps three independently controlled effects distinct:
 - **Dust** is a server-authoritative Dynamic Atmosphere emission from every wheel that both has a
   current raycast contact and carried positive suspension load in the current physics tick. Ordinary
   driving dust uses authoritative chassis speed; skids and burnouts use that wheel's authoritative
-  slip speed. A raycast miss, zero-load wheel, or airborne car emits no dust.
+  patch slip speed (the magnitude of spin-speed mismatch and lateral contact velocity), separate
+  from the force-based terrain-wear slip report. A raycast miss, zero-load wheel, or airborne car emits no dust.
 - **Terrain wear** remains the existing `SableCarBody` -> `SlipReporter.report` path. It uses the
   actual contacted block, paired load and worst per-wheel slip once per wheel per tick; Dynamic
   Terrain decides material eligibility, protection/unbreakable gates, and the resulting erosion.

@@ -8,6 +8,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
@@ -27,16 +28,24 @@ public final class CarWheelDustGameTests {
      * telemetry still describes that tick, so it proves the world-space delivery position rather than merely
      * echoing a test-supplied relative position.
      */
-    @GameTest(template = "settlement_test", timeoutTicks = 150 + VehicleLanes.CHUNK_LOAD_ALLOWANCE)
+    @GameTest(template = "settlement_test", timeoutTicks = 150 + VehicleLanes.CHUNK_LOAD_ALLOWANCE,
+            batch = "wheelDustIsolated")
     public static void groundedRollingCarDeliversDustAtRealLoadedWheelContacts(GameTestHelper helper) {
-        VehicleLanes.build(helper, VehicleLanes.Site.GEAR_RATIO, lanes -> {
+        VehicleLanes.build(helper, VehicleLanes.Site.WHEEL_DUST, lanes -> {
             lanes.layLane(VehicleLanes.FIRST_LANE_X, Blocks.DIRT.defaultBlockState());
             CarEntity car = lanes.spawn(DynamicVehiclesMod.CAR.get(), VehicleLanes.spawnPoint(VehicleLanes.FIRST_LANE_X));
             List<Observation> dust = new ArrayList<>();
             AtmosphereCompat.EmissionObserver.install(emission -> {
                 if (emission.material() == AtmosphereMaterial.DUST) {
-                    dust.add(new Observation(emission, car.debugSpeed(), car.debugWheelContactBlocks(),
-                            car.debugWheelContactSubSteps(), car.debugWheelSlipSpeeds()));
+                    // EmissionObserver is intentionally global for the optional-dependency boundary. Scope it
+                    // here to this fixture's CURRENT real wheel contacts before recording: a concurrently
+                    // ticking vehicle may produce legitimate dust, but is not evidence about this car.
+                    Observation observation = new Observation(emission, helper.getLevel().getBlockState(emission.pos()),
+                            car.debugSpeed(), car.debugWheelContactBlocks(), car.debugWheelContactSubSteps(),
+                            car.debugWheelSlipSpeeds());
+                    if (loadedWheelAt(observation, emission.pos()) >= 0) {
+                        dust.add(observation);
+                    }
                 }
             });
             helper.testInfo.addListener(new GameTestCleanup(AtmosphereCompat.EmissionObserver::clear));
@@ -48,8 +57,8 @@ public final class CarWheelDustGameTests {
                 helper.assertTrue(!dust.isEmpty(), "real grounded driving never delivered a dust emission");
                 for (Observation observed : dust) {
                     AtmosphereCompat.Emission emission = observed.emission();
-                    helper.assertTrue(helper.getLevel().getBlockState(emission.pos()).is(Blocks.DIRT),
-                            "dust delivery was not at the real dirt lane block: " + emission.pos());
+                    helper.assertTrue(observed.materialAtDelivery().is(Blocks.DIRT),
+                            "dust delivery was not at the real dirt lane block when emitted: " + emission.pos());
                     int wheel = loadedWheelAt(observed, emission.pos());
                     helper.assertTrue(wheel >= 0, "dust source was not a positive-load current wheel contact: "
                             + emission.pos());
@@ -76,8 +85,8 @@ public final class CarWheelDustGameTests {
         return -1;
     }
 
-    private record Observation(AtmosphereCompat.Emission emission, double speed, BlockPos[] contacts,
-            int[] contactSubSteps, double[] slips) {}
+    private record Observation(AtmosphereCompat.Emission emission, BlockState materialAtDelivery, double speed,
+            BlockPos[] contacts, int[] contactSubSteps, double[] slips) {}
 
     private static final class GameTestCleanup implements net.minecraft.gametest.framework.GameTestListener {
         private final Runnable cleanup;

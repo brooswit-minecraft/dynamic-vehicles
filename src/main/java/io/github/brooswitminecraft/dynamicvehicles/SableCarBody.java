@@ -329,21 +329,26 @@ final class SableCarBody {
         // Drivetrain (MINECRAFT-401): resolve the gear ratio actually engaged this tick, once, from the
         // driven wheels' own spin as it stood at the end of the LAST tick (wheelSpin is only updated inside
         // the sub-step loop below) -- see the field's own comment for why that one-tick lag is acceptable.
-        // All four wheels are driven (DRIVE_FORCE's own comment: "per wheel, all-wheel drive"), so the
-        // average of their magnitudes is the drivetrain's own input speed; averaging rather than picking one
-        // wheel keeps a single wheel's momentary wheelspin from single-handedly forcing an automatic shift.
+        // Only mechanically connected axles contribute shaft feedback. Keep the total wheel count
+        // separately: drive distribution still scales the historical per-wheel command around four wheels.
         int wheelCountForDrivetrain = spec.mounts().length;
-        double drivenWheelSpin = 0.0;
-        // MINECRAFT-444: the clutch needs the SIGNED average too -- which way the wheels are actually
-        // turning, not just how fast. The magnitude average below stays exactly as it was for the limiter
-        // and the automatic shift logic, which only ever care how fast the engine is turning.
-        double drivenWheelSpinSigned = 0.0;
+        int drivenWheelCount = 0;
+        int[] drivetrainPartners = new int[wheelCountForDrivetrain];
+        double[] requestedDriveFactors = new double[wheelCountForDrivetrain];
         for (int w = 0; w < wheelCountForDrivetrain; w++) {
-            drivenWheelSpin += Math.abs(wheelSpin[w]);
-            drivenWheelSpinSigned += wheelSpin[w];
+            drivetrainPartners[w] = partnerOf(w);
+            // Rear handbrake removes that axle from the clutch's actual recipients.
+            requestedDriveFactors[w] = handbrake && spec.mounts()[w][2] <= 0.0 ? 0.0
+                    : TorqueDistribution.distribute(1.0,
+                            spec.mounts()[w][2] > 0.0, spec.mounts()[w][0] < 0.0, tuning, steer);
         }
-        drivenWheelSpin /= wheelCountForDrivetrain;
-        drivenWheelSpinSigned /= wheelCountForDrivetrain;
+        DriveAllocation priorAllocation = DriveAllocation.freeze(requestedDriveFactors, drivetrainPartners,
+                wheelSpin, spec.wheelRadius(), wheelFrictionLimit, tuning.lsdLockPercent());
+        for (int w = 0; w < wheelCountForDrivetrain; w++) {
+            if (priorAllocation.share(w) > 0.0) drivenWheelCount++;
+        }
+        double drivenWheelSpin = priorAllocation.weightedSpeed(wheelSpin, true);
+        double drivenWheelSpinSigned = priorAllocation.weightedSpeed(wheelSpin, false);
         // There is exactly one engine regardless of gear, so exactly one rawEngineRpm reading feeds the
         // limiter below -- computed from whichever ratio is actually engaged this tick (REVERSE's own
         // ratio, the resolved manual/automatic ratio, or NEUTRAL's decoupled free-rev, which bypasses the
@@ -402,7 +407,7 @@ final class SableCarBody {
         // Determine engine output and governed demand for this tick. The current contact response
         // bounds each substep exchange below, and both shafts advance over that same interval.
         double engineTorque;
-        if (gear == CarPhysics.Gear.NEUTRAL) {
+        if (gear == CarPhysics.Gear.NEUTRAL || priorAllocation.shareSquares() == 0.0) {
             // Disengaged: nothing is connected, so the engine free-revs on its own output alone (what
             // freeRevRpm's pre-existing contract already assumed) and the wheels are offered nothing.
             engineTorque = DrivetrainMath.engineOutputTorque(throttle, rawEngineRpm, engineOmega, coupling);
@@ -432,9 +437,11 @@ final class SableCarBody {
                     clutchDemandTorque, clutchWheelSideOmega, dt, coupling);
             // Previous contact supplies only a warm-start proposal. Current contacts and the actual
             // predicted wheel response below determine whether any of this torque is accepted.
-            double reflectedInertia = DrivetrainMath.clutchLoadInertia(spec.massKg(), spec.wheelRadius(),
-                    wheelCountForDrivetrain, WheelMath.WHEEL_INERTIA, gearRatio, contactConstraintHeld,
-                    spec.forceScale());
+            double reflectedInertia = contactConstraintHeld
+                    ? DrivetrainMath.clutchLoadInertia(spec.massKg(), spec.wheelRadius(),
+                            drivenWheelCount, WheelMath.WHEEL_INERTIA, gearRatio, true, spec.forceScale())
+                    : DriveAllocation.reflectedInertia(WheelMath.WHEEL_INERTIA,
+                            gearRatio * DrivetrainMath.FINAL_DRIVE, spec.forceScale(), priorAllocation.shareSquares());
             clutchLockTorque = DrivetrainMath.clutchExchangeTorque(engineOmega, clutchWheelSideOmega,
                     engineTorque, clutchWheelSideTorque, reflectedInertia, dt, coupling);
             double offeredTorque = DrivetrainMath.realizableClutchTorque(clutchLockTorque, engineOmega,
@@ -638,32 +645,41 @@ final class SableCarBody {
             // Propose an exchange after current contact and normal loads are known; the prediction
             // below then checks actual wheel response, including grip transitions and recovery.
             // A free/slipping wheel is a much faster response than a wheel held by the road.
-            // Equal torque shares change the mean shaft speed by mobile/n^2 times torque/I.
+            // Freeze both sides of each differential before either wheel changes spin. Prediction,
+            // shaft feedback and application must all consume these same per-substep factors.
+            DriveAllocation driveAllocation = DriveAllocation.freeze(requestedDriveFactors, partners,
+                    wheelSpin, spec.wheelRadius(), gripForces, tuning.lsdLockPercent());
             double driveImpulseBeforeStep = realizedDriveImpulse;
-            if (gear != CarPhysics.Gear.NEUTRAL) {
-                int mobileWheels = 0;
-                double meanSpin = 0.0;
+            if (gear != CarPhysics.Gear.NEUTRAL && driveAllocation.shareSquares() > 0.0) {
+                int activeWheelCount = 0;
+                double mobileShareSquares = 0.0;
+                double mobileReaction = 0.0;
                 double currentContactReaction = 0.0;
                 for (int wheel = 0; wheel < wheelCountForDrivetrain; wheel++) {
-                    meanSpin += wheelSpin[wheel];
-                    if (wheelHits[wheel].getType() != HitResult.Type.MISS && forces[wheel] > 0.0) {
-                        currentContactReaction += previousTireForces[wheel];
-                    }
-                    if (wheelHits[wheel].getType() == HitResult.Type.MISS || !(forces[wheel] > 0.0)
-                            || Math.abs(clutchWheelForce) >= gripForces[wheel]
+                    double share = driveAllocation.share(wheel);
+                    if (!(share > 0.0)) continue;
+                    activeWheelCount++;
+                    boolean contact = wheelHits[wheel].getType() != HitResult.Type.MISS && forces[wheel] > 0.0;
+                    if (contact) currentContactReaction += previousTireForces[wheel];
+                    if (!contact || Math.abs(clutchWheelForce * driveAllocation.factor(wheel)) >= gripForces[wheel]
                             || !contactConstraintHeld) {
-                        mobileWheels++;
+                        mobileShareSquares += share * share;
+                        if (contact) mobileReaction += share * previousTireForces[wheel];
                     }
                 }
-                meanSpin /= wheelCountForDrivetrain;
+                double meanSpin = driveAllocation.weightedSpeed(wheelSpin, false);
                 double partnerOmega = DrivetrainMath.wheelSideOmegaSigned(meanSpin, gearRatio, gearDirection);
                 double gearing = gearRatio * DrivetrainMath.FINAL_DRIVE;
-                double inertia = mobileWheels > 0
-                        ? wheelCountForDrivetrain * wheelCountForDrivetrain * WheelMath.WHEEL_INERTIA
-                                / (mobileWheels * gearing * gearing * spec.forceScale())
+                double inertia = mobileShareSquares > 0.0
+                        ? DriveAllocation.reflectedInertia(WheelMath.WHEEL_INERTIA, gearing,
+                                spec.forceScale(), mobileShareSquares)
                         : DrivetrainMath.clutchLoadInertia(spec.massKg(), spec.wheelRadius(),
-                                wheelCountForDrivetrain, WheelMath.WHEEL_INERTIA, gearRatio, true, spec.forceScale());
-                double partnerTorque = DrivetrainMath.wheelSideTorqueAtEngine(currentContactReaction,
+                                activeWheelCount, WheelMath.WHEEL_INERTIA, gearRatio, true, spec.forceScale());
+                // Project tire reaction onto the same generalized mobile shaft coordinate.
+                // With all wheels held, their common road speed retains the chassis-load proposal.
+                double equivalentReaction = mobileShareSquares > 0.0
+                        ? mobileReaction / mobileShareSquares : currentContactReaction;
+                double partnerTorque = DrivetrainMath.wheelSideTorqueAtEngine(equivalentReaction,
                         spec.wheelRadius(), gearRatio, gearDirection, spec.forceScale());
                 clutchWheelSideTorque = partnerTorque;
                 double lock = DrivetrainMath.clutchExchangeTorque(engineOmega, partnerOmega,
@@ -677,7 +693,7 @@ final class SableCarBody {
                 double offer = clutchWheelForce;
                 double work = predictedExchangeWork(offer, throttle, steer, handbrake, gear, forwardSpeed,
                         engineTorque, subDt, tuning, orientation, down, subLinear, subAngular, wheelOffsets,
-                        wheelHits, forces, gripForces, textureGrip, textureRolling, partners);
+                        wheelHits, forces, gripForces, textureGrip, textureRolling, driveAllocation);
                 if (work > 1e-10) {
                     double low = 0.0;
                     double high = 1.0;
@@ -685,7 +701,7 @@ final class SableCarBody {
                         double fraction = (low + high) * 0.5;
                         double trial = predictedExchangeWork(offer * fraction, throttle, steer, handbrake, gear,
                                 forwardSpeed, engineTorque, subDt, tuning, orientation, down, subLinear, subAngular,
-                                wheelOffsets, wheelHits, forces, gripForces, textureGrip, textureRolling, partners);
+                                wheelOffsets, wheelHits, forces, gripForces, textureGrip, textureRolling, driveAllocation);
                         if (trial <= 0.0) low = fraction;
                         else high = fraction;
                     }
@@ -751,38 +767,7 @@ final class SableCarBody {
                     drive = 0.0;
                     lateralScale = 0.35;
                 }
-                int partner = partners[wheel];
-                boolean torqueDistributionActive = tuning.frontTorqueSplit() != 0.5
-                        || tuning.vectoringGain() != 0.0;
-                if (torqueDistributionActive) {
-                    drive = TorqueDistribution.distribute(drive, front, mount[0] < 0.0, tuning, steer);
-                }
-                if (drive != 0.0 && partner >= 0 && !torqueDistributionActive) {
-                    // The zero-lock path in distribute returns drive unchanged exactly, preserving the
-                    // existing open-differential path for every vehicle that has not opted in.
-                    LimitedSlipDifferential.DrivePair axleDrive = LimitedSlipDifferential.distribute(
-                            drive, drive, wheelSpin[wheel] * spec.wheelRadius(),
-                            wheelSpin[partner] * spec.wheelRadius(), gripForces[wheel], gripForces[partner],
-                            tuning.lsdLockPercent());
-                    drive = axleDrive.left();
-                } else if (drive != 0.0 && partner >= 0) {
-                    // Split/vectoring chooses the axle's requested drive first; LSD then makes its one
-                    // traction-based transfer across that already-distributed pair, rather than applying
-                    // either correction twice.
-                    double[] partnerMount = spec.mounts()[partner];
-                    boolean left = mount[0] < 0.0;
-                    double partnerDrive = TorqueDistribution.distribute(
-                            GearDrive.driveThroughClutch(throttle, forwardSpeed, gear, clutchWheelForce),
-                            partnerMount[2] > 0.0, partnerMount[0] < 0.0, tuning, steer);
-                    LimitedSlipDifferential.DrivePair axleDrive = left
-                            ? LimitedSlipDifferential.distribute(drive, partnerDrive,
-                                    wheelSpin[wheel] * spec.wheelRadius(), wheelSpin[partner] * spec.wheelRadius(),
-                                    gripForces[wheel], gripForces[partner], tuning.lsdLockPercent())
-                            : LimitedSlipDifferential.distribute(partnerDrive, drive,
-                                    wheelSpin[partner] * spec.wheelRadius(), wheelSpin[wheel] * spec.wheelRadius(),
-                                    gripForces[partner], gripForces[wheel], tuning.lsdLockPercent());
-                    drive = left ? axleDrive.left() : axleDrive.right();
-                }
+                drive *= driveAllocation.factor(wheel);
                 wheelDriveCommand[wheel] = drive;
                 // The wheel half of the exchange's books. WheelMath.tire replaces the drive with the brake's
                 // own target whenever a brake is applied, so a braked wheel takes nothing from the clutch
@@ -893,10 +878,10 @@ final class SableCarBody {
                 // never paid that reaction, conjuring momentum. Second, that friction is drawn from the SAME
                 // circle this step's longitudinal/lateral tire forces already spent part of, not a second,
                 // independent mu*normalForce budget - bound by the circle's remaining headroom instead.
-                if (excessForce != 0.0) {
+                if (driveAllocation.share(wheel) > 0.0 && excessForce != 0.0) {
                     constraintHeldThisSubStep = false;
                 }
-                anyDrivenWheelInContact = true;
+                if (driveAllocation.share(wheel) > 0.0) anyDrivenWheelInContact = true;
                 double reactionImpulse = 0.0;
                 if (excessForce == 0.0) {
                     double frictionHeadroom = Math.max(0.0,
@@ -958,7 +943,7 @@ final class SableCarBody {
                 wheelFrictionLimit[wheel] = tire.frictionLimit();
                 // The same delivered force, as an impulse summed over the tick for the next tick's clutch
                 // solve (see drivenTireForce) -- a sum, so it means the same thing at any wheelSubSteps.
-                drivenTireImpulse += tire.longitudinal() * subDt + reactionImpulse;
+                if (driveAllocation.share(wheel) > 0.0) drivenTireImpulse += tire.longitudinal() * subDt + reactionImpulse;
                 wheelTireImpulses[wheel] += tire.longitudinal() * subDt + reactionImpulse;
                 // SlipReporter must fire at most once per wheel per tick (not once per sub-step), so we only
                 // track the worst wearSlip seen across this tick's sub-steps here, paired with the force at
@@ -1447,7 +1432,7 @@ final class SableCarBody {
             CarPhysics.Gear gear, double forwardSpeed, double engineTorque, double stepDt,
             VehicleSpec.VehicleTuning tuning, Quaterniond orientation, Vector3d down,
             Vector3d linear, Vector3d angular, Vector3d[] offsets, BlockHitResult[] wheelHits,
-            double[] forces, double[] gripForces, double[] textureGrip, double[] textureRolling, int[] partners) {
+            double[] forces, double[] gripForces, double[] textureGrip, double[] textureRolling, DriveAllocation driveAllocation) {
         double[] spins = wheelSpin.clone();
         double driveImpulse = 0.0;
         double wheelWork = 0.0;
@@ -1471,38 +1456,7 @@ final class SableCarBody {
                     drive = 0.0;
                     lateralScale = 0.35;
                 }
-                int partner = partners[wheel];
-                boolean torqueDistributionActive = tuning.frontTorqueSplit() != 0.5
-                        || tuning.vectoringGain() != 0.0;
-                if (torqueDistributionActive) {
-                    drive = TorqueDistribution.distribute(drive, front, mount[0] < 0.0, tuning, steer);
-                }
-                if (drive != 0.0 && partner >= 0 && !torqueDistributionActive) {
-                    // The zero-lock path in distribute returns drive unchanged exactly, preserving the
-                    // existing open-differential path for every vehicle that has not opted in.
-                    LimitedSlipDifferential.DrivePair axleDrive = LimitedSlipDifferential.distribute(
-                            drive, drive, spins[wheel] * spec.wheelRadius(),
-                            spins[partner] * spec.wheelRadius(), gripForces[wheel], gripForces[partner],
-                            tuning.lsdLockPercent());
-                    drive = axleDrive.left();
-                } else if (drive != 0.0 && partner >= 0) {
-                    // Split/vectoring chooses the axle's requested drive first; LSD then makes its one
-                    // traction-based transfer across that already-distributed pair, rather than applying
-                    // either correction twice.
-                    double[] partnerMount = spec.mounts()[partner];
-                    boolean left = mount[0] < 0.0;
-                    double partnerDrive = TorqueDistribution.distribute(
-                            GearDrive.driveThroughClutch(throttle, forwardSpeed, gear, offer),
-                            partnerMount[2] > 0.0, partnerMount[0] < 0.0, tuning, steer);
-                    LimitedSlipDifferential.DrivePair axleDrive = left
-                            ? LimitedSlipDifferential.distribute(drive, partnerDrive,
-                                    spins[wheel] * spec.wheelRadius(), spins[partner] * spec.wheelRadius(),
-                                    gripForces[wheel], gripForces[partner], tuning.lsdLockPercent())
-                            : LimitedSlipDifferential.distribute(partnerDrive, drive,
-                                    spins[partner] * spec.wheelRadius(), spins[wheel] * spec.wheelRadius(),
-                                    gripForces[partner], gripForces[wheel], tuning.lsdLockPercent());
-                    drive = left ? axleDrive.left() : axleDrive.right();
-                }
+                drive *= driveAllocation.factor(wheel);
 
             double takenDrive = brake > 0.0 ? 0.0 : drive;
             double priorSpin = spins[wheel];

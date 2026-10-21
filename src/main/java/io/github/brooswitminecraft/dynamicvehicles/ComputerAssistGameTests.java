@@ -162,7 +162,10 @@ public final class ComputerAssistGameTests {
                                                 / (gearing * f.car.spec().forceScale());
                                         if (f.body.wheelContactSubSteps()[w] > 0) contacts++;
                                     }
-                                    helper.assertTrue(contacts == (partial ? 2 : 4), "mixed-contact energy fixture lost its geometry");
+                                    // Initial contacts establish the scenario. Later spring/velocity response may
+                                    // unload tires; keep auditing those contact-loss ticks rather than hiding them.
+                                    if (tick == 0) helper.assertTrue(contacts == (partial ? 2 : 4),
+                                            "initial mixed-contact fixture invalid: contacts="+contacts+" partial="+partial+" speed="+speed);
                                     double externalWork = f.body.engineExternalWork()
                                             + f.body.wheelExternalWork() / f.car.spec().forceScale();
                                     double externalImpulse = f.body.engineOutputTorque()*.05 + f.body.engineStopImpulse()

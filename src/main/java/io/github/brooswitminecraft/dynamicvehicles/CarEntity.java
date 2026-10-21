@@ -837,19 +837,27 @@ public class CarEntity extends Entity {
         int budget = ImpactRules.blockBreakBudget(speedBefore, CarConfig.COLLISION_MIN_SPEED.get(),
                 CarConfig.COLLISION_SEVERE_SPEED.get(), CarConfig.COLLISION_SEVERE_MAX_BLOCKS.get());
         double remainingSpeed = speedBefore;
+        int broken = 0;
         java.util.Set<net.minecraft.core.BlockPos> visited = new java.util.HashSet<>();
         for (double dy : new double[] {0.4, 1.0}) {
             // Keep one probe even below the breaking threshold so the established terrain/erosion and
             // failed-impact reporting behavior is unchanged; only a successful severe break extends it.
-            for (int block = 0; block < Math.max(1, budget); block++) {
-                double distance = reach + block;
-                net.minecraft.core.BlockPos pos = net.minecraft.core.BlockPos.containing(
-                        getX() + heading.x * distance, getY() + dy, getZ() + heading.z * distance);
-                if (!visited.add(pos) || !serverLevel.hasChunkAt(pos)) {
+            ImpactVoxelRay ray = new ImpactVoxelRay(getX() + heading.x * reach,
+                    getZ() + heading.z * reach, heading.x, heading.z);
+            for (int block = 0; block < Math.max(1, budget); block++, ray.advance()) {
+                net.minecraft.core.BlockPos pos = new net.minecraft.core.BlockPos(
+                        ray.x(), (int) Math.floor(getY() + dy), ray.z());
+                if (!visited.add(pos)) {
+                    continue;
+                }
+                if (!serverLevel.hasChunkAt(pos)) {
                     return;
                 }
                 BlockState state = serverLevel.getBlockState(pos);
-                if (state.isAir() || !state.getFluidState().isEmpty()) {
+                if (!state.getFluidState().isEmpty()) {
+                    return;
+                }
+                if (state.isAir()) {
                     if (block == 0) {
                         break;
                     }
@@ -884,16 +892,24 @@ public class CarEntity extends Entity {
                     reportImpact(serverLevel, pos, remainingSpeed);
                     return;
                 }
-                serverLevel.destroyBlock(pos, true, this);
+                if (broken >= budget || !destroyImpactBlock(serverLevel, pos)) {
+                    return;
+                }
+                broken++;
                 remainingSpeed = ImpactRules.afterSolidImpact(remainingSpeed, CarConfig.COLLISION_BREAK_SPEED_SCALE.get());
                 if (sableBody != null) {
                     SableCompat.scaleHorizontalVelocity(sableBody, CarConfig.COLLISION_BREAK_SPEED_SCALE.get());
                 }
-                if (remainingSpeed < CarConfig.COLLISION_MIN_SPEED.get()) {
+                if (broken >= budget || remainingSpeed < CarConfig.COLLISION_MIN_SPEED.get()) {
                     return;
                 }
             }
         }
+    }
+
+    /** Keep the world's success result observable for protected/refused-destruction regressions. */
+    boolean destroyImpactBlock(net.minecraft.server.level.ServerLevel serverLevel, net.minecraft.core.BlockPos pos) {
+        return serverLevel.destroyBlock(pos, true, this);
     }
 
     @Override

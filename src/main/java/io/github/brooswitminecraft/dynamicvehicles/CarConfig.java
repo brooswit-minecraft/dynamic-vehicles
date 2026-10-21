@@ -52,10 +52,10 @@ public final class CarConfig {
                 .comment("Multiplier on the acceleration/braking wear that is added to real tire slip (0 = only real tire slip wears the ground).")
                 .defineInRange("wearMultiplier", 5.0, 0.0, 10.0);
         SMOKE_ENABLED = builder
-                .comment("Cars emit Dynamic Atmosphere tire dust at speed or while sliding. Needs Dynamic Atmosphere; does not control exhaust.")
+                .comment("Deprecated compatibility key; no longer controls emissions. Use dustEnabled for wheel dust or exhaustEnabled for exhaust.")
                 .define("smokeEnabled", true);
         SMOKE_STRENGTH = builder
-                .comment("Multiplier on how much tire dust each emission puts into the atmosphere (0 = none).")
+                .comment("Deprecated compatibility key; no longer controls emissions. Use dustMultiplier for wheel dust or exhaustMultiplier for exhaust.")
                 .defineInRange("smokeMultiplier", 2.5, 0.0, 10.0);
         SMOKE_INTERVAL_TICKS = builder
                 .comment("Ticks between tire-dust emissions per car (at most one dust emission per loaded wheel per interval).")

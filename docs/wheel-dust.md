@@ -29,7 +29,7 @@ assuming a raw file edit applies immediately.
 | `dustSpeedStart` | m/s | 5.0 | 0.0–100.0 | Actual chassis-speed threshold for normal rolling dust. |
 | `dustSlipStart` | m/s | 3.0 | 0.0–100.0 | Actual per-wheel slip threshold for skid/burnout dust, including near-zero chassis speed. |
 | `dustMaxAmount` | atmosphere amount/wheel/emission interval | 32 | 1–64 | Hard cap for one wheel's output in one interval. |
-| `smokeEmitTicks` | game ticks | 6 | 5–200 | Existing shared effect cadence. Dust is evaluated once per car interval, never per physics sub-step. |
+| `smokeEmitTicks` | game ticks | 6 | 5–200 | Wheel-dust cadence only. Dust is evaluated once per car interval, never per physics sub-step. Exhaust uses exhaustEmitTicks independently. |
 
 The default thresholds intentionally make the dust curve start at the configured boundary: only speed
 above `dustSpeedStart` and slip above `dustSlipStart` add magnitude. This is not numerically identical
@@ -51,3 +51,5 @@ Dynamic Terrain's material/protection/unbreakable authority checks.
 The following still needs runtime play validation: visual density across trophy truck, truck, base car,
 muscle car, Indy and rally; Dynamic Atmosphere's client rendering/allow-list behavior; and a live
 server's config reload behavior. No live atmosphere allow-list or server setting is changed here.
+
+Legacy `smokeEnabled` and `smokeMultiplier` keys remain accepted for config compatibility but have no effect. Migrate them to `dustEnabled` and `dustMultiplier`; use `exhaustEnabled` and `exhaustMultiplier` for exhaust. `smokeEmitTicks` remains the active wheel-dust interval.

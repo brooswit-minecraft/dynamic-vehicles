@@ -82,6 +82,8 @@ public final class CarExhaustGameTests {
                 CarConfig.EXHAUST_ENABLED.set(true);
                 CarConfig.EXHAUST_MULTIPLIER.set(2.5);
                 CarConfig.EXHAUST_INTERVAL_TICKS.set(EMIT_INTERVAL);
+                // Dust is not due during either 45-tick leg: exhaust must keep its own cadence.
+                CarConfig.SMOKE_INTERVAL_TICKS.set(200);
                 CarConfig.WHEEL_SUB_STEPS.set(1);
                 CarEntity oneStep = spawnDrivenCar(lanes, VehicleLanes.FIRST_LANE_X);
                 activeCar.set(oneStep);
@@ -229,6 +231,7 @@ public final class CarExhaustGameTests {
     /** Registers cleanup before this fixture touches process-global config or the singleton observer. */
     private static void installTerminalCleanup(GameTestHelper helper, int steps, int interval, boolean enabled,
             double multiplier) {
+        int dustInterval = CarConfig.SMOKE_INTERVAL_TICKS.get();
         helper.testInfo.addListener(new GameTestListener() {
             private boolean cleaned;
 
@@ -236,6 +239,7 @@ public final class CarExhaustGameTests {
                 if (!cleaned) {
                     cleaned = true;
                     restore(steps, interval, enabled, multiplier);
+                    CarConfig.SMOKE_INTERVAL_TICKS.set(dustInterval);
                     AtmosphereCompat.EmissionObserver.clear();
                 }
             }

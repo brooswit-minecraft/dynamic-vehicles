@@ -58,7 +58,7 @@ public final class CarConfig {
                 .comment("Multiplier on how much tire dust each emission puts into the atmosphere (0 = none).")
                 .defineInRange("smokeMultiplier", 2.5, 0.0, 10.0);
         SMOKE_INTERVAL_TICKS = builder
-                .comment("Ticks between tire-dust emissions per car (at most one dust emission per interval).")
+                .comment("Ticks between tire-dust emissions per car (at most one dust emission per loaded wheel per interval).")
                 .defineInRange("smokeEmitTicks", 6, 5, 200);
         EXHAUST_ENABLED = builder
                 .comment("Cars emit vehicle-local Dynamic Atmosphere exhaust while moving and on the throttle. Does not control tire dust.")
@@ -94,7 +94,7 @@ public final class CarConfig {
                 .comment("Maximum Dynamic Atmosphere dust amount from one wheel during one car emission interval.")
                 .defineInRange("dustMaxAmount", 32, 1, 64);
         COLLISION_BREAKING = builder
-                .comment("A hard hit has a chance to break the block ahead (more likely when faster and for softer blocks); a block that survives is eroded instead. Never breaks unbreakable blocks, block entities or fluids, and at most one block per impact.")
+                .comment("A hard hit has a chance to break the block ahead (more likely when faster and for softer blocks); a block that survives is eroded instead. Never breaks unbreakable blocks, block entities or fluids, with severe impacts bounded by collisionSevereMaxBlocks.")
                 .define("collisionBreaking", true);
         COLLISION_MIN_SPEED = builder
                 .comment("Speed in m/s before the car was stopped below which a hit never breaks a block.")

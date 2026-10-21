@@ -186,6 +186,7 @@ public class CarEntity extends Entity {
         return DynamicVehiclesMod.TRUCK.isBound() && type == DynamicVehiclesMod.TRUCK.get() ? VehicleIds.TRUCK
                 : DynamicVehiclesMod.TROPHY.isBound() && type == DynamicVehiclesMod.TROPHY.get() ? VehicleIds.TROPHY_TRUCK
                 : DynamicVehiclesMod.DRIFT.isBound() && type == DynamicVehiclesMod.DRIFT.get() ? VehicleIds.DRIFT_CAR
+                : DynamicVehiclesMod.RALLY.isBound() && type == DynamicVehiclesMod.RALLY.get() ? VehicleIds.RALLY_CAR
                 : DynamicVehiclesMod.MUSCLE.isBound() && type == DynamicVehiclesMod.MUSCLE.get() ? VehicleIds.MUSCLE_CAR
                 : DynamicVehiclesMod.ROCK_CRAWLER.isBound() && type == DynamicVehiclesMod.ROCK_CRAWLER.get() ? VehicleIds.ROCK_CRAWLER
                 : DynamicVehiclesMod.MONSTER_TRUCK.isBound() && type == DynamicVehiclesMod.MONSTER_TRUCK.get() ? VehicleIds.MONSTER_TRUCK
@@ -200,6 +201,7 @@ public class CarEntity extends Entity {
             case VehicleIds.TRUCK -> VehicleSpec.TRUCK;
             case VehicleIds.TROPHY_TRUCK -> VehicleSpec.TROPHY;
             case VehicleIds.DRIFT_CAR -> VehicleSpec.DRIFT;
+            case VehicleIds.RALLY_CAR -> VehicleSpec.RALLY;
             case VehicleIds.MUSCLE_CAR -> VehicleSpec.MUSCLE;
             case VehicleIds.ROCK_CRAWLER -> VehicleSpec.ROCK_CRAWLER;
             case VehicleIds.MONSTER_TRUCK -> VehicleSpec.MONSTER_TRUCK;

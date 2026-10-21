@@ -85,6 +85,7 @@ final class VehicleSpecOverrides {
             Map.entry(VehicleIds.TRUCK, VehicleSpec.TRUCK),
             Map.entry(VehicleIds.TROPHY_TRUCK, VehicleSpec.TROPHY),
             Map.entry(VehicleIds.DRIFT_CAR, VehicleSpec.DRIFT),
+            Map.entry(VehicleIds.RALLY_CAR, VehicleSpec.RALLY),
             Map.entry("muscle_car", VehicleSpec.MUSCLE),
             Map.entry("rock_crawler", VehicleSpec.ROCK_CRAWLER),
             Map.entry("monster_truck", VehicleSpec.MONSTER_TRUCK),

@@ -6,6 +6,9 @@ import java.util.concurrent.atomic.AtomicReference;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.gametest.framework.GameTestInfo;
+import net.minecraft.gametest.framework.GameTestListener;
+import net.minecraft.gametest.framework.GameTestRunner;
 import net.minecraft.world.level.block.Blocks;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
@@ -19,8 +22,13 @@ public final class CarExhaustGameTests {
 
     private CarExhaustGameTests() {}
 
-    @GameTest(template = "settlement_test", timeoutTicks = 20)
+    @GameTest(template = "settlement_test", timeoutTicks = 20, batch = "carExhaustRear")
     public static void fullThrottleCarEmitsBoundedExhaustFromItsRear(GameTestHelper helper) {
+        int originalSteps = CarConfig.WHEEL_SUB_STEPS.get();
+        int originalInterval = CarConfig.EXHAUST_INTERVAL_TICKS.get();
+        boolean originalEnabled = CarConfig.EXHAUST_ENABLED.get();
+        double originalMultiplier = CarConfig.EXHAUST_MULTIPLIER.get();
+        installTerminalCleanup(helper, originalSteps, originalInterval, originalEnabled, originalMultiplier);
         helper.setBlock(new BlockPos(5, 2, 5), Blocks.STONE);
         CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
         car.setYRot(0.0f);
@@ -59,9 +67,10 @@ public final class CarExhaustGameTests {
         int originalInterval = CarConfig.EXHAUST_INTERVAL_TICKS.get();
         boolean originalEnabled = CarConfig.EXHAUST_ENABLED.get();
         double originalMultiplier = CarConfig.EXHAUST_MULTIPLIER.get();
+        installTerminalCleanup(helper, originalSteps, originalInterval, originalEnabled, originalMultiplier);
         AtomicInteger emissions = new AtomicInteger();
         AtmosphereCompat.EmissionObserver.install(ignored -> emissions.incrementAndGet());
-        VehicleLanes.build(helper, VehicleLanes.Site.SUB_STEP_SPEED, lanes -> {
+        VehicleLanes.build(helper, VehicleLanes.Site.EXHAUST_CADENCE, lanes -> {
             try {
                 CarConfig.EXHAUST_ENABLED.set(true);
                 CarConfig.EXHAUST_MULTIPLIER.set(2.5);
@@ -125,15 +134,16 @@ public final class CarExhaustGameTests {
 
     /** The production exhaust gate must suppress the compatibility call both when disabled and at zero scale. */
     @GameTest(template = "settlement_test", timeoutTicks = 2 * DRIVE_TICKS + VehicleLanes.CHUNK_LOAD_ALLOWANCE,
-            batch = "carExhaustCadence")
+            batch = "carExhaustDisabled")
     public static void disabledAndZeroScaleExhaustDoNotEmit(GameTestHelper helper) {
         int originalSteps = CarConfig.WHEEL_SUB_STEPS.get();
         int originalInterval = CarConfig.EXHAUST_INTERVAL_TICKS.get();
         boolean originalEnabled = CarConfig.EXHAUST_ENABLED.get();
         double originalMultiplier = CarConfig.EXHAUST_MULTIPLIER.get();
+        installTerminalCleanup(helper, originalSteps, originalInterval, originalEnabled, originalMultiplier);
         AtomicInteger emissions = new AtomicInteger();
         AtmosphereCompat.EmissionObserver.install(ignored -> emissions.incrementAndGet());
-        VehicleLanes.build(helper, VehicleLanes.Site.SUB_STEP_SPEED, lanes -> {
+        VehicleLanes.build(helper, VehicleLanes.Site.EXHAUST_DISABLED, lanes -> {
             try {
                 CarConfig.WHEEL_SUB_STEPS.set(1);
                 CarConfig.EXHAUST_INTERVAL_TICKS.set(EMIT_INTERVAL);
@@ -186,5 +196,26 @@ public final class CarExhaustGameTests {
         CarConfig.EXHAUST_INTERVAL_TICKS.set(interval);
         CarConfig.EXHAUST_ENABLED.set(enabled);
         CarConfig.EXHAUST_MULTIPLIER.set(multiplier);
+    }
+
+    /** Registers cleanup before this fixture touches process-global config or the singleton observer. */
+    private static void installTerminalCleanup(GameTestHelper helper, int steps, int interval, boolean enabled,
+            double multiplier) {
+        helper.testInfo.addListener(new GameTestListener() {
+            private boolean cleaned;
+
+            private void clean() {
+                if (!cleaned) {
+                    cleaned = true;
+                    restore(steps, interval, enabled, multiplier);
+                    AtmosphereCompat.EmissionObserver.clear();
+                }
+            }
+
+            @Override public void testStructureLoaded(GameTestInfo info) {}
+            @Override public void testPassed(GameTestInfo info, GameTestRunner runner) { clean(); }
+            @Override public void testFailed(GameTestInfo info, GameTestRunner runner) { clean(); }
+            @Override public void testAddedForRerun(GameTestInfo info, GameTestInfo retry, GameTestRunner runner) { clean(); }
+        });
     }
 }

@@ -63,7 +63,8 @@ public final class WingAeroGameTests {
     private static final int DRIVE_TICKS = 100;
     /** Long enough that a spurious force at rest would show up as real drift, not just jitter. */
     private static final int AT_REST_OBSERVE_TICKS = 100;
-    private static final int COAST_SPIN_UP_TICKS = 60;
+    // FWD needs a longer launch to establish the aerodynamic load used by these assertions.
+    private static final int COAST_SPIN_UP_TICKS = 90;
     private static final int COAST_TICKS = 100;
     /** Sampling cadence across the coast-down, so a transient speed-up partway through is caught rather
      * than averaged away by a single end-of-window reading. */

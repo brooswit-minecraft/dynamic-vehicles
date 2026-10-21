@@ -48,7 +48,8 @@ public final class CarDrivetrainGameTests {
     private static final double WHEEL_FORCE_BOUND_TOLERANCE = 1e-6;
     /** A clutch capacity far below the stock engine's own output (930 - 55 N*m), so it genuinely saturates
      * at full throttle -- see {@code aLowConfiguredClutchCapacitySaturatesTheExchangeAndLimitsTheCar}. */
-    private static final double LOW_CLUTCH_CAPACITY = 60.0;
+    // Keep the limited fixture below the base FWD tire traction ceiling.
+    private static final double LOW_CLUTCH_CAPACITY = 30.0;
     /** Slack on the two-shaft exchange balance, N*m: this identity is exact arithmetic. */
     private static final double EXCHANGE_BALANCE_TOLERANCE = 1e-6;
     /** Slack on the signed realized-impulse books (a wheel's own drive impulse against its share of the

@@ -169,7 +169,8 @@ public final class ClutchContactLossGameTests {
                 car.setVehicleTuning("front_torque_split", 1);
                 car.setVehicleTuning("vectoring_gain", 1);
                 car.setVehicleTuning("lsd_lock_percent", 0);
-                net.minecraft.core.BlockPos origin = helper.absolutePos(new net.minecraft.core.BlockPos(5, 2, 5));
+                // Avoid Sable float precision loss at GameTest's randomized multi-million coordinates.
+                net.minecraft.core.BlockPos origin = new net.minecraft.core.BlockPos(0, 100, 48_000);
                 for (int x = -3; x <= 3; x++) for (int z = -3; z <= 3; z++) {
                     for (int y = 0; y <= 4; y++) helper.getLevel().setBlock(origin.offset(x, y, z),
                             net.minecraft.world.level.block.Blocks.AIR.defaultBlockState(), 3);

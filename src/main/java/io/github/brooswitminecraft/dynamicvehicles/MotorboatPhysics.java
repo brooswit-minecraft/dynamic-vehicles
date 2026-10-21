@@ -22,6 +22,29 @@ package io.github.brooswitminecraft.dynamicvehicles;
 final class MotorboatPhysics {
     private MotorboatPhysics() {}
 
+    /** World-up lift on the immersed, travel-facing hull edge. Total force is capped, not per point.
+     * Still water: direction comes from horizontal hull velocity, including reverse and lateral travel.
+     * Dry points receive no force; shallow immersion fades continuously over 0.25m. */
+    static double[] travelSideLift(double vx, double vz, double[] offsetX, double[] offsetZ,
+            double[] depths, double coefficient, double maxForce) {
+        double[] forces = new double[depths.length];
+        double speed = Math.hypot(vx, vz);
+        if (!(speed > 1e-6) || !Double.isFinite(speed) || !(coefficient > 0)
+                || !Double.isFinite(coefficient) || !(maxForce > 0) || !Double.isFinite(maxForce)) return forces;
+        double totalWeight = 0;
+        for (int i = 0; i < forces.length; i++) {
+            forces[i] = Math.max(0, offsetX[i] * (vx / speed) + offsetZ[i] * (vz / speed));
+            totalWeight += forces[i];
+        }
+        if (!(totalWeight > 0) || !Double.isFinite(totalWeight)) return new double[depths.length];
+        double totalForce = Math.min(maxForce, coefficient * speed * speed);
+        for (int i = 0; i < forces.length; i++) {
+            double immersion = Double.isFinite(depths[i]) ? Math.clamp(depths[i] / 0.25, 0, 1) : 0;
+            forces[i] = totalForce * (forces[i] / totalWeight) * immersion;
+        }
+        return forces;
+    }
+
     /** A plain horizontal (X/Z) vector: thrust force components, N. */
     record Vector2(double x, double z) {}
 

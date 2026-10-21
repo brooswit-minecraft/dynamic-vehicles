@@ -122,6 +122,67 @@ public final class ComputerAssistGameTests {
         helper.succeed();
     }
 
+    /** Actual shaft endpoint measurements, with both aids enabled and real mixed tire contacts. */
+    @GameTest(template = "settlement_test", batch = "computerAssistEnergyIsolated")
+    public static void enabledAssistsPreserveShaftEnergyAcrossContactsAndShifts(GameTestHelper helper) {
+        withSubsteps(() -> {
+            for (int steps : new int[] {1, 4}) {
+                CarConfig.WHEEL_SUB_STEPS.set(steps);
+                for (var surface : new net.minecraft.world.level.block.Block[] {Blocks.STONE, Blocks.ICE}) {
+                    for (boolean partial : new boolean[] {false, true}) {
+                        for (double speed : new double[] {8, -8, .1}) {
+                            try (Fixture f = fixture(helper, .5, .5, false, speed, Math.copySign(30, speed))) {
+                                BlockPos centre = new BlockPos(0, 100, 52_000);
+                                for (int x = -3; x <= 3; x++) for (int z = -3; z <= 3; z++) {
+                                    helper.getLevel().setBlock(centre.offset(x, 0, z),
+                                            (partial && x < 0 ? Blocks.AIR : surface).defaultBlockState(), 3);
+                                }
+                                int[] interventions = {0};
+                                f.body.assistObserver = sample -> {
+                                    if (Math.abs(sample.appliedDrive()) < Math.abs(sample.requestedDrive())
+                                            || sample.appliedBrake() < sample.requestedBrake()) interventions[0]++;
+                                };
+                                for (int tick = 0; tick < 6; tick++) {
+                                    double beforeEngine = f.body.engineOmega();
+                                    double[] before = f.body.wheelSpinRates();
+                                    CarPhysics.Gear gear = speed < 0 ? CarPhysics.Gear.REVERSE
+                                            : tick < 3 ? CarPhysics.Gear.D1 : CarPhysics.Gear.D2;
+                                    f.body.tick(f.car, tick % 2 == 0 ? 1 : -1, 0, false, gear, .05);
+                                    double gearing = f.body.gearRatio() * DrivetrainMath.FINAL_DRIVE
+                                            * (gear == CarPhysics.Gear.REVERSE ? -1 : 1);
+                                    double energy = .5 * DrivetrainMath.ENGINE_INERTIA
+                                            * (f.body.engineOmega()*f.body.engineOmega()-beforeEngine*beforeEngine);
+                                    double momentum = DrivetrainMath.ENGINE_INERTIA * (f.body.engineOmega()-beforeEngine);
+                                    double[] after = f.body.wheelSpinRates();
+                                    int contacts = 0;
+                                    for (int w = 0; w < after.length; w++) {
+                                        energy += .5 * WheelMath.WHEEL_INERTIA * (after[w]*after[w]-before[w]*before[w])
+                                                / f.car.spec().forceScale();
+                                        momentum += WheelMath.WHEEL_INERTIA * (after[w]-before[w])
+                                                / (gearing * f.car.spec().forceScale());
+                                        if (f.body.wheelContactSubSteps()[w] > 0) contacts++;
+                                    }
+                                    helper.assertTrue(contacts == (partial ? 2 : 4), "mixed-contact energy fixture lost its geometry");
+                                    double externalWork = f.body.engineExternalWork()
+                                            + f.body.wheelExternalWork() / f.car.spec().forceScale();
+                                    double externalImpulse = f.body.engineOutputTorque()*.05 + f.body.engineStopImpulse()
+                                            + f.body.wheelExternalAngularImpulse() / (gearing*f.car.spec().forceScale());
+                                    String context = "steps="+steps+" partial="+partial+" speed="+speed+" tick="+tick;
+                                    helper.assertTrue(Double.isFinite(energy) && energy-externalWork < 1e-5,
+                                            "enabled assists created shaft energy: "+(energy-externalWork)+" "+context);
+                                    helper.assertTrue(Math.abs(momentum-externalImpulse)<1e-5,
+                                            "enabled assists violated signed shaft impulse: "+(momentum-externalImpulse)+" "+context);
+                                }
+                                helper.assertTrue(interventions[0] > 0, "energy fixture never exercised an enabled assist");
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        helper.succeed();
+    }
+
     private static Fixture fixture(GameTestHelper helper, double tc, double abs, boolean airborne,
             double speed, double spin) {
         CarEntity car;
@@ -141,7 +202,7 @@ public final class ComputerAssistGameTests {
         helper.assertTrue(car != null, "could not create configured car");
         helper.assertTrue(car.spec().computerTuning().tractionControlLevel() == tc
                 && car.spec().computerTuning().absLevel() == abs, "JSON did not reach fixture spec");
-        BlockPos centre = helper.absolutePos(new BlockPos(5, 2, 5));
+        BlockPos centre = new BlockPos(0, 100, 52_000);
         for (int x = -3; x <= 3; x++) for (int z = -3; z <= 3; z++) {
             helper.getLevel().setBlock(centre.offset(x, 0, z), Blocks.STONE.defaultBlockState(), 3);
             for (int y = 1; y <= 5; y++) {

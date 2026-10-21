@@ -58,6 +58,8 @@ final class SableMotorboatBody {
     private final RigidBodyHandle body;
     private final double[][] hullMounts;
     private final double[] motorMount;
+    private double[] lastTravelLiftForces = new double[4];
+    double[] travelLiftForces() { return lastTravelLiftForces.clone(); }
     private double lastSpeed;
     private double lastImmersionFraction;
 
@@ -139,9 +141,15 @@ final class SableMotorboatBody {
         double damping = MotorboatConfig.HULL_BUOYANCY_DAMPING.get();
         double maxPointForce = MotorboatConfig.MAX_POINT_BUOYANT_FORCE.get();
 
+        double[] liftX = new double[hullMounts.length];
+        double[] liftZ = new double[hullMounts.length];
+        double[] liftDepth = new double[hullMounts.length];
         int wetPoints = 0;
-        for (double[] mount : hullMounts) {
+        for (int point = 0; point < hullMounts.length; point++) {
+            double[] mount = hullMounts[point];
             Vector3d offset = orientation.transform(new Vector3d(mount[0], mount[1], mount[2]));
+            liftX[point] = offset.x;
+            liftZ[point] = offset.z;
             Vector3d worldPoint = new Vector3d(position).add(offset);
             Double surfaceY = sampleSurface(worldPoint.x, worldPoint.y, worldPoint.z);
             if (surfaceY == null) {
@@ -151,6 +159,7 @@ final class SableMotorboatBody {
             if (!(depth > 0.0)) {
                 continue;
             }
+            liftDepth[point] = depth;
             wetPoints++;
             Vector3d pointVelocity = new Vector3d(angular).cross(offset).add(linear);
             double force = MotorboatPhysics.pointBuoyantForce(depth, pointVelocity.y, stiffness, damping, maxPointForce);
@@ -159,6 +168,16 @@ final class SableMotorboatBody {
             }
             Vector3d localImpulse = inverse.transform(new Vector3d(0, force * dt, 0));
             body.applyImpulseAtPoint(new Vector3d(mount[0], mount[1], mount[2]), localImpulse);
+        }
+        lastTravelLiftForces = MotorboatPhysics.travelSideLift(linear.x, linear.z, liftX, liftZ, liftDepth,
+                MotorboatConfig.TRAVEL_LIFT_COEFFICIENT.get(), MotorboatConfig.MAX_TRAVEL_LIFT_FORCE.get());
+        for (int point = 0; point < hullMounts.length; point++) {
+            double force = lastTravelLiftForces[point];
+            if (force > 0) {
+                double[] mount = hullMounts[point];
+                body.applyImpulseAtPoint(new Vector3d(mount[0], mount[1], mount[2]),
+                        inverse.transform(new Vector3d(0, force * dt, 0)));
+            }
         }
         double immersionFraction = wetPoints / (double) hullMounts.length;
         this.lastImmersionFraction = immersionFraction;

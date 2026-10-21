@@ -80,6 +80,49 @@ public final class CarWheelDustGameTests {
         });
     }
 
+    @GameTest(template = "settlement_test", timeoutTicks = 170, batch = "wheelDustReverseIsolated")
+    public static void reversingEntityEmitsFromActualLoadedWheels(GameTestHelper helper) {
+        runSlipScenario(helper, true);
+    }
+
+    @GameTest(template = "settlement_test", timeoutTicks = 170, batch = "wheelDustBurnoutIsolated")
+    public static void stationaryWallBurnoutEmitsFromActualSpinningWheels(GameTestHelper helper) {
+        runSlipScenario(helper, false);
+    }
+
+    private static void runSlipScenario(GameTestHelper helper, boolean reverse) {
+        VehicleLanes.build(helper, reverse ? VehicleLanes.Site.DUST_REVERSE : VehicleLanes.Site.DUST_BURNOUT, lanes -> {
+            lanes.layLane(VehicleLanes.FIRST_LANE_X, Blocks.STONE.defaultBlockState());
+            if (!reverse) {
+                for (int x=2;x<=6;x++) for (int y=3;y<=5;y++)
+                    lanes.setBlock(new BlockPos(x,y,14),Blocks.BEDROCK.defaultBlockState());
+            }
+            CarEntity car = lanes.spawn(DynamicVehiclesMod.CAR.get(),
+                    new net.minecraft.world.phys.Vec3(VehicleLanes.FIRST_LANE_X+.5,VehicleLanes.SPAWN_Y,reverse?90:6));
+            car.selectGear(reverse ? CarPhysics.Gear.REVERSE : CarPhysics.Gear.D1);
+            int[] qualifying = {0};
+            AtmosphereCompat.EmissionObserver.install(emission -> {
+                if (emission.material()!=AtmosphereMaterial.DUST) return;
+                Observation observed = new Observation(emission,helper.getLevel().getBlockState(emission.pos()),
+                        car.debugSpeed(),car.debugWheelContactBlocks(),car.debugWheelContactSubSteps(),car.debugWheelSlipSpeeds());
+                int wheel = loadedWheelAt(observed,emission.pos());
+                if (wheel<0) return;
+                boolean scenario = reverse ? car.getDeltaMovement().z < -.1
+                        : observed.speed()<1 && observed.slips()[wheel]>CarConfig.DUST_SLIP_START.get();
+                if (scenario) {
+                    helper.assertTrue(emission.amount()>0 && emission.amount()<=CarConfig.DUST_MAX_AMOUNT.get(),
+                            "real reverse/burnout dust escaped per-wheel cap");
+                    qualifying[0]++;
+                }
+            });
+            helper.testInfo.addListener(new GameTestCleanup(AtmosphereCompat.EmissionObserver::clear));
+            helper.startSequence().thenIdle(8).thenExecute(() -> car.forceDrive(1,0,100))
+                    .thenIdle(105).thenExecute(() -> helper.assertTrue(qualifying[0]>0,
+                            "real entity never delivered "+(reverse?"reverse":"stationary burnout")+" contact dust"))
+                    .thenSucceed();
+        });
+    }
+
     private static int loadedWheelAt(Observation observed, BlockPos position) {
         int count = Math.min(observed.contacts().length,
                 Math.min(observed.contactSubSteps().length, observed.slips().length));

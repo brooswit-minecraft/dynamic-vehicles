@@ -197,14 +197,15 @@ public final class WheelErosionGameTests {
         try {
             for (int steps : new int[] {1, 4}) {
                 CarConfig.WHEEL_SUB_STEPS.set(steps);
-                try (Fixture f = fixture(helper, Blocks.STONE, false)) {
-                    BlockPos centre = helper.absolutePos(new BlockPos(5, 2, 5));
+                BlockPos centre = new BlockPos(0, 100, 56_000);
+                try (Fixture f = fixture(helper, Blocks.STONE, false, centre)) {
                     for (int x=-3;x<0;x++) for (int z=-3;z<=3;z++) for (int y=-3;y<=0;y++)
                         helper.getLevel().setBlock(centre.offset(x,y,z),Blocks.AIR.defaultBlockState(),3);
                     f.body.tick(f.car,0,0,false,CarPhysics.Gear.NEUTRAL,.05);
                     int[] loaded = f.body.wheelContactSubSteps();
                     helper.assertTrue(java.util.Arrays.stream(loaded).filter(n -> n>0).count()==2,
-                            "fixture must have exactly two physically loaded wheels");
+                            "fixture must have exactly two physically loaded wheels: steps=" + steps
+                                    + " contacts=" + java.util.Arrays.toString(loaded));
                     List<AtmosphereCompat.Emission> emissions = new ArrayList<>();
                     AtmosphereCompat.EmissionObserver.install(emissions::add);
                     f.car.emitDust(helper.getLevel(),f.body.speed(),f.body.wheelContactBlocks(),
@@ -240,9 +241,12 @@ public final class WheelErosionGameTests {
     }
 
     private static Fixture fixture(GameTestHelper helper, Block surface, boolean airborne) {
+        return fixture(helper, surface, airborne, helper.absolutePos(new BlockPos(5, 2, 5)));
+    }
+
+    private static Fixture fixture(GameTestHelper helper, Block surface, boolean airborne, BlockPos centre) {
         CarEntity car = DynamicVehiclesMod.CAR.get().create(helper.getLevel());
         helper.assertTrue(car != null, "could not construct erosion fixture");
-        BlockPos centre = helper.absolutePos(new BlockPos(5, 2, 5));
         for (int x = -3; x <= 3; x++) for (int z = -3; z <= 3; z++) {
             helper.getLevel().setBlock(centre.offset(x, 0, z), surface.defaultBlockState(), 3);
             for (int y = 1; y <= 5; y++) {

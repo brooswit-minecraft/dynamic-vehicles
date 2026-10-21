@@ -4,6 +4,7 @@ import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.LinkedHashMap;
 import net.minecraft.client.Minecraft;
 import net.minecraft.util.Mth;
 import net.neoforged.api.distmarker.Dist;
@@ -21,6 +22,17 @@ public final class AcceptanceClient {
     private static boolean carInput, boatInput, boatCamera, dismounted, dust, exhaust, freeLook, disabled;
     private static float initialError;
     private static boolean recentered;
+    private static final Map<String, Probe> probes = new LinkedHashMap<>();
+    private static Probe active;
+    private static final class Probe {
+        final String name;
+        float lookYaw, lookPitch;
+        boolean input, recentered, freeLook, disabled;
+        Probe(String name) { this.name=name; }
+        @Override public String toString() {
+            return name+"[input="+input+",recenter="+recentered+",freeLook="+freeLook+",disabled="+disabled+"]";
+        }
+    }
     private static Object get(Class<?> type,String name,Object object) throws Exception {
         Field field=type.getDeclaredField(name); field.setAccessible(true); return field.get(object);
     }
@@ -46,6 +58,8 @@ public final class AcceptanceClient {
         var mount=event.getEntity().getVehicle();
         if(mount instanceof CarEntity) carInput |= event.getInput().forwardImpulse>.1f && Math.abs(event.getInput().leftImpulse)>.01;
         if(mount instanceof MotorboatEntity) boatInput |= event.getInput().forwardImpulse>.1f && Math.abs(event.getInput().leftImpulse)>.01;
+        if(mount==lastMount && active!=null)
+            active.input |= event.getInput().forwardImpulse>.1f && Math.abs(event.getInput().leftImpulse)>.01;
     }
     @SubscribeEvent(priority=EventPriority.LOWEST)
     public static void tick(ClientTickEvent.Post event) {
@@ -56,6 +70,9 @@ public final class AcceptanceClient {
             if(mount!=lastMount) {
                 mountedTicks=0; lastMount=mount;
                 if(mount instanceof CarEntity) carMounts++;
+                active = mount instanceof CarEntity ? new Probe("car-"+carMounts)
+                        : mount instanceof MotorboatEntity ? new Probe("boat") : null;
+                if(active!=null) probes.put(active.name,active);
                 if(mount==null && boatCamera) dismounted=true;
             }
             mountedTicks++;
@@ -64,17 +81,28 @@ public final class AcceptanceClient {
                     var q=vehicle.renderOrientation(1);
                     float yaw=ChaseCameraMath.angles(q.x,q.y,q.z,q.w).yaw();
                     mc.player.setYRot(yaw+70); initialError=70;
+                    active.lookYaw=mc.player.getYRot(); active.lookPitch=mc.player.getXRot();
                 }
-                if(mountedTicks==7) freeLook |= (int)get(ChaseCamera.class,"idleTicks",null)<5;
+                if(mountedTicks==7) {
+                    check((int)get(ChaseCamera.class,"idleTicks",null)<5,"free-look timer did not reset: "+active.name);
+                    check(Math.abs(Mth.wrapDegrees(mc.player.getYRot()-active.lookYaw))<.001
+                            && Math.abs(mc.player.getXRot()-active.lookPitch)<.001,
+                            "camera modified player look during free-look: "+active.name);
+                    active.freeLook=true; freeLook=true;
+                }
                 if(mountedTicks==70) {
                     var q=vehicle.renderOrientation(1);
                     float yaw=ChaseCameraMath.angles(q.x,q.y,q.z,q.w).yaw();
-                    recentered |= Math.abs(Mth.wrapDegrees(mc.player.getYRot()-yaw))<initialError/2;
+                    active.recentered = Math.abs(Mth.wrapDegrees(mc.player.getYRot()-yaw))<initialError/2;
+                    check(active.recentered,"camera did not recenter: "+active.name);
+                    recentered |= active.recentered;
                     if(mount instanceof MotorboatEntity) boatCamera = get(ChaseCamera.class,"trackedVehicle",null)==mount;
                     ClientConfig.CHASE_CAMERA.set(false);
                 }
                 if(mountedTicks==73) {
-                    disabled |= !(boolean)get(ChaseCamera.class,"tracking",null) && (float)get(ChaseCamera.class,"cameraRoll",null)==0;
+                    active.disabled = !(boolean)get(ChaseCamera.class,"tracking",null) && (float)get(ChaseCamera.class,"cameraRoll",null)==0;
+                    check(active.disabled,"camera did not disable: "+active.name);
+                    disabled |= active.disabled;
                     ClientConfig.CHASE_CAMERA.set(true);
                 }
             }
@@ -93,6 +121,12 @@ public final class AcceptanceClient {
             if(ticks==700) {
                 DynamicVehiclesMod.LOGGER.info("CLIENT_ACCEPTANCE_STATE cars={} boatCamera={} dismount={} recenter={} freeLook={} disabled={} dust={} exhaust={}",
                         carMounts,boatCamera,dismounted,recentered,freeLook,disabled,dust,exhaust);
+                for(String required : new String[]{"car-1","boat","car-2"}) {
+                    Probe probe=probes.get(required);
+                    check(probe!=null && probe.input && probe.freeLook && probe.recentered && probe.disabled,
+                            "per-mount acceptance incomplete: "+required+" "+probe);
+                    DynamicVehiclesMod.LOGGER.info("CLIENT_ACCEPTANCE_MOUNT {}",probe);
+                }
                 check(carInput && boatInput,"simulated input missing: car="+carInput+" boat="+boatInput);
                 check(carMounts>=2 && boatCamera && dismounted,"car/boat/dismount/car transition incomplete: cars="+carMounts+" boat="+boatCamera+" dismount="+dismounted);
                 check(recentered && freeLook && disabled,"camera recenter/free-look/disable incomplete");

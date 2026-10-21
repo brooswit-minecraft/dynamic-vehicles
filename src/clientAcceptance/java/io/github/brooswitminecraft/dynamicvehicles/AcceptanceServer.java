@@ -14,6 +14,8 @@ public final class AcceptanceServer {
     private static CarEntity car;
     private static MotorboatEntity boat;
     private static boolean receivedInput;
+    private static final boolean[] throttleReceived = new boolean[3];
+    private static final boolean[] steeringReceived = new boolean[3];
     @SubscribeEvent
     public static void tick(ServerTickEvent.Post event) {
         var players = event.getServer().getPlayerList().getPlayers();
@@ -40,6 +42,11 @@ public final class AcceptanceServer {
             DynamicVehiclesMod.LOGGER.info("CLIENT_ACCEPTANCE_SERVER_READY");
         }
         if (player.getVehicle()!=null && Math.abs(player.zza)>.1) receivedInput=true;
+        int phase = player.getVehicle()==boat ? 1 : player.getVehicle()==car ? (ticks<470 ? 0 : 2) : -1;
+        if (phase>=0) {
+            throttleReceived[phase] |= Math.abs(player.zza)>.1;
+            steeringReceived[phase] |= Math.abs(player.xxa)>.01;
+        }
         if (ticks==220) { player.stopRiding(); player.startRiding(boat,true); }
         if (ticks==420) player.stopRiding();
         if (ticks==470) { player.teleportTo(car.getX(),car.getY()+2,car.getZ()); player.startRiding(car,true); }
@@ -51,7 +58,12 @@ public final class AcceptanceServer {
         }
         if (ticks==650) {
             if (!receivedInput) throw new IllegalStateException("client analog input never reached server rider");
-            DynamicVehiclesMod.LOGGER.info("CLIENT_ACCEPTANCE_SERVER_PASS input_received=true");
+            for(int phaseIndex=0;phaseIndex<3;phaseIndex++) {
+                if(!throttleReceived[phaseIndex] || !steeringReceived[phaseIndex])
+                    throw new IllegalStateException("missing server input phase="+phaseIndex
+                            +" throttle="+throttleReceived[phaseIndex]+" steering="+steeringReceived[phaseIndex]);
+            }
+            DynamicVehiclesMod.LOGGER.info("CLIENT_ACCEPTANCE_SERVER_PASS car_throttle=true car_steering=true boat_throttle=true boat_steering=true reentry_throttle=true reentry_steering=true");
         }
     }
 }

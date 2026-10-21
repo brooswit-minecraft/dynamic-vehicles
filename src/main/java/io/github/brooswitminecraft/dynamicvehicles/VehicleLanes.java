@@ -101,7 +101,8 @@ final class VehicleLanes {
         INTEGRATION_CONTACT,
         EXHAUST_CADENCE,
         EXHAUST_DISABLED,
-        WHEEL_DUST;
+        WHEEL_DUST,
+        CRASH_ACCEPTANCE;
 
         BlockPos origin() {
             return new BlockPos(0, SITE_Y, FIRST_SITE_Z + ordinal() * SITE_SPACING);

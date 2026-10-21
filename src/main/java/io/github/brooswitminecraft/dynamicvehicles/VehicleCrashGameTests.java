@@ -14,6 +14,45 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 public final class VehicleCrashGameTests {
     private VehicleCrashGameTests() {}
 
+    /** Real entity ticks and Sable wall contact trigger impact handling at a road-scale speed. */
+    @GameTest(template = "settlement_test", batch = "crashDrivingIsolated", timeoutTicks = 160)
+    public static void movingBodyHitsGlassBarrierLosesMomentumAndStops(GameTestHelper helper) {
+        VehicleLanes.build(helper, VehicleLanes.Site.CRASH_ACCEPTANCE, lanes -> {
+            lanes.layLane(VehicleLanes.FIRST_LANE_X, Blocks.STONE.defaultBlockState());
+            for (int x = 2; x <= 6; x++) for (int y = 3; y <= 5; y++) {
+                for (int z = 21; z <= 23; z++) lanes.setBlock(new BlockPos(x,y,z), Blocks.GLASS.defaultBlockState());
+                lanes.setBlock(new BlockPos(x,y,24), Blocks.BEDROCK.defaultBlockState());
+            }
+            CarEntity car = lanes.spawn(DynamicVehiclesMod.CAR.get(), VehicleLanes.spawnPoint(VehicleLanes.FIRST_LANE_X));
+            car.selectGear(CarPhysics.Gear.NEUTRAL);
+            helper.runAfterDelay(10, () -> {
+                helper.assertTrue(car.sableBody() != null, "real car did not initialize Sable");
+                car.addLinearVelocityForTest(0,0,35);
+                double[] maxSpeed = {0};
+                boolean[] broke = {false};
+                for (int delay = 1; delay <= 35; delay++) {
+                    helper.runAfterDelay(delay, () -> {
+                        maxSpeed[0] = Math.max(maxSpeed[0], car.debugSpeed());
+                        BlockPos origin = VehicleLanes.Site.CRASH_ACCEPTANCE.origin();
+                        for (int y = 3; y <= 5; y++) for (int z = 21; z <= 23; z++) {
+                            if (helper.getLevel().getBlockState(origin.offset(4,y,z)).isAir()) broke[0] = true;
+                        }
+                    });
+                }
+                helper.runAfterDelay(36, () -> {
+                    helper.assertTrue(maxSpeed[0] > 20, "fixture never established realistic pre-impact motion: "+maxSpeed[0]);
+                    helper.assertTrue(broke[0], "real wall collision never reached the block-breaking route");
+                    helper.assertTrue(car.debugSpeed() < 2, "car did not stop against the remaining barrier: "+car.debugSpeed());
+                    double momentumLoss = car.spec().massKg() * (maxSpeed[0]-car.debugSpeed());
+                    helper.assertTrue(momentumLoss > car.spec().massKg()*18, "collision did not remove measured body momentum");
+                    helper.assertTrue(helper.getLevel().getBlockState(VehicleLanes.Site.CRASH_ACCEPTANCE.origin()
+                            .offset(4,3,24)).is(Blocks.BEDROCK), "crash modified the unbreakable stop");
+                    helper.succeed();
+                });
+            });
+        });
+    }
+
     private static CarEntity fixture(GameTestHelper helper) {
         CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 2, 5));
         car.setHeadingForTest(new Vec3(0.0, 0.0, 1.0));

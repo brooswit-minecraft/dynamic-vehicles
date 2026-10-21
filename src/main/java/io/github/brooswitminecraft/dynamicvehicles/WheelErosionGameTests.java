@@ -111,6 +111,42 @@ public final class WheelErosionGameTests {
         helper.succeed();
     }
 
+    /** Select a deterministic RNG stream, then exercise the unmodified production tire-report path. */
+    @GameTest(template = "settlement_test", batch = "wheelErosionSuccessIsolated")
+    public static void loadedWheelSlipActuallyChangesEligibleTerrain(GameTestHelper helper) {
+        boolean enabled = DynamicTerrainConfig.VEHICLE_EROSION.get();
+        boolean wear = CarConfig.WEAR_ENABLED.get();
+        var prior = SlipReporter.observer;
+        try {
+            DynamicTerrainConfig.VEHICLE_EROSION.set(true);
+            CarConfig.WEAR_ENABLED.set(true);
+            try (Fixture f = fixture(helper, Blocks.DIRT, false)) {
+                var random = helper.getLevel().getRandom();
+                long seed = 0;
+                for (; seed < 1_000_000; seed++) {
+                    random.setSeed(seed);
+                    if (random.nextDouble() < .0001) break;
+                }
+                helper.assertTrue(seed < 1_000_000, "could not select deterministic erosion stream");
+                random.setSeed(seed);
+                List<SlipReporter.Report> reports = new ArrayList<>();
+                SlipReporter.observer = reports::add;
+                f.body.tick(f.car, 1, 0, false, CarPhysics.Gear.NEUTRAL, .05);
+                helper.assertTrue(!reports.isEmpty(), "loaded wheel did not report slip");
+                SlipReporter.Report first = reports.getFirst();
+                helper.assertTrue(first.result() == Erosion.Result.DEGRADED || first.result() == Erosion.Result.MOVED,
+                        "eligible real tire report did not change terrain: " + first.result());
+                helper.assertTrue(!helper.getLevel().getBlockState(first.position()).is(Blocks.DIRT),
+                        "successful erosion left the original contact block unchanged");
+            }
+        } finally {
+            SlipReporter.observer = prior;
+            DynamicTerrainConfig.VEHICLE_EROSION.set(enabled);
+            CarConfig.WEAR_ENABLED.set(wear);
+        }
+        helper.succeed();
+    }
+
     private static Fixture fixture(GameTestHelper helper, Block surface, boolean airborne) {
         CarEntity car = DynamicVehiclesMod.CAR.get().create(helper.getLevel());
         helper.assertTrue(car != null, "could not construct erosion fixture");

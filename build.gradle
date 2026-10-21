@@ -231,3 +231,10 @@ idea {
         downloadJavadoc = true
     }
 }
+
+// Explicit opt-in: acceptance instrumentation is excluded from normal compilation and release jars.
+if (project.hasProperty('clientAcceptance')) {
+    sourceSets.main.java.srcDir 'src/clientAcceptance/java'
+    neoForge.runs.client.gameDirectory = layout.projectDirectory.dir('run-acceptance-client')
+    neoForge.runs.server.gameDirectory = layout.projectDirectory.dir('run-acceptance-server')
+}

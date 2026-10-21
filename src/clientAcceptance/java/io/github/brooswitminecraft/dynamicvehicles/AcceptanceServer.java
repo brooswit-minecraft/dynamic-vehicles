@@ -26,6 +26,12 @@ public final class AcceptanceServer {
                 level.setBlock(new BlockPos(x,99,z),Blocks.STONE.defaultBlockState(),3);
                 for(int y=100;y<=104;y++) level.setBlock(new BlockPos(x,y,z),Blocks.AIR.defaultBlockState(),3);
             }
+            for (int x=-12;x<=12;x++) for(int z=-12;z<=80;z++) {
+                if(x==-12 || x==12 || z==-12 || z==80)
+                    for(int y=100;y<=104;y++) level.setBlock(new BlockPos(x,y,z),Blocks.BEDROCK.defaultBlockState(),3);
+            }
+            for(int x=4;x<=9;x++) for(int z=-4;z<=4;z++)
+                level.setBlock(new BlockPos(x,100,z),Blocks.WATER.defaultBlockState(),3);
             car = DynamicVehiclesMod.CAR.get().create(level);
             car.moveTo(.5,101,0.5,0,0); level.addFreshEntity(car);
             boat = DynamicVehiclesMod.MOTORBOAT.get().create(level);

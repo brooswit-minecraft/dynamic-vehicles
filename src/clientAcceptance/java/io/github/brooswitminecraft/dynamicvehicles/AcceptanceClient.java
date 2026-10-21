@@ -91,8 +91,10 @@ public final class AcceptanceClient {
                 }
             }
             if(ticks==700) {
+                DynamicVehiclesMod.LOGGER.info("CLIENT_ACCEPTANCE_STATE cars={} boatCamera={} dismount={} recenter={} freeLook={} disabled={} dust={} exhaust={}",
+                        carMounts,boatCamera,dismounted,recentered,freeLook,disabled,dust,exhaust);
                 check(carInput && boatInput,"simulated input missing: car="+carInput+" boat="+boatInput);
-                check(carMounts>=2 && boatCamera && dismounted,"car/boat/dismount/car transition incomplete");
+                check(carMounts>=2 && boatCamera && dismounted,"car/boat/dismount/car transition incomplete: cars="+carMounts+" boat="+boatCamera+" dismount="+dismounted);
                 check(recentered && freeLook && disabled,"camera recenter/free-look/disable incomplete");
                 check(dust && exhaust,"client receipt missing: dust="+dust+" exhaust="+exhaust);
                 Files.writeString(Path.of("client-acceptance-result.json"),"{\"passed\":true,\"simulated_input\":true,\"camera_transitions\":true,\"dust_receipt\":true,\"exhaust_receipt\":true,\"physical_wheel_tested\":false,\"visual_quality_tested\":false}");

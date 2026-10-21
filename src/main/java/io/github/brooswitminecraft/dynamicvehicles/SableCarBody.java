@@ -746,7 +746,8 @@ final class SableCarBody {
                     brake = BRAKE_FORCE * spec.forceScale(); // parked: hold on a slope instead of rolling away
                     brakeGain = 6.0;
                 }
-                if (handbrake && !front) {
+                boolean manualHandbrake = handbrake && !front;
+                if (manualHandbrake) {
                     brake = WheelMath.handbrakeForce(HANDBRAKE_FORCE, spec.forceScale(), spec.handbrakeScale());
                     drive = 0.0;
                     lateralScale = 0.35;
@@ -784,10 +785,11 @@ final class SableCarBody {
                     drive = left ? axleDrive.left() : axleDrive.right();
                 }
                 wheelDriveCommand[wheel] = drive;
+                double takenDrive;
                 if (!inContact) {
                     // No contact means no traction or anti-lock authority.  Keep the normal free-spin
                     // path, including its exact drivetrain bookkeeping, for a missing/unloaded wheel.
-                    double takenDrive = brake > 0.0 ? 0.0 : drive;
+                    takenDrive = brake > 0.0 ? 0.0 : drive;
                     realizedDriveImpulse += takenDrive * subDt;
                     wheelRealizedDriveImpulse[wheel] += takenDrive * subDt;
                     // Airborne, unloaded or over nothing: no tire force and no tire reaction, but the wheel
@@ -830,10 +832,12 @@ final class SableCarBody {
                 // only reduce the existing command, so they cannot create propulsion or reverse selection.
                 drive *= ComputerAssistMath.tractionFactor(computer.tractionControlLevel(),
                         wheelSpin[wheel] * spec.wheelRadius(), vLong, drive);
-                brake *= ComputerAssistMath.absFactor(computer.absLevel(),
-                        wheelSpin[wheel] * spec.wheelRadius(), vLong, brake);
+                if (!manualHandbrake) {
+                    brake *= ComputerAssistMath.absFactor(computer.absLevel(),
+                            wheelSpin[wheel] * spec.wheelRadius(), vLong, brake);
+                }
                 wheelDriveCommand[wheel] = drive;
-                double takenDrive = brake > 0.0 ? 0.0 : drive;
+                takenDrive = brake > 0.0 ? 0.0 : drive;
                 realizedDriveImpulse += takenDrive * subDt;
                 wheelRealizedDriveImpulse[wheel] += takenDrive * subDt;
                 wheelContactSubSteps[wheel]++;
@@ -1473,7 +1477,8 @@ final class SableCarBody {
                     brake = BRAKE_FORCE * spec.forceScale(); // parked: hold on a slope instead of rolling away
                     brakeGain = 6.0;
                 }
-                if (handbrake && !front) {
+                boolean manualHandbrake = handbrake && !front;
+                if (manualHandbrake) {
                     brake = WheelMath.handbrakeForce(HANDBRAKE_FORCE, spec.forceScale(), spec.handbrakeScale());
                     drive = 0.0;
                     lateralScale = 0.35;
@@ -1528,6 +1533,16 @@ final class SableCarBody {
                 Vector3d lateral = new Vector3d(up).cross(forward).normalize();
                 double vLong = pointVelocity.dot(forward);
                 double vLat = pointVelocity.dot(lateral);
+                // This trial must use the identical computer intervention as the actual force path;
+                // otherwise the passivity certificate would compare different wheel endpoints.
+                VehicleSpec.ComputerTuning computer = spec.computerTuning();
+                drive *= ComputerAssistMath.tractionFactor(computer.tractionControlLevel(),
+                        spins[wheel] * spec.wheelRadius(), vLong, drive);
+                if (!manualHandbrake) {
+                    brake *= ComputerAssistMath.absFactor(computer.absLevel(),
+                            spins[wheel] * spec.wheelRadius(), vLong, brake);
+                }
+                takenDrive = brake > 0.0 ? 0.0 : drive;
                 // What the tire feels comes from the block it is on (grip, rolling resistance), via Dynamic Terrain.
                 SurfaceProperties surface = Surfaces.at(level, hit.getBlockPos());
                 // Downforce (MINECRAFT-184): spec.downforceGripMultiplier() is exactly 1.0 for every vehicle

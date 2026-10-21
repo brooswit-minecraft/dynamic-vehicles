@@ -371,8 +371,7 @@ public record VehicleSpec(
         this(halfX, halfY, halfZ, mounts, wheelRadius, wheelWidth, rideHeight, restLength,
                 massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
                 forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
-                downforceGripPerSpeed, antiRollScale, seats, VehicleTuning.IDENTITY, 1.0,
-                0.0, 0.0, LEGACY_AIR_DRAG, DiffuserTuning.IDENTITY, ComputerTuning.DISABLED);
+                downforceGripPerSpeed, antiRollScale, seats, VehicleTuning.IDENTITY, 1.0);
     }
 
     /**
@@ -451,7 +450,7 @@ public record VehicleSpec(
                 massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
                 forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
                 downforceGripPerSpeed, antiRollScale, List.of(new Seat(0.0, seatY, seatZ)), vehicleTuning,
-                1.0, 0.0, 0.0, LEGACY_AIR_DRAG, DiffuserTuning.IDENTITY, ComputerTuning.DISABLED);
+                1.0);
     }
 
     /**

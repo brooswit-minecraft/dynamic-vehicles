@@ -1703,6 +1703,11 @@ final class SableCarBody {
         return wheelContactSpeed.clone();
     }
 
+    /** Each wheel's own reported slip speed in m/s from the last grounded physics tick (a copy). */
+    double[] wheelSlipSpeeds() {
+        return wheelSlip.clone();
+    }
+
     double[] wheelForces() {
         return wheelForce.clone();
     }

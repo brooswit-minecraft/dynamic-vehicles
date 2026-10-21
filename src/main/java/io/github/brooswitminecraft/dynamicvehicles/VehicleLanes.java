@@ -100,7 +100,8 @@ final class VehicleLanes {
         LIMITER_WALL,
         INTEGRATION_CONTACT,
         EXHAUST_CADENCE,
-        EXHAUST_DISABLED;
+        EXHAUST_DISABLED,
+        WHEEL_DUST;
 
         BlockPos origin() {
             return new BlockPos(0, SITE_Y, FIRST_SITE_Z + ordinal() * SITE_SPACING);

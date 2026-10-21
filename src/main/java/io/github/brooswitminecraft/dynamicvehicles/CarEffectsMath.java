@@ -75,11 +75,23 @@ public final class CarEffectsMath {
 
     /** Dust amount for one emission: grows with speed above {@link #MIN_DUST_SPEED}, plus a bit while the tires slip. */
     public static int dustAmount(double speed, double slip, double strength) {
+        return dustAmount(speed, slip, strength, MIN_DUST_SPEED, 3.0, 32);
+    }
+
+    /**
+     * Dust amount for one grounded wheel contact. Chassis speed and that wheel's actual slip are deliberately
+     * separate signals: ordinary driving dust follows speed while a stationary burnout follows wheel slip.
+     * This runs once per car emission interval, outside physics sub-steps, so changing sub-step count cannot
+     * multiply output.
+     */
+    public static int dustAmount(double speed, double slip, double strength, double speedStart, double slipStart,
+            int maxAmount) {
         double v = Math.abs(speed);
-        if (strength <= 0 || (v < MIN_DUST_SPEED && slip < 3.0)) {
+        if (strength <= 0 || maxAmount <= 0 || (v < speedStart && slip < slipStart)) {
             return 0;
         }
-        double raw = Math.max(0.0, v - MIN_DUST_SPEED) / 6.0 + Math.min(slip, 10.0) / 5.0;
-        return (int) Math.max(1, Math.round((1.0 + raw) * strength));
+        double raw = Math.max(0.0, v - speedStart) / 6.0 + Math.max(0.0, Math.min(slip, 10.0) - slipStart) / 5.0;
+        int requested = (int) Math.round((1.0 + raw) * strength);
+        return Math.min(maxAmount, Math.max(1, requested));
     }
 }

@@ -563,6 +563,18 @@ public class CarEntity extends Entity {
         return sableBody == null ? new int[0] : SableCompat.wheelContactSubSteps(sableBody);
     }
 
+    /** Server test support for MINECRAFT-480: the real world-space ray-hit block for each wheel in the
+     * just-completed physics tick, or {@code null} for a miss. Copies are returned by the body adapter. */
+    BlockPos[] debugWheelContactBlocks() {
+        return sableBody == null ? new BlockPos[0] : SableCompat.wheelContactBlocks(sableBody);
+    }
+
+    /** Server test support for MINECRAFT-480: each wheel's real raw slip speed from the just-completed
+     * physics tick. This is the same telemetry passed to the wheel-contact dust calculation. */
+    double[] debugWheelSlipSpeeds() {
+        return sableBody == null ? new double[0] : SableCompat.wheelSlipSpeeds(sableBody);
+    }
+
     /** Server test support only: this car's own wheel radius (m) and drive-force scale, so a test can take
      * the realized drive impulse back through the same gearing the production path used. */
     double debugWheelRadius() {
@@ -1503,7 +1515,9 @@ public class CarEntity extends Entity {
             publishDrivingTelemetry(DrivetrainMath.omegaToRpm(SableCompat.engineOmega(sableBody)), SableCompat.speed(sableBody));
             publishSoundState(Math.abs(throttle), SableCompat.audioSlip(sableBody),
                     SableCompat.engineRpm(sableBody));
-            emitEffects(throttle, SableCompat.speed(sableBody), SableCompat.slip(sableBody));
+            emitEffects(throttle, SableCompat.speed(sableBody),
+                    SableCompat.wheelContactBlocks(sableBody), SableCompat.wheelContactSubSteps(sableBody),
+                    SableCompat.wheelSlipSpeeds(sableBody));
             checkImpact(SableCompat.speed(sableBody));
             if (tickCount % 20 == 0) {
                 DynamicVehiclesMod.LOGGER.debug("car {} {}", getUUID(), SableCompat.describe(sableBody, gear, throttle));
@@ -1541,24 +1555,44 @@ public class CarEntity extends Entity {
         super.remove(reason);
     }
 
-    /** Server: exhaust while on the throttle and moving, dust at speed or sliding, both from behind the car, at most one of each per interval. */
-    private void emitEffects(double throttle, double speed, double slip) {
-        if (!AtmosphereCompat.usable() || !(level() instanceof net.minecraft.server.level.ServerLevel serverLevel)) {
+    /**
+     * Server effect emission. Exhaust remains a single rear vehicle-local source; dust is independently
+     * emitted from each wheel that actually carried load during the just-finished physics tick.
+     */
+    private void emitEffects(double throttle, double speed, BlockPos[] contactBlocks,
+            int[] contactSubSteps, double[] wheelSlipSpeeds) {
+        if (!AtmosphereCompat.usable()
+                || !(level() instanceof net.minecraft.server.level.ServerLevel serverLevel)) {
             return;
         }
         if (tickCount % CarConfig.EXHAUST_INTERVAL_TICKS.get() == 0) {
             emitExhaust(serverLevel, throttle, speed);
         }
-        if (!CarConfig.SMOKE_ENABLED.get() || tickCount % CarConfig.SMOKE_INTERVAL_TICKS.get() != 0) {
+        if (tickCount % CarConfig.SMOKE_INTERVAL_TICKS.get() == 0) {
+            emitDust(serverLevel, speed, contactBlocks, contactSubSteps, wheelSlipSpeeds);
+        }
+    }
+
+    /** The production dust half of {@link #emitEffects}: exactly one bounded emission per loaded wheel. */
+    void emitDust(net.minecraft.server.level.ServerLevel serverLevel, double speed, BlockPos[] contactBlocks,
+            int[] contactSubSteps, double[] wheelSlipSpeeds) {
+        if (!CarConfig.DUST_ENABLED.get()) {
             return;
         }
-        double strength = CarConfig.SMOKE_STRENGTH.get();
-        double yaw = Math.toRadians(getYRot());
-        double back = spec().halfZ() + 0.3;
-        BlockPos rear = BlockPos.containing(getX() + Math.sin(yaw) * back, getY() + 0.5, getZ() - Math.cos(yaw) * back);
-        int dust = onGround() ? CarEffectsMath.dustAmount(speed, slip, strength) : 0;
-        if (dust > 0) {
-            AtmosphereCompat.dust(serverLevel, rear.below(), dust);
+        double dustStrength = CarConfig.DUST_MULTIPLIER.get();
+        int wheelCount = Math.min(contactBlocks.length, Math.min(contactSubSteps.length, wheelSlipSpeeds.length));
+        for (int wheel = 0; wheel < wheelCount; wheel++) {
+            // A raycast alone is not proof of a tire contact: only a wheel that carried positive suspension
+            // load in at least one physics sub-step can emit. This also makes airborne and lost-contact
+            // cases quiet without relying on Entity#onGround, which Sable-driven cars do not update.
+            if (contactBlocks[wheel] == null || contactSubSteps[wheel] == 0) {
+                continue;
+            }
+            int dust = CarEffectsMath.dustAmount(speed, wheelSlipSpeeds[wheel], dustStrength,
+                    CarConfig.DUST_SPEED_START.get(), CarConfig.DUST_SLIP_START.get(), CarConfig.DUST_MAX_AMOUNT.get());
+            if (dust > 0) {
+                AtmosphereCompat.dust(serverLevel, contactBlocks[wheel], dust);
+            }
         }
     }
 

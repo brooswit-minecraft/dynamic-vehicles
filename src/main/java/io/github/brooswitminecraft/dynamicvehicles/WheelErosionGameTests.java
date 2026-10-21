@@ -147,6 +147,50 @@ public final class WheelErosionGameTests {
         helper.succeed();
     }
 
+    @GameTest(template = "settlement_test", batch = "wheelDustScenariosIsolated")
+    public static void actualContactDustHonorsSpeedSlipDisableAndAirborneGates(GameTestHelper helper) {
+        boolean enabled = CarConfig.DUST_ENABLED.get();
+        double multiplier = CarConfig.DUST_MULTIPLIER.get();
+        int cap = CarConfig.DUST_MAX_AMOUNT.get();
+        try (Fixture f = fixture(helper, Blocks.DIRT, false)) {
+            f.body.tick(f.car,1,0,false,CarPhysics.Gear.NEUTRAL,.05);
+            BlockPos[] contacts = f.body.wheelContactBlocks();
+            int[] loaded = f.body.wheelContactSubSteps();
+            helper.assertTrue(java.util.Arrays.stream(loaded).allMatch(n -> n>0), "dust fixture needs real loaded contacts");
+            List<AtmosphereCompat.Emission> emissions = new ArrayList<>();
+            AtmosphereCompat.EmissionObserver.install(emissions::add);
+            CarConfig.DUST_ENABLED.set(true);
+            CarConfig.DUST_MULTIPLIER.set(2.5);
+            CarConfig.DUST_MAX_AMOUNT.set(2);
+            f.car.emitDust(helper.getLevel(),20,contacts,loaded,new double[4]);
+            helper.assertTrue(emissions.size()==4,"speed without wheel slip must emit once per loaded contact");
+            for (var emission : emissions) {
+                helper.assertTrue(emission.material()==io.github.brooswitminecraft.dynamicatmosphere.AtmosphereMaterial.DUST
+                        && emission.amount()>0 && emission.amount()<=2
+                        && java.util.Arrays.asList(contacts).contains(emission.pos()), "dust escaped contact/material/cap contract");
+            }
+            emissions.clear();
+            f.car.emitDust(helper.getLevel(),0,contacts,loaded,new double[]{20,20,20,20});
+            helper.assertTrue(emissions.size()==4,"stationary chassis burnout slip must emit at loaded contacts");
+            emissions.clear();
+            f.car.emitDust(helper.getLevel(),0,contacts,loaded,new double[4]);
+            f.car.emitDust(helper.getLevel(),20,contacts,new int[4],new double[]{20,20,20,20});
+            helper.assertTrue(emissions.isEmpty(),"rest or unloaded tires emitted dust");
+            CarConfig.DUST_ENABLED.set(false);
+            f.car.emitDust(helper.getLevel(),20,contacts,loaded,new double[]{20,20,20,20});
+            CarConfig.DUST_ENABLED.set(true);
+            CarConfig.DUST_MULTIPLIER.set(0.0);
+            f.car.emitDust(helper.getLevel(),20,contacts,loaded,new double[]{20,20,20,20});
+            helper.assertTrue(emissions.isEmpty(),"disabled or zero-multiplier dust reached atmosphere");
+        } finally {
+            AtmosphereCompat.EmissionObserver.clear();
+            CarConfig.DUST_ENABLED.set(enabled);
+            CarConfig.DUST_MULTIPLIER.set(multiplier);
+            CarConfig.DUST_MAX_AMOUNT.set(cap);
+        }
+        helper.succeed();
+    }
+
     private static Fixture fixture(GameTestHelper helper, Block surface, boolean airborne) {
         CarEntity car = DynamicVehiclesMod.CAR.get().create(helper.getLevel());
         helper.assertTrue(car != null, "could not construct erosion fixture");

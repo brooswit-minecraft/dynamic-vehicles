@@ -53,6 +53,46 @@ public final class VehicleCrashGameTests {
         });
     }
 
+    @GameTest(template = "settlement_test", batch = "crashMomentumIsolated")
+    public static void impactRouteRetainsConfiguredBodyMomentumAndHonorsCooldown(GameTestHelper helper) {
+        double retention = CarConfig.COLLISION_BREAK_SPEED_SCALE.get();
+        SableCarBody body = null;
+        try {
+            CarConfig.COLLISION_BREAK_SPEED_SCALE.set(.8);
+            CarEntity car = DynamicVehiclesMod.CAR.get().create(helper.getLevel());
+            helper.assertTrue(car != null, "car factory failed");
+            car.moveTo(.5,200,54_000.5,0,0);
+            car.setHeadingForTest(new Vec3(0,0,1));
+            body = SableCarBody.create(helper.getLevel(),car);
+            helper.assertTrue(body != null,"real impact body unavailable");
+            java.lang.reflect.Field entityBody = CarEntity.class.getDeclaredField("sableBody");
+            entityBody.setAccessible(true);
+            entityBody.set(car,body);
+            java.lang.reflect.Field handleField = SableCarBody.class.getDeclaredField("body");
+            handleField.setAccessible(true);
+            var handle = (dev.ryanhcode.sable.api.physics.handle.RigidBodyHandle) handleField.get(body);
+            handle.applyImpulseAtPoint(new org.joml.Vector3d(),new org.joml.Vector3d(0,0,35*car.spec().massKg()));
+            for (int block=0;block<4;block++) helper.getLevel().setBlock(front(car,block),Blocks.GLASS.defaultBlockState(),3);
+            car.checkImpact(35);
+            car.checkImpact(0);
+            double after = handle.getLinearVelocity(new org.joml.Vector3d()).z;
+            helper.assertTrue(Math.abs(after-35*.8*.8*.8)<1e-4,
+                    "successful breaks did not retain configured real body momentum: "+after);
+            helper.assertTrue(helper.getLevel().getBlockState(front(car,3)).is(Blocks.GLASS),"impact exceeded break budget");
+            helper.getLevel().setBlock(front(car,0),Blocks.GLASS.defaultBlockState(),3);
+            car.checkImpact(35);
+            car.checkImpact(0);
+            helper.assertTrue(helper.getLevel().getBlockState(front(car,0)).is(Blocks.GLASS),"cooldown allowed another destruction burst");
+            helper.assertTrue(Math.abs(handle.getLinearVelocity(new org.joml.Vector3d()).z-after)<1e-6,
+                    "suppressed impact changed body momentum");
+        } catch (ReflectiveOperationException e) { throw new IllegalStateException(e); }
+        finally {
+            if (body != null) body.remove();
+            CarConfig.COLLISION_BREAK_SPEED_SCALE.set(retention);
+        }
+        helper.succeed();
+    }
+
     private static CarEntity fixture(GameTestHelper helper) {
         CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 2, 5));
         car.setHeadingForTest(new Vec3(0.0, 0.0, 1.0));

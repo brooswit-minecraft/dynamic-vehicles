@@ -1568,6 +1568,17 @@ final class SableCarBody {
         body.addLinearAndAngularVelocity(linear, new Vector3d());
     }
 
+    /**
+     * Removes horizontal momentum after a block-breaking crash without changing vertical velocity or
+     * angular state. This is production collision response, unlike the test-only velocity injector above.
+     */
+    void scaleHorizontalVelocity(double retainedSpeedScale) {
+        Vector3d velocity = body.getLinearVelocity(new Vector3d());
+        body.addLinearAndAngularVelocity(new Vector3d(
+                velocity.x * (retainedSpeedScale - 1.0), 0.0,
+                velocity.z * (retainedSpeedScale - 1.0)), new Vector3d());
+    }
+
     /** The REAL slip speed (m/s), load (kg) and {@link Erosion.Result} the production tick last actually
      * passed to/got back from {@link SlipReporter#report} -- not a value a caller recomputes itself. */
     double lastErosionReportSlipSpeed() {

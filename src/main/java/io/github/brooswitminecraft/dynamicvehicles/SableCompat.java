@@ -48,6 +48,11 @@ final class SableCompat {
         ((SableCarBody) body).addLinearVelocityForTest(linear);
     }
 
+    /** Applies a collision's horizontal momentum loss to the live rigid body. */
+    static void scaleHorizontalVelocity(Object body, double retainedSpeedScale) {
+        ((SableCarBody) body).scaleHorizontalVelocity(retainedSpeedScale);
+    }
+
     /** The real slip speed/load/{@code Erosion.Result} the production tick last actually passed to and
      * got back from {@code SlipReporter.report} (MINECRAFT-401 review, round 4) -- see
      * {@link SableCarBody#lastErosionResult()}. */

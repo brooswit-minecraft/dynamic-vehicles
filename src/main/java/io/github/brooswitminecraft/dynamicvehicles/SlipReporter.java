@@ -13,7 +13,13 @@ import net.minecraft.world.level.Level;
 public final class SlipReporter {
     private SlipReporter() {}
 
+    /** Diagnostic only; observes the real terrain result without changing erosion decisions. */
+    static java.util.function.Consumer<Report> observer;
+    record Report(BlockPos position, double slipSpeed, double loadKg, Erosion.Result result) {}
+
     public static Erosion.Result report(Level level, BlockPos contactBlock, double slipSpeed, double wheelLoadKg) {
-        return TireSlip.report(level, contactBlock, slipSpeed, wheelLoadKg);
+        Erosion.Result result = TireSlip.report(level, contactBlock, slipSpeed, wheelLoadKg);
+        if (observer != null) observer.accept(new Report(contactBlock.immutable(), slipSpeed, wheelLoadKg, result));
+        return result;
     }
 }

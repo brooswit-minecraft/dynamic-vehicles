@@ -1,0 +1,1 @@
+- Vehicle exhaust now has dedicated, bounded server settings for throttle response, scale and per-emission output, independent of tire dust.

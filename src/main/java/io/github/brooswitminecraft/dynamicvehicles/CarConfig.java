@@ -10,6 +10,12 @@ public final class CarConfig {
     public static final ModConfigSpec.BooleanValue SMOKE_ENABLED;
     public static final ModConfigSpec.DoubleValue SMOKE_STRENGTH;
     public static final ModConfigSpec.IntValue SMOKE_INTERVAL_TICKS;
+    /** Dedicated exhaust settings. Dust keeps the legacy smoke settings until its owning task migrates it. */
+    public static final ModConfigSpec.BooleanValue EXHAUST_ENABLED;
+    public static final ModConfigSpec.DoubleValue EXHAUST_MULTIPLIER;
+    public static final ModConfigSpec.DoubleValue EXHAUST_THROTTLE_START;
+    public static final ModConfigSpec.DoubleValue EXHAUST_THROTTLE_CURVE;
+    public static final ModConfigSpec.IntValue EXHAUST_MAX_AMOUNT;
     public static final ModConfigSpec.BooleanValue COLLISION_BREAKING;
     public static final ModConfigSpec.DoubleValue COLLISION_MIN_SPEED;
     public static final ModConfigSpec.DoubleValue COLLISION_MAX_HARDNESS;
@@ -44,6 +50,21 @@ public final class CarConfig {
         SMOKE_INTERVAL_TICKS = builder
                 .comment("Ticks between emissions per car (the per-car cap: one exhaust and one dust emission per interval).")
                 .defineInRange("smokeEmitTicks", 6, 5, 200);
+        EXHAUST_ENABLED = builder
+                .comment("Cars emit vehicle-local Dynamic Atmosphere exhaust while moving and on the throttle. Does not control tire dust.")
+                .define("exhaustEnabled", true);
+        EXHAUST_MULTIPLIER = builder
+                .comment("Multiplier on each vehicle exhaust emission (0 = no exhaust). This is separate from the legacy dust multiplier.")
+                .defineInRange("exhaustMultiplier", 2.5, 0.0, 10.0);
+        EXHAUST_THROTTLE_START = builder
+                .comment("Throttle fraction at or below which exhaust is off; above it, output ramps toward full throttle.")
+                .defineInRange("exhaustThrottleStart", 0.05, 0.0, 0.95);
+        EXHAUST_THROTTLE_CURVE = builder
+                .comment("Exponent for the throttle-to-exhaust ramp (1 = linear; above 1 delays visible exhaust until harder throttle).")
+                .defineInRange("exhaustThrottleCurve", 1.0, 0.1, 4.0);
+        EXHAUST_MAX_AMOUNT = builder
+                .comment("Maximum Dynamic Atmosphere exhaust amount in one car emission; also bounds a single emission at high throttle.")
+                .defineInRange("exhaustMaxAmount", 32, 1, 64);
         COLLISION_BREAKING = builder
                 .comment("A hard hit has a chance to break the block ahead (more likely when faster and for softer blocks); a block that survives is eroded instead. Never breaks unbreakable blocks, block entities or fluids, and at most one block per impact.")
                 .define("collisionBreaking", true);

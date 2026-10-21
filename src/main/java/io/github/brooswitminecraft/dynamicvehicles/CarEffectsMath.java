@@ -47,10 +47,30 @@ public final class CarEffectsMath {
 
     /** Exhaust amount for one emission: grows with throttle; 0 when stationary or off the throttle. */
     public static int exhaustAmount(double throttle, double speed, double strength) {
-        if (throttle <= 0.05 || Math.abs(speed) < MIN_EXHAUST_SPEED || strength <= 0) {
+        return exhaustAmount(throttle, speed, strength, 0.05, 1.0, 32);
+    }
+
+    /**
+     * Exhaust amount for one emission, mapped from the driver throttle after a configurable dead band and
+     * response curve. This is deliberately evaluated once per entity emission interval, not per wheel or
+     * physics sub-step, so changing wheel sub-steps cannot multiply atmosphere output.
+     *
+     * @param throttle driver throttle, normally 0..1
+     * @param speed authoritative forward speed in m/s
+     * @param strength emission scale; 0 disables exhaust
+     * @param throttleStart throttle dead band, 0..less than 1
+     * @param throttleCurve ramp exponent; 1 is linear
+     * @param maxAmount inclusive per-emission cap
+     */
+    public static int exhaustAmount(double throttle, double speed, double strength, double throttleStart,
+            double throttleCurve, int maxAmount) {
+        if (throttle <= throttleStart || Math.abs(speed) < MIN_EXHAUST_SPEED || strength <= 0 || maxAmount <= 0) {
             return 0;
         }
-        return (int) Math.max(1, Math.round(1.0 + 3.0 * throttle * strength));
+        double normalized = Math.min(1.0, (throttle - throttleStart) / (1.0 - throttleStart));
+        double curved = Math.pow(normalized, throttleCurve);
+        int requested = (int) Math.round(1.0 + 3.0 * curved * strength);
+        return Math.min(maxAmount, Math.max(1, requested));
     }
 
     /** Dust amount for one emission: grows with speed above {@link #MIN_DUST_SPEED}, plus a bit while the tires slip. */

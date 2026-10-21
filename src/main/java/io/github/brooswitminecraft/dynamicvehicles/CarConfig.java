@@ -16,6 +16,7 @@ public final class CarConfig {
     public static final ModConfigSpec.DoubleValue EXHAUST_THROTTLE_START;
     public static final ModConfigSpec.DoubleValue EXHAUST_THROTTLE_CURVE;
     public static final ModConfigSpec.IntValue EXHAUST_MAX_AMOUNT;
+    public static final ModConfigSpec.IntValue EXHAUST_INTERVAL_TICKS;
     public static final ModConfigSpec.BooleanValue COLLISION_BREAKING;
     public static final ModConfigSpec.DoubleValue COLLISION_MIN_SPEED;
     public static final ModConfigSpec.DoubleValue COLLISION_MAX_HARDNESS;
@@ -42,13 +43,13 @@ public final class CarConfig {
                 .comment("Multiplier on the acceleration/braking wear that is added to real tire slip (0 = only real tire slip wears the ground).")
                 .defineInRange("wearMultiplier", 5.0, 0.0, 10.0);
         SMOKE_ENABLED = builder
-                .comment("Cars emit Dynamic Atmosphere exhaust (while on the throttle and moving) and dust (at speed or sliding). Needs Dynamic Atmosphere.")
+                .comment("Cars emit Dynamic Atmosphere tire dust at speed or while sliding. Needs Dynamic Atmosphere; does not control exhaust.")
                 .define("smokeEnabled", true);
         SMOKE_STRENGTH = builder
-                .comment("Multiplier on how much exhaust and dust each emission puts into the atmosphere (0 = none).")
+                .comment("Multiplier on how much tire dust each emission puts into the atmosphere (0 = none).")
                 .defineInRange("smokeMultiplier", 2.5, 0.0, 10.0);
         SMOKE_INTERVAL_TICKS = builder
-                .comment("Ticks between emissions per car (the per-car cap: one exhaust and one dust emission per interval).")
+                .comment("Ticks between tire-dust emissions per car (at most one dust emission per interval).")
                 .defineInRange("smokeEmitTicks", 6, 5, 200);
         EXHAUST_ENABLED = builder
                 .comment("Cars emit vehicle-local Dynamic Atmosphere exhaust while moving and on the throttle. Does not control tire dust.")
@@ -65,6 +66,9 @@ public final class CarConfig {
         EXHAUST_MAX_AMOUNT = builder
                 .comment("Maximum Dynamic Atmosphere exhaust amount in one car emission; also bounds a single emission at high throttle.")
                 .defineInRange("exhaustMaxAmount", 32, 1, 64);
+        EXHAUST_INTERVAL_TICKS = builder
+                .comment("Ticks between vehicle exhaust emissions per car (at most one exhaust emission per interval).")
+                .defineInRange("exhaustEmitTicks", 6, 5, 200);
         COLLISION_BREAKING = builder
                 .comment("A hard hit has a chance to break the block ahead (more likely when faster and for softer blocks); a block that survives is eroded instead. Never breaks unbreakable blocks, block entities or fluids, and at most one block per impact.")
                 .define("collisionBreaking", true);

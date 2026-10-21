@@ -1501,12 +1501,13 @@ public class CarEntity extends Entity {
 
     /** Server: exhaust while on the throttle and moving, dust at speed or sliding, both from behind the car, at most one of each per interval. */
     private void emitEffects(double throttle, double speed, double slip) {
-        if (!AtmosphereCompat.usable() || tickCount % CarConfig.SMOKE_INTERVAL_TICKS.get() != 0
-                || !(level() instanceof net.minecraft.server.level.ServerLevel serverLevel)) {
+        if (!AtmosphereCompat.usable() || !(level() instanceof net.minecraft.server.level.ServerLevel serverLevel)) {
             return;
         }
-        emitExhaust(serverLevel, throttle, speed);
-        if (!CarConfig.SMOKE_ENABLED.get()) {
+        if (tickCount % CarConfig.EXHAUST_INTERVAL_TICKS.get() == 0) {
+            emitExhaust(serverLevel, throttle, speed);
+        }
+        if (!CarConfig.SMOKE_ENABLED.get() || tickCount % CarConfig.SMOKE_INTERVAL_TICKS.get() != 0) {
             return;
         }
         double strength = CarConfig.SMOKE_STRENGTH.get();

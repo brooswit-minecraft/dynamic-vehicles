@@ -15,6 +15,8 @@ public final class MotorboatConfig {
     public static final ModConfigSpec.DoubleValue HULL_BUOYANCY_STIFFNESS;
     public static final ModConfigSpec.DoubleValue HULL_BUOYANCY_DAMPING;
     public static final ModConfigSpec.DoubleValue MAX_POINT_BUOYANT_FORCE;
+    public static final ModConfigSpec.DoubleValue TRAVEL_LIFT_COEFFICIENT;
+    public static final ModConfigSpec.DoubleValue MAX_TRAVEL_LIFT_FORCE;
     public static final ModConfigSpec.DoubleValue MAX_THRUST;
     public static final ModConfigSpec.DoubleValue MAX_STEER_DEG;
     public static final ModConfigSpec.DoubleValue LONGITUDINAL_DRAG_RATE;
@@ -36,6 +38,12 @@ public final class MotorboatConfig {
         MAX_POINT_BUOYANT_FORCE = builder
                 .comment("Hard cap on a single hull point's buoyant force, N. Bounds a sudden deep-submersion spike (e.g. the boat was just teleported into a lake) so it can never produce an exploding one-tick impulse.")
                 .defineInRange("maxPointBuoyantForce", 6000.0, 0.0, 2_000_000.0);
+        TRAVEL_LIFT_COEFFICIENT = builder
+                .comment("World-up lift on immersed hull points facing horizontal travel, N/(m/s)^2. Includes reverse/sideways motion; zero disables. Still-water approximation.")
+                .defineInRange("travelLiftCoefficient", 8.0, 0.0, 500.0);
+        MAX_TRAVEL_LIFT_FORCE = builder
+                .comment("Total travel-side lift cap across all hull points, N; zero disables. Fades to zero as travel-facing points leave water.")
+                .defineInRange("maxTravelLiftForce", 1000.0, 0.0, 20_000.0);
         MAX_THRUST = builder
                 .comment("Motor's maximum thrust force at full throttle, N.")
                 .defineInRange("maxThrust", 3000.0, 0.0, 200_000.0);

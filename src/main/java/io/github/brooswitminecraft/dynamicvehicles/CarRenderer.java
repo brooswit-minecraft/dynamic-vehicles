@@ -33,6 +33,8 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
     private static final BlockState BODY = Blocks.LIGHT_GRAY_CONCRETE.defaultBlockState();
     private static final BlockState TRUCK_BODY = Blocks.ORANGE_CONCRETE.defaultBlockState();
     private static final BlockState RACE_BODY = Blocks.RED_CONCRETE.defaultBlockState();
+    private static final BlockState RALLY_BODY = Blocks.BLUE_CONCRETE.defaultBlockState();
+    private static final BlockState RALLY_TRIM = Blocks.YELLOW_CONCRETE.defaultBlockState();
     private static final BlockState TROPHY_STRIPE = Blocks.WHITE_CONCRETE.defaultBlockState();
     private static final BlockState TROPHY_LIGHTBAR = Blocks.SEA_LANTERN.defaultBlockState();
     private static final BlockState TROPHY_STRUT = Blocks.BLACK_CONCRETE.defaultBlockState();
@@ -142,6 +144,15 @@ public class CarRenderer extends EntityRenderer<CarEntity> {
             texturedBox(pose, buffers, light, DRIFT_TRIM_TEXTURE, -hx + 0.1f, tubTop, -1.35f, 0.08f, 0.38f, 0.15f);
             texturedBox(pose, buffers, light, DRIFT_TRIM_TEXTURE, hx - 0.18f, tubTop, -1.35f, 0.08f, 0.38f, 0.15f);
             texturedBox(pose, buffers, light, DRIFT_TRIM_TEXTURE, -0.85f, tubTop + 0.38f, -hz + 0.1f, 1.7f, 0.08f, 0.25f);
+        }
+        case RALLY -> {
+            // Blue/gold compact rally-sedan silhouette: hood scoop, squared cabin, flared fenders and high rear wing.
+            block(pose, buffers, light, RALLY_BODY, -hx, -hy, -hz, 2 * hx, 0.46f, 2 * hz);
+            block(pose, buffers, light, CABIN, -0.70f, -hy + 0.46f, -0.42f, 1.4f, hy - 0.04f - (-hy + 0.46f), 1.28f);
+            block(pose, buffers, light, RALLY_TRIM, -0.14f, -hy + 0.46f, 0.10f, 0.28f, 0.04f, hz - 0.10f);
+            block(pose, buffers, light, RALLY_TRIM, -hx - 0.03f, -hy + 0.05f, -hz, 0.03f, 0.20f, 2 * hz);
+            block(pose, buffers, light, RALLY_TRIM, hx, -hy + 0.05f, -hz, 0.03f, 0.20f, 2 * hz);
+            block(pose, buffers, light, RALLY_TRIM, -0.78f, hy - 0.05f, -hz + 0.08f, 1.56f, 0.07f, 0.20f);
         }
         case MUSCLE -> {
             // A long-hooded, short-wheelbase muscle body with a racing stripe down the hood and a low cabin set well back.

@@ -41,13 +41,13 @@ public final class ClientConfig {
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
         CHASE_CAMERA = builder
-                .comment("While riding the car, the camera yaw follows the car's heading. Moving the mouse is a temporary free look.")
+                .comment("While riding a car or motorboat, the camera follows the vehicle's orientation. Moving the mouse is a temporary free look.")
                 .define("chaseCamera", true);
         CHASE_CAMERA_LAG = builder
-                .comment("Seconds the camera takes to catch up with the car's heading (larger = lazier).")
+                .comment("Seconds the camera takes to catch up with the vehicle's heading (larger = lazier).")
                 .defineInRange("chaseCameraLag", 0.25, 0.02, 3.0);
         CHASE_CAMERA_RECENTER_SECONDS = builder
-                .comment("Seconds without mouse movement before the camera starts following the car again.")
+                .comment("Seconds without mouse movement before the camera starts following the vehicle again.")
                 .defineInRange("chaseCameraRecenterSeconds", 1.5, 0.0, 10.0);
         SOUND_VOLUME = builder
                 .comment("Volume of the car's looping engine and tire sounds, 0 to 1 (on top of Minecraft's own sound sliders).")

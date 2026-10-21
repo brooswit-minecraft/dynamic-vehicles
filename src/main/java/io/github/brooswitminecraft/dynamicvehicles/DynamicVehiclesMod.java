@@ -88,6 +88,11 @@ public class DynamicVehiclesMod {
                     .sized(VehicleSpec.DRIFT.width(), VehicleSpec.DRIFT.height()).clientTrackingRange(10).updateInterval(1)
                     .build(ResourceLocation.fromNamespaceAndPath(MODID, VehicleIds.DRIFT_CAR).toString()));
     public static final DeferredItem<CarItem> DRIFT_ITEM = ITEMS.register(VehicleIds.DRIFT_CAR, () -> new CarItem(new Item.Properties().stacksTo(1), DRIFT, 0.0));
+    public static final DeferredHolder<EntityType<?>, EntityType<CarEntity>> RALLY = ENTITIES.register(VehicleIds.RALLY_CAR,
+            () -> EntityType.Builder.<CarEntity>of(CarEntity::new, MobCategory.MISC)
+                    .sized(VehicleSpec.RALLY.width(), VehicleSpec.RALLY.height()).clientTrackingRange(10).updateInterval(1)
+                    .build(ResourceLocation.fromNamespaceAndPath(MODID, VehicleIds.RALLY_CAR).toString()));
+    public static final DeferredItem<CarItem> RALLY_ITEM = ITEMS.register(VehicleIds.RALLY_CAR, () -> new CarItem(new Item.Properties().stacksTo(1), RALLY, 0.0));
     public static final DeferredHolder<EntityType<?>, EntityType<CarEntity>> MUSCLE = ENTITIES.register("muscle_car",
             () -> EntityType.Builder.<CarEntity>of(CarEntity::new, MobCategory.MISC)
                     .sized(VehicleSpec.MUSCLE.width(), VehicleSpec.MUSCLE.height()).clientTrackingRange(10).updateInterval(1)
@@ -321,6 +326,7 @@ public class DynamicVehiclesMod {
             event.accept(TRUCK_ITEM);
             event.accept(TROPHY_ITEM);
             event.accept(DRIFT_ITEM);
+            event.accept(RALLY_ITEM);
             event.accept(MUSCLE_ITEM);
             event.accept(ROCK_CRAWLER_ITEM);
             event.accept(MONSTER_TRUCK_ITEM);
@@ -345,6 +351,7 @@ public class DynamicVehiclesMod {
             event.registerEntityRenderer(TRUCK.get(), CarRenderer::new);
             event.registerEntityRenderer(TROPHY.get(), CarRenderer::new);
             event.registerEntityRenderer(DRIFT.get(), CarRenderer::new);
+            event.registerEntityRenderer(RALLY.get(), CarRenderer::new);
             event.registerEntityRenderer(MUSCLE.get(), CarRenderer::new);
             event.registerEntityRenderer(ROCK_CRAWLER.get(), CarRenderer::new);
             event.registerEntityRenderer(MONSTER_TRUCK.get(), CarRenderer::new);

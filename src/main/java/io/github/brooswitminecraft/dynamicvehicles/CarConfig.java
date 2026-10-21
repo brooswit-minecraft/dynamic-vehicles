@@ -10,9 +10,25 @@ public final class CarConfig {
     public static final ModConfigSpec.BooleanValue SMOKE_ENABLED;
     public static final ModConfigSpec.DoubleValue SMOKE_STRENGTH;
     public static final ModConfigSpec.IntValue SMOKE_INTERVAL_TICKS;
+    /** Dedicated exhaust settings, independent of wheel-contact dust. */
+    public static final ModConfigSpec.BooleanValue EXHAUST_ENABLED;
+    public static final ModConfigSpec.DoubleValue EXHAUST_MULTIPLIER;
+    public static final ModConfigSpec.DoubleValue EXHAUST_THROTTLE_START;
+    public static final ModConfigSpec.DoubleValue EXHAUST_THROTTLE_CURVE;
+    public static final ModConfigSpec.IntValue EXHAUST_MAX_AMOUNT;
+    public static final ModConfigSpec.IntValue EXHAUST_INTERVAL_TICKS;
+    /** Dedicated wheel-contact dust settings. Exhaust owns its separate settings. */
+    public static final ModConfigSpec.BooleanValue DUST_ENABLED;
+    public static final ModConfigSpec.DoubleValue DUST_MULTIPLIER;
+    public static final ModConfigSpec.DoubleValue DUST_SPEED_START;
+    public static final ModConfigSpec.DoubleValue DUST_SLIP_START;
+    public static final ModConfigSpec.IntValue DUST_MAX_AMOUNT;
     public static final ModConfigSpec.BooleanValue COLLISION_BREAKING;
     public static final ModConfigSpec.DoubleValue COLLISION_MIN_SPEED;
     public static final ModConfigSpec.DoubleValue COLLISION_MAX_HARDNESS;
+    public static final ModConfigSpec.DoubleValue COLLISION_SEVERE_SPEED;
+    public static final ModConfigSpec.IntValue COLLISION_SEVERE_MAX_BLOCKS;
+    public static final ModConfigSpec.DoubleValue COLLISION_BREAK_SPEED_SCALE;
     public static final ModConfigSpec.BooleanValue HEADLAMP_LIGHT;
     public static final ModConfigSpec.BooleanValue TIRE_FORCE_AT_CONTACT;
     public static final ModConfigSpec.DoubleValue ANTI_ROLL;
@@ -36,16 +52,49 @@ public final class CarConfig {
                 .comment("Multiplier on the acceleration/braking wear that is added to real tire slip (0 = only real tire slip wears the ground).")
                 .defineInRange("wearMultiplier", 5.0, 0.0, 10.0);
         SMOKE_ENABLED = builder
-                .comment("Cars emit Dynamic Atmosphere exhaust (while on the throttle and moving) and dust (at speed or sliding). Needs Dynamic Atmosphere.")
+                .comment("Deprecated compatibility key; no longer controls emissions. Use dustEnabled for wheel dust or exhaustEnabled for exhaust.")
                 .define("smokeEnabled", true);
         SMOKE_STRENGTH = builder
-                .comment("Multiplier on how much exhaust and dust each emission puts into the atmosphere (0 = none).")
+                .comment("Deprecated compatibility key; no longer controls emissions. Use dustMultiplier for wheel dust or exhaustMultiplier for exhaust.")
                 .defineInRange("smokeMultiplier", 2.5, 0.0, 10.0);
         SMOKE_INTERVAL_TICKS = builder
-                .comment("Ticks between emissions per car (the per-car cap: one exhaust and one dust emission per interval).")
+                .comment("Ticks between tire-dust emissions per car (at most one dust emission per loaded wheel per interval).")
                 .defineInRange("smokeEmitTicks", 6, 5, 200);
+        EXHAUST_ENABLED = builder
+                .comment("Cars emit vehicle-local Dynamic Atmosphere exhaust while moving and on the throttle. Does not control tire dust.")
+                .define("exhaustEnabled", true);
+        EXHAUST_MULTIPLIER = builder
+                .comment("Multiplier on each vehicle exhaust emission (0 = no exhaust). This is separate from the legacy dust multiplier.")
+                .defineInRange("exhaustMultiplier", 2.5, 0.0, 10.0);
+        EXHAUST_THROTTLE_START = builder
+                .comment("Throttle fraction at or below which exhaust is off; above it, output ramps toward full throttle.")
+                .defineInRange("exhaustThrottleStart", 0.05, 0.0, 0.95);
+        EXHAUST_THROTTLE_CURVE = builder
+                .comment("Exponent for the throttle-to-exhaust ramp (1 = linear; above 1 delays visible exhaust until harder throttle).")
+                .defineInRange("exhaustThrottleCurve", 1.0, 0.1, 4.0);
+        EXHAUST_MAX_AMOUNT = builder
+                .comment("Maximum Dynamic Atmosphere exhaust amount in one car emission; also bounds a single emission at high throttle.")
+                .defineInRange("exhaustMaxAmount", 32, 1, 64);
+        EXHAUST_INTERVAL_TICKS = builder
+                .comment("Ticks between vehicle exhaust emissions per car (at most one exhaust emission per interval).")
+                .defineInRange("exhaustEmitTicks", 6, 5, 200);
+        DUST_ENABLED = builder
+                .comment("Cars emit Dynamic Atmosphere dust from each grounded wheel contact. Does not control exhaust.")
+                .define("dustEnabled", true);
+        DUST_MULTIPLIER = builder
+                .comment("Multiplier on each wheel-contact dust emission (0 = no dust). Separate from exhaust and terrain erosion.")
+                .defineInRange("dustMultiplier", 2.5, 0.0, 10.0);
+        DUST_SPEED_START = builder
+                .comment("Actual chassis speed in m/s at which a grounded wheel starts raising driving dust when it is not slipping.")
+                .defineInRange("dustSpeedStart", 5.0, 0.0, 100.0);
+        DUST_SLIP_START = builder
+                .comment("Actual wheel slip speed in m/s at which a grounded wheel starts raising skid or burnout dust, even when the chassis is stationary.")
+                .defineInRange("dustSlipStart", 3.0, 0.0, 100.0);
+        DUST_MAX_AMOUNT = builder
+                .comment("Maximum Dynamic Atmosphere dust amount from one wheel during one car emission interval.")
+                .defineInRange("dustMaxAmount", 32, 1, 64);
         COLLISION_BREAKING = builder
-                .comment("A hard hit has a chance to break the block ahead (more likely when faster and for softer blocks); a block that survives is eroded instead. Never breaks unbreakable blocks, block entities or fluids, and at most one block per impact.")
+                .comment("A hard hit has a chance to break the block ahead (more likely when faster and for softer blocks); a block that survives is eroded instead. Never breaks unbreakable blocks, block entities or fluids, with severe impacts bounded by collisionSevereMaxBlocks.")
                 .define("collisionBreaking", true);
         COLLISION_MIN_SPEED = builder
                 .comment("Speed in m/s before the car was stopped below which a hit never breaks a block.")
@@ -53,6 +102,15 @@ public final class CarConfig {
         COLLISION_MAX_HARDNESS = builder
                 .comment("Hardest block (vanilla destroy speed: dirt 0.5, stone 1.5, logs 2.0, iron blocks 5.0, obsidian 50) a car can break.")
                 .defineInRange("collisionMaxHardness", 3.0, 0.0, 100.0);
+        COLLISION_SEVERE_SPEED = builder
+                .comment("Impact speed in m/s that enables successive block breaks. It must be at least collisionMinSpeed; lower values are treated as collisionMinSpeed. Read live on the server.")
+                .defineInRange("collisionSevereSpeed", 16.0, 0.0, 100.0);
+        COLLISION_SEVERE_MAX_BLOCKS = builder
+                .comment("Maximum eligible blocks a severe impact can break in one collision report. This bounds work and never scans or loads chunks beyond the car's existing front contact.")
+                .defineInRange("collisionSevereMaxBlocks", 3, 1, 8);
+        COLLISION_BREAK_SPEED_SCALE = builder
+                .comment("Fraction of horizontal momentum retained after each block a crash breaks (0 stops immediately, 1 loses none). Applied once per destroyed block, live on the server.")
+                .defineInRange("collisionBreakSpeedScale", 0.3, 0.0, 1.0);
         HEADLAMP_LIGHT = builder
                 .comment("While the headlamps are on and the car is driven, place one invisible light block a few blocks ahead (only into air). All of them are recorded and removed when the lamps go off, the car unloads, or on the next server start.")
                 .define("headlampLight", true);

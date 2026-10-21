@@ -1,7 +1,7 @@
 # Per-car config files (MINECRAFT-443)
 
 Owner audit (MINECRAFT-395 comment 48329) found no per-car config files anywhere
-in this repo: every one of the 10 existing cars (`car`, `truck`, `trophy_truck`,
+in this repo: every one of the 11 existing cars (`car`, `truck`, `trophy_truck`, `rally_car`,
 `drift_car`, `muscle_car`, `rock_crawler`, `monster_truck`, `indy_car`, `bus`,
 `cargo_truck`) was a hardcoded Java `VehicleSpec` constant. This ticket adds an
 optional JSON override file per car, loaded by `VehicleSpecOverrides` and
@@ -112,10 +112,11 @@ here without updating this table.
 
 | id | rideHeight | dampingRate | antiRollScale | rollingScale | handbrakeScale | lsdLockPercent | frontTorqueSplit | vectoringGain | camberDeg | toeDeg | engineInertia | enginePeakTorque | engineBrakingTorque | clutchTorqueCapacity |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `car` | 0.9 | 3400.0 | 1.0 | 1.0 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 | 0.18 | 930.0 | 55.0 | 1200.0 |
+| `car` | 0.9 | 3400.0 | 1.0 | 1.0 | 1.0 | 0.0 | 1.0 | 0.0 | 0.0 | 0.0 | 0.18 | 930.0 | 55.0 | 1200.0 |
 | `truck` | 1.3 | 5390.0 | 1.0 | 1.0 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 | 0.18 | 930.0 | 55.0 | 1200.0 |
-| `trophy_truck` | 1.6 | 2570.0 | 1.5 | 0.6 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 | 0.18 | 930.0 | 55.0 | 1200.0 |
-| `drift_car` | 0.75 | 3117.0 | 1.0 | 1.0 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 | 0.18 | 930.0 | 55.0 | 1200.0 |
+| `trophy_truck` | 1.6 | 2570.0 | 1.5 | 0.6 | 1.0 | 0.0 | 0.4 | 0.0 | 0.0 | 0.0 | 0.18 | 930.0 | 55.0 | 1200.0 |
+| `drift_car` | 0.75 | 3117.0 | 1.0 | 1.0 | 1.0 | 0.0 | 0.4 | 0.0 | 0.0 | 0.0 | 0.18 | 930.0 | 55.0 | 1200.0 |
+| `rally_car` | 0.82 | 3550.0 | 1.1 | 0.85 | 1.0 | 0.0 | 0.2 | 0.0 | 0.0 | 0.0 | 0.18 | 930.0 | 55.0 | 1200.0 |
 | `muscle_car` | 0.95 | 4816.67 | 1.0 | 1.0 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 | 0.18 | 930.0 | 55.0 | 1200.0 |
 | `rock_crawler` | 1.9 | 5383.33 | 2.0 | 0.5 | 1.0 | 0.65 | 0.5 | 0.0 | 0.0 | 0.0 | 0.18 | 930.0 | 55.0 | 1200.0 |
 | `monster_truck` | 2.3 | 4500.0 | 1.0 | 0.55 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 | 0.18 | 930.0 | 55.0 | 1200.0 |
@@ -124,11 +125,12 @@ here without updating this table.
 | `cargo_truck` | 1.1 | 13600.0 | 1.0 | 0.7 | 1.0 | 0.0 | 0.5 | 0.0 | 0.0 | 0.0 | 0.18 | 930.0 | 55.0 | 1200.0 |
 
 `rock_crawler` is the only car with a non-identity `lsdLockPercent` (0.65,
-MINECRAFT-296's limited-slip tuning); every other field at its identity value
-(1.0 for the four scale multipliers, 0.5 for `frontTorqueSplit`, 0.0 for
-everything else) means no existing car has opted into vectoring, camber, toe,
-or a non-default handbrake/anti-roll/rolling scale besides `trophy_truck`'s
-and `rock_crawler`'s own already-documented anti-roll/rolling tuning above.
+MINECRAFT-296's limited-slip tuning). MINECRAFT-479 deliberately sets the
+stock `frontTorqueSplit` for `car` (1.0 FWD), `truck` (0.5/0.5 configurable
+4WD default), `trophy_truck` and `drift_car` (0.4/0.6 AWD), and `rally_car`
+(0.2/0.8 AWD). All cars retain zero vectoring/camber/toe and identity
+handbrake/anti-roll/rolling values except the already-documented
+`trophy_truck` and `rock_crawler` anti-roll/rolling tuning above.
 
 Example, retuning just the rock crawler's ride height and LSD lock, leaving
 every other field (including its own stock `antiRollScale` of 2.0) as is:
@@ -361,7 +363,7 @@ the unverified angular-impulse API). Every field is optional, same
 null-means-keep-stock convention as the rest of this file; an absent
 `diffuser` key (or any field within it) keeps that car's stock value, which
 is `DiffuserTuning.IDENTITY` (all four assists disabled, every bound/gain
-zero) for every one of this roster's 10 existing cars. A present field that
+zero) for every one of this roster's 11 existing cars. A present field that
 is out of range is clamped, not rejected, the same as the rest of this
 schema; `enabled` flags are booleans and are never clamped.
 
@@ -416,14 +418,31 @@ rather than inventing a parallel file or format. The same rule applies WITHIN an
 implemented section: `tireKit`'s remaining MINECRAFT-445 fields (caster, roll
 center) appear there only as that behaviour lands.
 
-Two of the original five reserved sections are now implemented and documented
-above — `tireKit` (MINECRAFT-445) and `wing` (MINECRAFT-446). These three remain
-reserved and are still read by nothing:
+`computer` is now implemented for MINECRAFT-448's frozen TC/ABS slice. The
+engine section remains reserved:
 
 | Key | Owner |
 |---|---|
-| `computer` | MINECRAFT-448 (assists/auto-shift) |
 | `engine` | MINECRAFT-449 (engine limits/turbo/nitrous/ballast) |
+
+### `computer` (MINECRAFT-448 frozen TC/ABS slice)
+
+Both fields are optional fractions in the inclusive range 0.0–1.0. They are
+loaded at server start with the rest of the per-car file. Absent or non-finite
+values retain the stock value; finite values outside the range are clamped.
+Every stock car defaults to 0.0 for both fields, preserving its existing
+behaviour exactly.
+
+| Key | Unit | Meaning |
+|---|---|---|
+| `tractionControlLevel` | fraction | Reduces that wheel's existing drive command when its actual wheel speed is running ahead of its current contact speed in the commanded-drive direction. 0 disables TC; 1 allows the strongest bounded reduction. |
+| `absLevel` | fraction | Reduces that wheel's existing brake command when its actual spin is falling behind its current contact speed in the braking direction. 0 disables ABS; 1 allows the strongest bounded release. |
+
+Neither aid invents a force, changes the selected gear, or acts on an absent
+contact; it only scales the existing per-wheel drive or brake command.
+Handbrake behaviour remains player-directed and follows its existing path.
+Countersteer, stability/launch control, rev matching, engine-brake assist and
+automatic-shift profiles remain outside this frozen slice.
 
 ## Standard vs. sport
 

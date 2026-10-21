@@ -61,3 +61,37 @@ jobs:
     with:
       gated-paths: '["^src/"]'
       version-file: 'gradle.properties'
+
+  client-acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+      - name: Install virtual display and software GL
+        run: sudo apt-get update && sudo apt-get install -y xvfb xauth imagemagick libgl1-mesa-dri libopenal1
+      - name: Compile test-only client harness
+        run: ./gradlew classes -PclientAcceptance --no-daemon -Dorg.gradle.jvmargs=-Xmx1G
+      - name: Run disposable local server and real client
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          ALSOFT_DRIVERS: 'null'
+        run: xvfb-run -a -s '-screen 0 1280x720x24' python3 tools/client-smoke/acceptance.py
+      - name: Preserve client acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-acceptance
+          path: |
+            client-acceptance-*.log
+            client-acceptance-*.png
+            run-acceptance-client/client-acceptance-*.json
+            run-acceptance-client/client-acceptance-failure.txt
+            run-acceptance-client/logs/latest.log
+            run-acceptance-client/crash-reports/
+            run-acceptance-server/logs/latest.log
+          if-no-files-found: warn

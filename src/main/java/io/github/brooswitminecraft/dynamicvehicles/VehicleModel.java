@@ -12,7 +12,7 @@ package io.github.brooswitminecraft.dynamicvehicles;
  * VehicleSpec} instance a car carries, but never its id).
  */
 enum VehicleModel {
-    CAR, TRUCK, TROPHY, DRIFT, MUSCLE, ROCK_CRAWLER, MONSTER_TRUCK, INDY, BUS, CARGO_TRUCK,
+    CAR, TRUCK, TROPHY, DRIFT, RALLY, MUSCLE, ROCK_CRAWLER, MONSTER_TRUCK, INDY, BUS, CARGO_TRUCK,
     /** Any id this mapping does not recognise -- the same renderer fallback every future, not-yet-given-a-
      * silhouette car id used before this ticket. */
     FALLBACK;
@@ -23,6 +23,7 @@ enum VehicleModel {
             case VehicleIds.TRUCK -> TRUCK;
             case VehicleIds.TROPHY_TRUCK -> TROPHY;
             case VehicleIds.DRIFT_CAR -> DRIFT;
+            case VehicleIds.RALLY_CAR -> RALLY;
             case VehicleIds.MUSCLE_CAR -> MUSCLE;
             case VehicleIds.ROCK_CRAWLER -> ROCK_CRAWLER;
             case VehicleIds.MONSTER_TRUCK -> MONSTER_TRUCK;

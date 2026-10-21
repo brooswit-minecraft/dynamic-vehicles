@@ -2,9 +2,6 @@ package io.github.brooswitminecraft.dynamicvehicles;
 
 /** Pure eligibility rules for material and entity impacts. */
 public final class ImpactRules {
-    /** The existing collision response removes 70% of forward speed per solid impact. */
-    static final double SOLID_IMPACT_SPEED_SCALE = 0.3;
-
     /** A collision report never claims more sliding than this (m/s), so one crash cannot outweigh a sustained burnout. */
     static final double MAX_IMPACT_SLIP = 10.0;
 
@@ -94,7 +91,16 @@ public final class ImpactRules {
         return BlockImpactRoute.DEFAULT;
     }
 
-    static double afterSolidImpact(double speed) {
-        return speed * SOLID_IMPACT_SPEED_SCALE;
+    /** Number of blocks a single collision is allowed to consider; the caller still stops at the first survivor. */
+    static int blockBreakBudget(double speed, double minSpeed, double severeSpeed, int severeMaxBlocks) {
+        if (speed < minSpeed) {
+            return 0;
+        }
+        return speed >= Math.max(minSpeed, severeSpeed) ? Math.max(1, severeMaxBlocks) : 1;
+    }
+
+    /** Remaining speed after one broken solid block. The scale is deliberately bounded by the config spec. */
+    static double afterSolidImpact(double speed, double retainedSpeedScale) {
+        return Math.max(0.0, speed * retainedSpeedScale);
     }
 }

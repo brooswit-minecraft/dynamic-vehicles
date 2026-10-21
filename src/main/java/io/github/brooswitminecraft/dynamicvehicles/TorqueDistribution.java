@@ -11,6 +11,12 @@ package io.github.brooswitminecraft.dynamicvehicles;
 public final class TorqueDistribution {
     private TorqueDistribution() {}
 
+    /** Whether this axle is mechanically connected; an undriven axle cannot set shaft feedback. */
+    static boolean drivenAxle(boolean front, VehicleSpec.VehicleTuning tuning) {
+        double frontShare = Math.clamp(tuning.frontTorqueSplit(), 0.0, 1.0);
+        return front ? frontShare > 0.0 : frontShare < 1.0;
+    }
+
     /**
      * Returns this wheel's requested drive force before any limited-slip transfer on its axle.
      *

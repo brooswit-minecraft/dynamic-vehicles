@@ -28,7 +28,7 @@ import net.minecraft.world.phys.Vec3;
  * tick every wheel reports its slip to Dynamic Terrain for the block beneath
  * it, and the car never modifies terrain itself.
  */
-public class CarEntity extends Entity {
+public class CarEntity extends DriverVehicleEntity {
     /** Wheel offsets from the car centre: x = right, z = forward, in metres. */
     static final double MASS_KG = 1200.0;
     private static final int WHEEL_COUNT = 4;
@@ -186,6 +186,7 @@ public class CarEntity extends Entity {
         return DynamicVehiclesMod.TRUCK.isBound() && type == DynamicVehiclesMod.TRUCK.get() ? VehicleIds.TRUCK
                 : DynamicVehiclesMod.TROPHY.isBound() && type == DynamicVehiclesMod.TROPHY.get() ? VehicleIds.TROPHY_TRUCK
                 : DynamicVehiclesMod.DRIFT.isBound() && type == DynamicVehiclesMod.DRIFT.get() ? VehicleIds.DRIFT_CAR
+                : DynamicVehiclesMod.RALLY.isBound() && type == DynamicVehiclesMod.RALLY.get() ? VehicleIds.RALLY_CAR
                 : DynamicVehiclesMod.MUSCLE.isBound() && type == DynamicVehiclesMod.MUSCLE.get() ? VehicleIds.MUSCLE_CAR
                 : DynamicVehiclesMod.ROCK_CRAWLER.isBound() && type == DynamicVehiclesMod.ROCK_CRAWLER.get() ? VehicleIds.ROCK_CRAWLER
                 : DynamicVehiclesMod.MONSTER_TRUCK.isBound() && type == DynamicVehiclesMod.MONSTER_TRUCK.get() ? VehicleIds.MONSTER_TRUCK
@@ -200,6 +201,7 @@ public class CarEntity extends Entity {
             case VehicleIds.TRUCK -> VehicleSpec.TRUCK;
             case VehicleIds.TROPHY_TRUCK -> VehicleSpec.TROPHY;
             case VehicleIds.DRIFT_CAR -> VehicleSpec.DRIFT;
+            case VehicleIds.RALLY_CAR -> VehicleSpec.RALLY;
             case VehicleIds.MUSCLE_CAR -> VehicleSpec.MUSCLE;
             case VehicleIds.ROCK_CRAWLER -> VehicleSpec.ROCK_CRAWLER;
             case VehicleIds.MONSTER_TRUCK -> VehicleSpec.MONSTER_TRUCK;
@@ -216,6 +218,9 @@ public class CarEntity extends Entity {
     String vehicleId() {
         return vehicleId;
     }
+
+    @Override
+    public boolean supportsWheelMovement() { return true; }
 
     /** This vehicle's shape and drivetrain: the car's or the truck's. */
     public VehicleSpec spec() {
@@ -561,6 +566,22 @@ public class CarEntity extends Entity {
         return sableBody == null ? new int[0] : SableCompat.wheelContactSubSteps(sableBody);
     }
 
+    /** Server test support for MINECRAFT-480: the real world-space ray-hit block for each wheel in the
+     * just-completed physics tick, or {@code null} for a miss. Copies are returned by the body adapter. */
+    BlockPos[] debugWheelContactBlocks() {
+        return sableBody == null ? new BlockPos[0] : SableCompat.wheelContactBlocks(sableBody);
+    }
+
+    /** Server test support: actual loaded patch slip passed to the dust calculation. */
+    double[] debugWheelDustSlipSpeeds() {
+        return sableBody == null ? new double[0] : SableCompat.wheelDustSlipSpeeds(sableBody);
+    }
+
+    /** Server test support: the separate terrain-wear slip report. */
+    double[] debugWheelSlipSpeeds() {
+        return sableBody == null ? new double[0] : SableCompat.wheelSlipSpeeds(sableBody);
+    }
+
     /** Server test support only: this car's own wheel radius (m) and drive-force scale, so a test can take
      * the realized drive impulse back through the same gearing the production path used. */
     double debugWheelRadius() {
@@ -819,55 +840,95 @@ public class CarEntity extends Entity {
         SlipReporter.report(serverLevel, pos, ImpactRules.impactSlip(speedBefore), MASS_KG / WHEEL_COUNT);
     }
 
-    /** Server: a hard hit may break the block ahead (soft and fast is likely), otherwise it erodes it. At most one block. */
-    private void hitBlockAhead(double speedBefore) {
+    /**
+     * Server: a hard hit may break the eligible block ahead. Severe hits can continue through a bounded
+     * number of adjacent eligible blocks, losing configured horizontal momentum after every destruction.
+     * Terrain erosion, protected blocks, fluids, passable glass, and the truck's bamboo-only path retain
+     * their existing authority and terminate the traversal.
+     */
+    // Package-private so the production-path GameTest can invoke this exact collision operation against
+    // real blocks; normal callers still reach it only through checkImpact().
+    void hitBlockAhead(double speedBefore) {
         if (!CarConfig.COLLISION_BREAKING.get() || heading == null || !(level() instanceof net.minecraft.server.level.ServerLevel serverLevel)) {
             return;
         }
         double reach = spec.halfZ() + 0.6;
+        int budget = ImpactRules.blockBreakBudget(speedBefore, CarConfig.COLLISION_MIN_SPEED.get(),
+                CarConfig.COLLISION_SEVERE_SPEED.get(), CarConfig.COLLISION_SEVERE_MAX_BLOCKS.get());
+        double remainingSpeed = speedBefore;
+        int broken = 0;
+        java.util.Set<net.minecraft.core.BlockPos> visited = new java.util.HashSet<>();
         for (double dy : new double[] {0.4, 1.0}) {
-            net.minecraft.core.BlockPos pos = net.minecraft.core.BlockPos.containing(getX() + heading.x * reach, getY() + dy, getZ() + heading.z * reach);
-            BlockState state = serverLevel.getBlockState(pos);
-            if (state.isAir() || !state.getFluidState().isEmpty()) {
-                continue;
-            }
-            boolean breakable = !state.hasBlockEntity() && state.getDestroySpeed(serverLevel, pos) >= 0.0;
-            boolean bamboo = state.is(BlockTags.BAMBOO_BLOCKS);
-            boolean dirtOrSand = state.is(BlockTags.DIRT) || state.is(BlockTags.SAND);
-            boolean glass = state.getBlock() instanceof TransparentBlock || state.getBlock() instanceof StainedGlassPaneBlock;
-            ImpactRules.BlockImpactRoute route = ImpactRules.blockImpactRoute(
-                    VehicleModel.forId(vehicleId) == VehicleModel.TRUCK, dirtOrSand, bamboo, breakable);
-
-            // Dynamic Terrain is the sole authority for loose terrain; it decides resistance and whether
-            // material shifts downhill or degrades. This is selected before the truck-only return below,
-            // so truck impacts cannot suppress dirt/sand terrain routing.
-            if (route == ImpactRules.BlockImpactRoute.TERRAIN_EROSION) {
-                reportImpact(serverLevel, pos, speedBefore);
-                return;
-            }
-
-            // The truck has a deliberately narrow vegetation interaction. It never gains the generic
-            // block-breaking privilege merely by being heavier than a car.
-            if (VehicleModel.forId(vehicleId) == VehicleModel.TRUCK) {
-                if (route == ImpactRules.BlockImpactRoute.TRUCK_BAMBOO) {
-                    serverLevel.destroyBlock(pos, true, this);
+            // Keep one probe even below the breaking threshold so the established terrain/erosion and
+            // failed-impact reporting behavior is unchanged; only a successful severe break extends it.
+            ImpactVoxelRay ray = new ImpactVoxelRay(getX() + heading.x * reach,
+                    getZ() + heading.z * reach, heading.x, heading.z);
+            for (int block = 0; block < Math.max(1, budget); block++, ray.advance()) {
+                net.minecraft.core.BlockPos pos = new net.minecraft.core.BlockPos(
+                        ray.x(), (int) Math.floor(getY() + dy), ray.z());
+                if (!visited.add(pos)) {
+                    continue;
                 }
-                return;
-            }
+                if (!serverLevel.hasChunkAt(pos)) {
+                    return;
+                }
+                BlockState state = serverLevel.getBlockState(pos);
+                if (!state.getFluidState().isEmpty()) {
+                    return;
+                }
+                if (state.isAir()) {
+                    if (block == 0) {
+                        break;
+                    }
+                    continue;
+                }
+                boolean breakable = !state.hasBlockEntity() && state.getDestroySpeed(serverLevel, pos) >= 0.0;
+                boolean bamboo = state.is(BlockTags.BAMBOO_BLOCKS);
+                boolean dirtOrSand = state.is(BlockTags.DIRT) || state.is(BlockTags.SAND);
+                boolean glass = state.getBlock() instanceof TransparentBlock || state.getBlock() instanceof StainedGlassPaneBlock;
+                ImpactRules.BlockImpactRoute route = ImpactRules.blockImpactRoute(
+                        VehicleModel.forId(vehicleId) == VehicleModel.TRUCK, dirtOrSand, bamboo, breakable);
 
-            if (!ImpactRules.glassMayBreak(glass, state.isCollisionShapeFullBlock(serverLevel, pos))) {
-                return;
+                // Dynamic Terrain remains the sole authority for loose terrain.
+                if (route == ImpactRules.BlockImpactRoute.TERRAIN_EROSION) {
+                    reportImpact(serverLevel, pos, remainingSpeed);
+                    return;
+                }
+                // The truck keeps its deliberately narrow vegetation interaction.
+                if (VehicleModel.forId(vehicleId) == VehicleModel.TRUCK) {
+                    if (route == ImpactRules.BlockImpactRoute.TRUCK_BAMBOO) {
+                        serverLevel.destroyBlock(pos, true, this);
+                    }
+                    return;
+                }
+                if (!ImpactRules.glassMayBreak(glass, state.isCollisionShapeFullBlock(serverLevel, pos))) {
+                    return;
+                }
+                double chance = state.hasBlockEntity() ? 0.0
+                        : CollisionMath.breakChance(remainingSpeed, state.getDestroySpeed(serverLevel, pos),
+                                CarConfig.COLLISION_MIN_SPEED.get(), CarConfig.COLLISION_MAX_HARDNESS.get());
+                if (chance <= 0.0 || random.nextDouble() >= chance) {
+                    reportImpact(serverLevel, pos, remainingSpeed);
+                    return;
+                }
+                if (broken >= budget || !destroyImpactBlock(serverLevel, pos)) {
+                    return;
+                }
+                broken++;
+                remainingSpeed = ImpactRules.afterSolidImpact(remainingSpeed, CarConfig.COLLISION_BREAK_SPEED_SCALE.get());
+                if (sableBody != null) {
+                    SableCompat.scaleHorizontalVelocity(sableBody, CarConfig.COLLISION_BREAK_SPEED_SCALE.get());
+                }
+                if (broken >= budget || remainingSpeed < CarConfig.COLLISION_MIN_SPEED.get()) {
+                    return;
+                }
             }
-            double chance = state.hasBlockEntity() ? 0.0
-                    : CollisionMath.breakChance(speedBefore, state.getDestroySpeed(serverLevel, pos),
-                            CarConfig.COLLISION_MIN_SPEED.get(), CarConfig.COLLISION_MAX_HARDNESS.get());
-            if (chance > 0.0 && random.nextDouble() < chance) {
-                serverLevel.destroyBlock(pos, true, this);
-            } else {
-                reportImpact(serverLevel, pos, speedBefore);
-            }
-            return;
         }
+    }
+
+    /** Keep the world's success result observable for protected/refused-destruction regressions. */
+    boolean destroyImpactBlock(net.minecraft.server.level.ServerLevel serverLevel, net.minecraft.core.BlockPos pos) {
+        return serverLevel.destroyBlock(pos, true, this);
     }
 
     @Override
@@ -1235,9 +1296,16 @@ public class CarEntity extends Entity {
             SkidMarksClient.tick(this);
             return;
         }
+        // Entity old-position bookkeeping runs before this tick, while Sable pose sync happens below.
+        // Position minus xo/zo can therefore remain zero even during real travel. Retain the previous
+        // synced velocity's direction BEFORE current collision response replaces it with a stop/rebound.
+        Vec3 priorMotion = getDeltaMovement();
+        double priorTravel = Math.hypot(priorMotion.x, priorMotion.z);
         double travelled = Math.hypot(getX() - xo, getZ() - zo);
-        if (travelled > 0.05) {
-            heading = new net.minecraft.world.phys.Vec3((getX() - xo) / travelled, 0.0, (getZ() - zo) / travelled);
+        if (priorTravel > 0.05) {
+            heading = new Vec3(priorMotion.x / priorTravel, 0.0, priorMotion.z / priorTravel);
+        } else if (travelled > 0.05) {
+            heading = new Vec3((getX() - xo) / travelled, 0.0, (getZ() - zo) / travelled);
         }
         if (tickCount % 2 == 0 && level() instanceof net.minecraft.server.level.ServerLevel lampLevel) {
             lampBlock = HeadlampLight.update(lampLevel, this, lampBlock);
@@ -1461,7 +1529,9 @@ public class CarEntity extends Entity {
             publishDrivingTelemetry(DrivetrainMath.omegaToRpm(SableCompat.engineOmega(sableBody)), SableCompat.speed(sableBody));
             publishSoundState(Math.abs(throttle), SableCompat.audioSlip(sableBody),
                     SableCompat.engineRpm(sableBody));
-            emitEffects(throttle, SableCompat.speed(sableBody), SableCompat.slip(sableBody));
+            emitEffects(throttle, SableCompat.speed(sableBody),
+                    SableCompat.wheelContactBlocks(sableBody), SableCompat.wheelContactSubSteps(sableBody),
+                    SableCompat.wheelDustSlipSpeeds(sableBody));
             checkImpact(SableCompat.speed(sableBody));
             if (tickCount % 20 == 0) {
                 DynamicVehiclesMod.LOGGER.debug("car {} {}", getUUID(), SableCompat.describe(sableBody, gear, throttle));
@@ -1499,23 +1569,57 @@ public class CarEntity extends Entity {
         super.remove(reason);
     }
 
-    /** Server: exhaust while on the throttle and moving, dust at speed or sliding, both from behind the car, at most one of each per interval. */
-    private void emitEffects(double throttle, double speed, double slip) {
-        if (!CarConfig.SMOKE_ENABLED.get() || !AtmosphereCompat.usable() || tickCount % CarConfig.SMOKE_INTERVAL_TICKS.get() != 0
+    /**
+     * Server effect emission. Exhaust remains a single rear vehicle-local source; dust is independently
+     * emitted from each wheel that actually carried load during the just-finished physics tick.
+     */
+    private void emitEffects(double throttle, double speed, BlockPos[] contactBlocks,
+            int[] contactSubSteps, double[] wheelSlipSpeeds) {
+        if (!AtmosphereCompat.usable()
                 || !(level() instanceof net.minecraft.server.level.ServerLevel serverLevel)) {
             return;
         }
-        double strength = CarConfig.SMOKE_STRENGTH.get();
+        if (tickCount % CarConfig.EXHAUST_INTERVAL_TICKS.get() == 0) {
+            emitExhaust(serverLevel, throttle, speed);
+        }
+        if (tickCount % CarConfig.SMOKE_INTERVAL_TICKS.get() == 0) {
+            emitDust(serverLevel, speed, contactBlocks, contactSubSteps, wheelSlipSpeeds);
+        }
+    }
+
+    /** The production dust half of {@link #emitEffects}: exactly one bounded emission per loaded wheel. */
+    void emitDust(net.minecraft.server.level.ServerLevel serverLevel, double speed, BlockPos[] contactBlocks,
+            int[] contactSubSteps, double[] wheelSlipSpeeds) {
+        if (!CarConfig.DUST_ENABLED.get()) {
+            return;
+        }
+        double dustStrength = CarConfig.DUST_MULTIPLIER.get();
+        int wheelCount = Math.min(contactBlocks.length, Math.min(contactSubSteps.length, wheelSlipSpeeds.length));
+        for (int wheel = 0; wheel < wheelCount; wheel++) {
+            // A raycast alone is not proof of a tire contact: only a wheel that carried positive suspension
+            // load in at least one physics sub-step can emit. This also makes airborne and lost-contact
+            // cases quiet without relying on Entity#onGround, which Sable-driven cars do not update.
+            if (contactBlocks[wheel] == null || contactSubSteps[wheel] == 0) {
+                continue;
+            }
+            int dust = CarEffectsMath.dustAmount(speed, wheelSlipSpeeds[wheel], dustStrength,
+                    CarConfig.DUST_SPEED_START.get(), CarConfig.DUST_SLIP_START.get(), CarConfig.DUST_MAX_AMOUNT.get());
+            if (dust > 0) {
+                AtmosphereCompat.dust(serverLevel, contactBlocks[wheel], dust);
+            }
+        }
+    }
+
+    /** The production exhaust half of {@link #emitEffects}: one rear-position source per car interval. */
+    void emitExhaust(net.minecraft.server.level.ServerLevel serverLevel, double throttle, double speed) {
         double yaw = Math.toRadians(getYRot());
         double back = spec().halfZ() + 0.3;
         BlockPos rear = BlockPos.containing(getX() + Math.sin(yaw) * back, getY() + 0.5, getZ() - Math.cos(yaw) * back);
-        int exhaust = CarEffectsMath.exhaustAmount(throttle, speed, strength);
-        if (exhaust > 0) {
+        int exhaust = CarEffectsMath.exhaustAmount(throttle, speed, CarConfig.EXHAUST_MULTIPLIER.get(),
+                CarConfig.EXHAUST_THROTTLE_START.get(), CarConfig.EXHAUST_THROTTLE_CURVE.get(),
+                CarConfig.EXHAUST_MAX_AMOUNT.get());
+        if (CarConfig.EXHAUST_ENABLED.get() && exhaust > 0) {
             AtmosphereCompat.exhaust(serverLevel, rear, exhaust);
-        }
-        int dust = onGround() ? CarEffectsMath.dustAmount(speed, slip, strength) : 0;
-        if (dust > 0) {
-            AtmosphereCompat.dust(serverLevel, rear.below(), dust);
         }
     }
 
@@ -1524,6 +1628,11 @@ public class CarEntity extends Entity {
         forcedThrottle = throttle;
         forcedSteer = steer;
         forcedDriveTicks = ticks;
+    }
+
+    /** GameTest-only heading setup for a controlled block-impact fixture. */
+    void setHeadingForTest(Vec3 heading) {
+        this.heading = heading.normalize();
     }
 
     /** Current server-authoritative horizontal speed, including Sable-synchronised vehicles. */

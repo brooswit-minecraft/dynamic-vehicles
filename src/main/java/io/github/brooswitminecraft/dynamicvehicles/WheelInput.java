@@ -104,7 +104,9 @@ public final class WheelInput {
 
     @SubscribeEvent
     public static void onMovementInput(MovementInputUpdateEvent event) {
-        boolean ridingCar = event.getEntity().getVehicle() instanceof CarEntity;
+        var mount = event.getEntity().getVehicle();
+        boolean ridingCar = mount instanceof CarEntity;
+        boolean ridingWheelVehicle = DriverVehicleEntity.acceptsWheelMovement(mount);
         if (!wasRidingCarForPaddles && ridingCar) {
             // Fresh mount: the car on the other end starts its own paddle state at false/false, so force a
             // resend even if our last-sent flags happen to already match (e.g. after a disconnect/rejoin).
@@ -118,10 +120,7 @@ public final class WheelInput {
             lastRadioButtonDown = false;
         }
         wasRidingCarForPaddles = ridingCar;
-        if (!ridingCar) {
-            return;
-        }
-        boolean wheelActive = device >= 0 && ClientConfig.WHEEL_ENABLED.get();
+        boolean wheelActive = ridingWheelVehicle && device >= 0 && ClientConfig.WHEEL_ENABLED.get();
         if (wheelActive) {
             WheelMapping.Output out = current();
             var input = event.getInput();
@@ -129,6 +128,10 @@ public final class WheelInput {
             input.forwardImpulse = WheelMapping.merge(input.forwardImpulse, out.forward());
             // The wheel's shifter paddles drive honk/handbrake instead (MINECRAFT-167); jump must do nothing.
             input.jumping = false;
+        }
+        // Only movement axes are shared. Car paddles, shifter and radio keep their car-only payload path.
+        if (!ridingCar) {
+            return;
         }
         WheelMapping.Paddles paddles = wheelActive
                 ? WheelMapping.paddles(readButtons(device), ClientConfig.WHEEL_HONK_BUTTON.get(), ClientConfig.WHEEL_HANDBRAKE_BUTTON.get())
@@ -215,7 +218,7 @@ public final class WheelInput {
 
     private static boolean isRiding() {
         LocalPlayer player = Minecraft.getInstance().player;
-        return player != null && player.getVehicle() instanceof CarEntity;
+        return player != null && DriverVehicleEntity.acceptsWheelMovement(player.getVehicle());
     }
 
     private static int findDevice() {

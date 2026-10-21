@@ -18,6 +18,7 @@ class VehicleModelTest {
         assertEquals(VehicleModel.TRUCK, VehicleModel.forId(VehicleIds.TRUCK));
         assertEquals(VehicleModel.TROPHY, VehicleModel.forId(VehicleIds.TROPHY_TRUCK));
         assertEquals(VehicleModel.DRIFT, VehicleModel.forId(VehicleIds.DRIFT_CAR));
+        assertEquals(VehicleModel.RALLY, VehicleModel.forId(VehicleIds.RALLY_CAR));
         assertEquals(VehicleModel.MUSCLE, VehicleModel.forId(VehicleIds.MUSCLE_CAR));
         assertEquals(VehicleModel.ROCK_CRAWLER, VehicleModel.forId(VehicleIds.ROCK_CRAWLER));
         assertEquals(VehicleModel.MONSTER_TRUCK, VehicleModel.forId(VehicleIds.MONSTER_TRUCK));

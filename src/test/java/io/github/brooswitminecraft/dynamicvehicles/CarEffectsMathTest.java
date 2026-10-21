@@ -56,6 +56,22 @@ class CarEffectsMathTest {
     }
 
     @Test
+    void exhaustThrottleRampHonorsDeadBandCurveScaleAndPerEmissionCap() {
+        assertEquals(0, CarEffectsMath.exhaustAmount(0.20, 10.0, 1.0, 0.20, 1.0, 32),
+                "configured throttle dead band must suppress exhaust at release");
+        int low = CarEffectsMath.exhaustAmount(0.35, 10.0, 2.5, 0.20, 1.0, 32);
+        int high = CarEffectsMath.exhaustAmount(1.0, 10.0, 2.5, 0.20, 1.0, 32);
+        assertTrue(low > 0 && low < high, "high throttle must emit more than a configured low-throttle level");
+        assertEquals(0, CarEffectsMath.exhaustAmount(1.0, 10.0, 0.0, 0.20, 1.0, 32),
+                "zero exhaust scale must disable even full throttle");
+        assertTrue(CarEffectsMath.exhaustAmount(0.50, 10.0, 2.5, 0.20, 2.0, 32) <
+                CarEffectsMath.exhaustAmount(0.50, 10.0, 2.5, 0.20, 1.0, 32),
+                "a steeper curve must defer the ramp at mid throttle");
+        assertEquals(7, CarEffectsMath.exhaustAmount(1.0, 10.0, 10.0, 0.0, 1.0, 7),
+                "one emission must never exceed its configured cap");
+    }
+
+    @Test
     void dustStartsExactlyAtMinSpeedOrOnSlipAlone() {
         assertEquals(0, CarEffectsMath.dustAmount(CarEffectsMath.MIN_DUST_SPEED - 0.01, 0.0, 1.0),
                 "just under the speed threshold with no slip: nothing yet");
@@ -63,5 +79,18 @@ class CarEffectsMathTest {
                 "right at the speed threshold: dust starts");
         assertEquals(0, CarEffectsMath.dustAmount(0.0, 2.99, 1.0), "just under the slip-alone threshold");
         assertTrue(CarEffectsMath.dustAmount(0.0, 3.0, 1.0) > 0, "right at the slip-alone threshold");
+    }
+
+    @Test
+    void configuredWheelDustKeepsSpeedAndSlipIndependentAndBounded() {
+        assertEquals(0, CarEffectsMath.dustAmount(4.9, 0.0, 1.0, 5.0, 3.0, 8));
+        assertTrue(CarEffectsMath.dustAmount(5.0, 0.0, 1.0, 5.0, 3.0, 8) > 0,
+                "ordinary grounded driving starts at the configured actual-speed threshold");
+        assertEquals(0, CarEffectsMath.dustAmount(0.0, 2.9, 1.0, 5.0, 3.0, 8));
+        assertTrue(CarEffectsMath.dustAmount(0.0, 3.0, 1.0, 5.0, 3.0, 8) > 0,
+                "stationary wheelspin starts at the configured per-wheel slip threshold");
+        assertEquals(0, CarEffectsMath.dustAmount(30.0, 10.0, 0.0, 5.0, 3.0, 8));
+        assertEquals(8, CarEffectsMath.dustAmount(300.0, 100.0, 10.0, 5.0, 3.0, 8),
+                "one wheel cannot exceed the configured per-emission dust cap");
     }
 }

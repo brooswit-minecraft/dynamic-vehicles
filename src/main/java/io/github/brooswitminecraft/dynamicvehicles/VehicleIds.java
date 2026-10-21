@@ -15,6 +15,7 @@ final class VehicleIds {
     static final String TRUCK = "truck";
     static final String TROPHY_TRUCK = "trophy_truck";
     static final String DRIFT_CAR = "drift_car";
+    static final String RALLY_CAR = "rally_car";
 
     /** MINECRAFT-443: named here (rather than left as the literals {@code DynamicVehiclesMod} already
      * registers them under) so {@link VehicleSpecOverrides} and the model/collision dispatch in

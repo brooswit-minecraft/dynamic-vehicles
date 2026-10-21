@@ -57,6 +57,9 @@ public class MotorboatEntity extends SimpleVehicleEntity {
         super(type, level);
     }
 
+    @Override
+    public boolean supportsWheelMovement() { return true; }
+
     public static double halfWidth() {
         return HALF_WIDTH;
     }

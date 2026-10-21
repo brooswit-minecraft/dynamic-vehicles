@@ -48,7 +48,8 @@ public final class CarDrivetrainGameTests {
     private static final double WHEEL_FORCE_BOUND_TOLERANCE = 1e-6;
     /** A clutch capacity far below the stock engine's own output (930 - 55 N*m), so it genuinely saturates
      * at full throttle -- see {@code aLowConfiguredClutchCapacitySaturatesTheExchangeAndLimitsTheCar}. */
-    private static final double LOW_CLUTCH_CAPACITY = 60.0;
+    // Keep the limited fixture below the base FWD tire traction ceiling.
+    private static final double LOW_CLUTCH_CAPACITY = 30.0;
     /** Slack on the two-shaft exchange balance, N*m: this identity is exact arithmetic. */
     private static final double EXCHANGE_BALANCE_TOLERANCE = 1e-6;
     /** Slack on the signed realized-impulse books (a wheel's own drive impulse against its share of the
@@ -1478,10 +1479,18 @@ public final class CarDrivetrainGameTests {
                         everSaturatedAtTheConfiguredCapacity[0] = true;
                     }
                     double exchangeBound = Math.abs(cars[0].debugClutchWheelForce());
-                    for (double command : cars[0].debugWheelDriveCommands()) {
+                    double[] commands = cars[0].debugWheelDriveCommands();
+                    double totalCommand = 0.0;
+                    for (int wheel = 0; wheel < commands.length; wheel++) {
+                        totalCommand += Math.abs(commands[wheel]);
+                        boolean front = cars[0].spec().mounts()[wheel][2] > 0.0;
+                        // The base FWD layout assigns the historical four-wheel command to two fronts.
+                        double wheelBound = front ? 2.0 * exchangeBound : 0.0;
                         worstCommandOverExchange[0] = Math.max(worstCommandOverExchange[0],
-                                Math.abs(command) - exchangeBound);
+                                Math.abs(commands[wheel]) - wheelBound);
                     }
+                    worstCommandOverExchange[0] = Math.max(worstCommandOverExchange[0],
+                            totalCommand - commands.length * exchangeBound);
                 })
                 .thenIdle(4)
                 .thenExecute(() -> {
@@ -1769,9 +1778,9 @@ public final class CarDrivetrainGameTests {
                     lane.board(car[0]);
                     books[0] = new ExchangeBooks(car[0], "D1-then-REVERSE car");
                 })
-                .thenExecute(() -> car[0].forceDrive(1.0, 0.0, 25))
+                .thenExecute(() -> car[0].forceDrive(1.0, 0.0, 45))
                 .thenIdle(1)
-                .thenExecuteFor(155, () -> {
+                .thenExecuteFor(175, () -> {
                     books[0].sample();
                     boolean inReverse = car[0].debugLastGear() == CarPhysics.Gear.REVERSE;
                     double velocity = forwardVelocity(car[0]);
@@ -1784,8 +1793,8 @@ public final class CarDrivetrainGameTests {
                     if (inReverse && velocity < -4.0) {
                         governedTicks[0]++;
                     }
-                    if (++tick[0] == 25) {
-                        // D1's 25 ticks are done (the last one was just audited): REVERSE, still rolling forward.
+                    if (++tick[0] == 45) {
+                        // D1's 45 ticks (allowing the base FWD traction limit) are done (the last one was just audited): REVERSE, still rolling forward.
                         helper.assertTrue(velocity > 3.0,
                                 "test setup invalid -- the car was not rolling forward when REVERSE was selected: " + velocity);
                         car[0].selectGear(CarPhysics.Gear.REVERSE);

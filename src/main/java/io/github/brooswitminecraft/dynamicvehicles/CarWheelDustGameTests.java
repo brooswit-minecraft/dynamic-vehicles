@@ -42,7 +42,7 @@ public final class CarWheelDustGameTests {
                     // ticking vehicle may produce legitimate dust, but is not evidence about this car.
                     Observation observation = new Observation(emission, helper.getLevel().getBlockState(emission.pos()),
                             car.debugSpeed(), car.debugWheelContactBlocks(), car.debugWheelContactSubSteps(),
-                            car.debugWheelSlipSpeeds());
+                            car.debugWheelDustSlipSpeeds());
                     if (loadedWheelAt(observation, emission.pos()) >= 0) {
                         dust.add(observation);
                     }
@@ -99,12 +99,14 @@ public final class CarWheelDustGameTests {
             }
             CarEntity car = lanes.spawn(DynamicVehiclesMod.CAR.get(),
                     new net.minecraft.world.phys.Vec3(VehicleLanes.FIRST_LANE_X+.5,VehicleLanes.SPAWN_Y,reverse?90:6));
+            var rider = helper.makeMockPlayer(net.minecraft.world.level.GameType.CREATIVE);
+            helper.assertTrue(rider.startRiding(car), "scenario driver could not mount car");
             car.selectGear(reverse ? CarPhysics.Gear.REVERSE : CarPhysics.Gear.D1);
             int[] qualifying = {0};
             AtmosphereCompat.EmissionObserver.install(emission -> {
                 if (emission.material()!=AtmosphereMaterial.DUST) return;
                 Observation observed = new Observation(emission,helper.getLevel().getBlockState(emission.pos()),
-                        car.debugSpeed(),car.debugWheelContactBlocks(),car.debugWheelContactSubSteps(),car.debugWheelSlipSpeeds());
+                        car.debugSpeed(),car.debugWheelContactBlocks(),car.debugWheelContactSubSteps(),car.debugWheelDustSlipSpeeds());
                 int wheel = loadedWheelAt(observed,emission.pos());
                 if (wheel<0) return;
                 boolean scenario = reverse ? car.getDeltaMovement().z < -.1

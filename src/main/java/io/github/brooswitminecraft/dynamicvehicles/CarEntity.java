@@ -572,8 +572,12 @@ public class CarEntity extends DriverVehicleEntity {
         return sableBody == null ? new BlockPos[0] : SableCompat.wheelContactBlocks(sableBody);
     }
 
-    /** Server test support for MINECRAFT-480: each wheel's real raw slip speed from the just-completed
-     * physics tick. This is the same telemetry passed to the wheel-contact dust calculation. */
+    /** Server test support for MINECRAFT-480: each wheel's terrain-wear slip speed from the just-completed
+     * physics tick. */
+    double[] debugWheelDustSlipSpeeds() {
+        return sableBody == null ? new double[0] : SableCompat.wheelDustSlipSpeeds(sableBody);
+    }
+
     double[] debugWheelSlipSpeeds() {
         return sableBody == null ? new double[0] : SableCompat.wheelSlipSpeeds(sableBody);
     }
@@ -1527,7 +1531,7 @@ public class CarEntity extends DriverVehicleEntity {
                     SableCompat.engineRpm(sableBody));
             emitEffects(throttle, SableCompat.speed(sableBody),
                     SableCompat.wheelContactBlocks(sableBody), SableCompat.wheelContactSubSteps(sableBody),
-                    SableCompat.wheelSlipSpeeds(sableBody));
+                    SableCompat.wheelDustSlipSpeeds(sableBody));
             checkImpact(SableCompat.speed(sableBody));
             if (tickCount % 20 == 0) {
                 DynamicVehiclesMod.LOGGER.debug("car {} {}", getUUID(), SableCompat.describe(sableBody, gear, throttle));

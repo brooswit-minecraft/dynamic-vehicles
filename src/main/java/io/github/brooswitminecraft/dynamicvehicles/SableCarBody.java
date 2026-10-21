@@ -197,6 +197,7 @@ final class SableCarBody {
     // books: one that touched nothing all tick must have changed its spin by exactly what it took.
     private final double[] wheelRealizedDriveImpulse;
     private final int[] wheelContactSubSteps;
+    private final double[] wheelDustSlip;
     // MINECRAFT-446 review (comment 49019): the REAL aero downforce this tick's production path actually
     // applied, captured at the one real application site below - not re-derived by a test from an assumed
     // speed. The review's own finding is why these exist: a test that infers the wing's contribution from
@@ -279,6 +280,7 @@ final class SableCarBody {
         this.wheelDriveCommand = new double[spec.mounts().length];
         this.wheelRealizedDriveImpulse = new double[spec.mounts().length];
         this.wheelContactSubSteps = new int[spec.mounts().length];
+        this.wheelDustSlip = new double[spec.mounts().length];
         this.suspensionTravel = new double[spec.mounts().length];
         this.steerAngle = new double[spec.mounts().length];
         this.lastContactBlockPos = new BlockPos[spec.mounts().length];
@@ -466,6 +468,7 @@ final class SableCarBody {
         realizedDriveImpulse = 0.0;
         java.util.Arrays.fill(wheelRealizedDriveImpulse, 0.0);
         java.util.Arrays.fill(wheelContactSubSteps, 0);
+        java.util.Arrays.fill(wheelDustSlip, 0.0);
         double drivenTireImpulse = 0.0;
         double[] wheelTireImpulses = new double[wheelCountForDrivetrain];
 
@@ -936,6 +939,8 @@ final class SableCarBody {
                 wheelExternalWork += externalImpulse * (priorSpin + wheelSpin[wheel]) * 0.5;
                 double spinSlip = WheelMath.slipFromSpin(wheelSpin[wheel], spec.wheelRadius(), vLong);
                 spinSlipThisTick = Math.max(spinSlipThisTick, Math.abs(spinSlip));
+                // Dust follows actual patch motion; terrain wear keeps its separate force-based slip.
+                wheelDustSlip[wheel] = Math.max(wheelDustSlip[wheel], Math.hypot(spinSlip, vLat));
                 // Audio observes the actual traction budget (including drift/alignment tuning),
                 // independently of terrain wear reporting. Never alter the applied tire forces.
                 double audioLateralScale = driftTuned
@@ -1706,6 +1711,11 @@ final class SableCarBody {
     /** Each wheel's own reported slip speed in m/s from the last grounded physics tick (a copy). */
     double[] wheelSlipSpeeds() {
         return wheelSlip.clone();
+    }
+
+    /** Peak loaded-contact patch slip for visual dust, cleared every physics tick. */
+    double[] wheelDustSlipSpeeds() {
+        return wheelDustSlip.clone();
     }
 
     double[] wheelForces() {

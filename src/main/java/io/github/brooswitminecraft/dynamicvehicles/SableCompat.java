@@ -191,6 +191,10 @@ final class SableCompat {
     }
 
     /** Each grounded wheel's actual slip speed in m/s from the same physics tick as its contact block. */
+    static double[] wheelDustSlipSpeeds(Object body) {
+        return ((SableCarBody) body).wheelDustSlipSpeeds();
+    }
+
     static double[] wheelSlipSpeeds(Object body) {
         return ((SableCarBody) body).wheelSlipSpeeds();
     }

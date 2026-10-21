@@ -10,7 +10,7 @@ import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.client.event.ViewportEvent;
 
 /**
- * Chase camera: while the player rides a car, their view eases toward the car's full orientation each tick, so
+ * Chase camera: while the player rides a car or motorboat, their view eases toward the vehicle's full orientation each tick, so
  * you do not have to keep dragging the camera to look where you are driving. Any mouse movement is free look;
  * after a pause the camera eases back. Yaw and pitch move the player's view; roll is applied at camera render
  * time because Minecraft players have no roll state.
@@ -18,6 +18,7 @@ import net.neoforged.neoforge.client.event.ViewportEvent;
 @EventBusSubscriber(modid = DynamicVehiclesMod.MODID, value = Dist.CLIENT)
 public final class ChaseCamera {
     private static boolean tracking;
+    private static DriverVehicleEntity trackedVehicle;
     private static float lastYaw;
     private static float lastPitch;
     private static float cameraRoll;
@@ -30,16 +31,20 @@ public final class ChaseCamera {
     @SubscribeEvent
     public static void onClientTick(ClientTickEvent.Post event) {
         LocalPlayer player = Minecraft.getInstance().player;
-        if (player == null || !(player.getVehicle() instanceof CarEntity car) || !car.isRigidBody()
+        if (player == null || !(player.getVehicle() instanceof DriverVehicleEntity vehicle)
+                || !vehicle.supportsWheelMovement() || !vehicle.isRigidBody()
                 || !ClientConfig.CHASE_CAMERA.get()) {
             tracking = false;
+            trackedVehicle = null;
             cameraRoll = 0.0f;
             return;
         }
         float playerYaw = player.getYRot();
         float playerPitch = player.getXRot();
-        if (!tracking) {
+        if (!tracking || trackedVehicle != vehicle) {
             tracking = true;
+            trackedVehicle = vehicle;
+            cameraRoll = 0.0f;
             lastYaw = playerYaw;
             lastPitch = playerPitch;
             idleTicks = (int) Math.ceil(ClientConfig.CHASE_CAMERA_RECENTER_SECONDS.get() * 20.0); // start following at once
@@ -53,7 +58,7 @@ public final class ChaseCamera {
         if (idleTicks >= ClientConfig.CHASE_CAMERA_RECENTER_SECONDS.get() * 20.0) {
             double lag = ClientConfig.CHASE_CAMERA_LAG.get();
             float k = (float) (1.0 - Math.exp(-0.05 / lag));
-            org.joml.Quaternionf orientation = car.renderOrientation(1.0f);
+            org.joml.Quaternionf orientation = vehicle.renderOrientation(1.0f);
             ChaseCameraMath.Angles target = ChaseCameraMath.angles(orientation.x, orientation.y, orientation.z, orientation.w);
             newYaw = playerYaw + Mth.wrapDegrees(target.yaw() - playerYaw) * k;
             newPitch = playerPitch + (target.pitch() - playerPitch) * k;
@@ -66,8 +71,10 @@ public final class ChaseCamera {
         lastPitch = newPitch;
         if (--logCountdown <= 0) {
             logCountdown = 20;
-            DynamicVehiclesMod.LOGGER.debug("CHASE yawError={} carHeading={} cameraYaw={} cameraPitch={} cameraRoll={} idleTicks={}",
-                    String.format("%.1f", Mth.wrapDegrees(car.heading() - newYaw)), String.format("%.1f", car.heading()),
+            org.joml.Quaternionf q = vehicle.renderOrientation(1.0f);
+            float vehicleYaw = ChaseCameraMath.angles(q.x, q.y, q.z, q.w).yaw();
+            DynamicVehiclesMod.LOGGER.debug("CHASE yawError={} vehicleHeading={} cameraYaw={} cameraPitch={} cameraRoll={} idleTicks={}",
+                    String.format("%.1f", Mth.wrapDegrees(vehicleYaw - newYaw)), String.format("%.1f", vehicleYaw),
                     String.format("%.1f", Mth.wrapDegrees(newYaw)), String.format("%.1f", newPitch),
                     String.format("%.1f", cameraRoll), idleTicks);
         }
@@ -76,7 +83,8 @@ public final class ChaseCamera {
     @SubscribeEvent
     public static void onComputeCameraAngles(ViewportEvent.ComputeCameraAngles event) {
         LocalPlayer player = Minecraft.getInstance().player;
-        if (tracking && player != null && player.getVehicle() instanceof CarEntity car && car.isRigidBody()
+        if (tracking && player != null && player.getVehicle() instanceof DriverVehicleEntity vehicle && trackedVehicle == vehicle
+                && vehicle.supportsWheelMovement() && vehicle.isRigidBody()
                 && ClientConfig.CHASE_CAMERA.get()) {
             event.setRoll(cameraRoll);
         }

@@ -22,7 +22,7 @@ import net.minecraft.world.phys.Vec3;
  * and passengers already sync through the entity's standard tracking, the same as every other non-living
  * rideable entity.
  */
-public abstract class SimpleVehicleEntity extends Entity {
+public abstract class SimpleVehicleEntity extends DriverVehicleEntity {
 
     protected SimpleVehicleEntity(EntityType<? extends SimpleVehicleEntity> type, Level level) {
         super(type, level);

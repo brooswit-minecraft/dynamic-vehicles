@@ -28,7 +28,7 @@ import net.minecraft.world.phys.Vec3;
  * tick every wheel reports its slip to Dynamic Terrain for the block beneath
  * it, and the car never modifies terrain itself.
  */
-public class CarEntity extends Entity {
+public class CarEntity extends DriverVehicleEntity {
     /** Wheel offsets from the car centre: x = right, z = forward, in metres. */
     static final double MASS_KG = 1200.0;
     private static final int WHEEL_COUNT = 4;
@@ -218,6 +218,9 @@ public class CarEntity extends Entity {
     String vehicleId() {
         return vehicleId;
     }
+
+    @Override
+    public boolean supportsWheelMovement() { return true; }
 
     /** This vehicle's shape and drivetrain: the car's or the truck's. */
     public VehicleSpec spec() {

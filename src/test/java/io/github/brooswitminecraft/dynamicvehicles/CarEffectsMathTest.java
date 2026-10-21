@@ -64,4 +64,17 @@ class CarEffectsMathTest {
         assertEquals(0, CarEffectsMath.dustAmount(0.0, 2.99, 1.0), "just under the slip-alone threshold");
         assertTrue(CarEffectsMath.dustAmount(0.0, 3.0, 1.0) > 0, "right at the slip-alone threshold");
     }
+
+    @Test
+    void configuredWheelDustKeepsSpeedAndSlipIndependentAndBounded() {
+        assertEquals(0, CarEffectsMath.dustAmount(4.9, 0.0, 1.0, 5.0, 3.0, 8));
+        assertTrue(CarEffectsMath.dustAmount(5.0, 0.0, 1.0, 5.0, 3.0, 8) > 0,
+                "ordinary grounded driving starts at the configured actual-speed threshold");
+        assertEquals(0, CarEffectsMath.dustAmount(0.0, 2.9, 1.0, 5.0, 3.0, 8));
+        assertTrue(CarEffectsMath.dustAmount(0.0, 3.0, 1.0, 5.0, 3.0, 8) > 0,
+                "stationary wheelspin starts at the configured per-wheel slip threshold");
+        assertEquals(0, CarEffectsMath.dustAmount(30.0, 10.0, 0.0, 5.0, 3.0, 8));
+        assertEquals(8, CarEffectsMath.dustAmount(300.0, 100.0, 10.0, 5.0, 3.0, 8),
+                "one wheel cannot exceed the configured per-emission dust cap");
+    }
 }

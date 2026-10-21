@@ -10,6 +10,12 @@ public final class CarConfig {
     public static final ModConfigSpec.BooleanValue SMOKE_ENABLED;
     public static final ModConfigSpec.DoubleValue SMOKE_STRENGTH;
     public static final ModConfigSpec.IntValue SMOKE_INTERVAL_TICKS;
+    /** Dedicated wheel-contact dust settings. Exhaust owns its separate settings. */
+    public static final ModConfigSpec.BooleanValue DUST_ENABLED;
+    public static final ModConfigSpec.DoubleValue DUST_MULTIPLIER;
+    public static final ModConfigSpec.DoubleValue DUST_SPEED_START;
+    public static final ModConfigSpec.DoubleValue DUST_SLIP_START;
+    public static final ModConfigSpec.IntValue DUST_MAX_AMOUNT;
     public static final ModConfigSpec.BooleanValue COLLISION_BREAKING;
     public static final ModConfigSpec.DoubleValue COLLISION_MIN_SPEED;
     public static final ModConfigSpec.DoubleValue COLLISION_MAX_HARDNESS;
@@ -44,6 +50,21 @@ public final class CarConfig {
         SMOKE_INTERVAL_TICKS = builder
                 .comment("Ticks between emissions per car (the per-car cap: one exhaust and one dust emission per interval).")
                 .defineInRange("smokeEmitTicks", 6, 5, 200);
+        DUST_ENABLED = builder
+                .comment("Cars emit Dynamic Atmosphere dust from each grounded wheel contact. Does not control exhaust.")
+                .define("dustEnabled", true);
+        DUST_MULTIPLIER = builder
+                .comment("Multiplier on each wheel-contact dust emission (0 = no dust). Separate from exhaust and terrain erosion.")
+                .defineInRange("dustMultiplier", 2.5, 0.0, 10.0);
+        DUST_SPEED_START = builder
+                .comment("Actual chassis speed in m/s at which a grounded wheel starts raising driving dust when it is not slipping.")
+                .defineInRange("dustSpeedStart", 5.0, 0.0, 100.0);
+        DUST_SLIP_START = builder
+                .comment("Actual wheel slip speed in m/s at which a grounded wheel starts raising skid or burnout dust, even when the chassis is stationary.")
+                .defineInRange("dustSlipStart", 3.0, 0.0, 100.0);
+        DUST_MAX_AMOUNT = builder
+                .comment("Maximum Dynamic Atmosphere dust amount from one wheel during one car emission interval.")
+                .defineInRange("dustMaxAmount", 32, 1, 64);
         COLLISION_BREAKING = builder
                 .comment("A hard hit has a chance to break the block ahead (more likely when faster and for softer blocks); a block that survives is eroded instead. Never breaks unbreakable blocks, block entities or fluids, and at most one block per impact.")
                 .define("collisionBreaking", true);

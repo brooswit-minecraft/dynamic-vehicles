@@ -185,6 +185,11 @@ final class SableCompat {
         return ((SableCarBody) body).wheelContactSpeeds();
     }
 
+    /** Each grounded wheel's actual slip speed in m/s from the same physics tick as its contact block. */
+    static double[] wheelSlipSpeeds(Object body) {
+        return ((SableCarBody) body).wheelSlipSpeeds();
+    }
+
     /** Each wheel's own drivetrain longitudinal command; see {@link SableCarBody#wheelDriveCommands()}. */
     static double[] wheelDriveCommands(Object body) {
         return ((SableCarBody) body).wheelDriveCommands();

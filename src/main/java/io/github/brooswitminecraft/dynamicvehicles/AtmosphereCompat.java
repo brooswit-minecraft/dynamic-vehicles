@@ -27,7 +27,11 @@ final class AtmosphereCompat {
     }
 
     static void dust(ServerLevel level, BlockPos pos, int amount) {
-        Emitter.emit(level, io.github.brooswitminecraft.dynamicatmosphere.AtmosphereMaterial.DUST, pos, amount);
+        var material = io.github.brooswitminecraft.dynamicatmosphere.AtmosphereMaterial.DUST;
+        Emitter.emit(level, material, pos, amount);
+        // Observation only: keeps the optional-dependency boundary intact while allowing GameTests to
+        // prove that the real dust compatibility path, rather than a helper calculation, was reached.
+        EmissionObserver.record(material, pos, amount);
     }
 
     /** Holds the Dynamic Atmosphere references so they load only after {@link #usable()}. */

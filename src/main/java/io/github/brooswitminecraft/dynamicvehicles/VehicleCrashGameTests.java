@@ -23,10 +23,11 @@ public final class VehicleCrashGameTests {
                 for (int z = 21; z <= 23; z++) lanes.setBlock(new BlockPos(x,y,z), Blocks.GLASS.defaultBlockState());
                 lanes.setBlock(new BlockPos(x,y,24), Blocks.BEDROCK.defaultBlockState());
             }
-            CarEntity car = lanes.spawn(DynamicVehiclesMod.CAR.get(), VehicleLanes.spawnPoint(VehicleLanes.FIRST_LANE_X));
+            CarEntity car = lanes.spawn(DynamicVehiclesMod.CAR.get(), new Vec3(VehicleLanes.FIRST_LANE_X+.5, VehicleLanes.SPAWN_Y, VehicleLanes.SPAWN_Z+.5));
             car.selectGear(CarPhysics.Gear.NEUTRAL);
             double[] maxSpeed = {0};
             boolean[] broke = {false};
+            StringBuilder trajectory = new StringBuilder();
             // A sequence avoids adding dozens of timed-map entries while GameTest iterates that map.
             helper.startSequence().thenIdle(10).thenExecute(() -> {
                 helper.assertTrue(car.sableBody() != null, "real car did not initialize Sable");
@@ -34,12 +35,19 @@ public final class VehicleCrashGameTests {
             }).thenExecuteFor(35, () -> {
                 maxSpeed[0] = Math.max(maxSpeed[0], car.debugSpeed());
                 BlockPos origin = VehicleLanes.Site.CRASH_ACCEPTANCE.origin();
-                for (int y = 3; y <= 5; y++) for (int z = 21; z <= 23; z++) {
-                    if (helper.getLevel().getBlockState(origin.offset(4,y,z)).isAir()) broke[0] = true;
+                trajectory.append(String.format(java.util.Locale.ROOT," [x=%.2f z=%.2f speed=%.2f]",
+                        car.getX()-origin.getX(),car.getZ()-origin.getZ(),car.debugSpeed()));
+                for (int x=2;x<=6;x++) for (int y = 3; y <= 5; y++) for (int z = 21; z <= 23; z++) {
+                    if (helper.getLevel().getBlockState(origin.offset(x,y,z)).isAir()) broke[0] = true;
                 }
             }).thenExecute(() -> {
                 helper.assertTrue(maxSpeed[0] > 20, "fixture never established realistic pre-impact motion: "+maxSpeed[0]);
-                helper.assertTrue(broke[0], "real wall collision never reached the block-breaking route");
+                Object impactHeading;
+                try {
+                    var field = CarEntity.class.getDeclaredField("heading"); field.setAccessible(true);
+                    impactHeading = field.get(car);
+                } catch (ReflectiveOperationException e) { throw new IllegalStateException(e); }
+                helper.assertTrue(broke[0], "real wall collision did not break glass; heading="+impactHeading+trajectory);
                 helper.assertTrue(car.debugSpeed() < 2, "car did not stop against the remaining barrier: "+car.debugSpeed());
                 double momentumLoss = car.spec().massKg() * (maxSpeed[0]-car.debugSpeed());
                 helper.assertTrue(momentumLoss > car.spec().massKg()*18, "collision did not remove measured body momentum");

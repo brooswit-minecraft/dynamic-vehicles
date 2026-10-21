@@ -214,7 +214,7 @@ public final class VehicleSpecOverridesGameTests {
     /** Config must reach a real entity independently per vehicle type, including reconstruction from NBT. */
     @GameTest(template = "settlement_test")
     public static void computerAssistConfigReachesNewAndReloadedCarsWithoutLeakingToTruck(GameTestHelper helper) {
-        withLoadedOverride(VehicleIds.CAR, "{\"tractionControlLevel\":0.75,\"absLevel\":0.5}", () -> {
+        withLoadedOverride(VehicleIds.CAR, "{\"computer\":{\"tractionControlLevel\":0.75,\"absLevel\":0.5}}", () -> {
             CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
             helper.assertTrue(car.spec().computerTuning().tractionControlLevel() == 0.75,
                     "real car constructor did not consume configured TC authority");

@@ -130,7 +130,7 @@ public final class ComputerAssistGameTests {
             Path cars = dir.resolve("dynamicvehicles/cars");
             Files.createDirectories(cars);
             Files.writeString(cars.resolve(VehicleIds.CAR + ".json"),
-                    "{\"tractionControlLevel\":" + tc + ",\"absLevel\":" + abs + "}");
+                    "{\"computer\":{\"tractionControlLevel\":" + tc + ",\"absLevel\":" + abs + "}}");
             VehicleSpecOverrides.load(dir);
             car = DynamicVehiclesMod.CAR.get().create(helper.getLevel());
         } catch (java.io.IOException e) {

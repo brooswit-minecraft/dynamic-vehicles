@@ -137,7 +137,7 @@ public final class WingAeroGameTests {
     private static final double MIN_BALANCE_SHIFT_MARGIN = 0.02;
     /** A deliberately short spin-up, so the car it drives reaches a much lower coasting speed than one
      * given the full {@link #COAST_SPIN_UP_TICKS} window. */
-    private static final int SHORT_SPIN_UP_TICKS = 15;
+    private static final int SHORT_SPIN_UP_TICKS = 35;
     /** The faster car must be travelling at least this many times the slower car's speed for a
      * speed-dependence comparison to be comparing two genuinely different speeds. */
     private static final double MIN_SPEED_GAP_RATIO = 1.5;
@@ -285,7 +285,9 @@ public final class WingAeroGameTests {
                 stock.forceDrive(FULL_THROTTLE, NO_STEER, COAST_SPIN_UP_TICKS);
                 winged.forceDrive(FULL_THROTTLE, NO_STEER, COAST_SPIN_UP_TICKS);
                 helper.runAfterDelay(COAST_SPIN_UP_TICKS, () -> {
+                    stock.selectGear(CarPhysics.Gear.NEUTRAL);
                     stock.forceDrive(NO_THROTTLE, NO_STEER, LAUNCH_TRANSIENT_TICKS);
+                    winged.selectGear(CarPhysics.Gear.NEUTRAL);
                     winged.forceDrive(NO_THROTTLE, NO_STEER, LAUNCH_TRANSIENT_TICKS);
                     helper.runAfterDelay(LAUNCH_TRANSIENT_TICKS, () -> {
                         double stockSpeed = horizontalSpeed(stock);
@@ -337,6 +339,8 @@ public final class WingAeroGameTests {
                                 COAST_SPIN_UP_TICKS + LAUNCH_TRANSIENT_TICKS - 1L, "slower car");
                         fastCar.forceDrive(FULL_THROTTLE, NO_STEER, COAST_SPIN_UP_TICKS);
                         slowCar.forceDrive(FULL_THROTTLE, NO_STEER, SHORT_SPIN_UP_TICKS);
+                        helper.runAfterDelay(SHORT_SPIN_UP_TICKS, () -> slowCar.selectGear(CarPhysics.Gear.NEUTRAL));
+                        helper.runAfterDelay(COAST_SPIN_UP_TICKS, () -> fastCar.selectGear(CarPhysics.Gear.NEUTRAL));
                         // Both are coasting with their launch transient decayed by this point: the slow car
                         // released throttle earlier, which only widens the speed gap being tested.
                         helper.runAfterDelay(COAST_SPIN_UP_TICKS + LAUNCH_TRANSIENT_TICKS, () -> {
@@ -419,10 +423,14 @@ public final class WingAeroGameTests {
                     double speedAtThrottleRelease = horizontalSpeed(car);
                     helper.assertTrue(speedAtThrottleRelease > MOVING_SPEED_FLOOR,
                             "test setup never got the car moving before coast-down: " + speedAtThrottleRelease);
+                    car.selectGear(CarPhysics.Gear.NEUTRAL);
                     car.forceDrive(NO_THROTTLE, NO_STEER, COAST_TICKS);
                     double[] lastSpeed = {speedAtThrottleRelease};
                     boolean[] everSpedUp = {false};
-                    for (int delay = COAST_SAMPLE_INTERVAL_TICKS; delay <= COAST_TICKS;
+                    // Let launch wheel slip and suspension transients settle before attributing
+                    // any subsequent speed increase to the coasting force path.
+                    helper.runAfterDelay(LAUNCH_TRANSIENT_TICKS, () -> lastSpeed[0] = horizontalSpeed(car));
+                    for (int delay = LAUNCH_TRANSIENT_TICKS + COAST_SAMPLE_INTERVAL_TICKS; delay <= COAST_TICKS;
                             delay += COAST_SAMPLE_INTERVAL_TICKS) {
                         helper.runAfterDelay(delay, () -> {
                             double speed = horizontalSpeed(car);
@@ -435,7 +443,8 @@ public final class WingAeroGameTests {
                     helper.runAfterDelay(COAST_TICKS, () -> {
                         helper.assertTrue(!everSpedUp[0],
                                 "a coasting car with elevated aerodynamic drag must never speed back up, only "
-                                        + "slow down -- drag injected energy instead of only opposing velocity");
+                                        + "slow down after settling -- lastSpeed=" + lastSpeed[0]
+                                        + " releaseSpeed=" + speedAtThrottleRelease);
                         helper.assertTrue(lastSpeed[0] < speedAtThrottleRelease,
                                 "a coasting car with elevated aerodynamic drag must end up slower than when "
                                         + "throttle was released: released=" + speedAtThrottleRelease
@@ -625,8 +634,10 @@ public final class WingAeroGameTests {
                         helper.runAfterDelay(COAST_SPIN_UP_TICKS, () -> {
                             // Throttle released: from here on neither car has drive torque, so neither carries
                             // the launch weight transfer that defeated the earlier change-based drafts.
-                            stock.forceDrive(NO_THROTTLE, NO_STEER, LAUNCH_TRANSIENT_TICKS);
-                            winged.forceDrive(NO_THROTTLE, NO_STEER, LAUNCH_TRANSIENT_TICKS);
+                            stock.selectGear(CarPhysics.Gear.NEUTRAL);
+                    stock.forceDrive(NO_THROTTLE, NO_STEER, LAUNCH_TRANSIENT_TICKS);
+                            winged.selectGear(CarPhysics.Gear.NEUTRAL);
+                    winged.forceDrive(NO_THROTTLE, NO_STEER, LAUNCH_TRANSIENT_TICKS);
                             helper.runAfterDelay(LAUNCH_TRANSIENT_TICKS, () -> {
                                 double stockLevel = totalTravel(stock);
                                 double wingedLevel = totalTravel(winged);

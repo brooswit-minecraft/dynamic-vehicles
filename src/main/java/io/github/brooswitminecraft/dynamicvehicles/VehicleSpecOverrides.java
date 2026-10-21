@@ -247,6 +247,7 @@ final class VehicleSpecOverrides {
                                 VehicleSpecLimits.MAX_CLUTCH_TORQUE_CAPACITY, stockCoupling.clutchTorqueCapacity()));
 
         VehicleSpec.DiffuserTuning diffuserTuning = applyDiffuserOverride(stock.diffuserTuning(), file.diffuser);
+        VehicleSpec.ComputerTuning computerTuning = applyComputerOverride(stock.computerTuning(), file.computer);
 
         return new VehicleSpec(stock.halfX(), stock.halfY(), stock.halfZ(),
                 stock.mounts(), stock.wheelRadius(), stock.wheelWidth(),
@@ -259,7 +260,24 @@ final class VehicleSpecOverrides {
                 stock.tireTuning(), stock.downforceGripPerSpeed(), antiRollScale,
                 stock.seats(), vehicleTuning, handbrakeScale, suspensionTuning, steeringTuning,
                 tirePressureBar, pitchTuning,
-                frontWingDownforceCoeff, rearWingDownforceCoeff, wingDragCoeff, drivetrainCoupling, diffuserTuning);
+                frontWingDownforceCoeff, rearWingDownforceCoeff, wingDragCoeff, drivetrainCoupling, diffuserTuning,
+                computerTuning);
+    }
+
+    private static VehicleSpec.ComputerTuning applyComputerOverride(VehicleSpec.ComputerTuning stock,
+            VehicleCarConfigFile.Computer file) {
+        if (file == null) {
+            return stock;
+        }
+        double traction = file.tractionControlLevel == null ? stock.tractionControlLevel()
+                : VehicleSpecLimits.clamp(file.tractionControlLevel,
+                        VehicleSpecLimits.MIN_COMPUTER_ASSIST_LEVEL, VehicleSpecLimits.MAX_COMPUTER_ASSIST_LEVEL,
+                        stock.tractionControlLevel());
+        double abs = file.absLevel == null ? stock.absLevel()
+                : VehicleSpecLimits.clamp(file.absLevel,
+                        VehicleSpecLimits.MIN_COMPUTER_ASSIST_LEVEL, VehicleSpecLimits.MAX_COMPUTER_ASSIST_LEVEL,
+                        stock.absLevel());
+        return new VehicleSpec.ComputerTuning(traction, abs);
     }
 
     /** Builds this car's effective {@link VehicleSpec.DiffuserTuning} (MINECRAFT-447): {@code stock}

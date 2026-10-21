@@ -149,7 +149,7 @@ public record VehicleSpec(
          * hardware -- so every vehicle's coupling behaviour is byte-for-byte what it was before this field
          * existed. Grouped into their own small type for the same reason {@link VehicleTuning} is: four
          * related dials that are set together or not at all. See {@link DrivetrainCoupling}. */
-        DrivetrainCoupling drivetrainCoupling, DiffuserTuning diffuserTuning) {
+        DrivetrainCoupling drivetrainCoupling, DiffuserTuning diffuserTuning, ComputerTuning computerTuning) {
 
     /** Compatibility constructor: absent feature groups retain their identity defaults. */
     public VehicleSpec(double halfX, double halfY, double halfZ,
@@ -169,7 +169,7 @@ public record VehicleSpec(
                 downforceGripPerSpeed, antiRollScale, seats, vehicleTuning, handbrakeScale,
                 SuspensionTuning.singleRate(dampingRate), SteeringTuning.IDENTITY,
                 WheelMath.NOMINAL_TIRE_PRESSURE_BAR, PitchTuning.IDENTITY,
-                frontWingDownforceCoeff, rearWingDownforceCoeff, wingDragCoeff, DrivetrainCoupling.STOCK, DiffuserTuning.IDENTITY);
+                frontWingDownforceCoeff, rearWingDownforceCoeff, wingDragCoeff, DrivetrainCoupling.STOCK, DiffuserTuning.IDENTITY, ComputerTuning.DISABLED);
     }
 
     /** Compatibility constructor: absent feature groups retain their identity defaults. */
@@ -190,7 +190,7 @@ public record VehicleSpec(
                 downforceGripPerSpeed, antiRollScale, seats, vehicleTuning, handbrakeScale,
                 SuspensionTuning.singleRate(dampingRate), SteeringTuning.IDENTITY,
                 WheelMath.NOMINAL_TIRE_PRESSURE_BAR, PitchTuning.IDENTITY,
-                frontWingDownforceCoeff, rearWingDownforceCoeff, wingDragCoeff, drivetrainCoupling, DiffuserTuning.IDENTITY);
+                frontWingDownforceCoeff, rearWingDownforceCoeff, wingDragCoeff, drivetrainCoupling, DiffuserTuning.IDENTITY, ComputerTuning.DISABLED);
     }
 
     /** Compatibility constructor: absent feature groups retain their identity defaults. */
@@ -211,7 +211,7 @@ public record VehicleSpec(
                 downforceGripPerSpeed, antiRollScale, seats, vehicleTuning, handbrakeScale,
                 SuspensionTuning.singleRate(dampingRate), SteeringTuning.IDENTITY,
                 WheelMath.NOMINAL_TIRE_PRESSURE_BAR, PitchTuning.IDENTITY,
-                frontWingDownforceCoeff, rearWingDownforceCoeff, wingDragCoeff, DrivetrainCoupling.STOCK, diffuserTuning);
+                frontWingDownforceCoeff, rearWingDownforceCoeff, wingDragCoeff, DrivetrainCoupling.STOCK, diffuserTuning, ComputerTuning.DISABLED);
     }
 
     /** Compatibility constructor: absent feature groups retain their identity defaults. */
@@ -232,7 +232,7 @@ public record VehicleSpec(
                 forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
                 downforceGripPerSpeed, antiRollScale, seats, vehicleTuning, handbrakeScale,
                 suspensionTuning, steeringTuning, tirePressureBar, pitchTuning,
-                frontWingDownforceCoeff, rearWingDownforceCoeff, wingDragCoeff, DrivetrainCoupling.STOCK, DiffuserTuning.IDENTITY);
+                frontWingDownforceCoeff, rearWingDownforceCoeff, wingDragCoeff, DrivetrainCoupling.STOCK, DiffuserTuning.IDENTITY, ComputerTuning.DISABLED);
     }
 
     /** Compatibility constructor: absent feature groups retain their identity defaults. */
@@ -253,7 +253,7 @@ public record VehicleSpec(
                 forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
                 downforceGripPerSpeed, antiRollScale, seats, vehicleTuning, handbrakeScale,
                 suspensionTuning, steeringTuning, tirePressureBar, pitchTuning,
-                frontWingDownforceCoeff, rearWingDownforceCoeff, wingDragCoeff, drivetrainCoupling, DiffuserTuning.IDENTITY);
+                frontWingDownforceCoeff, rearWingDownforceCoeff, wingDragCoeff, drivetrainCoupling, DiffuserTuning.IDENTITY, ComputerTuning.DISABLED);
     }
 
     /**
@@ -371,8 +371,7 @@ public record VehicleSpec(
         this(halfX, halfY, halfZ, mounts, wheelRadius, wheelWidth, rideHeight, restLength,
                 massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
                 forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
-                downforceGripPerSpeed, antiRollScale, seats, VehicleTuning.IDENTITY, 1.0,
-                0.0, 0.0, LEGACY_AIR_DRAG, DiffuserTuning.IDENTITY);
+                downforceGripPerSpeed, antiRollScale, seats, VehicleTuning.IDENTITY, 1.0);
     }
 
     /**
@@ -451,7 +450,7 @@ public record VehicleSpec(
                 massKg, springRate, dampingRate, maxSpringForce, wheelbase, maxSpeed,
                 forceScale, enginePitch, seatY, seatZ, looseGrip, rollingScale, tireTuning,
                 downforceGripPerSpeed, antiRollScale, List.of(new Seat(0.0, seatY, seatZ)), vehicleTuning,
-                1.0, 0.0, 0.0, LEGACY_AIR_DRAG, DiffuserTuning.IDENTITY);
+                1.0);
     }
 
     /**
@@ -599,6 +598,11 @@ public record VehicleSpec(
             return new SuspensionTuning(dampingRate, dampingRate, dampingRate, DEFAULT_DAMPING_KNEE_SPEED,
                     BUMP_STOP_DISABLED_TRAVEL, NO_BUMP_STOP_RATE);
         }
+    }
+
+    /** Per-car TC/ABS authority.  Both values are fractions: 0 disables, 1 permits full intervention. */
+    public record ComputerTuning(double tractionControlLevel, double absLevel) {
+        public static final ComputerTuning DISABLED = new ComputerTuning(0.0, 0.0);
     }
 
     /** Independently bounded orientation assists; identity disables every assist. */

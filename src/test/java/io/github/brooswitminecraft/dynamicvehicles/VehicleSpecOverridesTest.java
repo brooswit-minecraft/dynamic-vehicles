@@ -145,6 +145,19 @@ class VehicleSpecOverridesTest {
     }
 
     @Test
+    void computerAssistLevelsLoadClampAndPreserveDisabledStockDefaults(@TempDir Path configDir) throws IOException {
+        assertEquals(0.0, VehicleSpec.CAR.computerTuning().tractionControlLevel(), 0.0);
+        assertEquals(0.0, VehicleSpec.CAR.computerTuning().absLevel(), 0.0);
+        writeCarsFile(configDir, "car", "{\"computer\":{\"tractionControlLevel\":0.4,\"absLevel\":9.0}}");
+
+        VehicleSpecOverrides.load(configDir);
+        VehicleSpec.ComputerTuning computer = VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR).computerTuning();
+
+        assertEquals(0.4, computer.tractionControlLevel(), 1e-9);
+        assertEquals(VehicleSpecLimits.MAX_COMPUTER_ASSIST_LEVEL, computer.absLevel(), 1e-9);
+    }
+
+    @Test
     void aNonFiniteCouplingFieldFallsBackToStockRatherThanLeakingNaN(@TempDir Path configDir) throws IOException {
         writeCarsFile(configDir, "car", "{\"engineInertia\": NaN}");
 

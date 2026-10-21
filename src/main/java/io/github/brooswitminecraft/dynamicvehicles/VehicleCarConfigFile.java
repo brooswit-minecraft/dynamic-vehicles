@@ -3,7 +3,7 @@ package io.github.brooswitminecraft.dynamicvehicles;
 /**
  * The JSON shape of one {@code config/dynamicvehicles/cars/<id>.json} file (MINECRAFT-443). Every field is
  * Optional fields retain stock defaults when absent. tireKit, wing and diffuser are implemented;
- * computer and engine remain reserved for their owning tasks.
+ * engine remains reserved for its owning task; computer is implemented by MINECRAFT-448.
  *
  * <p>See {@code docs/per-car-config.md} for the full schema, units, ranges and defaults.
  */
@@ -49,6 +49,14 @@ final class VehicleCarConfigFile {
     Double enginePeakTorque;
     Double engineBrakingTorque;
     Double clutchTorqueCapacity;
+
+    /** Driver aids, each a 0..1 intervention level.  Zero disables that aid. */
+    Computer computer;
+
+    static final class Computer {
+        Double tractionControlLevel;
+        Double absLevel;
+    }
 
 
     /** The {@code "diffuser": { ... }} nested object (MINECRAFT-447), absent ({@code null}) entirely if the

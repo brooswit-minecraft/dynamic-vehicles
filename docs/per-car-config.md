@@ -416,14 +416,31 @@ rather than inventing a parallel file or format. The same rule applies WITHIN an
 implemented section: `tireKit`'s remaining MINECRAFT-445 fields (caster, roll
 center) appear there only as that behaviour lands.
 
-Two of the original five reserved sections are now implemented and documented
-above — `tireKit` (MINECRAFT-445) and `wing` (MINECRAFT-446). These three remain
-reserved and are still read by nothing:
+`computer` is now implemented for MINECRAFT-448's frozen TC/ABS slice. The
+engine section remains reserved:
 
 | Key | Owner |
 |---|---|
-| `computer` | MINECRAFT-448 (assists/auto-shift) |
 | `engine` | MINECRAFT-449 (engine limits/turbo/nitrous/ballast) |
+
+### `computer` (MINECRAFT-448 frozen TC/ABS slice)
+
+Both fields are optional fractions in the inclusive range 0.0–1.0. They are
+loaded at server start with the rest of the per-car file. Absent or non-finite
+values retain the stock value; finite values outside the range are clamped.
+Every stock car defaults to 0.0 for both fields, preserving its existing
+behaviour exactly.
+
+| Key | Unit | Meaning |
+|---|---|---|
+| `tractionControlLevel` | fraction | Reduces that wheel's existing drive command when its actual wheel speed is running ahead of its current contact speed in the commanded-drive direction. 0 disables TC; 1 allows the strongest bounded reduction. |
+| `absLevel` | fraction | Reduces that wheel's existing brake command when its actual spin is falling behind its current contact speed in the braking direction. 0 disables ABS; 1 allows the strongest bounded release. |
+
+Neither aid invents a force, changes the selected gear, or acts on an absent
+contact; it only scales the existing per-wheel drive or brake command.
+Handbrake behaviour remains player-directed and follows its existing path.
+Countersteer, stability/launch control, rev matching, engine-brake assist and
+automatic-shift profiles remain outside this frozen slice.
 
 ## Standard vs. sport
 

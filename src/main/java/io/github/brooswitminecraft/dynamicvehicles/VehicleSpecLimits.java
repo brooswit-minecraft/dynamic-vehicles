@@ -114,6 +114,10 @@ final class VehicleSpecLimits {
     static final double MIN_WING_DRAG_COEFF = 0.0;
     static final double MAX_WING_DRAG_COEFF = 5.0;
 
+    /** Computer-assist authority: zero is deliberately the disabled/stock behaviour. */
+    static final double MIN_COMPUTER_ASSIST_LEVEL = 0.0;
+    static final double MAX_COMPUTER_ASSIST_LEVEL = 1.0;
+
     private VehicleSpecLimits() {}
 
     /** A non-finite value falls back to {@code fallback} so malformed config can never leak NaN/Infinity

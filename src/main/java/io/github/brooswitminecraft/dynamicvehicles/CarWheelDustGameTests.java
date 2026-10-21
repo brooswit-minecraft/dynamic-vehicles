@@ -1,5 +1,6 @@
 package io.github.brooswitminecraft.dynamicvehicles;
 
+import io.github.brooswitminecraft.dynamicterrain.DynamicTerrainConfig;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -31,6 +32,11 @@ public final class CarWheelDustGameTests {
     @GameTest(template = "settlement_test", timeoutTicks = 150 + VehicleLanes.CHUNK_LOAD_ALLOWANCE,
             batch = "wheelDustIsolated")
     public static void groundedRollingCarDeliversDustAtRealLoadedWheelContacts(GameTestHelper helper) {
+        // This test requires an intact rolling lane; actual terrain changes have their own seeded
+        // Sable-to-erosion acceptance test. Randomly wearing this lane through is not a dust failure.
+        boolean erosion = DynamicTerrainConfig.VEHICLE_EROSION.get();
+        helper.testInfo.addListener(new GameTestCleanup(() -> DynamicTerrainConfig.VEHICLE_EROSION.set(erosion)));
+        DynamicTerrainConfig.VEHICLE_EROSION.set(false);
         VehicleLanes.build(helper, VehicleLanes.Site.WHEEL_DUST, lanes -> {
             lanes.layLane(VehicleLanes.FIRST_LANE_X, Blocks.DIRT.defaultBlockState());
             CarEntity car = lanes.spawn(DynamicVehiclesMod.CAR.get(), VehicleLanes.spawnPoint(VehicleLanes.FIRST_LANE_X));
@@ -57,14 +63,8 @@ public final class CarWheelDustGameTests {
                 helper.assertTrue(!dust.isEmpty(), "real grounded driving never delivered a dust emission");
                 for (Observation observed : dust) {
                     AtmosphereCompat.Emission emission = observed.emission();
-                    // The lane starts as DIRT. Sable's one real SlipReporter call may legitimately advance
-                    // that exact contacted block through Dynamic Terrain's documented DIRT -> GRAVEL -> AIR
-                    // damage transition before emitEffects runs. Capture and report the state at delivery;
-                    // accepting only that lineage keeps this a material/transition assertion instead of a
-                    // flaky pristine-block assertion.
-                    helper.assertTrue(isDirtWearStage(observed.materialAtDelivery()),
-                            "dust contact left the dirt wear lineage at delivery: pos=" + emission.pos()
-                                    + " material=" + observed.materialAtDelivery().getBlock());
+                    helper.assertTrue(observed.materialAtDelivery().is(Blocks.DIRT),
+                            "dust source left the intact dirt lane: " + emission.pos());
                     int wheel = loadedWheelAt(observed, emission.pos());
                     helper.assertTrue(wheel >= 0, "dust source was not a positive-load current wheel contact: "
                             + emission.pos());
@@ -134,10 +134,6 @@ public final class CarWheelDustGameTests {
             }
         }
         return -1;
-    }
-
-    private static boolean isDirtWearStage(BlockState state) {
-        return state.is(Blocks.DIRT) || state.is(Blocks.GRAVEL) || state.isAir();
     }
 
     private record Observation(AtmosphereCompat.Emission emission, BlockState materialAtDelivery, double speed,

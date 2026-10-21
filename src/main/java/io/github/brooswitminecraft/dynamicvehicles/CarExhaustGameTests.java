@@ -69,7 +69,14 @@ public final class CarExhaustGameTests {
         double originalMultiplier = CarConfig.EXHAUST_MULTIPLIER.get();
         installTerminalCleanup(helper, originalSteps, originalInterval, originalEnabled, originalMultiplier);
         AtomicInteger emissions = new AtomicInteger();
-        AtmosphereCompat.EmissionObserver.install(ignored -> emissions.incrementAndGet());
+        AtomicReference<CarEntity> activeCar = new AtomicReference<>();
+        AtmosphereCompat.EmissionObserver.install(emission -> {
+            CarEntity car = activeCar.get();
+            if (car != null && emission.material() == AtmosphereCompat.exhaustMaterial()
+                    && emission.pos().equals(exhaustPosition(car))) {
+                emissions.incrementAndGet();
+            }
+        });
         VehicleLanes.build(helper, VehicleLanes.Site.EXHAUST_CADENCE, lanes -> {
             try {
                 CarConfig.EXHAUST_ENABLED.set(true);
@@ -77,8 +84,9 @@ public final class CarExhaustGameTests {
                 CarConfig.EXHAUST_INTERVAL_TICKS.set(EMIT_INTERVAL);
                 CarConfig.WHEEL_SUB_STEPS.set(1);
                 CarEntity oneStep = spawnDrivenCar(lanes, VehicleLanes.FIRST_LANE_X);
+                activeCar.set(oneStep);
                 helper.runAfterDelay(DRIVE_TICKS, () -> runFourStepCadenceLeg(helper, lanes, emissions,
-                        originalSteps, originalInterval, originalEnabled, originalMultiplier, oneStep));
+                        originalSteps, originalInterval, originalEnabled, originalMultiplier, oneStep, activeCar));
             } catch (RuntimeException e) {
                 restore(originalSteps, originalInterval, originalEnabled, originalMultiplier);
                 AtmosphereCompat.EmissionObserver.clear();
@@ -88,13 +96,15 @@ public final class CarExhaustGameTests {
     }
 
     private static void runFourStepCadenceLeg(GameTestHelper helper, VehicleLanes lanes, AtomicInteger emissions,
-            int originalSteps, int originalInterval, boolean originalEnabled, double originalMultiplier, CarEntity oneStep) {
+            int originalSteps, int originalInterval, boolean originalEnabled, double originalMultiplier, CarEntity oneStep, AtomicReference<CarEntity> activeCar) {
         try {
             int oneStepCount = emissions.getAndSet(0);
             assertBoundedCadence(helper, oneStep, oneStepCount, 1);
+            activeCar.set(null);
             oneStep.discard();
             CarConfig.WHEEL_SUB_STEPS.set(4);
             CarEntity fourStep = spawnDrivenCar(lanes, VehicleLanes.THIRD_LANE_X);
+            activeCar.set(fourStep);
             helper.runAfterDelay(DRIVE_TICKS, () -> {
                 try {
                     int fourStepCount = emissions.get();
@@ -113,6 +123,14 @@ public final class CarExhaustGameTests {
             AtmosphereCompat.EmissionObserver.clear();
             throw e;
         }
+    }
+
+    /** Scope the global observer to the active fixture's rear source, excluding wheel dust and other cars. */
+    private static BlockPos exhaustPosition(CarEntity car) {
+        double yaw = Math.toRadians(car.getYRot());
+        double back = car.spec().halfZ() + 0.3;
+        return BlockPos.containing(car.getX() + Math.sin(yaw) * back, car.getY() + 0.5,
+                car.getZ() - Math.cos(yaw) * back);
     }
 
     private static CarEntity spawnDrivenCar(VehicleLanes lanes, int laneX) {
@@ -142,7 +160,14 @@ public final class CarExhaustGameTests {
         double originalMultiplier = CarConfig.EXHAUST_MULTIPLIER.get();
         installTerminalCleanup(helper, originalSteps, originalInterval, originalEnabled, originalMultiplier);
         AtomicInteger emissions = new AtomicInteger();
-        AtmosphereCompat.EmissionObserver.install(ignored -> emissions.incrementAndGet());
+        AtomicReference<CarEntity> activeCar = new AtomicReference<>();
+        AtmosphereCompat.EmissionObserver.install(emission -> {
+            CarEntity car = activeCar.get();
+            if (car != null && emission.material() == AtmosphereCompat.exhaustMaterial()
+                    && emission.pos().equals(exhaustPosition(car))) {
+                emissions.incrementAndGet();
+            }
+        });
         VehicleLanes.build(helper, VehicleLanes.Site.EXHAUST_DISABLED, lanes -> {
             try {
                 CarConfig.WHEEL_SUB_STEPS.set(1);
@@ -150,8 +175,9 @@ public final class CarExhaustGameTests {
                 CarConfig.EXHAUST_ENABLED.set(false);
                 CarConfig.EXHAUST_MULTIPLIER.set(2.5);
                 CarEntity disabled = spawnDrivenCar(lanes, VehicleLanes.FIRST_LANE_X);
+                activeCar.set(disabled);
                 helper.runAfterDelay(DRIVE_TICKS, () -> runZeroScaleLeg(helper, lanes, emissions,
-                        originalSteps, originalInterval, originalEnabled, originalMultiplier, disabled));
+                        originalSteps, originalInterval, originalEnabled, originalMultiplier, disabled, activeCar));
             } catch (RuntimeException e) {
                 restore(originalSteps, originalInterval, originalEnabled, originalMultiplier);
                 AtmosphereCompat.EmissionObserver.clear();
@@ -161,15 +187,17 @@ public final class CarExhaustGameTests {
     }
 
     private static void runZeroScaleLeg(GameTestHelper helper, VehicleLanes lanes, AtomicInteger emissions,
-            int originalSteps, int originalInterval, boolean originalEnabled, double originalMultiplier, CarEntity disabled) {
+            int originalSteps, int originalInterval, boolean originalEnabled, double originalMultiplier, CarEntity disabled, AtomicReference<CarEntity> activeCar) {
         try {
             helper.assertTrue(disabled.debugSpeed() >= CarEffectsMath.MIN_EXHAUST_SPEED,
                     "disabled-exhaust fixture never reached exhaust speed: " + disabled.debugSpeed());
             helper.assertTrue(emissions.getAndSet(0) == 0, "disabled exhaust reached the compatibility emitter");
+            activeCar.set(null);
             disabled.discard();
             CarConfig.EXHAUST_ENABLED.set(true);
             CarConfig.EXHAUST_MULTIPLIER.set(0.0);
             CarEntity zeroScale = spawnDrivenCar(lanes, VehicleLanes.THIRD_LANE_X);
+            activeCar.set(zeroScale);
             helper.runAfterDelay(DRIVE_TICKS, () -> {
                 try {
                     helper.assertTrue(zeroScale.debugSpeed() >= CarEffectsMath.MIN_EXHAUST_SPEED,

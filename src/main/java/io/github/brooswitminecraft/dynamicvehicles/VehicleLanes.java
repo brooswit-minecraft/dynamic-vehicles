@@ -98,7 +98,9 @@ final class VehicleLanes {
         SUB_STEP_SPEED,
         GEAR_RATIO,
         LIMITER_WALL,
-        INTEGRATION_CONTACT;
+        INTEGRATION_CONTACT,
+        EXHAUST_CADENCE,
+        EXHAUST_DISABLED;
 
         BlockPos origin() {
             return new BlockPos(0, SITE_Y, FIRST_SITE_Z + ordinal() * SITE_SPACING);

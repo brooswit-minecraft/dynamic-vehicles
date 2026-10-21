@@ -1543,21 +1543,35 @@ public class CarEntity extends Entity {
 
     /** Server: exhaust while on the throttle and moving, dust at speed or sliding, both from behind the car, at most one of each per interval. */
     private void emitEffects(double throttle, double speed, double slip) {
-        if (!CarConfig.SMOKE_ENABLED.get() || !AtmosphereCompat.usable() || tickCount % CarConfig.SMOKE_INTERVAL_TICKS.get() != 0
-                || !(level() instanceof net.minecraft.server.level.ServerLevel serverLevel)) {
+        if (!AtmosphereCompat.usable() || !(level() instanceof net.minecraft.server.level.ServerLevel serverLevel)) {
+            return;
+        }
+        if (tickCount % CarConfig.EXHAUST_INTERVAL_TICKS.get() == 0) {
+            emitExhaust(serverLevel, throttle, speed);
+        }
+        if (!CarConfig.SMOKE_ENABLED.get() || tickCount % CarConfig.SMOKE_INTERVAL_TICKS.get() != 0) {
             return;
         }
         double strength = CarConfig.SMOKE_STRENGTH.get();
         double yaw = Math.toRadians(getYRot());
         double back = spec().halfZ() + 0.3;
         BlockPos rear = BlockPos.containing(getX() + Math.sin(yaw) * back, getY() + 0.5, getZ() - Math.cos(yaw) * back);
-        int exhaust = CarEffectsMath.exhaustAmount(throttle, speed, strength);
-        if (exhaust > 0) {
-            AtmosphereCompat.exhaust(serverLevel, rear, exhaust);
-        }
         int dust = onGround() ? CarEffectsMath.dustAmount(speed, slip, strength) : 0;
         if (dust > 0) {
             AtmosphereCompat.dust(serverLevel, rear.below(), dust);
+        }
+    }
+
+    /** The production exhaust half of {@link #emitEffects}: one rear-position source per car interval. */
+    void emitExhaust(net.minecraft.server.level.ServerLevel serverLevel, double throttle, double speed) {
+        double yaw = Math.toRadians(getYRot());
+        double back = spec().halfZ() + 0.3;
+        BlockPos rear = BlockPos.containing(getX() + Math.sin(yaw) * back, getY() + 0.5, getZ() - Math.cos(yaw) * back);
+        int exhaust = CarEffectsMath.exhaustAmount(throttle, speed, CarConfig.EXHAUST_MULTIPLIER.get(),
+                CarConfig.EXHAUST_THROTTLE_START.get(), CarConfig.EXHAUST_THROTTLE_CURVE.get(),
+                CarConfig.EXHAUST_MAX_AMOUNT.get());
+        if (CarConfig.EXHAUST_ENABLED.get() && exhaust > 0) {
+            AtmosphereCompat.exhaust(serverLevel, rear, exhaust);
         }
     }
 

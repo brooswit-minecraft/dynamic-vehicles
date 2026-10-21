@@ -56,6 +56,22 @@ class CarEffectsMathTest {
     }
 
     @Test
+    void exhaustThrottleRampHonorsDeadBandCurveScaleAndPerEmissionCap() {
+        assertEquals(0, CarEffectsMath.exhaustAmount(0.20, 10.0, 1.0, 0.20, 1.0, 32),
+                "configured throttle dead band must suppress exhaust at release");
+        int low = CarEffectsMath.exhaustAmount(0.35, 10.0, 2.5, 0.20, 1.0, 32);
+        int high = CarEffectsMath.exhaustAmount(1.0, 10.0, 2.5, 0.20, 1.0, 32);
+        assertTrue(low > 0 && low < high, "high throttle must emit more than a configured low-throttle level");
+        assertEquals(0, CarEffectsMath.exhaustAmount(1.0, 10.0, 0.0, 0.20, 1.0, 32),
+                "zero exhaust scale must disable even full throttle");
+        assertTrue(CarEffectsMath.exhaustAmount(0.50, 10.0, 2.5, 0.20, 2.0, 32) <
+                CarEffectsMath.exhaustAmount(0.50, 10.0, 2.5, 0.20, 1.0, 32),
+                "a steeper curve must defer the ramp at mid throttle");
+        assertEquals(7, CarEffectsMath.exhaustAmount(1.0, 10.0, 10.0, 0.0, 1.0, 7),
+                "one emission must never exceed its configured cap");
+    }
+
+    @Test
     void dustStartsExactlyAtMinSpeedOrOnSlipAlone() {
         assertEquals(0, CarEffectsMath.dustAmount(CarEffectsMath.MIN_DUST_SPEED - 0.01, 0.0, 1.0),
                 "just under the speed threshold with no slip: nothing yet");

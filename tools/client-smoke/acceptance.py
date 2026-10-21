@@ -40,6 +40,8 @@ try:
         subprocess.run(['import','-window','root',str(root/'client-acceptance-latest.png')],timeout=15,check=False)
         time.sleep(5)
     if client_process.poll() is None: raise RuntimeError('client acceptance timeout')
+    if (client/'client-acceptance-failure.txt').exists():
+        raise RuntimeError((client/'client-acceptance-failure.txt').read_text())
     result=json.loads((client/'client-acceptance-result.json').read_text())
     if result.get('passed') is not True: raise RuntimeError('client did not report success')
     text=(root/'client-acceptance-server.log').read_text(errors='replace')
@@ -53,3 +55,7 @@ finally:
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid,signal.SIGKILL); process.wait()
     for log in logs: log.close()
+    for path in (root/'client-acceptance-client.log',client/'logs/latest.log',root/'client-acceptance-server.log'):
+        if path.exists():
+            print('ACCEPTANCE_DIAGNOSTIC '+str(path),flush=True)
+            print('\n'.join(path.read_text(errors='replace').splitlines()[-100:]),flush=True)

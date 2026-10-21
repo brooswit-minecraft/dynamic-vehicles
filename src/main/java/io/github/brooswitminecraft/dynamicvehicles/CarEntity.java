@@ -1292,9 +1292,16 @@ public class CarEntity extends DriverVehicleEntity {
             SkidMarksClient.tick(this);
             return;
         }
+        // Entity old-position bookkeeping runs before this tick, while Sable pose sync happens below.
+        // Position minus xo/zo can therefore remain zero even during real travel. Retain the previous
+        // synced velocity's direction BEFORE current collision response replaces it with a stop/rebound.
+        Vec3 priorMotion = getDeltaMovement();
+        double priorTravel = Math.hypot(priorMotion.x, priorMotion.z);
         double travelled = Math.hypot(getX() - xo, getZ() - zo);
-        if (travelled > 0.05) {
-            heading = new net.minecraft.world.phys.Vec3((getX() - xo) / travelled, 0.0, (getZ() - zo) / travelled);
+        if (priorTravel > 0.05) {
+            heading = new Vec3(priorMotion.x / priorTravel, 0.0, priorMotion.z / priorTravel);
+        } else if (travelled > 0.05) {
+            heading = new Vec3((getX() - xo) / travelled, 0.0, (getZ() - zo) / travelled);
         }
         if (tickCount % 2 == 0 && level() instanceof net.minecraft.server.level.ServerLevel lampLevel) {
             lampBlock = HeadlampLight.update(lampLevel, this, lampBlock);

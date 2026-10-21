@@ -819,54 +819,78 @@ public class CarEntity extends Entity {
         SlipReporter.report(serverLevel, pos, ImpactRules.impactSlip(speedBefore), MASS_KG / WHEEL_COUNT);
     }
 
-    /** Server: a hard hit may break the block ahead (soft and fast is likely), otherwise it erodes it. At most one block. */
-    private void hitBlockAhead(double speedBefore) {
+    /**
+     * Server: a hard hit may break the eligible block ahead. Severe hits can continue through a bounded
+     * number of adjacent eligible blocks, losing configured horizontal momentum after every destruction.
+     * Terrain erosion, protected blocks, fluids, passable glass, and the truck's bamboo-only path retain
+     * their existing authority and terminate the traversal.
+     */
+    // Package-private so the production-path GameTest can invoke this exact collision operation against
+    // real blocks; normal callers still reach it only through checkImpact().
+    void hitBlockAhead(double speedBefore) {
         if (!CarConfig.COLLISION_BREAKING.get() || heading == null || !(level() instanceof net.minecraft.server.level.ServerLevel serverLevel)) {
             return;
         }
         double reach = spec.halfZ() + 0.6;
+        int budget = ImpactRules.blockBreakBudget(speedBefore, CarConfig.COLLISION_MIN_SPEED.get(),
+                CarConfig.COLLISION_SEVERE_SPEED.get(), CarConfig.COLLISION_SEVERE_MAX_BLOCKS.get());
+        double remainingSpeed = speedBefore;
+        java.util.Set<net.minecraft.core.BlockPos> visited = new java.util.HashSet<>();
         for (double dy : new double[] {0.4, 1.0}) {
-            net.minecraft.core.BlockPos pos = net.minecraft.core.BlockPos.containing(getX() + heading.x * reach, getY() + dy, getZ() + heading.z * reach);
-            BlockState state = serverLevel.getBlockState(pos);
-            if (state.isAir() || !state.getFluidState().isEmpty()) {
-                continue;
-            }
-            boolean breakable = !state.hasBlockEntity() && state.getDestroySpeed(serverLevel, pos) >= 0.0;
-            boolean bamboo = state.is(BlockTags.BAMBOO_BLOCKS);
-            boolean dirtOrSand = state.is(BlockTags.DIRT) || state.is(BlockTags.SAND);
-            boolean glass = state.getBlock() instanceof TransparentBlock || state.getBlock() instanceof StainedGlassPaneBlock;
-            ImpactRules.BlockImpactRoute route = ImpactRules.blockImpactRoute(
-                    VehicleModel.forId(vehicleId) == VehicleModel.TRUCK, dirtOrSand, bamboo, breakable);
-
-            // Dynamic Terrain is the sole authority for loose terrain; it decides resistance and whether
-            // material shifts downhill or degrades. This is selected before the truck-only return below,
-            // so truck impacts cannot suppress dirt/sand terrain routing.
-            if (route == ImpactRules.BlockImpactRoute.TERRAIN_EROSION) {
-                reportImpact(serverLevel, pos, speedBefore);
-                return;
-            }
-
-            // The truck has a deliberately narrow vegetation interaction. It never gains the generic
-            // block-breaking privilege merely by being heavier than a car.
-            if (VehicleModel.forId(vehicleId) == VehicleModel.TRUCK) {
-                if (route == ImpactRules.BlockImpactRoute.TRUCK_BAMBOO) {
-                    serverLevel.destroyBlock(pos, true, this);
+            // Keep one probe even below the breaking threshold so the established terrain/erosion and
+            // failed-impact reporting behavior is unchanged; only a successful severe break extends it.
+            for (int block = 0; block < Math.max(1, budget); block++) {
+                double distance = reach + block;
+                net.minecraft.core.BlockPos pos = net.minecraft.core.BlockPos.containing(
+                        getX() + heading.x * distance, getY() + dy, getZ() + heading.z * distance);
+                if (!visited.add(pos) || !serverLevel.hasChunkAt(pos)) {
+                    return;
                 }
-                return;
-            }
+                BlockState state = serverLevel.getBlockState(pos);
+                if (state.isAir() || !state.getFluidState().isEmpty()) {
+                    if (block == 0) {
+                        break;
+                    }
+                    continue;
+                }
+                boolean breakable = !state.hasBlockEntity() && state.getDestroySpeed(serverLevel, pos) >= 0.0;
+                boolean bamboo = state.is(BlockTags.BAMBOO_BLOCKS);
+                boolean dirtOrSand = state.is(BlockTags.DIRT) || state.is(BlockTags.SAND);
+                boolean glass = state.getBlock() instanceof TransparentBlock || state.getBlock() instanceof StainedGlassPaneBlock;
+                ImpactRules.BlockImpactRoute route = ImpactRules.blockImpactRoute(
+                        VehicleModel.forId(vehicleId) == VehicleModel.TRUCK, dirtOrSand, bamboo, breakable);
 
-            if (!ImpactRules.glassMayBreak(glass, state.isCollisionShapeFullBlock(serverLevel, pos))) {
-                return;
-            }
-            double chance = state.hasBlockEntity() ? 0.0
-                    : CollisionMath.breakChance(speedBefore, state.getDestroySpeed(serverLevel, pos),
-                            CarConfig.COLLISION_MIN_SPEED.get(), CarConfig.COLLISION_MAX_HARDNESS.get());
-            if (chance > 0.0 && random.nextDouble() < chance) {
+                // Dynamic Terrain remains the sole authority for loose terrain.
+                if (route == ImpactRules.BlockImpactRoute.TERRAIN_EROSION) {
+                    reportImpact(serverLevel, pos, remainingSpeed);
+                    return;
+                }
+                // The truck keeps its deliberately narrow vegetation interaction.
+                if (VehicleModel.forId(vehicleId) == VehicleModel.TRUCK) {
+                    if (route == ImpactRules.BlockImpactRoute.TRUCK_BAMBOO) {
+                        serverLevel.destroyBlock(pos, true, this);
+                    }
+                    return;
+                }
+                if (!ImpactRules.glassMayBreak(glass, state.isCollisionShapeFullBlock(serverLevel, pos))) {
+                    return;
+                }
+                double chance = state.hasBlockEntity() ? 0.0
+                        : CollisionMath.breakChance(remainingSpeed, state.getDestroySpeed(serverLevel, pos),
+                                CarConfig.COLLISION_MIN_SPEED.get(), CarConfig.COLLISION_MAX_HARDNESS.get());
+                if (chance <= 0.0 || random.nextDouble() >= chance) {
+                    reportImpact(serverLevel, pos, remainingSpeed);
+                    return;
+                }
                 serverLevel.destroyBlock(pos, true, this);
-            } else {
-                reportImpact(serverLevel, pos, speedBefore);
+                remainingSpeed = ImpactRules.afterSolidImpact(remainingSpeed, CarConfig.COLLISION_BREAK_SPEED_SCALE.get());
+                if (sableBody != null) {
+                    SableCompat.scaleHorizontalVelocity(sableBody, CarConfig.COLLISION_BREAK_SPEED_SCALE.get());
+                }
+                if (remainingSpeed < CarConfig.COLLISION_MIN_SPEED.get()) {
+                    return;
+                }
             }
-            return;
         }
     }
 
@@ -1524,6 +1548,11 @@ public class CarEntity extends Entity {
         forcedThrottle = throttle;
         forcedSteer = steer;
         forcedDriveTicks = ticks;
+    }
+
+    /** GameTest-only heading setup for a controlled block-impact fixture. */
+    void setHeadingForTest(Vec3 heading) {
+        this.heading = heading.normalize();
     }
 
     /** Current server-authoritative horizontal speed, including Sable-synchronised vehicles. */

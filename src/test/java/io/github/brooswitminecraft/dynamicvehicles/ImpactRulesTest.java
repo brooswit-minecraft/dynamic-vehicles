@@ -78,11 +78,20 @@ class ImpactRulesTest {
 
     @Test
     void repeatedSolidImpactsProgressivelyRemoveMomentum() {
-        double first = ImpactRules.afterSolidImpact(10.0);
-        double second = ImpactRules.afterSolidImpact(first);
+        double first = ImpactRules.afterSolidImpact(10.0, 0.3);
+        double second = ImpactRules.afterSolidImpact(first, 0.3);
         assertEquals(3.0, first);
         assertEquals(0.9, second, 1.0e-9);
         assertTrue(second < first && first < 10.0);
+    }
+
+    @Test
+    void severeImpactBudgetIsThresholdedAndBounded() {
+        assertEquals(0, ImpactRules.blockBreakBudget(7.99, 8.0, 16.0, 3));
+        assertEquals(1, ImpactRules.blockBreakBudget(8.0, 8.0, 16.0, 3));
+        assertEquals(3, ImpactRules.blockBreakBudget(16.0, 8.0, 16.0, 3));
+        assertEquals(3, ImpactRules.blockBreakBudget(20.0, 8.0, 4.0, 3),
+                "a severe threshold below minimum must not disable the configured bound");
     }
 
     @Test

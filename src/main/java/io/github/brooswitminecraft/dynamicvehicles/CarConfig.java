@@ -13,6 +13,9 @@ public final class CarConfig {
     public static final ModConfigSpec.BooleanValue COLLISION_BREAKING;
     public static final ModConfigSpec.DoubleValue COLLISION_MIN_SPEED;
     public static final ModConfigSpec.DoubleValue COLLISION_MAX_HARDNESS;
+    public static final ModConfigSpec.DoubleValue COLLISION_SEVERE_SPEED;
+    public static final ModConfigSpec.IntValue COLLISION_SEVERE_MAX_BLOCKS;
+    public static final ModConfigSpec.DoubleValue COLLISION_BREAK_SPEED_SCALE;
     public static final ModConfigSpec.BooleanValue HEADLAMP_LIGHT;
     public static final ModConfigSpec.BooleanValue TIRE_FORCE_AT_CONTACT;
     public static final ModConfigSpec.DoubleValue ANTI_ROLL;
@@ -53,6 +56,15 @@ public final class CarConfig {
         COLLISION_MAX_HARDNESS = builder
                 .comment("Hardest block (vanilla destroy speed: dirt 0.5, stone 1.5, logs 2.0, iron blocks 5.0, obsidian 50) a car can break.")
                 .defineInRange("collisionMaxHardness", 3.0, 0.0, 100.0);
+        COLLISION_SEVERE_SPEED = builder
+                .comment("Impact speed in m/s that enables successive block breaks. It must be at least collisionMinSpeed; lower values are treated as collisionMinSpeed. Read live on the server.")
+                .defineInRange("collisionSevereSpeed", 16.0, 0.0, 100.0);
+        COLLISION_SEVERE_MAX_BLOCKS = builder
+                .comment("Maximum eligible blocks a severe impact can break in one collision report. This bounds work and never scans or loads chunks beyond the car's existing front contact.")
+                .defineInRange("collisionSevereMaxBlocks", 3, 1, 8);
+        COLLISION_BREAK_SPEED_SCALE = builder
+                .comment("Fraction of horizontal momentum retained after each block a crash breaks (0 stops immediately, 1 loses none). Applied once per destroyed block, live on the server.")
+                .defineInRange("collisionBreakSpeedScale", 0.3, 0.0, 1.0);
         HEADLAMP_LIGHT = builder
                 .comment("While the headlamps are on and the car is driven, place one invisible light block a few blocks ahead (only into air). All of them are recorded and removed when the lamps go off, the car unloads, or on the next server start.")
                 .define("headlampLight", true);

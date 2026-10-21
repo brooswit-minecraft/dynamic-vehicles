@@ -211,6 +211,28 @@ public final class VehicleSpecOverridesGameTests {
         helper.succeed();
     }
 
+    /** Config must reach a real entity independently per vehicle type, including reconstruction from NBT. */
+    @GameTest(template = "settlement_test")
+    public static void computerAssistConfigReachesNewAndReloadedCarsWithoutLeakingToTruck(GameTestHelper helper) {
+        withLoadedOverride(VehicleIds.CAR, "{\"tractionControlLevel\":0.75,\"absLevel\":0.5}", () -> {
+            CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
+            helper.assertTrue(car.spec().computerTuning().tractionControlLevel() == 0.75,
+                    "real car constructor did not consume configured TC authority");
+            helper.assertTrue(car.spec().computerTuning().absLevel() == 0.5,
+                    "real car constructor did not consume configured ABS authority");
+            CarEntity truck = helper.spawn(DynamicVehiclesMod.TRUCK.get(), new BlockPos(5, 3, 9));
+            helper.assertTrue(truck.spec().computerTuning().equals(VehicleSpec.TRUCK.computerTuning()),
+                    "car-specific assist configuration leaked to truck");
+            net.minecraft.nbt.CompoundTag saved = new net.minecraft.nbt.CompoundTag();
+            car.addAdditionalSaveData(saved);
+            CarEntity restored = new CarEntity(DynamicVehiclesMod.CAR.get(), helper.getLevel());
+            restored.readAdditionalSaveData(saved);
+            helper.assertTrue(restored.spec().computerTuning().equals(car.spec().computerTuning()),
+                    "NBT reconstruction lost the configured assist authority");
+            helper.succeed();
+        });
+    }
+
     private static byte[] readBytesOrFail(java.nio.file.Path file) {
         try {
             return Files.readAllBytes(file);

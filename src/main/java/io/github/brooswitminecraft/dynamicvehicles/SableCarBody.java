@@ -59,6 +59,11 @@ final class SableCarBody {
     private final ServerLevel level;
     private final BoxPhysicsObject box;
     private final RigidBodyHandle body;
+    /** Optional per-instance diagnostic tap at the production tire-command boundary. */
+    java.util.function.Consumer<AssistSample> assistObserver;
+    record AssistSample(int wheel, double contactSpeed, double wheelSpeed, double requestedDrive,
+            double appliedDrive, double requestedBrake, double appliedBrake, boolean manualHandbrake) {}
+
     private double lastSlipSpeed;
     private double lastAudioSlipSpeed;
     private double lastSpinSlip;
@@ -815,11 +820,17 @@ final class SableCarBody {
                 VehicleSpec.ComputerTuning computer = spec.computerTuning();
                 // Both aids observe this wheel's actual current contact speed and spin.  Their factors
                 // only reduce the existing command, so they cannot create propulsion or reverse selection.
+                double requestedDrive = drive;
+                double requestedBrake = brake;
                 drive *= ComputerAssistMath.tractionFactor(computer.tractionControlLevel(),
                         wheelSpin[wheel] * spec.wheelRadius(), vLong, drive);
                 if (!manualHandbrake) {
                     brake *= ComputerAssistMath.absFactor(computer.absLevel(),
                             wheelSpin[wheel] * spec.wheelRadius(), vLong, brake);
+                }
+                if (assistObserver != null) {
+                    assistObserver.accept(new AssistSample(wheel, vLong, wheelSpin[wheel] * spec.wheelRadius(),
+                            requestedDrive, drive, requestedBrake, brake, manualHandbrake));
                 }
                 wheelDriveCommand[wheel] = drive;
                 takenDrive = brake > 0.0 ? 0.0 : drive;

@@ -1564,39 +1564,76 @@ public final class TownGameTests {
                 new TownRoadPlanner.RoadCell(foreignPath.getX(), foreignPath.getZ(), foreignPath.getY()),
                 new TownRoadPlanner.RoadCell(routeStart.getX() + 2, routeStart.getZ(), routeStart.getY()),
                 new TownRoadPlanner.RoadCell(routeStart.getX() + 3, routeStart.getZ(), routeStart.getY()));
+        String roadOwner = TownStorage.roadOwner(helper.getLevel().dimension(), region);
+        String roadSignature = "road:" + net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(Blocks.DIRT_PATH)
+                + ":" + TownResourceCategory.STONE.name();
+        int[] driverCalls = {0};
+        TownConstructionService.RoadWork boundedRoadWork = (level, selectedRegion, selectedStorage, selectedStore) -> {
+            driverCalls[0]++;
+            return TownRoadConstructionService.buildRoadCells(level, route, selectedStorage, selectedStore) > 0;
+        };
+        storage.markTownFounded(townKey);
+        ServerPlayer player = GameTestMockPlayers.create(helper);
+        player.teleportTo(absoluteCampfire.getX() + 0.5, absoluteCampfire.getY(), absoluteCampfire.getZ() + 0.5);
 
-        helper.assertTrue(TownRoadConstructionService.buildRoadCells(helper.getLevel(), route, storage, store) == 0,
+        TownConstructionService.runConstructionAndRoadsTick(helper.getLevel(), storage, boundedRoadWork);
+        helper.assertTrue(driverCalls[0] == 1,
+                "the real tick must activate roads for the nearby player in the founded region even after the sole campfire is gone");
+        helper.assertTrue(store.balance(TownResourceCategory.STONE) == 0,
                 "roads must pause without stone after the sole Builder/campfire is gone");
-        helper.assertTrue(helper.getBlockState(foreignPath).is(Blocks.DIRT_PATH),
+        helper.assertTrue(helper.getLevel().getBlockState(foreignPath).is(Blocks.DIRT_PATH),
                 "a foreign dirt path must not be adopted or changed while the road is paused");
 
         storage.creditStore(townKey, TownResourceCategory.STONE, 1000);
-        int firstTick = TownRoadConstructionService.buildRoadCells(helper.getLevel(), route, storage, store);
-        helper.assertTrue(firstTick > 0 && firstTick <= TownConstants.ROAD_BLOCKS_PER_TICK,
+        TownConstructionService.runConstructionAndRoadsTick(helper.getLevel(), storage, boundedRoadWork);
+        int firstTick = 1000 - store.balance(TownResourceCategory.STONE);
+        helper.assertTrue(firstTick == TownConstants.ROAD_BLOCKS_PER_TICK,
                 "funded road work must make bounded progress after the Builder/campfire lifecycle, found " + firstTick);
-        helper.assertTrue(helper.getBlockState(foreignPath).is(Blocks.DIRT_PATH),
+        helper.assertTrue(helper.getLevel().getBlockState(foreignPath).is(Blocks.DIRT_PATH),
                 "a foreign dirt path must remain protected rather than become free road progress");
+        helper.assertTrue(!storage.isCellPlaced(helper.getLevel().dimension(), foreignPath, roadOwner, roadSignature),
+                "a foreign dirt path must have no paid ownership record before reload");
         int balanceBeforeReload = store.balance(TownResourceCategory.STONE);
 
         TownStorage reloaded = TownStorage.load(storage.save(new CompoundTag(), helper.getLevel().registryAccess()), helper.getLevel().registryAccess());
         TownResourceStore reloadedStore = reloaded.storeFor(townKey);
         helper.assertTrue(reloadedStore.balance(TownResourceCategory.STONE) == balanceBeforeReload,
                 "paid road progress and its balance must survive TownStorage save/load");
+        helper.assertTrue(!reloaded.isCellPlaced(helper.getLevel().dimension(), foreignPath, roadOwner, roadSignature),
+                "save/load must not invent a paid ownership record for the foreign dirt path");
 
         int resumed = 0;
         for (int tick = 0; tick < 8; tick++) {
-            int placed = TownRoadConstructionService.buildRoadCells(helper.getLevel(), route, reloaded, reloadedStore);
+            int before = reloadedStore.balance(TownResourceCategory.STONE);
+            TownConstructionService.runConstructionAndRoadsTick(helper.getLevel(), reloaded, boundedRoadWork);
+            int placed = before - reloadedStore.balance(TownResourceCategory.STONE);
             resumed += placed;
             if (placed == 0) {
                 break;
             }
         }
-        helper.assertTrue(resumed > 0,
-                "later road-builder ticks must resume the unfinished paid route after reload");
+        helper.assertTrue(resumed == 7,
+                "later road-builder ticks must resume and finish the seven remaining buildable cells after reload, found " + resumed);
         helper.assertTrue(reloadedStore.balance(TownResourceCategory.STONE) == balanceBeforeReload - resumed * TownConstants.ROAD_COST_PER_BLOCK,
                 "only newly placed post-reload cells may be charged; persisted paid progress must not be charged again");
-        helper.assertTrue(helper.getBlockState(foreignPath).is(Blocks.DIRT_PATH),
+        helper.assertTrue(helper.getLevel().getBlockState(foreignPath).is(Blocks.DIRT_PATH),
                 "reload/retry must never adopt the foreign dirt path as this road's paid progress");
+        helper.assertTrue(!reloaded.isCellPlaced(helper.getLevel().dimension(), foreignPath, roadOwner, roadSignature),
+                "the completed route must still not claim the foreign dirt path as paid work");
+        for (int x = routeStart.getX(); x <= routeStart.getX() + 3; x++) {
+            for (int z = routeStart.getZ() - 1; z <= routeStart.getZ() + 1; z++) {
+                BlockPos cell = new BlockPos(x, routeStart.getY(), z);
+                if (cell.equals(foreignPath)) {
+                    continue;
+                }
+                helper.assertTrue(reloaded.isCellPlaced(helper.getLevel().dimension(), cell, roadOwner, roadSignature),
+                        "every buildable road cell must finish with this road's exact paid owner/signature: " + cell);
+            }
+        }
+        int finalBalance = reloadedStore.balance(TownResourceCategory.STONE);
+        TownConstructionService.runConstructionAndRoadsTick(helper.getLevel(), reloaded, boundedRoadWork);
+        helper.assertTrue(reloadedStore.balance(TownResourceCategory.STONE) == finalBalance,
+                "a no-op retry must not debit the already completed paid route");
         helper.succeed();
     }
 

@@ -55,6 +55,18 @@ public final class TownConstructionService {
      *  logic. [Review round 4, finding #3] exercises this directly to prove road construction for a
      *  FOUNDED region keeps progressing with NO claimed campfire present at all. */
     public static void runConstructionAndRoadsTick(ServerLevel level) {
+        runConstructionAndRoadsTick(level, TownStorage.of(level.getServer()), TownRoadConstructionService::buildRoadsForRegion);
+    }
+
+    /** The road-work boundary of the production construction tick. Package-private solely so a
+     *  disposable GameTest can prove the founded-region/player activation gate with a route that
+     *  fits its tiny fixture; production always supplies {@link TownRoadConstructionService}. */
+    @FunctionalInterface
+    interface RoadWork {
+        boolean build(ServerLevel level, RegionCoord region, TownStorage storage, TownResourceStore store);
+    }
+
+    static void runConstructionAndRoadsTick(ServerLevel level, TownStorage storage, RoadWork roadWork) {
         // [Review round 4, finding #4] Dynamic Towns (founding, building, and road construction
         // alike) is an Overworld-only feature, matching vanilla's own village generation never
         // occurring in the Nether/End - an explicit, documented scope decision rather than letting
@@ -62,8 +74,6 @@ public final class TownConstructionService {
         if (!level.dimension().equals(Level.OVERWORLD)) {
             return;
         }
-
-        TownStorage storage = TownStorage.of(level.getServer());
 
         Map<BlockPos, Villager> claimedCampfires = findClaimedCampfireSites(level);
         for (Map.Entry<BlockPos, Villager> entry : claimedCampfires.entrySet()) {
@@ -85,7 +95,7 @@ public final class TownConstructionService {
         // any campfire is currently claimed there.
         for (RegionCoord region : regionsWithNearbyPlayerActivity(level, storage)) {
             TownResourceStore store = storage.storeFor(TownKeys.keyFor(level.dimension(), region));
-            if (TownRoadConstructionService.buildRoadsForRegion(level, region, storage, store)) {
+            if (roadWork.build(level, region, storage, store)) {
                 storage.setDirty();
             }
         }

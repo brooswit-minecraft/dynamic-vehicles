@@ -307,10 +307,28 @@ public final class TownResidentAllocationHandlerGameTests {
                 "a released matching ticket must add exactly the retained Armorer's workplace demand without reclaiming it");
         TownStorage foundedOtherRegion = newStorageWithFoundedTown(helper, GUARANTEED_EMPTY_REGION);
         ServerLevel nether = helper.getLevel().getServer().getLevel(net.minecraft.world.level.Level.NETHER);
+        BlockPos netherResidentPos = helper.absolutePos(anchor).atY(80);
+        RegionCoord netherRegion = TownRegion.fromBlockCoords(netherResidentPos.getX(), netherResidentPos.getZ());
+        Villager netherResident = nether == null ? null
+                : EntityType.VILLAGER.create(nether, null, netherResidentPos, MobSpawnType.EVENT, false, false);
+        if (netherResident != null) {
+            nether.addFreshEntity(netherResident);
+            storage.markTownFounded(TownKeys.keyFor(nether.dimension(), netherRegion));
+        }
+        boolean visibleUnhousedNetherResident = netherResident != null && netherResident.isAlive()
+                && netherResident.getBrain().getMemory(MemoryModuleType.HOME).isEmpty()
+                && TownRegion.fromBlockCoords(netherResident.blockPosition().getX(), netherResident.blockPosition().getZ())
+                        .equals(netherRegion)
+                && nether.getEntity(netherResident.getUUID()) == netherResident;
+        TownResidentDemand netherDemand = nether == null ? null
+                : TownResidentAllocationHandler.unmetDemand(nether, netherRegion, storage);
+        if (netherResident != null) {
+            netherResident.discard();
+        }
         helper.assertTrue(TownResidentAllocationHandler.unmetDemand(helper.getLevel(), region, new TownStorage()) == TownResidentDemand.NONE
                         && TownResidentAllocationHandler.unmetDemand(helper.getLevel(), GUARANTEED_EMPTY_REGION, foundedOtherRegion) == TownResidentDemand.NONE
-                        && nether != null && TownResidentAllocationHandler.unmetDemand(nether, region, storage) == TownResidentDemand.NONE,
-                "unfounded, founded-other-region, and non-Overworld queries must not report this town's residents as demand");
+                        && nether != null && visibleUnhousedNetherResident && netherDemand == TownResidentDemand.NONE,
+                "unfounded, founded-other-region, and non-Overworld queries must not report resident demand");
         helper.succeed();
     }
 

@@ -23,6 +23,9 @@ import net.minecraft.world.level.block.state.properties.BedPart;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
+import java.util.HashMap;
+import java.util.Map;
+
 /**
  * MINECRAFT-388/455: {@link TownResidentAllocationHandler} must give EVERY villager in a founded
  * town reachable accommodation/work - not only the one claimant a construction site's own handoff
@@ -249,59 +252,100 @@ public final class TownResidentAllocationHandlerGameTests {
         helper.succeed();
     }
 
-    /**
-     * MINECRAFT-455 acceptance probe: allocation safety alone is not sufficient.  This starts a
-     * founded town with only one town-owned bed and a wrong-profession workstation, but with two
-     * residents, one of whom must retain ARMORER.  The intended resident/planning production path
-     * must create or schedule sufficient compatible, reachable capacity rather than leaving the
-     * second resident unhoused or the Armorer unemployed.  It deliberately fails on the current
-     * implementation: {@code allocateHomeIfNeeded}/{@code allocateWorkplaceIfNeeded} can consume
-     * a vacancy but have no demand-to-site planning path when one is absent.
-     *
-     * <p>This disposable test is deliberately confined to the resident lane; it neither calls nor
-     * edits TownConstructionService, TownGameTests, or the road lifecycle.  Once a resident-demand
-     * planning seam is agreed, its completed form must additionally drive the real construction
-     * path, assert navigable routes to the completed fixtures, then kill one resident and verify
-     * death-to-vacancy-to-reallocation across save/load.
-     */
+    /** The pure demand query observes current shortage without granting a ticket or changing any
+     * resident state.  A valid held HOME/JOB_SITE removes demand; losing the matching job ticket
+     * restores only that retained profession's workplace demand. */
     @GameTest(template = "settlement_test")
-    public static void insufficientCapacityMustEventuallyHouseResidentsAndRetainMatchingWork(GameTestHelper helper) {
+    public static void unmetDemandUsesFoundedTownValidatedReservationsAndHasNoSideEffects(GameTestHelper helper) {
         prepareFlatGround(helper);
         BlockPos anchor = anchor(helper);
-        BlockPos onlyBed = anchor.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
-        BlockPos wrongWorkstation = anchor.offset(OLD_WORKSTATION_OFFSET.getX(), OLD_WORKSTATION_OFFSET.getY(), OLD_WORKSTATION_OFFSET.getZ());
-        placeValidBed(helper, onlyBed);
-        placeWorkstation(helper, wrongWorkstation, Blocks.FLETCHING_TABLE);
-
+        BlockPos bed = anchor.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        BlockPos workstation = anchor.offset(WORKSTATION_OFFSET.getX(), WORKSTATION_OFFSET.getY(), WORKSTATION_OFFSET.getZ());
+        placeValidBed(helper, bed);
+        placeWorkstation(helper, workstation, Blocks.BLAST_FURNACE);
         RegionCoord region = regionOf(helper);
         TownStorage storage = newStorageWithFoundedTown(helper, region);
-        markTownOwned(helper, storage, helper.absolutePos(onlyBed));
-        markTownOwned(helper, storage, helper.absolutePos(wrongWorkstation));
+        BlockPos absoluteBed = helper.absolutePos(bed);
+        BlockPos absoluteWorkstation = helper.absolutePos(workstation);
+        markTownOwned(helper, storage, absoluteBed);
+        markTownOwned(helper, storage, absoluteWorkstation);
 
         Villager armorer = spawnVillager(helper, anchor.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         armorer.setVillagerData(armorer.getVillagerData().setProfession(VillagerProfession.ARMORER));
-        Villager resident = spawnVillager(helper, anchor.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+        takeTicketDirectly(helper.getLevel(), absoluteBed);
+        takeTicketDirectly(helper.getLevel(), absoluteWorkstation);
+        storage.setReservationOwner(helper.getLevel().dimension(), absoluteBed, armorer.getUUID());
+        storage.setReservationOwner(helper.getLevel().dimension(), absoluteWorkstation, armorer.getUUID());
+        armorer.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(helper.getLevel().dimension(), absoluteBed));
+        armorer.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteWorkstation));
 
-        BlockPos townCenter = helper.absolutePos(anchor);
-        TownResidentDemand demand = TownResidentAllocationHandler.unmetDemand(helper.getLevel(), region, storage);
-        helper.assertTrue(demand.missingHomes() == 2
-                        && demand.missingWorkplaces().getOrDefault(VillagerProfession.ARMORER, 0) == 1,
-                "the resident/planning query must report both unhoused residents and the retained Armorer's absent matching workplace without reserving anything");
-        TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), armorer, townCenter, region, storage);
-        TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), resident, townCenter, region, storage);
-        TownResidentAllocationHandler.allocateWorkplaceIfNeeded(helper.getLevel(), armorer, townCenter, region, storage);
+        storage.setDirty(false);
+        TownResidentDemand satisfied = TownResidentAllocationHandler.unmetDemand(helper.getLevel(), region, storage);
+        int baselineArmorerDemand = satisfied.missingWorkplaces().getOrDefault(VillagerProfession.ARMORER, 0);
+        helper.assertTrue(baselineArmorerDemand == 0 && !storage.isDirty()
+                        && armorer.getBrain().getMemory(MemoryModuleType.HOME).map(gp -> gp.pos().equals(absoluteBed)).orElse(false)
+                        && armorer.getBrain().getMemory(MemoryModuleType.JOB_SITE).map(gp -> gp.pos().equals(absoluteWorkstation)).orElse(false)
+                        && helper.getLevel().getPoiManager().getFreeTickets(absoluteBed) == 0
+                        && helper.getLevel().getPoiManager().getFreeTickets(absoluteWorkstation) == 0,
+                "a valid existing HOME/JOB_SITE must suppress demand and the pure query must not mutate storage, memories, or POI tickets");
 
-        helper.assertTrue(armorer.getBrain().getMemory(MemoryModuleType.HOME).isPresent()
-                        && resident.getBrain().getMemory(MemoryModuleType.HOME).isPresent(),
-                "a founded town with two residents must eventually supply distinct reachable homes, not leave one resident unhoused when its sole initial bed is occupied");
-        helper.assertTrue(!armorer.getBrain().getMemory(MemoryModuleType.HOME).get()
-                        .equals(resident.getBrain().getMemory(MemoryModuleType.HOME).get()),
-                "two residents must receive distinct HOME reservations");
-        helper.assertTrue(armorer.getVillagerData().getProfession() == VillagerProfession.ARMORER
-                        && armorer.getBrain().getMemory(MemoryModuleType.JOB_SITE).isPresent()
-                        && helper.getLevel().getBlockState(armorer.getBrain().getMemory(MemoryModuleType.JOB_SITE).get().pos())
-                                .is(Blocks.BLAST_FURNACE),
-                "a retained Armorer must eventually receive an ARMORER workstation, never the initial wrong-profession vacancy");
+        helper.getLevel().getPoiManager().release(absoluteWorkstation);
+        TownResidentDemand missingWork = TownResidentAllocationHandler.unmetDemand(helper.getLevel(), region, storage);
+        helper.assertTrue(missingWork.missingWorkplaces().getOrDefault(VillagerProfession.ARMORER, 0) == baselineArmorerDemand + 1,
+                "a released matching ticket must add exactly the retained Armorer's workplace demand");
+        helper.assertTrue(TownResidentAllocationHandler.unmetDemand(helper.getLevel(), region, new TownStorage()) == TownResidentDemand.NONE
+                        && TownResidentAllocationHandler.unmetDemand(helper.getLevel(), GUARANTEED_EMPTY_REGION, storage) == TownResidentDemand.NONE,
+                "unfounded and different regions must not report this town's residents as demand");
+        helper.succeed();
+    }
+
+    /** Actively claimed temporary Builders belong to the existing construction lifecycle and have no
+     * retained final profession for the pure resident-demand value to request. */
+    @GameTest(template = "settlement_test")
+    public static void unmetDemandExcludesActiveTemporaryBuildersAndDiscardedResidents(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos anchor = anchor(helper);
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        Villager builder = spawnVillager(helper, anchor.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        builder.setVillagerData(builder.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
+        BlockPos campfire = helper.absolutePos(anchor.offset(0, 1, 0));
+        helper.getLevel().setBlock(campfire, Blocks.CAMPFIRE.defaultBlockState(), Block.UPDATE_ALL);
+        builder.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), campfire));
+        Villager discarded = spawnVillager(helper, anchor.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+        discarded.discard();
+
+        TownResidentDemand beforeBuilder = TownResidentAllocationHandler.unmetDemand(helper.getLevel(), region, storage);
+        helper.assertTrue(beforeBuilder.missingWorkplaces().getOrDefault(BuilderProfession.BUILDER.get(), 0) == 0,
+                "an active temporary Builder must not create a Builder workplace demand");
+
+        Villager waitingResident = spawnVillager(helper, anchor.offset(2, 1, 0));
+        TownResidentDemand withResident = TownResidentAllocationHandler.unmetDemand(helper.getLevel(), region, storage);
+        waitingResident.discard();
+        TownResidentDemand afterDiscard = TownResidentAllocationHandler.unmetDemand(helper.getLevel(), region, storage);
+        helper.assertTrue(withResident.missingHomes() == beforeBuilder.missingHomes() + 1
+                        && afterDiscard.equals(beforeBuilder),
+                "a live ordinary resident must count once, while a discarded resident must be filtered back out");
+        helper.succeed();
+    }
+
+    /** The record makes a defensive immutable copy so callers cannot mutate a demand observation
+     * after it has been returned by the resident/planning lane. */
+    @GameTest(template = "settlement_test")
+    public static void townResidentDemandIsImmutable(GameTestHelper helper) {
+        Map<VillagerProfession, Integer> mutable = new HashMap<>();
+        mutable.put(VillagerProfession.ARMORER, 1);
+        TownResidentDemand demand = new TownResidentDemand(2, mutable);
+        mutable.clear();
+        boolean immutable = false;
+        try {
+            demand.missingWorkplaces().put(VillagerProfession.FARMER, 1);
+        } catch (UnsupportedOperationException expected) {
+            immutable = true;
+        }
+        helper.assertTrue(immutable && demand.missingHomes() == 2
+                        && demand.missingWorkplaces().equals(Map.of(VillagerProfession.ARMORER, 1)),
+                "TownResidentDemand must retain an immutable defensive copy of workplace counts");
         helper.succeed();
     }
 

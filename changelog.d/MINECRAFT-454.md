@@ -1,1 +1,5 @@
-Fix Dynamic Towns building terrain preparation so failed clears or fills roll back safely without advancing construction.
+bump: patch
+
+### Fixed
+- Dynamic Towns building terrain preparation now safely rolls back failed clears or fills without
+  advancing construction or consuming resources.

@@ -65,3 +65,20 @@ Minecraft can clamp a requested scale to fit the window. CI preserves ten PNGs
 and the manifest in the client acceptance artifact. The harness restores its
 local test mode, inventory and GUI settings after the mode/scale sequence.
 Screenshot capture and layer assertions alone do not establish visual approval.
+
+## Lifecycle and telemetry follow-up
+
+The client acceptance server now sends the connected player to the Nether and
+back, kills the player, then disconnects it. The real client checks the production
+HUD handler restores every replaced layer and leaves row reservations unchanged
+through those states, including the null-player state after disconnect. A dead
+player who is still mounted no longer qualifies as a driver for HUD rendering.
+
+A synchronous client probe uses the real seat-assignment object to move the local
+rider from driver to passenger and back, and verifies cancellation/restoration.
+It also checks the dead-but-still-mounted state. The test restores all local state
+before returning; this is not a networked two-player seat-swap sequence. That
+multiplayer sequence remains a manual gap. The entity-data GameTest now exercises
+zero, half-scale, full-scale and double-scale speed/RPM from the production server
+publisher through dirty-data transfer and the actual display normalization.
+Physical reverse/limiter maneuvers and visual inspection remain separate checks.

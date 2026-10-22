@@ -70,7 +70,7 @@ public final class HudRenderAcceptance {
         var mc=Minecraft.getInstance();
         if(!started || mc.player==null || !GAUGES.contains(event.getName())) return;
         boolean driver=mc.player.getVehicle() instanceof CarEntity car && car.isRigidBody()
-                && car.getControllingPassenger()==mc.player && !mc.options.hideGui && !mc.player.isSpectator();
+                && car.getControllingPassenger()==mc.player && mc.player.isAlive() && !mc.options.hideGui && !mc.player.isSpectator();
         if(event.isCanceled()!=driver) throw new IllegalStateException("actual GUI layer cancellation/restoration failed: "+event.getName());
         seen.add(event.getName());
     }

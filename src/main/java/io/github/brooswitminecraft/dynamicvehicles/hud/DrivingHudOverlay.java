@@ -17,7 +17,7 @@ import net.neoforged.neoforge.client.gui.VanillaGuiLayers;
 @EventBusSubscriber(modid = DynamicVehiclesMod.MODID, value = Dist.CLIENT)
 public final class DrivingHudOverlay implements LayeredDraw.Layer {
     static CarEntity drivenCar(Minecraft minecraft) {
-        if (minecraft.player == null || minecraft.player.isSpectator()
+        if (minecraft.player == null || !minecraft.player.isAlive() || minecraft.player.isSpectator()
                 || !(minecraft.player.getVehicle() instanceof CarEntity car)) return null;
         return DrivingHudPresentation.visible(minecraft.options.hideGui, true,
                 car.getControllingPassenger() == minecraft.player, car.isRigidBody()) ? car : null;

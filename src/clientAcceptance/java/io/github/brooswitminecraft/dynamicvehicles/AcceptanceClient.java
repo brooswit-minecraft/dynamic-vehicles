@@ -76,6 +76,7 @@ public final class AcceptanceClient {
                 if(mount==null && boatCamera) dismounted=true;
             }
             mountedTicks++;
+            HudRenderAcceptance.tick(mc,mountedTicks,carMounts);
             if(mount instanceof DriverVehicleEntity vehicle && vehicle.isRigidBody()) {
                 if(mountedTicks==5) {
                     var q=vehicle.renderOrientation(1);
@@ -138,9 +139,10 @@ public final class AcceptanceClient {
                 check(carInput && boatInput,"simulated input missing: car="+carInput+" boat="+boatInput);
                 check(carMounts>=2 && boatCamera && dismounted,"car/boat/dismount/car transition incomplete: cars="+carMounts+" boat="+boatCamera+" dismount="+dismounted);
                 check(recentered && freeLook && disabled,"camera recenter/free-look/disable incomplete");
+                check(HudRenderAcceptance.complete(), "rendered HUD screenshots/restoration incomplete");
                 check(hudMounted && hudExited && hudReentered, "HUD mount/exit/re-entry coverage incomplete");
                 check(dust && exhaust,"client receipt missing: dust="+dust+" exhaust="+exhaust);
-                Files.writeString(Path.of("client-acceptance-result.json"),"{\"passed\":true,\"simulated_input\":true,\"camera_transitions\":true,\"dust_receipt\":true,\"exhaust_receipt\":true,\"physical_wheel_tested\":false,\"visual_quality_tested\":false,\"hud_geometry_and_restoration\":true}");
+                Files.writeString(Path.of("client-acceptance-result.json"),"{\"passed\":true,\"simulated_input\":true,\"camera_transitions\":true,\"dust_receipt\":true,\"exhaust_receipt\":true,\"physical_wheel_tested\":false,\"visual_quality_tested\":false,\"hud_geometry_and_restoration\":true,\"rendered_hud_frames\":10}");
                 DynamicVehiclesMod.LOGGER.info("CLIENT_ACCEPTANCE_PASS"); mc.stop();
             }
         } catch(Exception failure) { fail(failure); }

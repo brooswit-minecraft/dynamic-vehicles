@@ -1,0 +1,27 @@
+# MINECRAFT-484 driving HUD
+
+Frozen section 8 only. Health becomes car health, XP becomes RPM, food becomes speed
+from zero to the vehicle's intended top speed, and armor becomes actual tire slip.
+The four labeled bars occupy the corresponding lower HUD positions. No player stats mutate.
+
+The server synchronizes health, `spec.maxSpeed()` (the actual governor target), and raw tire
+slip along with existing driving speed/RPM. Slip excludes the audio handbrake/reverse override.
+Implementation defaults: RPM full scale is the existing 6500-RPM limiter; slip full scale is
+4 m/s, a reviewable display choice. Speed/health/RPM/slip are clamped to their display bounds;
+reverse speed uses magnitude. Protocol 2 prevents old peers misreading the changed entity data.
+
+Only the local controlling passenger of a ready rigid-body car gets the replacement. Each frame
+checks the current vehicle/driver, hidden GUI and spectator state. Dismount, seat change, death,
+disconnect/world change restore vanilla rendering without saved HUD state. The vanilla XP level
+and mount health are suppressed along with the four replaced layers to avoid duplicate displays.
+
+Tests cover visibility and normalized telemetry bounds, including reverse/overspeed/invalid
+values. Existing real client acceptance remains enabled in PR CI; it does not yet establish all
+new HUD visuals. Local Gradle cannot start because `services.gradle.org` cannot resolve.
+Exact-head CI evidence is in the PR. No installation, live-world change or manual playtest occurred.
+
+Manual acceptance still required: damaged/full car vs player health; idle/shift/limiter RPM;
+stationary/reverse/top-speed/overspeed; rolling vs actual tire slip; passenger vs driver; exit,
+seat swap, F1, spectator, death, disconnect and dimension change. Check nondefault server top-speed
+configuration against a client with different local defaults. Confirm ordinary player bars return.
+This does not change physics or MINECRAFT-478 caster/roll-center scope.

@@ -27,3 +27,29 @@ stationary/reverse/top-speed/overspeed; rolling vs actual tire slip; passenger v
 seat swap, F1, spectator, death, disconnect and dimension change. Check nondefault server top-speed
 configuration against a client with different local defaults. Confirm ordinary player bars return.
 This does not change physics or MINECRAFT-478 caster/roll-center scope.
+
+## Review corrections: layout and feature-specific acceptance
+
+RPM now occupies `[H-34, H-24)`, leaving two clear scaled pixels before the hotbar
+at `H-22`. Health/speed occupy `[H-46, H-36)` and slip `[H-58, H-48)`.
+`DrivingHudLayout` supplies these actual renderer bounds and reservation constants.
+The selected-item layer reserves at least 70 pixels in survival, 84 in creative to
+compensate vanilla's +14 creative offset. Its 9-pixel label ends at `H-61`, above
+all gauges even when the name spans the full HUD width. Air starts at `H-58` on
+the right and remains clear of speed.
+
+`DrivingHudLayoutTest` verifies non-overlap across minimum/odd and common scaled
+viewports, both modes and a full-width selected-item label. The test-only real
+client `HudAcceptanceChecks` calls the actual production `RenderGuiLayerEvent.Pre`
+handler with the current player/mount, both game modes, GUI scales 1–4, and F1
+on/off. It verifies cancellation, unchanged reservations after exit, long-name
+bounds using actual font metrics, and mount/exit/re-entry coverage. Receipts are
+`CLIENT_ACCEPTANCE_HUD_PASS`; these probes do not claim pixel screenshot or visual
+quality approval. The original input/camera/dust harness still runs separately.
+
+The existing wall-pinned D1 GameTest now transfers real nonzero physics tire slip
+into a replica's entity data and checks that the HUD value matches it, exceeds
+0.3 m/s during the fixture and produces a nonempty gauge. This supplements the
+body-less audio-separation fixture. Remaining manual checks above still apply,
+including actual seat swaps/death/disconnect/dimension transitions and a visual
+inspection of long selected-item names at the user's chosen GUI scales.

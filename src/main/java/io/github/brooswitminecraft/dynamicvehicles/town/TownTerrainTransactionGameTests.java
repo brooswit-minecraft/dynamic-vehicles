@@ -3,6 +3,7 @@ package io.github.brooswitminecraft.dynamicvehicles.town;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.GlobalPos;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.world.entity.EntityType;
@@ -10,7 +11,10 @@ import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.entity.ai.memory.MemoryModuleType;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.npc.VillagerProfession;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.entity.ChestBlockEntity;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
@@ -87,6 +91,97 @@ public final class TownTerrainTransactionGameTests {
         helper.assertTrue(!helper.getBlockState(trunkBase).is(Blocks.OAK_LOG)
                         && !helper.getBlockState(trunkBase.above()).is(Blocks.OAK_LOG),
                 "a clean retry after rollback must commit the normal terrain clearing");
+        helper.succeed();
+    }
+
+    /** A rollback failure in a below-floor fill must survive reload and stop the whole site, not
+     * let a later attempt skip that untrusted support cell and advance the building above it. */
+    @GameTest(template = "settlement_test")
+    public static void rejectedFillRollbackFailureBlocksRetryAfterReload(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos elevatedAnchor = ANCHOR.above(2);
+        helper.setBlock(elevatedAnchor, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(elevatedAnchor);
+        spawnClaimant(helper, absoluteCampfire);
+
+        TownStorage storage = new TownStorage();
+        // Persist the elevated floor so adjacent footprint columns must perform below-floor fills.
+        storage.setFloor(TownStorage.siteOwner(absoluteCampfire), absoluteCampfire.getY());
+        TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 500);
+        int woodBefore = store.balance(TownResourceCategory.WOOD);
+        int stoneBefore = store.balance(TownResourceCategory.STONE);
+
+        BlockPos firstFill = elevatedAnchor.offset(-2, -2, -2);
+        BlockPos rejectedFill = firstFill.above();
+        BlockPos absoluteFirstFill = helper.absolutePos(firstFill);
+        BlockPos absoluteRejectedFill = helper.absolutePos(rejectedFill);
+        TownConstructionService.testForceTerrainMutationFailureAt = absoluteRejectedFill;
+        TownConstructionService.testForceTerrainRollbackFailureAt = absoluteFirstFill;
+        TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
+        TownConstructionService.testForceTerrainRollbackFailureAt = null;
+
+        helper.assertTrue(storage.isCellBlocked(helper.getLevel().dimension(), absoluteFirstFill)
+                        && storage.isCellBlocked(helper.getLevel().dimension(), absoluteRejectedFill),
+                "an unconfirmed fill rollback must durably block every cell in its terrain transaction");
+        helper.assertTrue(helper.getBlockState(firstFill).is(Blocks.DIRT)
+                        && helper.getBlockState(rejectedFill).isAir(),
+                "the test must leave the failed rollback's first fill visibly untrusted");
+        helper.assertTrue(store.balance(TownResourceCategory.WOOD) == woodBefore
+                        && store.balance(TownResourceCategory.STONE) == stoneBefore
+                        && helper.getBlockState(elevatedAnchor).is(Blocks.CAMPFIRE),
+                "a rejected fill and failed rollback must not credit, debit, or advance the building");
+
+        CompoundTag saved = storage.save(new CompoundTag(), helper.getLevel().registryAccess());
+        TownStorage reloaded = TownStorage.load(saved, helper.getLevel().registryAccess());
+        TownResourceStore reloadedStore = reloaded.storeFor(TownKeys.keyFor(helper.getLevel().dimension(),
+                TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ())));
+        TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, reloaded);
+
+        helper.assertTrue(reloaded.isCellBlocked(helper.getLevel().dimension(), absoluteFirstFill)
+                        && reloaded.isCellBlocked(helper.getLevel().dimension(), absoluteRejectedFill),
+                "the terrain transaction hold must survive reload");
+        helper.assertTrue(helper.getBlockState(firstFill).is(Blocks.DIRT)
+                        && helper.getBlockState(rejectedFill).isAir()
+                        && helper.getBlockState(elevatedAnchor).is(Blocks.CAMPFIRE),
+                "a later attempt must stop before adopting or building over blocked fill cells");
+        helper.assertTrue(reloadedStore.balance(TownResourceCategory.WOOD) == woodBefore
+                        && reloadedStore.balance(TownResourceCategory.STONE) == stoneBefore,
+                "a blocked retry must leave resources unchanged");
+        helper.succeed();
+    }
+
+    /** Terrain prep must reject a real block entity before any write, preserving its inventory/NBT
+     * instead of trying a state-only rollback after a later injected failure.  The production
+     * guard is state-agnostic, so it applies equally to a modded waterlogged block entity. */
+    @GameTest(template = "settlement_test")
+    public static void blockEntityPreflightPreservesInventoryAndStopsBuild(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        helper.setBlock(ANCHOR, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(ANCHOR);
+        BlockPos containerCell = ANCHOR.offset(1, 0, 1);
+        BlockPos absoluteContainerCell = helper.absolutePos(containerCell);
+        helper.setBlock(containerCell, Blocks.CHEST);
+        ChestBlockEntity inventory = (ChestBlockEntity) helper.getLevel().getBlockEntity(absoluteContainerCell);
+        inventory.setItem(0, new ItemStack(Items.DIAMOND, 7));
+        spawnClaimant(helper, absoluteCampfire);
+
+        TownStorage storage = new TownStorage();
+        TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 500);
+        int woodBefore = store.balance(TownResourceCategory.WOOD);
+        int stoneBefore = store.balance(TownResourceCategory.STONE);
+        TownConstructionService.testForceTerrainMutationFailureAt = helper.absolutePos(ANCHOR.offset(1, 1, 1));
+        TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
+        TownConstructionService.testForceTerrainMutationFailureAt = null;
+
+        helper.assertTrue(helper.getBlockState(containerCell).is(Blocks.CHEST),
+                "a block-entity cell must not be cleared by terrain preparation");
+        helper.assertTrue(helper.getLevel().getBlockEntity(absoluteContainerCell) instanceof ChestBlockEntity chest
+                        && chest.getItem(0).is(Items.DIAMOND) && chest.getItem(0).getCount() == 7,
+                "the rejected cell's identifiable block-entity inventory/NBT must remain intact");
+        helper.assertTrue(store.balance(TownResourceCategory.WOOD) == woodBefore
+                        && store.balance(TownResourceCategory.STONE) == stoneBefore
+                        && helper.getBlockState(ANCHOR).is(Blocks.CAMPFIRE),
+                "rejecting a block entity must leave resources and building progress untouched");
         helper.succeed();
     }
 }

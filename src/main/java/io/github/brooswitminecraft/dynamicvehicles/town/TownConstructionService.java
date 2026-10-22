@@ -46,6 +46,9 @@ public final class TownConstructionService {
      * this hook lets the focused production GameTest prove that an interruption restores every
      * earlier write before construction can continue. */
     static BlockPos testForceTerrainMutationFailureAt = null;
+    /** Test-only fault injection for proving that an unconfirmed terrain rollback remains a
+     * durable stop, rather than becoming a later build-through. */
+    static BlockPos testForceTerrainRollbackFailureAt = null;
 
     public static void onLevelTick(LevelTickEvent.Post event) {
         if (!(event.getLevel() instanceof ServerLevel level)
@@ -746,9 +749,9 @@ public final class TownConstructionService {
      * {@link TownTerrain#classify} and credited via {@link TownClearingYields} exactly once, since
      * removing the block is what makes it unavailable to tally again.
      *
-     * Every clear/fill belongs to ONE terrain transaction.  The natural blocks and air cells this
-     * method is allowed to mutate cannot carry block-entity data; nevertheless, their full block
-     * states are snapshotted before every write.  If any write is rejected, every earlier write is
+     * Every clear/fill belongs to ONE terrain transaction.  Block entities are rejected by
+     * preflight (and checked again immediately before a clear), so the journal only ever handles
+     * state-only terrain.  Every eligible state is snapshotted before every write.  If any write is rejected, every earlier write is
      * restored before returning, and salvage is credited only after the complete transaction
      * commits.  A rollback that cannot itself be confirmed is durably contained rather than retried
      * against an unknown world state.
@@ -773,11 +776,11 @@ public final class TownConstructionService {
                         continue;
                     }
                     if (storage.isCellBlocked(level.dimension(), pos)) {
-                        // [Review round 11, finding #2 supplement] Redundant with the whole-site
-                        // preflight above (which already covers this exact scan range) but kept
-                        // here too as an explicit, defensive guard: a durably blocked cell is never
-                        // cleared/salvaged, regardless of what else is true about it.
-                        continue;
+                        // A terrain-prep block is a site-wide transaction hold, not an ignorable
+                        // individual cell.  In particular, a blocked below-floor fill is outside
+                        // the ordinary building-volume preflight scan and must still prevent a
+                        // later attempt from building over an unconfirmed world state.
+                        return abortTerrainPreparation(level, storage, mutations);
                     }
                     BlockState state = level.getBlockState(pos);
                     if (state.isAir()) {
@@ -789,6 +792,12 @@ public final class TownConstructionService {
                         // already would have aborted the whole site over. Either way, never clear
                         // it here - this pass salvages NATURAL terrain only.
                         continue;
+                    }
+                    if (level.getBlockEntity(pos) != null) {
+                        // Defend against a block entity appearing after whole-site preflight.
+                        // No terrain mutation may remove data this journal cannot faithfully
+                        // restore; any prior work in this transaction is rolled back first.
+                        return abortTerrainPreparation(level, storage, mutations);
                     }
                     // [Review round 3, finding #4] Classify BEFORE removal (removal destroys the
                     // state needed to classify it), but only actually TALLY the credit after
@@ -812,8 +821,11 @@ public final class TownConstructionService {
                 // height) with plain dirt - a leveling fill, not salvage, so it earns no credit.
                 for (int y = top; y < baseY; y++) {
                     BlockPos pos = new BlockPos(columnX, y, columnZ);
-                    if (pos.equals(campfire) || storage.isCellBlocked(level.dimension(), pos)) {
+                    if (pos.equals(campfire)) {
                         continue;
+                    }
+                    if (storage.isCellBlocked(level.dimension(), pos)) {
+                        return abortTerrainPreparation(level, storage, mutations);
                     }
                     if (level.getBlockState(pos).isAir()) {
                         mutations.add(new TerrainMutation(pos, Blocks.AIR.defaultBlockState()));
@@ -884,6 +896,9 @@ public final class TownConstructionService {
         // restored and Minecraft quite correctly returns false for setting the identical state.
         if (level.getBlockState(pos).equals(original)) {
             return true;
+        }
+        if (pos.equals(testForceTerrainRollbackFailureAt)) {
+            return false;
         }
         return level.setBlock(pos, original, net.minecraft.world.level.block.Block.UPDATE_ALL)
                 && level.getBlockState(pos).equals(original);

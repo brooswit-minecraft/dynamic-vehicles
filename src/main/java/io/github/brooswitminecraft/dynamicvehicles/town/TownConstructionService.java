@@ -41,6 +41,12 @@ import java.util.Set;
 public final class TownConstructionService {
     private TownConstructionService() {}
 
+    /** Test-only fault injection for the terrain-preparation transaction.  Minecraft's normal
+     * world implementation does not offer a deterministic way to reject one intermediate write;
+     * this hook lets the focused production GameTest prove that an interruption restores every
+     * earlier write before construction can continue. */
+    static BlockPos testForceTerrainMutationFailureAt = null;
+
     public static void onLevelTick(LevelTickEvent.Post event) {
         if (!(event.getLevel() instanceof ServerLevel level)
                 || level.getGameTime() % TownConstants.CONSTRUCTION_TICK_INTERVAL_TICKS != 0) {
@@ -279,7 +285,13 @@ public final class TownConstructionService {
         // reload, or retry). The campfire's own cell is left untouched here - it keeps its current
         // block (the campfire) until the bottom-up build reaches it last. Already-placed template
         // blocks (non-natural) are left alone, not re-cleared, so this cannot undo earlier progress.
-        if (prepareTerrain(level, campfire, radius, floorY, store, storage)) {
+        TerrainPreparation terrainPreparation = prepareTerrain(level, campfire, radius, floorY, store, storage);
+        if (terrainPreparation == TerrainPreparation.ABORTED) {
+            // An intermediate terrain write was rejected (or its rollback could not be verified).
+            // Do not advance the building or debit resources from an incomplete preparation.
+            return;
+        }
+        if (terrainPreparation == TerrainPreparation.MUTATED) {
             storage.setDirty();
         }
 
@@ -734,12 +746,17 @@ public final class TownConstructionService {
      * {@link TownTerrain#classify} and credited via {@link TownClearingYields} exactly once, since
      * removing the block is what makes it unavailable to tally again.
      *
-     * @return {@code true} if anything was mutated (so the caller knows whether to persist storage).
+     * Every clear/fill belongs to ONE terrain transaction.  The natural blocks and air cells this
+     * method is allowed to mutate cannot carry block-entity data; nevertheless, their full block
+     * states are snapshotted before every write.  If any write is rejected, every earlier write is
+     * restored before returning, and salvage is credited only after the complete transaction
+     * commits.  A rollback that cannot itself be confirmed is durably contained rather than retried
+     * against an unknown world state.
      */
-    private static boolean prepareTerrain(ServerLevel level, BlockPos campfire, int radius, int baseY, TownResourceStore store,
+    private static TerrainPreparation prepareTerrain(ServerLevel level, BlockPos campfire, int radius, int baseY, TownResourceStore store,
             TownStorage storage) {
         Map<TownClearingYields.ClearedMaterial, Integer> tally = new EnumMap<>(TownClearingYields.ClearedMaterial.class);
-        boolean mutated = false;
+        List<TerrainMutation> mutations = new ArrayList<>();
         for (int x = -radius; x <= radius; x++) {
             for (int z = -radius; z <= radius; z++) {
                 int columnX = campfire.getX() + x;
@@ -782,11 +799,11 @@ public final class TownConstructionService {
                     // becomes air, so the `state.isAir()` check above already skips it on every
                     // later pass - no separate "already credited" bookkeeping is needed.
                     TownClearingYields.ClearedMaterial material = TownTerrain.classify(state);
-                    boolean removed = level.removeBlock(pos, false) && level.getBlockState(pos).isAir();
+                    mutations.add(new TerrainMutation(pos, state));
+                    boolean removed = removeTerrainBlock(level, pos) && level.getBlockState(pos).isAir();
                     if (!removed) {
-                        continue;
+                        return abortTerrainPreparation(level, storage, mutations);
                     }
-                    mutated = true;
                     if (material != null) {
                         tally.merge(material, 1, Integer::sum);
                     }
@@ -799,8 +816,12 @@ public final class TownConstructionService {
                         continue;
                     }
                     if (level.getBlockState(pos).isAir()) {
-                        level.setBlock(pos, Blocks.DIRT.defaultBlockState(), net.minecraft.world.level.block.Block.UPDATE_ALL);
-                        mutated = true;
+                        mutations.add(new TerrainMutation(pos, Blocks.AIR.defaultBlockState()));
+                        boolean filled = setTerrainBlock(level, pos, Blocks.DIRT.defaultBlockState())
+                                && level.getBlockState(pos).is(Blocks.DIRT);
+                        if (!filled) {
+                            return abortTerrainPreparation(level, storage, mutations);
+                        }
                     }
                 }
             }
@@ -812,7 +833,60 @@ public final class TownConstructionService {
                 store.credit(yield.category(), credit);
             }
         }
-        return mutated;
+        return mutations.isEmpty() ? TerrainPreparation.READY : TerrainPreparation.MUTATED;
+    }
+
+    private enum TerrainPreparation { READY, MUTATED, ABORTED }
+
+    private record TerrainMutation(BlockPos pos, BlockState original) {}
+
+    /** Restores in reverse write order.  A failure is permanently contained because retrying could
+     * otherwise duplicate salvage from a world state whose exact history is no longer known. */
+    private static TerrainPreparation abortTerrainPreparation(ServerLevel level, TownStorage storage,
+            List<TerrainMutation> mutations) {
+        List<BlockPos> failedRestorations = new ArrayList<>();
+        for (int i = mutations.size() - 1; i >= 0; i--) {
+            TerrainMutation mutation = mutations.get(i);
+            if (!restoreTerrainBlock(level, mutation.pos(), mutation.original())) {
+                failedRestorations.add(mutation.pos());
+            }
+        }
+        if (!failedRestorations.isEmpty()) {
+            io.github.brooswitminecraft.dynamicvehicles.DynamicVehiclesMod.LOGGER.error(
+                    "Dynamic Towns terrain rollback did not fully restore {} - permanently excluding the transaction cells",
+                    failedRestorations);
+            for (TerrainMutation mutation : mutations) {
+                storage.markCellBlocked(level.dimension(), mutation.pos());
+            }
+            storage.setDirty();
+        }
+        return TerrainPreparation.ABORTED;
+    }
+
+    private static boolean removeTerrainBlock(ServerLevel level, BlockPos pos) {
+        if (pos.equals(testForceTerrainMutationFailureAt)) {
+            testForceTerrainMutationFailureAt = null;
+            return false;
+        }
+        return level.removeBlock(pos, false);
+    }
+
+    private static boolean setTerrainBlock(ServerLevel level, BlockPos pos, BlockState state) {
+        if (pos.equals(testForceTerrainMutationFailureAt)) {
+            testForceTerrainMutationFailureAt = null;
+            return false;
+        }
+        return level.setBlock(pos, state, net.minecraft.world.level.block.Block.UPDATE_ALL);
+    }
+
+    private static boolean restoreTerrainBlock(ServerLevel level, BlockPos pos, BlockState original) {
+        // The rejected write may have been a clean no-op, in which case this cell is already
+        // restored and Minecraft quite correctly returns false for setting the identical state.
+        if (level.getBlockState(pos).equals(original)) {
+            return true;
+        }
+        return level.setBlock(pos, original, net.minecraft.world.level.block.Block.UPDATE_ALL)
+                && level.getBlockState(pos).equals(original);
     }
 
     private static boolean hasUnplacedBlocksBefore(List<ConstructionSitePlan.PlannedBlock> ordered,

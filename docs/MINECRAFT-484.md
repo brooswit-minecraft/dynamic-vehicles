@@ -15,7 +15,9 @@ checks the current vehicle/driver, hidden GUI and spectator state. Dismount, sea
 disconnect/world change restore vanilla rendering without saved HUD state. The vanilla XP level
 and mount health are suppressed along with the four replaced layers to avoid duplicate displays.
 
-Tests cover visibility and normalized telemetry bounds, including reverse/overspeed/invalid
+The production entity-data GameTest also checks restored car health, server top-speed scale,
+and separation of tire slip from audio slip. Canceled layers reserve space for vanilla air/status
+overlays. Tests cover visibility and normalized telemetry bounds, including reverse/overspeed/invalid
 values. Existing real client acceptance remains enabled in PR CI; it does not yet establish all
 new HUD visuals. Local Gradle cannot start because `services.gradle.org` cannot resolve.
 Exact-head CI evidence is in the PR. No installation, live-world change or manual playtest occurred.

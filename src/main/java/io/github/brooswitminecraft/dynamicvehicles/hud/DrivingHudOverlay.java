@@ -25,8 +25,16 @@ public final class DrivingHudOverlay implements LayeredDraw.Layer {
 
     @SubscribeEvent
     public static void replacePlayerLayers(RenderGuiLayerEvent.Pre event) {
-        if (drivenCar(Minecraft.getInstance()) == null) return;
+        Minecraft minecraft = Minecraft.getInstance();
+        if (drivenCar(minecraft) == null) return;
         var layer = event.getName();
+        // Vanilla's canceled layers normally reserve space for later air/status overlays.
+        // Reserve our 12-pixel rows too, so breathing bubbles and item names do not overlap.
+        if (layer.equals(VanillaGuiLayers.PLAYER_HEALTH) || layer.equals(VanillaGuiLayers.ARMOR_LEVEL)) {
+            minecraft.gui.leftHeight += 12;
+        } else if (layer.equals(VanillaGuiLayers.FOOD_LEVEL)) {
+            minecraft.gui.rightHeight += 12;
+        }
         if (layer.equals(VanillaGuiLayers.PLAYER_HEALTH) || layer.equals(VanillaGuiLayers.FOOD_LEVEL)
                 || layer.equals(VanillaGuiLayers.ARMOR_LEVEL) || layer.equals(VanillaGuiLayers.EXPERIENCE_BAR)
                 || layer.equals(VanillaGuiLayers.EXPERIENCE_LEVEL) || layer.equals(VanillaGuiLayers.VEHICLE_HEALTH)) {

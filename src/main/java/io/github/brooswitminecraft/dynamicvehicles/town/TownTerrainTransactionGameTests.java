@@ -131,6 +131,10 @@ public final class TownTerrainTransactionGameTests {
                         && helper.getBlockState(elevatedAnchor).is(Blocks.CAMPFIRE),
                 "a rejected fill and failed rollback must not credit, debit, or advance the building");
 
+        // Subsequent natural coverage changes the heightmap so the original blocked upper fill
+        // would be outside both preparation loops.  Only the site-level quarantine may now stop
+        // a second attempt.
+        helper.setBlock(rejectedFill, Blocks.DIRT);
         CompoundTag saved = storage.save(new CompoundTag(), helper.getLevel().registryAccess());
         TownStorage reloaded = TownStorage.load(saved, helper.getLevel().registryAccess());
         TownResourceStore reloadedStore = reloaded.storeFor(TownKeys.keyFor(helper.getLevel().dimension(),
@@ -141,12 +145,38 @@ public final class TownTerrainTransactionGameTests {
                         && reloaded.isCellBlocked(helper.getLevel().dimension(), absoluteRejectedFill),
                 "the terrain transaction hold must survive reload");
         helper.assertTrue(helper.getBlockState(firstFill).is(Blocks.DIRT)
-                        && helper.getBlockState(rejectedFill).isAir()
+                        && helper.getBlockState(rejectedFill).is(Blocks.DIRT)
                         && helper.getBlockState(elevatedAnchor).is(Blocks.CAMPFIRE),
                 "a later attempt must stop before adopting or building over blocked fill cells");
         helper.assertTrue(reloadedStore.balance(TownResourceCategory.WOOD) == woodBefore
                         && reloadedStore.balance(TownResourceCategory.STONE) == stoneBefore,
                 "a blocked retry must leave resources unchanged");
+        helper.succeed();
+    }
+
+    /** CAVE_AIR is an air state but not the same state as ordinary AIR.  A rejected fill must
+     * restore that exact pre-state rather than normalising it to plain air. */
+    @GameTest(template = "settlement_test")
+    public static void rejectedFillRestoresExactCaveAirState(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos elevatedAnchor = ANCHOR.above(2);
+        helper.setBlock(elevatedAnchor, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(elevatedAnchor);
+        spawnClaimant(helper, absoluteCampfire);
+        TownStorage storage = new TownStorage();
+        storage.setFloor(TownStorage.siteOwner(absoluteCampfire), absoluteCampfire.getY());
+        fundStore(helper, storage, absoluteCampfire, 500);
+
+        BlockPos firstFill = elevatedAnchor.offset(-2, -2, -2);
+        BlockPos rejectedFill = firstFill.above();
+        helper.setBlock(firstFill, Blocks.CAVE_AIR);
+        TownConstructionService.testForceTerrainMutationFailureAt = helper.absolutePos(rejectedFill);
+        TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
+
+        helper.assertTrue(helper.getBlockState(firstFill).equals(Blocks.CAVE_AIR.defaultBlockState()),
+                "rollback must restore CAVE_AIR exactly, not replace it with ordinary AIR");
+        helper.assertTrue(helper.getBlockState(elevatedAnchor).is(Blocks.CAMPFIRE),
+                "a rejected fill must not advance the building");
         helper.succeed();
     }
 

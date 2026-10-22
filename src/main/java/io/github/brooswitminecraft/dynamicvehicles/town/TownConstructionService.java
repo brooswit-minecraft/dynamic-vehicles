@@ -156,6 +156,11 @@ public final class TownConstructionService {
         }
         Villager claimant = claimantOpt.get();
         String siteOwner = TownStorage.siteOwner(campfire);
+        // A failed terrain rollback quarantines the entire site, not only currently-visible cells:
+        // later natural coverage can change the heightmap and hide the exact failed support.
+        if (storage.isTerrainSiteBlocked(level.dimension(), campfire)) {
+            return;
+        }
 
         RegionCoord region = TownRegion.fromBlockCoords(campfire.getX(), campfire.getZ());
         TownPlan plan = TownPlanner.generate(region, level.getSeed());
@@ -780,7 +785,7 @@ public final class TownConstructionService {
                         // individual cell.  In particular, a blocked below-floor fill is outside
                         // the ordinary building-volume preflight scan and must still prevent a
                         // later attempt from building over an unconfirmed world state.
-                        return abortTerrainPreparation(level, storage, mutations);
+                        return abortTerrainPreparation(level, campfire, storage, mutations);
                     }
                     BlockState state = level.getBlockState(pos);
                     if (state.isAir()) {
@@ -797,7 +802,7 @@ public final class TownConstructionService {
                         // Defend against a block entity appearing after whole-site preflight.
                         // No terrain mutation may remove data this journal cannot faithfully
                         // restore; any prior work in this transaction is rolled back first.
-                        return abortTerrainPreparation(level, storage, mutations);
+                        return abortTerrainPreparation(level, campfire, storage, mutations);
                     }
                     // [Review round 3, finding #4] Classify BEFORE removal (removal destroys the
                     // state needed to classify it), but only actually TALLY the credit after
@@ -811,7 +816,7 @@ public final class TownConstructionService {
                     mutations.add(new TerrainMutation(pos, state));
                     boolean removed = removeTerrainBlock(level, pos) && level.getBlockState(pos).isAir();
                     if (!removed) {
-                        return abortTerrainPreparation(level, storage, mutations);
+                        return abortTerrainPreparation(level, campfire, storage, mutations);
                     }
                     if (material != null) {
                         tally.merge(material, 1, Integer::sum);
@@ -825,14 +830,16 @@ public final class TownConstructionService {
                         continue;
                     }
                     if (storage.isCellBlocked(level.dimension(), pos)) {
-                        return abortTerrainPreparation(level, storage, mutations);
+                        return abortTerrainPreparation(level, campfire, storage, mutations);
                     }
                     if (level.getBlockState(pos).isAir()) {
-                        mutations.add(new TerrainMutation(pos, Blocks.AIR.defaultBlockState()));
+                        // isAir() includes CAVE_AIR/VOID_AIR; preserve the exact original state
+                        // rather than silently normalising an aborted transaction to plain air.
+                        mutations.add(new TerrainMutation(pos, level.getBlockState(pos)));
                         boolean filled = setTerrainBlock(level, pos, Blocks.DIRT.defaultBlockState())
                                 && level.getBlockState(pos).is(Blocks.DIRT);
                         if (!filled) {
-                            return abortTerrainPreparation(level, storage, mutations);
+                            return abortTerrainPreparation(level, campfire, storage, mutations);
                         }
                     }
                 }
@@ -854,7 +861,7 @@ public final class TownConstructionService {
 
     /** Restores in reverse write order.  A failure is permanently contained because retrying could
      * otherwise duplicate salvage from a world state whose exact history is no longer known. */
-    private static TerrainPreparation abortTerrainPreparation(ServerLevel level, TownStorage storage,
+    private static TerrainPreparation abortTerrainPreparation(ServerLevel level, BlockPos campfire, TownStorage storage,
             List<TerrainMutation> mutations) {
         List<BlockPos> failedRestorations = new ArrayList<>();
         for (int i = mutations.size() - 1; i >= 0; i--) {
@@ -870,6 +877,7 @@ public final class TownConstructionService {
             for (TerrainMutation mutation : mutations) {
                 storage.markCellBlocked(level.dimension(), mutation.pos());
             }
+            storage.markTerrainSiteBlocked(level.dimension(), campfire);
             storage.setDirty();
         }
         return TerrainPreparation.ABORTED;

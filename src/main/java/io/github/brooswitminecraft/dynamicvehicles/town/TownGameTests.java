@@ -1519,6 +1519,87 @@ public final class TownGameTests {
         helper.succeed();
     }
 
+    /**
+     * MINECRAFT-453: the road's lifetime is independent from the single building that originally
+     * founded the town.  This deliberately uses a short, controlled route because a real
+     * seed-derived region route can lie outside the small disposable GameTest template; the work
+     * it drives is nevertheless {@link TownRoadConstructionService}'s real paid-progress writer.
+     *
+     * <p>The sequence is the production-relevant failure boundary: a real Builder completes and
+     * releases its campfire, roads pause with no stone, a foreign dirt path is refused rather than
+     * adopted, then paid progress is saved/loaded and subsequent road ticks finish the remaining
+     * route without recharging the persisted cells.
+     */
+    @GameTest(template = "settlement_test")
+    public static void roadsResumeAfterTheOnlyBuilderSiteFinishesAcrossFundsAndStorageReload(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos campfireCell = ANCHOR;
+        BlockPos absoluteCampfire = helper.absolutePos(campfireCell);
+        helper.setBlock(campfireCell, Blocks.CAMPFIRE);
+        Villager claimant = EntityType.VILLAGER.create(helper.getLevel(), null, absoluteCampfire, MobSpawnType.EVENT, false, false);
+        helper.getLevel().addFreshEntity(claimant);
+        claimant.setVillagerData(claimant.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
+        claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteCampfire));
+
+        TownStorage storage = new TownStorage();
+        fundStore(helper, storage, absoluteCampfire, 100000);
+        buildUntilHandedOff(helper, absoluteCampfire, claimant, storage);
+        helper.assertTrue(!helper.getBlockState(campfireCell).is(Blocks.CAMPFIRE),
+                "test setup requires the sole site's campfire to be replaced before roads run");
+        helper.assertTrue(claimant.getVillagerData().getProfession() != BuilderProfession.BUILDER.get(),
+                "test setup requires the sole Builder to be released before roads run");
+
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
+        String townKey = TownKeys.keyFor(helper.getLevel().dimension(), region);
+        TownResourceStore store = storage.storeFor(townKey);
+        int stone = store.balance(TownResourceCategory.STONE);
+        helper.assertTrue(storage.tryDebitStore(townKey, TownResourceCategory.STONE, stone),
+                "test setup must drain the site's remaining stone so the road genuinely pauses");
+
+        BlockPos routeStart = helper.absolutePos(new BlockPos(1, 8, 1));
+        BlockPos foreignPath = routeStart.offset(1, 0, 0);
+        helper.getLevel().setBlock(foreignPath, Blocks.DIRT_PATH.defaultBlockState(), Block.UPDATE_ALL);
+        List<TownRoadPlanner.RoadCell> route = List.of(
+                new TownRoadPlanner.RoadCell(routeStart.getX(), routeStart.getZ(), routeStart.getY()),
+                new TownRoadPlanner.RoadCell(foreignPath.getX(), foreignPath.getZ(), foreignPath.getY()),
+                new TownRoadPlanner.RoadCell(routeStart.getX() + 2, routeStart.getZ(), routeStart.getY()),
+                new TownRoadPlanner.RoadCell(routeStart.getX() + 3, routeStart.getZ(), routeStart.getY()));
+
+        helper.assertTrue(TownRoadConstructionService.buildRoadCells(helper.getLevel(), route, storage, store) == 0,
+                "roads must pause without stone after the sole Builder/campfire is gone");
+        helper.assertTrue(helper.getBlockState(foreignPath).is(Blocks.DIRT_PATH),
+                "a foreign dirt path must not be adopted or changed while the road is paused");
+
+        storage.creditStore(townKey, TownResourceCategory.STONE, 1000);
+        int firstTick = TownRoadConstructionService.buildRoadCells(helper.getLevel(), route, storage, store);
+        helper.assertTrue(firstTick > 0 && firstTick <= TownConstants.ROAD_BLOCKS_PER_TICK,
+                "funded road work must make bounded progress after the Builder/campfire lifecycle, found " + firstTick);
+        helper.assertTrue(helper.getBlockState(foreignPath).is(Blocks.DIRT_PATH),
+                "a foreign dirt path must remain protected rather than become free road progress");
+        int balanceBeforeReload = store.balance(TownResourceCategory.STONE);
+
+        TownStorage reloaded = TownStorage.load(storage.save(new CompoundTag(), helper.getLevel().registryAccess()), helper.getLevel().registryAccess());
+        TownResourceStore reloadedStore = reloaded.storeFor(townKey);
+        helper.assertTrue(reloadedStore.balance(TownResourceCategory.STONE) == balanceBeforeReload,
+                "paid road progress and its balance must survive TownStorage save/load");
+
+        int resumed = 0;
+        for (int tick = 0; tick < 8; tick++) {
+            int placed = TownRoadConstructionService.buildRoadCells(helper.getLevel(), route, reloaded, reloadedStore);
+            resumed += placed;
+            if (placed == 0) {
+                break;
+            }
+        }
+        helper.assertTrue(resumed > 0,
+                "later road-builder ticks must resume the unfinished paid route after reload");
+        helper.assertTrue(reloadedStore.balance(TownResourceCategory.STONE) == balanceBeforeReload - resumed * TownConstants.ROAD_COST_PER_BLOCK,
+                "only newly placed post-reload cells may be charged; persisted paid progress must not be charged again");
+        helper.assertTrue(helper.getBlockState(foreignPath).is(Blocks.DIRT_PATH),
+                "reload/retry must never adopt the foreign dirt path as this road's paid progress");
+        helper.succeed();
+    }
+
     /** MINECRAFT-388 review round 4, finding #4: support fill must dig DOWN through a deep gap
      *  (not just one cell) until real solid ground is found, so a route crossing a valley/gap does
      *  not leave the surface floating. */

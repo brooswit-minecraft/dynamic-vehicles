@@ -148,7 +148,10 @@ public final class TownResidentAllocationHandler {
             if (!hasValidHome(level, villager, region, storage)) {
                 missingHomes++;
             }
-            if (profession != VillagerProfession.NONE && profession != BuilderProfession.BUILDER.get()
+            // NONE and NITWIT have no vanilla held job site.  A NITWIT can still need a home,
+            // but must never turn the pure observation into an impossible workplace request.
+            if (profession != VillagerProfession.NONE && profession != VillagerProfession.NITWIT
+                    && profession != BuilderProfession.BUILDER.get()
                     && !hasValidWorkplace(level, villager, region, storage)) {
                 missingWorkplaces.merge(profession, 1, Integer::sum);
             }

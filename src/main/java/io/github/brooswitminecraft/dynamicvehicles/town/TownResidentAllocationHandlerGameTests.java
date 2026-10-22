@@ -318,34 +318,50 @@ public final class TownResidentAllocationHandlerGameTests {
         int netherChunkX = netherResidentPos.getX() >> 4;
         int netherChunkZ = netherResidentPos.getZ() >> 4;
         boolean forcedByThisTest = nether.setChunkForced(netherChunkX, netherChunkZ, true);
-        Villager netherResident = null;
-        try {
-            helper.assertTrue(nether.hasChunkAt(netherResidentPos),
-                    "test setup: forced Nether resident chunk must be loaded at " + netherResidentPos);
-            storage.markTownFounded(TownKeys.keyFor(nether.dimension(), netherRegion));
-            helper.assertTrue(storage.hasFoundedTown(TownKeys.keyFor(nether.dimension(), netherRegion)),
-                    "test setup: Nether resident region must be founded");
-            netherResident = EntityType.VILLAGER.create(nether, null, netherResidentPos, MobSpawnType.EVENT, false, false);
-            helper.assertTrue(netherResident != null, "test setup: Nether villager must be constructible");
-            boolean added = nether.addFreshEntity(netherResident);
-            helper.assertTrue(added && nether.getEntity(netherResident.getUUID()) == netherResident && netherResident.isAlive()
-                            && netherResident.getBrain().getMemory(MemoryModuleType.HOME).isEmpty()
-                            && TownRegion.fromBlockCoords(netherResident.blockPosition().getX(), netherResident.blockPosition().getZ())
-                                    .equals(netherRegion),
-                    "test setup: alive unhoused Nether resident must be visible in founded queried region; added=" + added
-                            + ", resident=" + netherResident + ", region=" + netherRegion);
-            TownResidentDemand netherDemand = TownResidentAllocationHandler.unmetDemand(nether, netherRegion, storage);
-            helper.assertTrue(netherDemand == TownResidentDemand.NONE,
-                    "the non-Overworld guard must suppress demand despite a visible founded Nether resident; demand=" + netherDemand);
-        } finally {
-            if (netherResident != null) {
-                netherResident.discard();
-            }
-            if (forcedByThisTest) {
-                nether.setChunkForced(netherChunkX, netherChunkZ, false);
-            }
-        }
-        helper.succeed();
+        storage.markTownFounded(TownKeys.keyFor(nether.dimension(), netherRegion));
+        Villager netherResident = EntityType.VILLAGER.create(nether, null, netherResidentPos, MobSpawnType.EVENT, false, false);
+        helper.assertTrue(netherResident != null, "test setup: Nether villager must be constructible");
+        boolean added = nether.addFreshEntity(netherResident);
+        helper.startSequence()
+                // A forced chunk is synchronously block-readable but its entity manager is not
+                // necessarily tracking a just-added entity until normal GameTest ticks progress.
+                .thenIdle(20)
+                .thenExecute(() -> {
+                    try {
+                        boolean chunkLoaded = nether.hasChunkAt(netherResidentPos);
+                        boolean founded = storage.hasFoundedTown(TownKeys.keyFor(nether.dimension(), netherRegion));
+                        boolean uuidLookupMatches = nether.getEntity(netherResident.getUUID()) == netherResident;
+                        boolean alive = netherResident.isAlive();
+                        boolean unhoused = netherResident.getBrain().getMemory(MemoryModuleType.HOME).isEmpty();
+                        boolean correctRegion = TownRegion.fromBlockCoords(netherResident.blockPosition().getX(), netherResident.blockPosition().getZ())
+                                .equals(netherRegion);
+                        boolean inProductionIterable = false;
+                        for (Entity entity : nether.getEntities().getAll()) {
+                            if (entity == netherResident) {
+                                inProductionIterable = true;
+                                break;
+                            }
+                        }
+                        helper.assertTrue(chunkLoaded, "test setup: forced Nether resident chunk must be loaded at " + netherResidentPos);
+                        helper.assertTrue(founded, "test setup: Nether resident region must be founded: " + netherRegion);
+                        helper.assertTrue(added, "test setup: Nether resident must be accepted by the level entity manager");
+                        helper.assertTrue(uuidLookupMatches, "test setup: UUID lookup must return the Nether resident");
+                        helper.assertTrue(alive, "test setup: Nether resident must remain alive after tracking wait");
+                        helper.assertTrue(unhoused, "test setup: Nether resident must remain without HOME after tracking wait");
+                        helper.assertTrue(correctRegion, "test setup: Nether resident must remain in queried region " + netherRegion);
+                        helper.assertTrue(inProductionIterable,
+                                "test setup: Nether resident must appear in the production level.getEntities().getAll() iterable");
+                        TownResidentDemand netherDemand = TownResidentAllocationHandler.unmetDemand(nether, netherRegion, storage);
+                        helper.assertTrue(netherDemand == TownResidentDemand.NONE,
+                                "the non-Overworld guard must suppress demand despite a visible founded Nether resident; demand=" + netherDemand);
+                    } finally {
+                        netherResident.discard();
+                        if (forcedByThisTest) {
+                            nether.setChunkForced(netherChunkX, netherChunkZ, false);
+                        }
+                    }
+                })
+                .thenSucceed();
     }
 
     /** Actively claimed temporary Builders belong to the existing construction lifecycle and have no

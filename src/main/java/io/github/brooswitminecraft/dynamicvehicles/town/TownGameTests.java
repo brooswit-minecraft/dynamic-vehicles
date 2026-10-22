@@ -64,6 +64,18 @@ public final class TownGameTests {
         return TownStorage.roadOwner(level.dimension(), TownRegion.fromBlockCoords(pos.getX(), pos.getZ()));
     }
 
+    private static String roadActivityRoster(ServerLevel level, ServerPlayer first, ServerPlayer second) {
+        StringBuilder roster = new StringBuilder();
+        for (ServerPlayer player : level.players()) {
+            if (!roster.isEmpty()) roster.append("; ");
+            boolean owned = player.getUUID().equals(first.getUUID()) || player.getUUID().equals(second.getUUID());
+            BlockPos pos = player.blockPosition();
+            roster.append(player.getUUID()).append(" owned=").append(owned).append(" pos=").append(pos)
+                    .append(" region=").append(TownRegion.fromBlockCoords(pos.getX(), pos.getZ()));
+        }
+        return roster.toString();
+    }
+
     /**
      * Exercises {@link TownFounder#tryFoundAt} directly with an explicit target matching the
      * prepared flat ground, rather than {@link TownFounder#tryFoundNear}'s full plan-driven
@@ -1523,6 +1535,94 @@ public final class TownGameTests {
         // include this region purely because it is founded and a player is nearby.
         helper.assertTrue(TownConstructionService.regionsWithNearbyPlayerActivity(helper.getLevel(), storage).contains(region),
                 "a founded region with a nearby player must count as road-active, even with NO claimed campfire anywhere in the level");
+        helper.succeed();
+    }
+
+    /** MINECRAFT-453: activity is selected per founded region, not once per nearby player. */
+    @GameTest(template = "settlement_test")
+    public static void multipleNearbyPlayersDispatchOnePaidRoadBudgetAndResumeAfterInactiveReload(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        ServerLevel level = helper.getLevel();
+        BlockPos anchor = helper.absolutePos(ANCHOR);
+        RegionCoord fixtureGridRegion = TownRegion.fromBlockCoords(anchor.getX(), anchor.getZ());
+        // GameTest batches place many unrelated mock players around their own structures.  Select
+        // a remote founded region for these two owned actors, while keeping the bounded callback's
+        // deliberately local corridor inside this fixture's loaded template.
+        RegionCoord region = new RegionCoord(fixtureGridRegion.x() + 100, fixtureGridRegion.z() + 100);
+        String townKey = TownKeys.keyFor(level.dimension(), region);
+        TownStorage storage = new TownStorage();
+        storage.markTownFounded(townKey);
+        TownResourceStore store = storage.storeFor(townKey);
+        store.credit(TownResourceCategory.STONE, 1000);
+        BlockPos start = helper.absolutePos(new BlockPos(1, 8, 1));
+        BlockPos foreign = start.offset(1, 0, 0);
+        level.setBlock(foreign, Blocks.DIRT_PATH.defaultBlockState(), Block.UPDATE_ALL);
+        List<TownRoadPlanner.RoadCell> route = List.of(
+                new TownRoadPlanner.RoadCell(start.getX(), start.getZ(), start.getY()),
+                new TownRoadPlanner.RoadCell(foreign.getX(), foreign.getZ(), foreign.getY()),
+                new TownRoadPlanner.RoadCell(start.getX() + 2, start.getZ(), start.getY()),
+                new TownRoadPlanner.RoadCell(start.getX() + 3, start.getZ(), start.getY()));
+        String signature = "road:" + net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(Blocks.DIRT_PATH)
+                + ":" + TownResourceCategory.STONE.name();
+        int[] dispatches = {0};
+        TownConstructionService.RoadWork work = (workLevel, selected, selectedStorage, selectedStore) -> {
+            helper.assertTrue(selected.equals(region), "two nearby players must dispatch the founded region exactly once");
+            dispatches[0]++;
+            return TownRoadConstructionService.buildRoadCells(workLevel, route, selectedStorage, selectedStore) > 0;
+        };
+        ServerPlayer first = GameTestMockPlayers.create(helper);
+        ServerPlayer second = GameTestMockPlayers.create(helper);
+        int activeX = TownRegion.minBlockX(region) + 5;
+        int activeZ = TownRegion.minBlockZ(region) + 5;
+        first.teleportTo(activeX + .5, anchor.getY(), activeZ + .5);
+        second.teleportTo(activeX + 2.5, anchor.getY(), activeZ + 2.5);
+
+        TownConstructionService.runConstructionAndRoadsTick(level, storage, work);
+        helper.assertTrue(dispatches[0] == 1, "two registered nearby players must consume one region dispatch, not two");
+        int afterTwoPlayers = store.balance(TownResourceCategory.STONE);
+        helper.assertTrue(1000 - afterTwoPlayers == TownConstants.ROAD_BLOCKS_PER_TICK,
+                "one regional dispatch must consume exactly one road budget");
+        second.teleportTo(activeX + 2000.5, anchor.getY(), activeZ + 2000.5);
+        TownConstructionService.runConstructionAndRoadsTick(level, storage, work);
+        helper.assertTrue(dispatches[0] == 2, "one remaining nearby player must keep one regional dispatch active");
+
+        first.teleportTo(activeX - 2000.5, anchor.getY(), activeZ - 2000.5);
+        helper.assertTrue(TownConstructionService.regionsWithNearbyPlayerActivity(level, storage).isEmpty(),
+                "test setup requires both registered players to be outside the only founded region before inactive assertions: "
+                        + "first=" + first.getGameProfile().getName() + "@" + first.blockPosition()
+                        + " region=" + TownRegion.fromBlockCoords(first.blockPosition().getX(), first.blockPosition().getZ())
+                        + ", second=" + second.getGameProfile().getName() + "@" + second.blockPosition()
+                        + " region=" + TownRegion.fromBlockCoords(second.blockPosition().getX(), second.blockPosition().getZ())
+                        + ", target=" + region + ", active=" + TownConstructionService.regionsWithNearbyPlayerActivity(level, storage)
+                        + ", levelRoster=" + roadActivityRoster(level, first, second));
+        int inactiveBalance = store.balance(TownResourceCategory.STONE);
+        TownConstructionService.runConstructionAndRoadsTick(level, storage, work);
+        helper.assertTrue(dispatches[0] == 2 && store.balance(TownResourceCategory.STONE) == inactiveBalance,
+                "with both players outside the founded region there must be no dispatch or debit");
+        TownStorage reloaded = TownStorage.load(storage.save(new CompoundTag(), level.registryAccess()), level.registryAccess());
+        TownResourceStore reloadedStore = reloaded.storeFor(townKey);
+        TownConstructionService.runConstructionAndRoadsTick(level, reloaded, work);
+        helper.assertTrue(dispatches[0] == 2 && reloadedStore.balance(TownResourceCategory.STONE) == inactiveBalance,
+                "inactive save/load must not manufacture a dispatch or debit");
+
+        first.teleportTo(activeX + .5, anchor.getY(), activeZ + .5);
+        for (int tick = 0; tick < 8; tick++) {
+            int before = reloadedStore.balance(TownResourceCategory.STONE);
+            TownConstructionService.runConstructionAndRoadsTick(level, reloaded, work);
+            if (before == reloadedStore.balance(TownResourceCategory.STONE)) break;
+        }
+        helper.assertTrue(level.getBlockState(foreign).is(Blocks.DIRT_PATH)
+                        && !reloaded.isCellPlaced(level.dimension(), foreign, roadOwnerAt(level, foreign), signature),
+                "foreign dirt-path work must remain unadopted after inactive reload and reactivation");
+        for (int x = start.getX(); x <= start.getX() + 3; x++) for (int z = start.getZ() - 1; z <= start.getZ() + 1; z++) {
+            BlockPos cell = new BlockPos(x, start.getY(), z);
+            if (!cell.equals(foreign)) helper.assertTrue(reloaded.isCellPlaced(level.dimension(), cell, roadOwnerAt(level, cell), signature),
+                    "reactivated road must complete every paid cell with its exact owner/signature: " + cell);
+        }
+        int finalBalance = reloadedStore.balance(TownResourceCategory.STONE);
+        TownConstructionService.runConstructionAndRoadsTick(level, reloaded, work);
+        helper.assertTrue(reloadedStore.balance(TownResourceCategory.STONE) == finalBalance,
+                "completed reactivated road must not debit again on a no-op retry");
         helper.succeed();
     }
 

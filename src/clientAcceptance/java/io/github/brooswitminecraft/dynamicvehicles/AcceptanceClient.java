@@ -21,7 +21,7 @@ public final class AcceptanceClient {
     private static Object lastMount;
     private static boolean carInput, boatInput, boatCamera, dismounted, dust, exhaust, freeLook, disabled;
     private static float initialError;
-    private static boolean recentered;
+    private static boolean recentered, hudMounted, hudExited, hudReentered;
     private static final Map<String, Probe> probes = new LinkedHashMap<>();
     private static Probe active;
     private static final class Probe {
@@ -107,6 +107,14 @@ public final class AcceptanceClient {
                 }
             }
             if(mount==null && dismounted) check(!(boolean)get(ChaseCamera.class,"tracking",null),"camera tracking leaked after dismount");
+            if (mount instanceof CarEntity car && car.isRigidBody() && mountedTicks == 30) {
+                HudAcceptanceChecks.verify(mc, true);
+                if (carMounts == 1) hudMounted = true;
+                else hudReentered = true;
+            } else if (mount == null && hudMounted && !hudExited) {
+                HudAcceptanceChecks.verify(mc, false);
+                hudExited = true;
+            }
             if(ticks%10==0) {
                 Class<?> type=Class.forName("io.github.brooswitminecraft.dynamicatmosphere.client.AtmosphereClient");
                 Map<?,?> materials=(Map<?,?>)get(type,"MATERIALS",null);
@@ -130,8 +138,9 @@ public final class AcceptanceClient {
                 check(carInput && boatInput,"simulated input missing: car="+carInput+" boat="+boatInput);
                 check(carMounts>=2 && boatCamera && dismounted,"car/boat/dismount/car transition incomplete: cars="+carMounts+" boat="+boatCamera+" dismount="+dismounted);
                 check(recentered && freeLook && disabled,"camera recenter/free-look/disable incomplete");
+                check(hudMounted && hudExited && hudReentered, "HUD mount/exit/re-entry coverage incomplete");
                 check(dust && exhaust,"client receipt missing: dust="+dust+" exhaust="+exhaust);
-                Files.writeString(Path.of("client-acceptance-result.json"),"{\"passed\":true,\"simulated_input\":true,\"camera_transitions\":true,\"dust_receipt\":true,\"exhaust_receipt\":true,\"physical_wheel_tested\":false,\"visual_quality_tested\":false}");
+                Files.writeString(Path.of("client-acceptance-result.json"),"{\"passed\":true,\"simulated_input\":true,\"camera_transitions\":true,\"dust_receipt\":true,\"exhaust_receipt\":true,\"physical_wheel_tested\":false,\"visual_quality_tested\":false,\"hud_geometry_and_restoration\":true}");
                 DynamicVehiclesMod.LOGGER.info("CLIENT_ACCEPTANCE_PASS"); mc.stop();
             }
         } catch(Exception failure) { fail(failure); }

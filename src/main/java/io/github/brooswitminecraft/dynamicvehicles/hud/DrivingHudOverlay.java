@@ -28,12 +28,17 @@ public final class DrivingHudOverlay implements LayeredDraw.Layer {
         Minecraft minecraft = Minecraft.getInstance();
         if (drivenCar(minecraft) == null) return;
         var layer = event.getName();
-        // Vanilla's canceled layers normally reserve space for later air/status overlays.
-        // Reserve our 12-pixel rows too, so breathing bubbles and item names do not overlap.
-        if (layer.equals(VanillaGuiLayers.PLAYER_HEALTH) || layer.equals(VanillaGuiLayers.ARMOR_LEVEL)) {
-            minecraft.gui.leftHeight += 12;
+        // Reservations use the same scaled-pixel bounds as the actual gauges. Creative's
+        // selected-item label adds 14 pixels after applying left/rightHeight, unlike survival.
+        if (layer.equals(VanillaGuiLayers.PLAYER_HEALTH)) {
+            minecraft.gui.leftHeight = Math.max(minecraft.gui.leftHeight, DrivingHudLayout.AIR_OFFSET);
+        } else if (layer.equals(VanillaGuiLayers.ARMOR_LEVEL)) {
+            minecraft.gui.leftHeight = Math.max(minecraft.gui.leftHeight, DrivingHudLayout.LEFT_OFFSET);
         } else if (layer.equals(VanillaGuiLayers.FOOD_LEVEL)) {
-            minecraft.gui.rightHeight += 12;
+            minecraft.gui.rightHeight = Math.max(minecraft.gui.rightHeight, DrivingHudLayout.AIR_OFFSET);
+        } else if (layer.equals(VanillaGuiLayers.SELECTED_ITEM_NAME)) {
+            minecraft.gui.leftHeight = Math.max(minecraft.gui.leftHeight,
+                    DrivingHudLayout.itemNameOffset(minecraft.gameMode.canHurtPlayer()));
         }
         if (layer.equals(VanillaGuiLayers.PLAYER_HEALTH) || layer.equals(VanillaGuiLayers.FOOD_LEVEL)
                 || layer.equals(VanillaGuiLayers.ARMOR_LEVEL) || layer.equals(VanillaGuiLayers.EXPERIENCE_BAR)
@@ -47,23 +52,24 @@ public final class DrivingHudOverlay implements LayeredDraw.Layer {
         Minecraft minecraft = Minecraft.getInstance();
         CarEntity car = drivenCar(minecraft);
         if (car == null) return;
-        int left = graphics.guiWidth() / 2 - 91, bottom = graphics.guiHeight();
-        bar(graphics, minecraft, left, bottom - 41, 81, car.clientHealthFraction(), 0xFF943D3D,
+        var layout = DrivingHudLayout.at(graphics.guiWidth(), graphics.guiHeight());
+        bar(graphics, minecraft, layout.health(), car.clientHealthFraction(), 0xFF943D3D,
                 "Car " + Math.round(car.clientHealthFraction() * 100) + "%");
-        bar(graphics, minecraft, left + 101, bottom - 41, 81,
+        bar(graphics, minecraft, layout.speed(),
                 DrivingHudPresentation.fraction(car.clientDrivingSpeed(), car.clientTopSpeed()), 0xFF86602C,
                 DrivingHudPresentation.speed(car.clientDrivingSpeed()));
-        bar(graphics, minecraft, left, bottom - 53, 81,
+        bar(graphics, minecraft, layout.slip(),
                 DrivingHudPresentation.slipFraction(car.clientTireSlip()), 0xFF606F86, "Tire slip");
-        bar(graphics, minecraft, left, bottom - 29, 182,
+        bar(graphics, minecraft, layout.rpm(),
                 DrivingHudPresentation.fraction(car.clientDrivingRpm(), DrivetrainMath.LIMITER_RPM), 0xFF487C32,
                 DrivingHudPresentation.rpm(car.clientDrivingRpm()));
     }
 
-    private static void bar(GuiGraphics graphics, Minecraft minecraft, int x, int y, int width,
+    private static void bar(GuiGraphics graphics, Minecraft minecraft, DrivingHudLayout.Rect bounds,
                             double fraction, int color, String text) {
-        graphics.fill(x, y, x + width, y + 10, 0xD0202020);
-        graphics.fill(x, y, x + (int) Math.round(width * DrivingHudPresentation.fraction(fraction, 1)), y + 10, color);
-        graphics.drawCenteredString(minecraft.font, text, x + width / 2, y + 1, 0xFFFFFF);
+        graphics.fill(bounds.x(), bounds.y(), bounds.right(), bounds.bottom(), 0xD0202020);
+        graphics.fill(bounds.x(), bounds.y(), bounds.x() + (int) Math.round(bounds.width()
+                * DrivingHudPresentation.fraction(fraction, 1)), bounds.bottom(), color);
+        graphics.drawCenteredString(minecraft.font, text, bounds.x() + bounds.width() / 2, bounds.y() + 1, 0xFFFFFF);
     }
 }

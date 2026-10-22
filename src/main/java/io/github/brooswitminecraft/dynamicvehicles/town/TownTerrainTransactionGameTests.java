@@ -15,6 +15,8 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.entity.ChestBlockEntity;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
@@ -180,17 +182,19 @@ public final class TownTerrainTransactionGameTests {
         helper.succeed();
     }
 
-    /** Terrain prep must reject a real block entity before any write, preserving its inventory/NBT
-     * instead of trying a state-only rollback after a later injected failure.  The production
-     * guard is state-agnostic, so it applies equally to a modded waterlogged block entity. */
+    /** Terrain prep must reject a populated waterlogged chest before any write.  Without the
+     * block-entity guard, its fluid state makes it pass natural-terrain admission and a later
+     * terrain mutation would clear it without a way to restore its inventory/NBT. */
     @GameTest(template = "settlement_test")
-    public static void blockEntityPreflightPreservesInventoryAndStopsBuild(GameTestHelper helper) {
+    public static void waterloggedChestPreflightPreservesInventoryAndStopsBuild(GameTestHelper helper) {
         prepareFlatGround(helper);
         helper.setBlock(ANCHOR, Blocks.CAMPFIRE);
         BlockPos absoluteCampfire = helper.absolutePos(ANCHOR);
         BlockPos containerCell = ANCHOR.offset(1, 0, 1);
         BlockPos absoluteContainerCell = helper.absolutePos(containerCell);
-        helper.setBlock(containerCell, Blocks.CHEST);
+        BlockState waterloggedChest = Blocks.CHEST.defaultBlockState()
+                .setValue(BlockStateProperties.WATERLOGGED, true);
+        helper.getLevel().setBlock(absoluteContainerCell, waterloggedChest, 3);
         ChestBlockEntity inventory = (ChestBlockEntity) helper.getLevel().getBlockEntity(absoluteContainerCell);
         inventory.setItem(0, new ItemStack(Items.DIAMOND, 7));
         spawnClaimant(helper, absoluteCampfire);
@@ -199,12 +203,16 @@ public final class TownTerrainTransactionGameTests {
         TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 500);
         int woodBefore = store.balance(TownResourceCategory.WOOD);
         int stoneBefore = store.balance(TownResourceCategory.STONE);
+        helper.assertTrue(helper.getLevel().getFluidState(absoluteContainerCell).isSource(),
+                "fixture must be a genuinely waterlogged chest");
+        helper.assertTrue(TownTerrain.isNaturalTerrain(helper.getBlockState(containerCell)),
+                "fixture must satisfy the pre-guard natural-terrain admission predicate");
         TownConstructionService.testForceTerrainMutationFailureAt = helper.absolutePos(ANCHOR.offset(1, 1, 1));
         TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
         TownConstructionService.testForceTerrainMutationFailureAt = null;
 
         helper.assertTrue(helper.getBlockState(containerCell).is(Blocks.CHEST),
-                "a block-entity cell must not be cleared by terrain preparation");
+                "a waterlogged block-entity cell must not be cleared by terrain preparation");
         helper.assertTrue(helper.getLevel().getBlockEntity(absoluteContainerCell) instanceof ChestBlockEntity chest
                         && chest.getItem(0).is(Items.DIAMOND) && chest.getItem(0).getCount() == 7,
                 "the rejected cell's identifiable block-entity inventory/NBT must remain intact");

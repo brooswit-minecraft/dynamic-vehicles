@@ -249,6 +249,62 @@ public final class TownResidentAllocationHandlerGameTests {
         helper.succeed();
     }
 
+    /**
+     * MINECRAFT-455 acceptance probe: allocation safety alone is not sufficient.  This starts a
+     * founded town with only one town-owned bed and a wrong-profession workstation, but with two
+     * residents, one of whom must retain ARMORER.  The intended resident/planning production path
+     * must create or schedule sufficient compatible, reachable capacity rather than leaving the
+     * second resident unhoused or the Armorer unemployed.  It deliberately fails on the current
+     * implementation: {@code allocateHomeIfNeeded}/{@code allocateWorkplaceIfNeeded} can consume
+     * a vacancy but have no demand-to-site planning path when one is absent.
+     *
+     * <p>This disposable test is deliberately confined to the resident lane; it neither calls nor
+     * edits TownConstructionService, TownGameTests, or the road lifecycle.  Once a resident-demand
+     * planning seam is agreed, its completed form must additionally drive the real construction
+     * path, assert navigable routes to the completed fixtures, then kill one resident and verify
+     * death-to-vacancy-to-reallocation across save/load.
+     */
+    @GameTest(template = "settlement_test")
+    public static void insufficientCapacityMustEventuallyHouseResidentsAndRetainMatchingWork(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos anchor = anchor(helper);
+        BlockPos onlyBed = anchor.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        BlockPos wrongWorkstation = anchor.offset(OLD_WORKSTATION_OFFSET.getX(), OLD_WORKSTATION_OFFSET.getY(), OLD_WORKSTATION_OFFSET.getZ());
+        placeValidBed(helper, onlyBed);
+        placeWorkstation(helper, wrongWorkstation, Blocks.FLETCHING_TABLE);
+
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        markTownOwned(helper, storage, helper.absolutePos(onlyBed));
+        markTownOwned(helper, storage, helper.absolutePos(wrongWorkstation));
+
+        Villager armorer = spawnVillager(helper, anchor.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        armorer.setVillagerData(armorer.getVillagerData().setProfession(VillagerProfession.ARMORER));
+        Villager resident = spawnVillager(helper, anchor.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+
+        BlockPos townCenter = helper.absolutePos(anchor);
+        TownResidentDemand demand = TownResidentAllocationHandler.unmetDemand(helper.getLevel(), region, storage);
+        helper.assertTrue(demand.missingHomes() == 2
+                        && demand.missingWorkplaces().getOrDefault(VillagerProfession.ARMORER, 0) == 1,
+                "the resident/planning query must report both unhoused residents and the retained Armorer's absent matching workplace without reserving anything");
+        TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), armorer, townCenter, region, storage);
+        TownResidentAllocationHandler.allocateHomeIfNeeded(helper.getLevel(), resident, townCenter, region, storage);
+        TownResidentAllocationHandler.allocateWorkplaceIfNeeded(helper.getLevel(), armorer, townCenter, region, storage);
+
+        helper.assertTrue(armorer.getBrain().getMemory(MemoryModuleType.HOME).isPresent()
+                        && resident.getBrain().getMemory(MemoryModuleType.HOME).isPresent(),
+                "a founded town with two residents must eventually supply distinct reachable homes, not leave one resident unhoused when its sole initial bed is occupied");
+        helper.assertTrue(!armorer.getBrain().getMemory(MemoryModuleType.HOME).get()
+                        .equals(resident.getBrain().getMemory(MemoryModuleType.HOME).get()),
+                "two residents must receive distinct HOME reservations");
+        helper.assertTrue(armorer.getVillagerData().getProfession() == VillagerProfession.ARMORER
+                        && armorer.getBrain().getMemory(MemoryModuleType.JOB_SITE).isPresent()
+                        && helper.getLevel().getBlockState(armorer.getBrain().getMemory(MemoryModuleType.JOB_SITE).get().pos())
+                                .is(Blocks.BLAST_FURNACE),
+                "a retained Armorer must eventually receive an ARMORER workstation, never the initial wrong-profession vacancy");
+        helper.succeed();
+    }
+
     /** A region so far from the shared GameTest world's own cluster of ~126 structures that no test
      *  anywhere in the suite could ever have placed real content in it - unlike an adjacent
      *  ({@code TownRegion.neighbor(...)}) region, which proved NOT reliably empty in CI: this

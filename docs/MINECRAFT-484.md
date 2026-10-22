@@ -53,3 +53,15 @@ into a replica's entity data and checks that the HUD value matches it, exceeds
 body-less audio-separation fixture. Remaining manual checks above still apply,
 including actual seat swaps/death/disconnect/dimension transitions and a visual
 inspection of long selected-item names at the user's chosen GUI scales.
+
+## Disposable rendered-frame acceptance
+
+The opt-in client harness also observes the real GUI event dispatch and captures
+framebuffer PNGs for survival and creative at requested scales 1–4, plus exit and
+re-entry. Every captured frame requires all four actual gauge layer events with
+the expected cancellation/restoration state. It uses a long selected-item name;
+`client-acceptance-hud-frames.json` records actual scaled viewport dimensions, since
+Minecraft can clamp a requested scale to fit the window. CI preserves ten PNGs
+and the manifest in the client acceptance artifact. The harness restores its
+local test mode, inventory and GUI settings after the mode/scale sequence.
+Screenshot capture and layer assertions alone do not establish visual approval.

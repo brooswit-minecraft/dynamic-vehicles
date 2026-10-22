@@ -57,6 +57,13 @@ public final class TownGameTests {
         }
     }
 
+    /** Road progress belongs to the region containing each individual surface cell, not to the
+     * campfire that happened to found the nearby town.  Keep this in the test rather than
+     * duplicating a production constant/owner string at every assertion. */
+    private static String roadOwnerAt(ServerLevel level, BlockPos pos) {
+        return TownStorage.roadOwner(level.dimension(), TownRegion.fromBlockCoords(pos.getX(), pos.getZ()));
+    }
+
     /**
      * Exercises {@link TownFounder#tryFoundAt} directly with an explicit target matching the
      * prepared flat ground, rather than {@link TownFounder#tryFoundNear}'s full plan-driven
@@ -1520,6 +1527,44 @@ public final class TownGameTests {
     }
 
     /**
+     * The lifecycle fixture can land at any GameTest-world coordinate.  Pin the ownership rule at
+     * a deterministic negative boundary as well: {@code -385} is in region {@code -2}, whereas
+     * {@code -384} is in region {@code -1}.  A single campfire-derived owner for both paid cells
+     * would make the second exact-record assertion fail.
+     */
+    @GameTest(template = "settlement_test")
+    public static void paidRoadProgressUsesEachCellsOwnRegionAcrossANegativeBoundary(GameTestHelper helper) {
+        TownStorage storage = new TownStorage();
+        BlockPos southOfBoundary = new BlockPos(-385, 2, -385);
+        BlockPos northOfBoundary = new BlockPos(-385, 2, -384);
+        String signature = "road:" + net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(Blocks.DIRT_PATH)
+                + ":" + TownResourceCategory.STONE.name();
+        String southOwner = roadOwnerAt(helper.getLevel(), southOfBoundary);
+        String northOwner = roadOwnerAt(helper.getLevel(), northOfBoundary);
+
+        helper.assertTrue(TownRegion.fromBlockCoords(southOfBoundary.getX(), southOfBoundary.getZ())
+                        .equals(new RegionCoord(-2, -2)),
+                "negative coordinates below a 384-block boundary must floor into region -2");
+        helper.assertTrue(TownRegion.fromBlockCoords(northOfBoundary.getX(), northOfBoundary.getZ())
+                        .equals(new RegionCoord(-2, -1)),
+                "negative coordinates on a 384-block boundary must be in the next region");
+        helper.assertTrue(!southOwner.equals(northOwner),
+                "adjacent paid road cells across a negative boundary must have different region owners");
+
+        storage.markCellPlaced(helper.getLevel().dimension(), southOfBoundary, southOwner, signature,
+                Blocks.DIRT_PATH.defaultBlockState());
+        storage.markCellPlaced(helper.getLevel().dimension(), northOfBoundary, northOwner, signature,
+                Blocks.DIRT_PATH.defaultBlockState());
+        helper.assertTrue(storage.isCellPlaced(helper.getLevel().dimension(), southOfBoundary, southOwner, signature),
+                "the southern negative-coordinate paid cell must retain its exact region owner");
+        helper.assertTrue(storage.isCellPlaced(helper.getLevel().dimension(), northOfBoundary, northOwner, signature),
+                "the northern negative-coordinate paid cell must retain its exact region owner");
+        helper.assertTrue(!storage.isCellPlaced(helper.getLevel().dimension(), northOfBoundary, southOwner, signature),
+                "the northern paid cell must never be accepted under its southern neighbor's owner");
+        helper.succeed();
+    }
+
+    /**
      * MINECRAFT-453: the road's lifetime is independent from the single building that originally
      * founded the town.  This deliberately uses a short, controlled route because a real
      * seed-derived region route can lie outside the small disposable GameTest template; the work
@@ -1564,7 +1609,6 @@ public final class TownGameTests {
                 new TownRoadPlanner.RoadCell(foreignPath.getX(), foreignPath.getZ(), foreignPath.getY()),
                 new TownRoadPlanner.RoadCell(routeStart.getX() + 2, routeStart.getZ(), routeStart.getY()),
                 new TownRoadPlanner.RoadCell(routeStart.getX() + 3, routeStart.getZ(), routeStart.getY()));
-        String roadOwner = TownStorage.roadOwner(helper.getLevel().dimension(), region);
         String roadSignature = "road:" + net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(Blocks.DIRT_PATH)
                 + ":" + TownResourceCategory.STONE.name();
         int[] driverCalls = {0};
@@ -1591,16 +1635,18 @@ public final class TownGameTests {
                 "funded road work must make bounded progress after the Builder/campfire lifecycle, found " + firstTick);
         helper.assertTrue(helper.getLevel().getBlockState(foreignPath).is(Blocks.DIRT_PATH),
                 "a foreign dirt path must remain protected rather than become free road progress");
-        helper.assertTrue(!storage.isCellPlaced(helper.getLevel().dimension(), foreignPath, roadOwner, roadSignature),
-                "a foreign dirt path must have no paid ownership record before reload");
+        helper.assertTrue(!storage.isCellPlaced(helper.getLevel().dimension(), foreignPath,
+                        roadOwnerAt(helper.getLevel(), foreignPath), roadSignature),
+                "a foreign dirt path must have no paid ownership record for its own region before reload");
         int balanceBeforeReload = store.balance(TownResourceCategory.STONE);
 
         TownStorage reloaded = TownStorage.load(storage.save(new CompoundTag(), helper.getLevel().registryAccess()), helper.getLevel().registryAccess());
         TownResourceStore reloadedStore = reloaded.storeFor(townKey);
         helper.assertTrue(reloadedStore.balance(TownResourceCategory.STONE) == balanceBeforeReload,
                 "paid road progress and its balance must survive TownStorage save/load");
-        helper.assertTrue(!reloaded.isCellPlaced(helper.getLevel().dimension(), foreignPath, roadOwner, roadSignature),
-                "save/load must not invent a paid ownership record for the foreign dirt path");
+        helper.assertTrue(!reloaded.isCellPlaced(helper.getLevel().dimension(), foreignPath,
+                        roadOwnerAt(helper.getLevel(), foreignPath), roadSignature),
+                "save/load must not invent a paid ownership record for the foreign dirt path's own region");
 
         int resumed = 0;
         for (int tick = 0; tick < 8; tick++) {
@@ -1618,16 +1664,20 @@ public final class TownGameTests {
                 "only newly placed post-reload cells may be charged; persisted paid progress must not be charged again");
         helper.assertTrue(helper.getLevel().getBlockState(foreignPath).is(Blocks.DIRT_PATH),
                 "reload/retry must never adopt the foreign dirt path as this road's paid progress");
-        helper.assertTrue(!reloaded.isCellPlaced(helper.getLevel().dimension(), foreignPath, roadOwner, roadSignature),
-                "the completed route must still not claim the foreign dirt path as paid work");
+        helper.assertTrue(!reloaded.isCellPlaced(helper.getLevel().dimension(), foreignPath,
+                        roadOwnerAt(helper.getLevel(), foreignPath), roadSignature),
+                "the completed route must still not claim the foreign dirt path as paid work in its own region");
         for (int x = routeStart.getX(); x <= routeStart.getX() + 3; x++) {
             for (int z = routeStart.getZ() - 1; z <= routeStart.getZ() + 1; z++) {
                 BlockPos cell = new BlockPos(x, routeStart.getY(), z);
                 if (cell.equals(foreignPath)) {
                     continue;
                 }
-                helper.assertTrue(reloaded.isCellPlaced(helper.getLevel().dimension(), cell, roadOwner, roadSignature),
-                        "every buildable road cell must finish with this road's exact paid owner/signature: " + cell);
+                String expectedOwner = roadOwnerAt(helper.getLevel(), cell);
+                helper.assertTrue(reloaded.isCellPlaced(helper.getLevel().dimension(), cell, expectedOwner, roadSignature),
+                        "every buildable road cell must finish with its own region's exact paid owner/signature: cell="
+                                + cell + ", region=" + TownRegion.fromBlockCoords(cell.getX(), cell.getZ())
+                                + ", expectedOwner=" + expectedOwner);
             }
         }
         int finalBalance = reloadedStore.balance(TownResourceCategory.STONE);

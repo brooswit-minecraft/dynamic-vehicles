@@ -139,6 +139,14 @@ public final class TownSitePreflight {
         if (pos.equals(campfire)) {
             return true;
         }
+        // A fluid state alone is not evidence that a cell is disposable: modded or future
+        // waterlogged blocks can carry a block entity (and therefore inventory/NBT) while still
+        // satisfying TownTerrain#isNaturalTerrain's fluid allowance.  Terrain preparation never
+        // snapshots arbitrary block-entity data, so reject it before any site mutation instead of
+        // risking a state-only rollback that silently destroys that data.
+        if (level.getBlockEntity(pos) != null) {
+            return false;
+        }
         BlockState state = level.getBlockState(pos);
         if (state.is(Blocks.CAMPFIRE)) {
             // Never overwrite another live campfire - including one this exact site's own claim

@@ -76,6 +76,28 @@ public final class TownGameTests {
         return roster.toString();
     }
 
+    /** Remove only fixture-owned mock players, but never skip the second cleanup after a failure. */
+    private static void removeOwnedMockPlayers(ServerLevel level, ServerPlayer first, ServerPlayer second) {
+        Throwable failure = null;
+        if (first != null) {
+            try {
+                level.getServer().getPlayerList().remove(first);
+            } catch (Throwable exception) {
+                failure = exception;
+            }
+        }
+        if (second != null) {
+            try {
+                level.getServer().getPlayerList().remove(second);
+            } catch (Throwable exception) {
+                if (failure == null) failure = exception;
+                else failure.addSuppressed(exception);
+            }
+        }
+        if (failure instanceof Error error) throw error;
+        if (failure != null) throw (RuntimeException) failure;
+    }
+
     /**
      * Exercises {@link TownFounder#tryFoundAt} directly with an explicit target matching the
      * prepared flat ground, rather than {@link TownFounder#tryFoundNear}'s full plan-driven
@@ -1570,8 +1592,15 @@ public final class TownGameTests {
             dispatches[0]++;
             return TownRoadConstructionService.buildRoadCells(workLevel, route, selectedStorage, selectedStore) > 0;
         };
-        ServerPlayer first = GameTestMockPlayers.create(helper);
-        ServerPlayer second = GameTestMockPlayers.create(helper);
+        List<ServerPlayer> unrelatedBefore = List.copyOf(level.players());
+        ServerPlayer first = null;
+        ServerPlayer second = null;
+        java.util.UUID[] ownedUuids = new java.util.UUID[2];
+        try {
+        first = GameTestMockPlayers.create(helper);
+        ownedUuids[0] = first.getUUID();
+        second = GameTestMockPlayers.create(helper);
+        ownedUuids[1] = second.getUUID();
         int activeX = TownRegion.minBlockX(region) + 5;
         int activeZ = TownRegion.minBlockZ(region) + 5;
         first.teleportTo(activeX + .5, anchor.getY(), activeZ + .5);
@@ -1585,6 +1614,8 @@ public final class TownGameTests {
         second.teleportTo(activeX + 2000.5, anchor.getY(), activeZ + 2000.5);
         TownConstructionService.runConstructionAndRoadsTick(level, storage, work);
         helper.assertTrue(dispatches[0] == 2, "one remaining nearby player must keep one regional dispatch active");
+        helper.assertTrue(1000 - store.balance(TownResourceCategory.STONE) == 8,
+                "exactly two active regional ticks must debit eight paid road cells before inactivity");
 
         first.teleportTo(activeX - 2000.5, anchor.getY(), activeZ - 2000.5);
         helper.assertTrue(TownConstructionService.regionsWithNearbyPlayerActivity(level, storage).isEmpty(),
@@ -1620,9 +1651,27 @@ public final class TownGameTests {
                     "reactivated road must complete every paid cell with its exact owner/signature: " + cell);
         }
         int finalBalance = reloadedStore.balance(TownResourceCategory.STONE);
+        helper.assertTrue(inactiveBalance - finalBalance == 3,
+                "reactivation must debit exactly three paid road cells after inactive reload");
+        helper.assertTrue(1000 - finalBalance == 11,
+                "reactivation must debit exactly three additional cells, for eleven paid cells total");
         TownConstructionService.runConstructionAndRoadsTick(level, reloaded, work);
         helper.assertTrue(reloadedStore.balance(TownResourceCategory.STONE) == finalBalance,
                 "completed reactivated road must not debit again on a no-op retry");
+        } finally {
+            // These are the only actors this fixture created.  Use PlayerList's normal lifecycle
+            // removal rather than mutating a shared test roster or waiting for disconnect polling.
+            removeOwnedMockPlayers(level, first, second);
+        }
+        helper.assertTrue(level.players().stream().noneMatch(player -> player.getUUID().equals(ownedUuids[0])
+                        || player.getUUID().equals(ownedUuids[1])),
+                "fixture cleanup must remove both UUID-owned players from the level roster");
+        helper.assertTrue(level.getServer().getPlayerList().getPlayers().stream().noneMatch(player -> player.getUUID().equals(ownedUuids[0])
+                        || player.getUUID().equals(ownedUuids[1])),
+                "fixture cleanup must remove both UUID-owned players from the server player list");
+        helper.assertTrue(unrelatedBefore.stream().allMatch(player -> level.players().stream()
+                        .anyMatch(current -> current.getUUID().equals(player.getUUID()))),
+                "fixture cleanup must preserve every pre-existing unrelated level player");
         helper.succeed();
     }
 

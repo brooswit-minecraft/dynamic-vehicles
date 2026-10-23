@@ -1736,6 +1736,11 @@ public final class TownGameTests {
             helper.assertTrue(dispatches[0] == 2 && !level.hasChunkAt(start)
                             && reloadedStore.balance(TownResourceCategory.STONE) == 1000,
                     "an absent corridor retry after save/load must neither load nor debit");
+            for (int x = start.getX(); x <= start.getX() + 1; x++) for (int z = start.getZ() - 1; z <= start.getZ() + 1; z++) {
+                BlockPos cell = new BlockPos(x, start.getY(), z);
+                helper.assertTrue(!reloaded.isCellPlaced(level.dimension(), cell, roadOwnerAt(level, cell), signature),
+                        "an absent corridor retry after save/load must not create owned road progress: " + cell);
+            }
 
             // This is the fixture's only deliberate load of its remote corridor.  Now that it is
             // present, prepare the supported natural terrain the real writer requires.

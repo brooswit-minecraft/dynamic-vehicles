@@ -4,6 +4,17 @@ import static org.junit.jupiter.api.Assertions.*;
 import org.junit.jupiter.api.Test;
 
 class DrivingHudPresentationTest {
+    @Test void fractionsClampAtZeroAndIntendedMaximumAndRejectInvalidTelemetry() {
+        assertEquals(0, DrivingHudPresentation.fraction(0, 40));
+        assertEquals(.5, DrivingHudPresentation.fraction(-20, 40));
+        assertEquals(1, DrivingHudPresentation.fraction(40, 40));
+        assertEquals(1, DrivingHudPresentation.fraction(80, 40));
+        assertEquals(0, DrivingHudPresentation.fraction(10, 0));
+        assertEquals(0, DrivingHudPresentation.fraction(Double.NaN, 40));
+        assertEquals(.5, DrivingHudPresentation.slipFraction(2));
+        assertEquals(1, DrivingHudPresentation.slipFraction(8));
+    }
+
     @Test void speedIsKilometersPerHourAndReverseHasPositiveMagnitude() {
         assertEquals("36 km/h", DrivingHudPresentation.speed(10));
         assertEquals("36 km/h", DrivingHudPresentation.speed(-10));

@@ -77,6 +77,10 @@ public final class TownStorage extends SavedData {
     private final Map<String, BlockPos> pendingCampfires = new HashMap<>();
     private final Map<String, Integer> siteFloors = new HashMap<>();
     private final Set<String> blockedCells = new HashSet<>();
+    /** A building terrain transaction whose rollback cannot be verified.  Unlike a blocked cell,
+     * this survives later terrain/heightmap changes that could otherwise hide the exact support
+     * position from the next preparation scan. */
+    private final Set<String> blockedTerrainSites = new HashSet<>();
     private final Map<String, UUID> reservationOwners = new HashMap<>();
 
     public static TownStorage of(MinecraftServer server) {
@@ -272,6 +276,15 @@ public final class TownStorage extends SavedData {
         setDirty();
     }
 
+    public boolean isTerrainSiteBlocked(ResourceKey<Level> dimension, BlockPos campfire) {
+        return blockedTerrainSites.contains(cellKey(dimension, campfire));
+    }
+
+    public void markTerrainSiteBlocked(ResourceKey<Level> dimension, BlockPos campfire) {
+        blockedTerrainSites.add(cellKey(dimension, campfire));
+        setDirty();
+    }
+
     /**
      * The floor Y a building site's own {@code owner} (see {@link #siteOwner(BlockPos)}) committed
      * to the FIRST time it was ever estimated, reused on every later tick rather than re-derived from
@@ -407,6 +420,14 @@ public final class TownStorage extends SavedData {
         }
         tag.put("BlockedCells", blockedList);
 
+        ListTag blockedTerrainSiteList = new ListTag();
+        for (String key : blockedTerrainSites) {
+            CompoundTag entryTag = new CompoundTag();
+            entryTag.putString("Key", key);
+            blockedTerrainSiteList.add(entryTag);
+        }
+        tag.put("BlockedTerrainSites", blockedTerrainSiteList);
+
         ListTag reservationOwnerList = new ListTag();
         for (Map.Entry<String, UUID> entry : reservationOwners.entrySet()) {
             CompoundTag entryTag = new CompoundTag();
@@ -462,6 +483,10 @@ public final class TownStorage extends SavedData {
         ListTag blockedList = tag.getList("BlockedCells", Tag.TAG_COMPOUND);
         for (int i = 0; i < blockedList.size(); i++) {
             storage.blockedCells.add(blockedList.getCompound(i).getString("Key"));
+        }
+        ListTag blockedTerrainSiteList = tag.getList("BlockedTerrainSites", Tag.TAG_COMPOUND);
+        for (int i = 0; i < blockedTerrainSiteList.size(); i++) {
+            storage.blockedTerrainSites.add(blockedTerrainSiteList.getCompound(i).getString("Key"));
         }
         ListTag reservationOwnerList = tag.getList("ReservationOwners", Tag.TAG_COMPOUND);
         for (int i = 0; i < reservationOwnerList.size(); i++) {

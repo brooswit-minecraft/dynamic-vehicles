@@ -50,6 +50,19 @@ public final class AcceptanceServer {
         if (ticks==220) { player.stopRiding(); player.startRiding(boat,true); }
         if (ticks==420) player.stopRiding();
         if (ticks==470) { player.teleportTo(car.getX(),car.getY()+2,car.getZ()); player.startRiding(car,true); }
+        if(ticks==760) {
+            player.stopRiding();
+            var nether=event.getServer().getLevel(net.minecraft.world.level.Level.NETHER);
+            nether.setBlock(new BlockPos(0,119,0),Blocks.BEDROCK.defaultBlockState(),3);
+            player.teleportTo(nether,.5,120,.5,java.util.Set.of(),0,0);
+        }
+        if(ticks==840) player.teleportTo(event.getServer().overworld(),.5,101,.5,java.util.Set.of(),0,0);
+        if(ticks==900) {
+            player.setGameMode(net.minecraft.world.level.GameType.SURVIVAL);
+            player.setInvulnerable(false);
+            player.hurt(player.damageSources().genericKill(),Float.MAX_VALUE);
+        }
+        if(ticks==960) player.connection.disconnect(net.minecraft.network.chat.Component.literal("Disposable HUD lifecycle complete"));
         // Exercise the production optional-mod/network route; this is receipt coverage, not visual density.
         if (ticks%10==0 && ticks<650) {
             BlockPos pos=player.blockPosition().offset(2,0,0);

@@ -206,7 +206,7 @@ public class DynamicVehiclesMod {
     }
 
     private void registerPayloads(net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent event) {
-        var registrar = event.registrar("1");
+        var registrar = event.registrar("2");
         registrar.playToServer(LightsTogglePayload.TYPE, LightsTogglePayload.STREAM_CODEC, LightsTogglePayload::handle);
         registrar.playToServer(WheelPaddlesPayload.TYPE, WheelPaddlesPayload.STREAM_CODEC, WheelPaddlesPayload::handle);
         registrar.playToServer(GearTogglePayload.TYPE, GearTogglePayload.STREAM_CODEC, GearTogglePayload::handle);

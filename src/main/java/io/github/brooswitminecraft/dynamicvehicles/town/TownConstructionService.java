@@ -276,6 +276,21 @@ public final class TownConstructionService {
         // own forward-write-plus-rollback failure (most commonly a road's) must never be silently
         // adopted by a claimed building as ordinary clearable terrain - the whole site aborts, the
         // same way any other protected/foreign content already does.
+        // A persisted payment record is not permission to reconstruct a changed cell for free.
+        // In particular, AIR is normally safe terrain, so it cannot be left to the generic
+        // preflight predicate: a paid floor/wall that was destroyed would otherwise pass the
+        // whole-site scan, be restored, and only then discover a later protected cell. Inspect
+        // every exact plan-owned paid record before terrain preparation or any building mutation;
+        // preserve every mismatch (including AIR) for explicit recovery rather than charging,
+        // crediting, restoring, or rewriting its progress record here.
+        for (TownBuildingTemplates.Placement placement : template) {
+            BlockPos pos = new BlockPos(placement.x(), placement.y(), placement.z());
+            String signature = cellSignature(planSignature, placement);
+            if (storage.isCellPlaced(level.dimension(), pos, siteOwner, signature)
+                    && !level.getBlockState(pos).equals(placement.state())) {
+                return;
+            }
+        }
         if (!TownSitePreflight.isSiteSafe(level, campfire, radius, floorY, plannedTopY,
                 pos -> {
                     TownBuildingTemplates.Placement planned = byPosition.get(key(pos.getX(), pos.getY(), pos.getZ()));
@@ -330,7 +345,13 @@ public final class TownConstructionService {
             // still matches) is skipped for free - a foreign block that merely matches the planned
             // material is never treated as already-paid progress.
             boolean alreadyPlaced = storage.isCellPlaced(level.dimension(), pos, siteOwner, signature);
-            if (alreadyPlaced && level.getBlockState(pos).is(placement.block())) {
+            if (alreadyPlaced) {
+                if (!level.getBlockState(pos).equals(placement.state())) {
+                    // The whole-site pass above rejects a mismatch observed at admission. Keep the
+                    // same guard at the actual mutation point in case the live world changed after
+                    // admission; never turn a paid-record mismatch into a free rebuild.
+                    break;
+                }
                 continue;
             }
             if (!claimant.isAlive() || !TownCampfireClaims.isClaimedBy(claimant, level, campfire)) {

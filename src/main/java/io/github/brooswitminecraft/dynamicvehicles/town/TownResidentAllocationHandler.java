@@ -16,6 +16,8 @@ import net.minecraft.world.level.block.Blocks;
 import net.neoforged.neoforge.event.entity.EntityLeaveLevelEvent;
 import net.neoforged.neoforge.event.tick.LevelTickEvent;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -112,6 +114,50 @@ public final class TownResidentAllocationHandler {
             allocateHomeIfNeeded(level, villager, townCenter, region, storage);
             allocateWorkplaceIfNeeded(level, villager, townCenter, region, storage);
         }
+    }
+
+    /**
+     * Observes the housing and retained-profession workplace capacity currently missing from one
+     * founded town.  This is deliberately a pure resident/planning query: its callers may use the
+     * result to decide whether an existing construction policy needs capacity, but this method does
+     * not reserve/release POIs, alter villager memories or professions, persist data, or invoke
+     * {@link TownConstructionService}.
+     *
+     * <p>The observation uses the same current-region, dimension, live-ticket, and ownership
+     * validation as allocation.  Active temporary Builders are excluded from workplace demand:
+     * their construction and final-profession lifecycle remains exclusively owned by
+     * {@link TownConstructionService}; a Builder does not identify a retained final profession for
+     * this pure query to request.
+     */
+    static TownResidentDemand unmetDemand(ServerLevel level, RegionCoord region, TownStorage storage) {
+        if (!level.dimension().equals(Level.OVERWORLD)
+                || !storage.hasFoundedTown(TownKeys.keyFor(level.dimension(), region))) {
+            return TownResidentDemand.NONE;
+        }
+        int missingHomes = 0;
+        Map<VillagerProfession, Integer> missingWorkplaces = new HashMap<>();
+        for (Entity entity : level.getEntities().getAll()) {
+            if (!(entity instanceof Villager villager) || !villager.isAlive()
+                    || !TownRegion.fromBlockCoords(villager.blockPosition().getX(), villager.blockPosition().getZ()).equals(region)) {
+                continue;
+            }
+            VillagerProfession profession = villager.getVillagerData().getProfession();
+            if (profession == BuilderProfession.BUILDER.get() && hasActiveBuilderClaim(level, villager)) {
+                continue;
+            }
+            if (!hasValidHome(level, villager, region, storage)) {
+                missingHomes++;
+            }
+            // NONE and NITWIT have no vanilla held job site.  A NITWIT can still need a home,
+            // but must never turn the pure observation into an impossible workplace request.
+            if (profession != VillagerProfession.NONE && profession != VillagerProfession.NITWIT
+                    && profession != BuilderProfession.BUILDER.get()
+                    && !hasValidWorkplace(level, villager, region, storage)) {
+                missingWorkplaces.merge(profession, 1, Integer::sum);
+            }
+        }
+        return missingHomes == 0 && missingWorkplaces.isEmpty()
+                ? TownResidentDemand.NONE : new TownResidentDemand(missingHomes, missingWorkplaces);
     }
 
     /** {@code true} when {@code villager} is a Builder whose {@code JOB_SITE} memory still points at

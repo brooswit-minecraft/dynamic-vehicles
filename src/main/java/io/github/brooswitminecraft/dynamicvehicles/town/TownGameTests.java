@@ -1676,6 +1676,109 @@ public final class TownGameTests {
     }
 
     /**
+     * MINECRAFT-453: the activity-driven writer must leave a never-loaded remote road corridor
+     * completely untouched, including across a storage round trip, then resume its normal paid
+     * progress only once this fixture deliberately loads and prepares that exact corridor.
+     *
+     * <p>This is deliberately a never-loaded-to-loaded acceptance fixture, not a simulation of
+     * actual chunk eviction, the full regional planner, or multi-player/network contention.
+     */
+    @GameTest(template = "settlement_test")
+    public static void unloadedRoadCorridorDoesNotLoadOrChargeUntilExplicitlyLoaded(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        BlockPos anchor = helper.absolutePos(ANCHOR);
+        RegionCoord fixtureGridRegion = TownRegion.fromBlockCoords(anchor.getX(), anchor.getZ());
+        // Keep both the player activity region and the two-cell corridor far outside this template
+        // and the chunks used by neighbouring GameTest fixtures.
+        RegionCoord region = new RegionCoord(fixtureGridRegion.x() + 200, fixtureGridRegion.z() + 200);
+        String townKey = TownKeys.keyFor(level.dimension(), region);
+        BlockPos start = new BlockPos(TownRegion.minBlockX(region) + 5, anchor.getY(), TownRegion.minBlockZ(region) + 5);
+        List<TownRoadPlanner.RoadCell> route = List.of(
+                new TownRoadPlanner.RoadCell(start.getX(), start.getZ(), start.getY()),
+                new TownRoadPlanner.RoadCell(start.getX() + 1, start.getZ(), start.getY()));
+        String signature = "road:" + net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(Blocks.DIRT_PATH)
+                + ":" + TownResourceCategory.STONE.name();
+        TownStorage storage = new TownStorage();
+        storage.markTownFounded(townKey);
+        TownResourceStore store = storage.storeFor(townKey);
+        store.credit(TownResourceCategory.STONE, 1000);
+        int[] dispatches = {0};
+        TownConstructionService.RoadWork work = (workLevel, selected, selectedStorage, selectedStore) -> {
+            helper.assertTrue(selected.equals(region), "only the fixture's founded remote region may dispatch its road work");
+            dispatches[0]++;
+            return TownRoadConstructionService.buildRoadCells(workLevel, route, selectedStorage, selectedStore) > 0;
+        };
+        List<ServerPlayer> unrelatedBefore = List.copyOf(level.players());
+        ServerPlayer player = null;
+        java.util.UUID[] ownedUuids = new java.util.UUID[1];
+        try {
+            player = GameTestMockPlayers.create(helper);
+            ownedUuids[0] = player.getUUID();
+            player.teleportTo(TownRegion.minBlockX(region) + 20.5, anchor.getY(), TownRegion.minBlockZ(region) + 20.5);
+
+            // Do not read a block, heightmap, or chunk before this guard: the test's first two
+            // road ticks must prove the production guard itself declines this absent corridor.
+            helper.assertTrue(!level.hasChunkAt(start), "remote corridor must start absent before the road writer touches it");
+            TownConstructionService.runConstructionAndRoadsTick(level, storage, work);
+            helper.assertTrue(dispatches[0] == 1 && !level.hasChunkAt(start),
+                    "an absent corridor may be dispatched but must neither load nor place road work");
+            helper.assertTrue(store.balance(TownResourceCategory.STONE) == 1000,
+                    "an absent corridor must not debit stone");
+            for (int x = start.getX(); x <= start.getX() + 1; x++) for (int z = start.getZ() - 1; z <= start.getZ() + 1; z++) {
+                BlockPos cell = new BlockPos(x, start.getY(), z);
+                helper.assertTrue(!storage.isCellPlaced(level.dimension(), cell, roadOwnerAt(level, cell), signature),
+                        "an absent corridor must not create owned road progress: " + cell);
+            }
+
+            TownStorage reloaded = TownStorage.load(storage.save(new CompoundTag(), level.registryAccess()), level.registryAccess());
+            TownResourceStore reloadedStore = reloaded.storeFor(townKey);
+            TownConstructionService.runConstructionAndRoadsTick(level, reloaded, work);
+            helper.assertTrue(dispatches[0] == 2 && !level.hasChunkAt(start)
+                            && reloadedStore.balance(TownResourceCategory.STONE) == 1000,
+                    "an absent corridor retry after save/load must neither load nor debit");
+
+            // This is the fixture's only deliberate load of its remote corridor.  Now that it is
+            // present, prepare the supported natural terrain the real writer requires.
+            level.getChunkAt(start);
+            for (int x = start.getX(); x <= start.getX() + 1; x++) for (int z = start.getZ() - 1; z <= start.getZ() + 1; z++) {
+                BlockPos cell = new BlockPos(x, start.getY(), z);
+                level.setBlock(cell.below(), Blocks.DIRT.defaultBlockState(), Block.UPDATE_ALL);
+                level.setBlock(cell, Blocks.DIRT.defaultBlockState(), Block.UPDATE_ALL);
+                level.setBlock(cell.above(), Blocks.AIR.defaultBlockState(), Block.UPDATE_ALL);
+                level.setBlock(cell.above(2), Blocks.AIR.defaultBlockState(), Block.UPDATE_ALL);
+            }
+            TownConstructionService.runConstructionAndRoadsTick(level, reloaded, work);
+            helper.assertTrue(1000 - reloadedStore.balance(TownResourceCategory.STONE) == TownConstants.ROAD_BLOCKS_PER_TICK,
+                    "the first loaded tick must debit exactly its four-cell road budget");
+            TownConstructionService.runConstructionAndRoadsTick(level, reloaded, work);
+            helper.assertTrue(1000 - reloadedStore.balance(TownResourceCategory.STONE) == 6,
+                    "the second loaded tick must debit exactly the remaining two corridor cells");
+            for (int x = start.getX(); x <= start.getX() + 1; x++) for (int z = start.getZ() - 1; z <= start.getZ() + 1; z++) {
+                BlockPos cell = new BlockPos(x, start.getY(), z);
+                helper.assertTrue(level.getBlockState(cell).is(Blocks.DIRT_PATH)
+                                && reloaded.isCellPlaced(level.dimension(), cell, roadOwnerAt(level, cell), signature),
+                        "explicitly loaded corridor must finish each paid owned road cell: " + cell);
+            }
+            int completedBalance = reloadedStore.balance(TownResourceCategory.STONE);
+            TownConstructionService.runConstructionAndRoadsTick(level, reloaded, work);
+            helper.assertTrue(reloadedStore.balance(TownResourceCategory.STONE) == completedBalance,
+                    "a completed loaded corridor retry must not debit again");
+        } finally {
+            // This fixture owns only this one actor; leave all shared GameTest actors untouched.
+            removeOwnedMockPlayers(level, player, null);
+        }
+        helper.assertTrue(level.players().stream().noneMatch(current -> current.getUUID().equals(ownedUuids[0])),
+                "fixture cleanup must remove its UUID-owned player from the level roster");
+        helper.assertTrue(level.getServer().getPlayerList().getPlayers().stream()
+                        .noneMatch(current -> current.getUUID().equals(ownedUuids[0])),
+                "fixture cleanup must remove its UUID-owned player from the server player list");
+        helper.assertTrue(unrelatedBefore.stream().allMatch(previous -> level.players().stream()
+                        .anyMatch(current -> current.getUUID().equals(previous.getUUID()))),
+                "fixture cleanup must preserve every pre-existing unrelated level player");
+        helper.succeed();
+    }
+
+    /**
      * The lifecycle fixture can land at any GameTest-world coordinate.  Drive the real road writer
      * across a deterministic negative boundary: {@code -385} is in region {@code -2}, whereas
      * {@code -384} is in region {@code -1}.  The writer's minor-width corridor spans both, then

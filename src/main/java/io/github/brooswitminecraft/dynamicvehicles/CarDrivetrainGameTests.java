@@ -255,6 +255,9 @@ public final class CarDrivetrainGameTests {
             rider.zza = 1.0f;
             float[] worstSpinHolder = {0.0f};
             double[] peakAudio = {0.0};
+            double[] peakHudSlip = {0.0};
+            CarEntity hudReplica = DynamicVehiclesMod.CAR.get().create(helper.getLevel());
+            helper.assertTrue(hudReplica != null, "missing HUD replica");
             float[] worstSlipHolder = {0.0f};
             float[] worstSpeedHolder = {0.0f};
             double[] bestRealSlip = {0.0};
@@ -267,6 +270,12 @@ public final class CarDrivetrainGameTests {
                         worstSpinHolder[0] = Math.max(worstSpinHolder[0], Math.abs(car.wheelSpin(wheel, 1.0f)));
                     }
                     worstSlipHolder[0] = Math.max(worstSlipHolder[0], (float) car.debugSlipSpeed());
+                    // Exercise nonzero physics -> production telemetry -> actual entity-data replica.
+                    var dirty = car.getEntityData().packDirty();
+                    if (dirty != null) hudReplica.getEntityData().assignValues(dirty);
+                    helper.assertTrue(Math.abs(hudReplica.clientTireSlip() - car.debugSlipSpeed()) < 0.0001,
+                            "HUD lost the actual physics slip during synchronization");
+                    peakHudSlip[0] = Math.max(peakHudSlip[0], hudReplica.clientTireSlip());
                     peakAudio[0] = Math.max(peakAudio[0], CarSoundMath.skidVolume(car.clientSlip()));
                     worstSpeedHolder[0] = Math.max(worstSpeedHolder[0], (float) car.debugSpeed());
                     // The REAL production call's own arguments and own result, not a recomputation -- see
@@ -291,6 +300,9 @@ public final class CarDrivetrainGameTests {
                 // magnitude past this. A correctly limiter-coupled drivetrain's peak stays near where the
                 // engaged ratio's own RPM reaches the limiter -- comfortably under 150 rad/s for D1's ratio.
                 helper.assertTrue(peakAudio[0] > 0.1, "full-throttle no-brake wheelspin never reached audible synchronized squeal: " + peakAudio[0]);
+                helper.assertTrue(peakHudSlip[0] > 0.3
+                        && io.github.brooswitminecraft.dynamicvehicles.hud.DrivingHudPresentation.slipFraction(peakHudSlip[0]) > 0,
+                        "the HUD fixture never received positive physical slip: " + peakHudSlip[0]);
                 helper.assertTrue(worstSpinHolder[0] < 150.0,
                         "a driven wheel's spin rate grew without bound instead of being capped by the rev limiter: " + worstSpinHolder[0] + " rad/s");
                 helper.assertTrue(worstSlipHolder[0] > 0.3,

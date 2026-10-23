@@ -67,6 +67,13 @@ public class CarEntity extends DriverVehicleEntity {
             net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
     private static final net.minecraft.network.syncher.EntityDataAccessor<Float> DATA_SLIP =
             net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
+    private static final net.minecraft.network.syncher.EntityDataAccessor<Float> DATA_HEALTH =
+            net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
+    private static final net.minecraft.network.syncher.EntityDataAccessor<Float> DATA_TOP_SPEED =
+            net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
+    private static final net.minecraft.network.syncher.EntityDataAccessor<Float> DATA_TIRE_SLIP =
+            net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
+
     /** Dashboard measurements: raw crankshaft RPM and body speed in m/s, not the audio fraction. */
     private static final net.minecraft.network.syncher.EntityDataAccessor<Float> DATA_DRIVING_RPM =
             net.minecraft.network.syncher.SynchedEntityData.defineId(CarEntity.class, net.minecraft.network.syncher.EntityDataSerializers.FLOAT);
@@ -330,6 +337,9 @@ public class CarEntity extends DriverVehicleEntity {
         builder.define(DATA_RADIO_URL, "");
         builder.define(DATA_SLIP, 0.0f);
         builder.define(DATA_RPM, 0.0f);
+        builder.define(DATA_HEALTH, CarHealth.MAX);
+        builder.define(DATA_TOP_SPEED, 0.0f);
+        builder.define(DATA_TIRE_SLIP, 0.0f);
         builder.define(DATA_DRIVING_RPM, 0.0f);
         builder.define(DATA_DRIVING_SPEED, 0.0f);
         builder.define(DATA_WHEELS, new CompoundTag());
@@ -740,11 +750,19 @@ public class CarEntity extends DriverVehicleEntity {
         };
     }
 
+    public double clientHealthFraction() { return entityData.get(DATA_HEALTH) / CarHealth.MAX; }
+    public double clientTopSpeed() { return entityData.get(DATA_TOP_SPEED); }
+    /** Actual tire slip speed in m/s, without the audio handbrake/reverse override. */
+    public double clientTireSlip() { return entityData.get(DATA_TIRE_SLIP); }
+
     public double clientDrivingRpm() { return entityData.get(DATA_DRIVING_RPM); }
 
     public double clientDrivingSpeed() { return entityData.get(DATA_DRIVING_SPEED); }
 
     void publishDrivingTelemetry(double rpm, double metersPerSecond) {
+        entityData.set(DATA_HEALTH, health);
+        entityData.set(DATA_TOP_SPEED, (float) spec.maxSpeed());
+        entityData.set(DATA_TIRE_SLIP, (float) (sableBody == null ? 0 : SableCompat.slip(sableBody)));
         entityData.set(DATA_DRIVING_RPM, (float) Math.max(0, rpm));
         entityData.set(DATA_DRIVING_SPEED, (float) Math.max(0, metersPerSecond));
     }
@@ -1347,6 +1365,7 @@ public class CarEntity extends DriverVehicleEntity {
             return;
         }
         health = Math.max(0.0f, health - amount);
+        entityData.set(DATA_HEALTH, health);
     }
 
     /** Server test hook: current health, 0..{@link CarHealth#MAX}. */

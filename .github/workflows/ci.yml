@@ -93,5 +93,6 @@ jobs:
             run-acceptance-client/client-acceptance-failure.txt
             run-acceptance-client/logs/latest.log
             run-acceptance-client/crash-reports/
+            run-acceptance-client/screenshots/client-acceptance-hud-*.png
             run-acceptance-server/logs/latest.log
           if-no-files-found: warn

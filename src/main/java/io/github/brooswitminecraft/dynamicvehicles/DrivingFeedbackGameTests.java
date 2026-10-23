@@ -50,6 +50,26 @@ public final class DrivingFeedbackGameTests {
         transfer(server, replica);
         helper.assertTrue(replica.clientDrivingRpm() == 400 && replica.clientDrivingSpeed() == 10,
                 "raw telemetry was clamped to audio idle or changed units");
+        var saved = new net.minecraft.nbt.CompoundTag();
+        saved.putFloat("VehicleHealth", 37.0f);
+        server.readAdditionalSaveData(saved);
+        server.publishSoundState(1, 4, 6000);
+        server.publishDrivingTelemetry(6000, server.spec().maxSpeed());
+        transfer(server, replica);
+        helper.assertTrue(Math.abs(replica.clientHealthFraction() - .37) < .0001,
+                "HUD health must follow persisted server car health, not player health");
+        helper.assertTrue(Math.abs(replica.clientTopSpeed() - server.spec().maxSpeed()) < .0001,
+                "HUD must receive the server's intended top-speed scale");
+        helper.assertTrue(replica.clientSlip() == 1 && replica.clientTireSlip() == 0,
+                "HUD tire slip must not borrow the separately published audio slip value");
+        for(double ratio : new double[]{0,.5,1,2}) {
+            server.publishDrivingTelemetry(DrivetrainMath.LIMITER_RPM*ratio,server.spec().maxSpeed()*ratio);
+            transfer(server,replica);
+            helper.assertTrue(Math.abs(io.github.brooswitminecraft.dynamicvehicles.hud.DrivingHudPresentation.fraction(replica.clientDrivingSpeed(),replica.clientTopSpeed())-Math.min(ratio,1))<.0001,
+                    "synchronized speed endpoint/overspeed scaling failed: "+ratio);
+            helper.assertTrue(Math.abs(io.github.brooswitminecraft.dynamicvehicles.hud.DrivingHudPresentation.fraction(replica.clientDrivingRpm(),DrivetrainMath.LIMITER_RPM)-Math.min(ratio,1))<.0001,
+                    "synchronized RPM endpoint/limiter scaling failed: "+ratio);
+        }
         helper.succeed();
     }
 

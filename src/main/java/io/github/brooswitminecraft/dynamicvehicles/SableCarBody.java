@@ -731,11 +731,7 @@ final class SableCarBody {
                 // physics, not just a rendered pose: this angle rotates the tire's own forward axis
                 // below, which is what vLong/vLat -- and therefore the tire's force directions -- are
                 // measured against.
-                double frontSteerAngle = steer * WheelMath.maxSteerAngle(forwardSpeed, WheelMath.BASE_FRICTION,
-                        spec.wheelbase(), CarPhysics.MAX_STEER);
-                double wheelSteerAngle = front ? WheelMath.casterAdjustedSteerAngle(frontSteerAngle,
-                        spec.steeringTuning().casterDeg(), forwardSpeed)
-                        : frontSteerAngle * spec.steeringTuning().rearSteerRatio();
+                double wheelSteerAngle = wheelSteerAngle(mount, steer, forwardSpeed);
                 this.steerAngle[wheel] = wheelSteerAngle;
 
                 BlockHitResult hit = wheelHits[wheel];
@@ -1026,14 +1022,14 @@ final class SableCarBody {
                     Vector3d longitudinalLocal = new Vector3d(horizontalLocal).sub(lateralLocal);
                     body.applyImpulseAtPoint(new Vector3d(local.x, tireY, local.z), longitudinalLocal);
                     body.applyImpulseAtPoint(new Vector3d(local.x,
-                            tireY + spec.suspensionTuning().rollCenterHeight(), local.z), lateralLocal);
+                            rollCenterLateralY(contactLocal.y, tireY), local.z), lateralLocal);
                 } else {
                     double pitchTireY = WheelMath.pitchResistApplicationHeight(tireY, BODY_TIRE_FORCE_HEIGHT, antiFraction);
                     Vector3d lateralLocal = inverse.transform(new Vector3d(lateral).mul(tire.lateral() * subDt));
                     Vector3d longitudinalLocal = new Vector3d(horizontalLocal).sub(lateralLocal);
                     body.applyImpulseAtPoint(new Vector3d(local.x, pitchTireY, local.z), longitudinalLocal);
                     body.applyImpulseAtPoint(new Vector3d(local.x,
-                            tireY + spec.suspensionTuning().rollCenterHeight(), local.z), lateralLocal);
+                            rollCenterLateralY(contactLocal.y, tireY), local.z), lateralLocal);
                 }
             }
             // Re-read velocity so the next sub-step's forces respond to the impulses just applied above -
@@ -1461,6 +1457,21 @@ final class SableCarBody {
         return -1;
     }
 
+    /** The one steering-geometry resolution used by both applied and predicted wheel response. */
+    private double wheelSteerAngle(double[] mount, double steer, double forwardSpeed) {
+        double commandedFront = steer * WheelMath.maxSteerAngle(forwardSpeed, WheelMath.BASE_FRICTION,
+                spec.wheelbase(), CarPhysics.MAX_STEER);
+        double effectiveFront = WheelMath.casterAdjustedSteerAngle(commandedFront,
+                spec.steeringTuning().casterDeg(), forwardSpeed);
+        return mount[2] > 0.0 ? effectiveFront : effectiveFront * spec.steeringTuning().rearSteerRatio();
+    }
+
+    /** Zero preserves the legacy force-height switch; nonzero tuning is explicitly contact-patch-relative. */
+    private double rollCenterLateralY(double contactY, double legacyTireY) {
+        double height = spec.suspensionTuning().rollCenterHeight();
+        return height == 0.0 ? legacyTireY : contactY + height;
+    }
+
     /** Debug overlay: the body box corners (red) and where each suspension ray meets the ground (green). */
     /** Evaluate the same wheel response used below, without applying any body impulses.
      * The accepted exchange must dissipate work at the actual two shaft midpoint speeds. */
@@ -1476,9 +1487,7 @@ final class SableCarBody {
         for (int wheel = 0; wheel < spins.length; wheel++) {
             double[] mount = spec.mounts()[wheel];
             boolean front = mount[2] > 0.0;
-            double frontSteerAngle = steer * WheelMath.maxSteerAngle(forwardSpeed, WheelMath.BASE_FRICTION,
-                    spec.wheelbase(), CarPhysics.MAX_STEER);
-            double wheelSteerAngle = front ? frontSteerAngle : frontSteerAngle * spec.steeringTuning().rearSteerRatio();
+            double wheelSteerAngle = wheelSteerAngle(mount, steer, forwardSpeed);
                 double drive = GearDrive.driveThroughClutch(throttle, forwardSpeed, gear, offer);
                 double brake = GearDrive.brake(throttle, forwardSpeed, BRAKE_FORCE, spec.forceScale());
                 double lateralScale = 1.0;

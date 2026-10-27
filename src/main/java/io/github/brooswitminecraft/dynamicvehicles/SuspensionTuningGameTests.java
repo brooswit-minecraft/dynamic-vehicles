@@ -147,6 +147,67 @@ public final class SuspensionTuningGameTests {
      * Tight: this is one multiplication in production, not an integrated physical quantity. */
     private static final double STEER_ANGLE_TOLERANCE = 1e-9;
 
+    /**
+     * The zero roll-centre compatibility seam uses two real Sable calls instead of the historical one:
+     * {@code longitudinalLocal} and {@code lateralLocal} are applied separately at the same old tire
+     * height.  This fixture pins the native operation that makes that safe.  It deliberately uses the
+     * actual Sable bodies behind two otherwise stock {@link CarEntity}s, rather than assuming point
+     * impulses are additive from the wrapper's Java-side arithmetic.
+     */
+    @GameTest(template = "settlement_test", timeoutTicks = 40, batch = "suspensionTuningZeroRollCenterSableIsolated")
+    public static void zeroRollCenterSplitImpulseMatchesTheHistoricalCombinedSableImpulse(GameTestHelper helper) {
+        SableCarBody combinedBody = null;
+        SableCarBody splitBody = null;
+        try {
+            CarEntity combinedCar = DynamicVehiclesMod.CAR.get().create(helper.getLevel());
+            CarEntity splitCar = DynamicVehiclesMod.CAR.get().create(helper.getLevel());
+            helper.assertTrue(combinedCar != null && splitCar != null, "car factory failed for the zero-roll-centre Sable control");
+            combinedCar.moveTo(5.5, 30.0, 5.5, 0.0f, 0.0f);
+            splitCar.moveTo(15.5, 30.0, 5.5, 0.0f, 0.0f);
+            helper.assertTrue(combinedCar.spec().suspensionTuning().rollCenterHeight() == 0.0
+                            && splitCar.spec().suspensionTuning().rollCenterHeight() == 0.0,
+                    "stock cars did not resolve zero roll-centre height");
+            helper.assertTrue(combinedCar.spec().pitchTuning().equals(VehicleSpec.PitchTuning.IDENTITY)
+                            && splitCar.spec().pitchTuning().equals(VehicleSpec.PitchTuning.IDENTITY),
+                    "stock cars did not resolve zero anti-dive/anti-squat");
+
+            combinedBody = SableCarBody.create(helper.getLevel(), combinedCar);
+            splitBody = SableCarBody.create(helper.getLevel(), splitCar);
+            java.lang.reflect.Field bodyField = SableCarBody.class.getDeclaredField("body");
+            bodyField.setAccessible(true);
+            var combined = (dev.ryanhcode.sable.api.physics.handle.RigidBodyHandle) bodyField.get(combinedBody);
+            var split = (dev.ryanhcode.sable.api.physics.handle.RigidBodyHandle) bodyField.get(splitBody);
+            org.joml.Vector3d point = new org.joml.Vector3d(0.7, -0.35, 1.1);
+            org.joml.Vector3d longitudinal = new org.joml.Vector3d(17.0, 0.0, 31.0);
+            org.joml.Vector3d lateral = new org.joml.Vector3d(-23.0, 0.0, 13.0);
+            combined.applyImpulseAtPoint(new org.joml.Vector3d(point),
+                    new org.joml.Vector3d(longitudinal).add(lateral));
+            split.applyImpulseAtPoint(new org.joml.Vector3d(point), longitudinal);
+            split.applyImpulseAtPoint(new org.joml.Vector3d(point), lateral);
+
+            org.joml.Vector3d combinedLinear = combined.getLinearVelocity(new org.joml.Vector3d());
+            org.joml.Vector3d splitLinear = split.getLinearVelocity(new org.joml.Vector3d());
+            org.joml.Vector3d combinedAngular = combined.getAngularVelocity(new org.joml.Vector3d());
+            org.joml.Vector3d splitAngular = split.getAngularVelocity(new org.joml.Vector3d());
+            helper.assertTrue(maxComponentGap(combinedLinear, splitLinear) < 1e-12
+                            && maxComponentGap(combinedAngular, splitAngular) < 1e-12,
+                    "real Sable changed the zero-roll-centre impulse when it was split: combined linear="
+                            + combinedLinear + " split linear=" + splitLinear + " combined angular="
+                            + combinedAngular + " split angular=" + splitAngular);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        } finally {
+            if (combinedBody != null) combinedBody.remove();
+            if (splitBody != null) splitBody.remove();
+        }
+        helper.succeed();
+    }
+
+    private static double maxComponentGap(org.joml.Vector3dc first, org.joml.Vector3dc second) {
+        return Math.max(Math.abs(first.x() - second.x()),
+                Math.max(Math.abs(first.y() - second.y()), Math.abs(first.z() - second.z())));
+    }
+
     /** A soft tire and nothing else: well under nominal, so it buys grip and pays in rolling drag. The
      * rolling side is what this fixture measures, because cruise speed under a fixed throttle is the
      * observable RollingResistanceGameTests has already proven this suite can compare reliably. */

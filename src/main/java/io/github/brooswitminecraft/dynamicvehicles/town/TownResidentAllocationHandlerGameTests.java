@@ -258,7 +258,7 @@ public final class TownResidentAllocationHandlerGameTests {
     /** The consumer asks construction only for the resident still missing capacity after normal
      * fixture allocation.  In particular, it must not pass the two-resident aggregate shortage to
      * both residents and manufacture duplicate admissions across a retry/reload. */
-    @GameTest(template = "settlement_test")
+    @GameTest(template = "settlement_test", batch = "residentAllocationConsumerIsolated")
     public static void allocationConsumerAdmitsOnlyTheStillUnhousedResidentAndReusesItAfterReload(GameTestHelper helper) {
         prepareFlatGround(helper);
         BlockPos bedHead = anchor(helper).offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
@@ -275,6 +275,16 @@ public final class TownResidentAllocationHandlerGameTests {
         helper.startSequence()
                 .thenIdle(2)
                 .thenExecute(() -> {
+                    helper.assertTrue(helper.getLevel().getEntity(first.getUUID()) == first
+                                    && helper.getLevel().getEntity(second.getUUID()) == second
+                                    && first.isAlive() && second.isAlive(),
+                            "test setup: both named residents must be alive and UUID-resolvable in the level before whole-level allocation");
+                    helper.assertTrue(TownRegion.fromBlockCoords(first.blockPosition().getX(), first.blockPosition().getZ()).equals(region)
+                                    && TownRegion.fromBlockCoords(second.blockPosition().getX(), second.blockPosition().getZ()).equals(region)
+                                    && first.getBrain().getMemory(MemoryModuleType.HOME).isEmpty()
+                                    && second.getBrain().getMemory(MemoryModuleType.HOME).isEmpty()
+                                    && helper.getLevel().getPoiManager().getFreeTickets(helper.absolutePos(bedHead)) == 1,
+                            "test setup: both named residents must be unhoused in this region and the one town-owned bed must be free");
                     TownResidentAllocationHandler.runResidentAllocationTick(helper.getLevel(), storage);
                     boolean firstHoused = first.getBrain().getMemory(MemoryModuleType.HOME).isPresent();
                     Villager waiting = firstHoused ? second : first;
@@ -282,14 +292,18 @@ public final class TownResidentAllocationHandlerGameTests {
                     Optional<ResidentCapacityAdmission> firstAdmission = storage.capacityAdmissionFor(helper.getLevel().dimension(), region, first.getUUID());
                     Optional<ResidentCapacityAdmission> secondAdmission = storage.capacityAdmissionFor(helper.getLevel().dimension(), region, second.getUUID());
                     Optional<ResidentCapacityAdmission> admission = firstHoused ? secondAdmission : firstAdmission;
+                    helper.assertTrue(firstHoused ^ second.getBrain().getMemory(MemoryModuleType.HOME).isPresent(),
+                            "exactly one named resident must receive the single town-owned bed");
                     helper.assertTrue(housed.getBrain().getMemory(MemoryModuleType.HOME).isPresent()
                                     && waiting.getBrain().getMemory(MemoryModuleType.HOME).isEmpty()
+                                    && helper.getLevel().getPoiManager().getFreeTickets(helper.absolutePos(bedHead)) == 0,
+                            "the single bed's real POI ticket must belong to the named housed resident, leaving the other named resident waiting");
+                    helper.assertTrue(firstAdmission.isPresent() ^ secondAdmission.isPresent()
                                     && admission.isPresent()
                                     && admission.get().beneficiaryId().equals(waiting.getUUID())
                                     && admission.get().requestedHomes() == 1
-                                    && admission.get().requestedWorkplaces().isEmpty()
-                                    && (firstAdmission.isPresent() ^ secondAdmission.isPresent()),
-                            "only the resident still without the one town-owned bed may receive one resident-sized admission");
+                                    && admission.get().requestedWorkplaces().isEmpty(),
+                            "only the named resident still without the one town-owned bed may receive one resident-sized admission");
 
                     CompoundTag saved = storage.save(new CompoundTag(), helper.getLevel().registryAccess());
                     ListTag savedAdmissions = saved.getList("ResidentCapacityAdmissions", Tag.TAG_COMPOUND);

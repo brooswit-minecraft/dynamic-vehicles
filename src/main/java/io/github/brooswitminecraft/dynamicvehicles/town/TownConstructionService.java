@@ -49,6 +49,13 @@ public final class TownConstructionService {
     /** Test-only fault injection for proving that an unconfirmed terrain rollback remains a
      * durable stop, rather than becoming a later build-through. */
     static BlockPos testForceTerrainRollbackFailureAt = null;
+    /**
+     * Test-only injection for the administrative quarantine path after a building write lands but
+     * before it is debited/recorded.  This verifies serialization of an explicitly requested
+     * exclusion; it is NOT crash recovery for a process that dies at this boundary.  Kept
+     * package-private so it is not a construction-consumer API.
+     */
+    static BlockPos testForcePlacementInterruptionAt = null;
 
     public static void onLevelTick(LevelTickEvent.Post event) {
         if (!(event.getLevel() instanceof ServerLevel level)
@@ -471,6 +478,17 @@ public final class TownConstructionService {
                     releaseReservedHandoff(level, storage, reservedHandoff.get());
                 }
                 continue;
+            }
+            if (pos.equals(testForcePlacementInterruptionAt)) {
+                testForcePlacementInterruptionAt = null;
+                // Explicit test quarantine: the world write landed but no debit/paid-progress
+                // record has been committed.  This only proves the persisted exclusion path; a
+                // genuine process-crash recovery contract remains separately unresolved.
+                storage.markCellBlocked(level.dimension(), pos);
+                if (reservedHandoff.isPresent()) {
+                    releaseReservedHandoff(level, storage, reservedHandoff.get());
+                }
+                break;
             }
             if (!alreadyPlaced) {
                 ConstructionSitePlan.tryPayForBlock(store, block, TownConstants.CONSTRUCTION_COST_PER_BLOCK);

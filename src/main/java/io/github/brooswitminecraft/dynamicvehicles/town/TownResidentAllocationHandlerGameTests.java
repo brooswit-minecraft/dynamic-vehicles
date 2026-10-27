@@ -8,6 +8,8 @@ import net.minecraft.core.GlobalPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.Tag;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
@@ -290,10 +292,32 @@ public final class TownResidentAllocationHandlerGameTests {
                             "only the resident still without the one town-owned bed may receive one resident-sized admission");
 
                     CompoundTag saved = storage.save(new CompoundTag(), helper.getLevel().registryAccess());
+                    ListTag savedAdmissions = saved.getList("ResidentCapacityAdmissions", Tag.TAG_COMPOUND);
+                    helper.assertTrue(savedAdmissions.size() == 1,
+                            "test setup: exactly one resident admission must be serialized before reload");
                     TownStorage reloaded = TownStorage.load(saved, helper.getLevel().registryAccess());
+                    // Prove persistence BEFORE the retry can call the admission boundary.  If load
+                    // dropped the record, runResidentAllocationTick could otherwise recreate an
+                    // indistinguishable admission and make this look like a successful round trip.
+                    Optional<ResidentCapacityAdmission> loadedAdmission = reloaded.capacityAdmissionFor(
+                            helper.getLevel().dimension(), region, waiting.getUUID());
+                    ListTag loadedAdmissions = reloaded.save(new CompoundTag(), helper.getLevel().registryAccess())
+                            .getList("ResidentCapacityAdmissions", Tag.TAG_COMPOUND);
+                    helper.assertTrue(loadedAdmissions.size() == 1,
+                            "reload must retain exactly one admission before any retry can recreate it");
+                    helper.assertTrue(loadedAdmission.isPresent(),
+                            "reload must retain an admission under the waiting resident's durable identity before retry");
+                    helper.assertTrue(loadedAdmission.get().equals(admission.get())
+                                    && loadedAdmission.get().beneficiaryId().equals(waiting.getUUID())
+                                    && loadedAdmission.get().dimension().equals(helper.getLevel().dimension())
+                                    && loadedAdmission.get().region().equals(region)
+                                    && loadedAdmission.get().requestedHomes() == 1
+                                    && loadedAdmission.get().requestedWorkplaces().isEmpty()
+                                    && loadedAdmission.get().state() == ResidentCapacityAdmission.State.AWAITING_CLAIM,
+                            "reload must retain the waiting resident's exact one-home admission profile before any retry can recreate it");
                     TownResidentAllocationHandler.runResidentAllocationTick(helper.getLevel(), reloaded);
                     helper.assertTrue(reloaded.capacityAdmissionFor(helper.getLevel().dimension(), region, waiting.getUUID())
-                                    .filter(admission.get()::equals).isPresent()
+                                    .filter(loadedAdmission.get()::equals).isPresent()
                                     && reloaded.capacityAdmissionFor(helper.getLevel().dimension(), region, housed.getUUID()).isEmpty()
                                     && helper.getLevel().getPoiManager().getFreeTickets(helper.absolutePos(bedHead)) == 0,
                             "a retry after reload must reuse the one waiting resident admission and never add a second bed owner or admission");

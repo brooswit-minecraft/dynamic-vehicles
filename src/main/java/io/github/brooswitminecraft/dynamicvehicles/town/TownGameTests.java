@@ -456,6 +456,97 @@ public final class TownGameTests {
         helper.succeed();
     }
 
+    /**
+     * MINECRAFT-453: paid road progress is not a blanket permission to preserve whatever happens
+     * to be live at that coordinate.  An owned, matching dirt path is a no-op; a foreign dirt
+     * path and protected content are skipped; but an owned record whose live natural surface has
+     * changed is safely rebuilt and charged again.  This production-path fixture also proves that
+     * the exact debit/retry decision survives a {@link TownStorage} save/load round trip.
+     */
+    @GameTest(template = "settlement_test")
+    public static void widthOneRoadRebuildsChangedPaidNaturalSurfaceAfterReloadWithoutAdoptingForeignPaths(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        ServerLevel level = helper.getLevel();
+        BlockPos matching = helper.absolutePos(ANCHOR.offset(-2, 0, 0));
+        BlockPos foreign = helper.absolutePos(ANCHOR.offset(-1, 0, 0));
+        BlockPos protectedCell = helper.absolutePos(ANCHOR);
+        BlockPos changedPaidSurface = helper.absolutePos(ANCHOR.offset(1, 0, 0));
+        BlockPos unpaidNatural = helper.absolutePos(ANCHOR.offset(2, 0, 0));
+        String signature = "road:" + net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(Blocks.DIRT_PATH)
+                + ":" + TownResourceCategory.STONE.name();
+
+        TownStorage storage = new TownStorage();
+        String matchingOwner = roadOwnerAt(level, matching);
+        String changedOwner = roadOwnerAt(level, changedPaidSurface);
+        storage.markCellPlaced(level.dimension(), matching, matchingOwner, signature, Blocks.DIRT_PATH.defaultBlockState());
+        storage.markCellPlaced(level.dimension(), changedPaidSurface, changedOwner, signature, Blocks.DIRT_PATH.defaultBlockState());
+        level.setBlock(matching, Blocks.DIRT_PATH.defaultBlockState(), Block.UPDATE_ALL);
+        level.setBlock(foreign, Blocks.DIRT_PATH.defaultBlockState(), Block.UPDATE_ALL);
+        level.setBlock(protectedCell, Blocks.CHEST.defaultBlockState(), Block.UPDATE_ALL);
+        level.setBlock(changedPaidSurface, Blocks.DIRT.defaultBlockState(), Block.UPDATE_ALL);
+        level.setBlock(unpaidNatural, Blocks.DIRT.defaultBlockState(), Block.UPDATE_ALL);
+        // changedPaidSurface deliberately remains natural DIRT: its persisted road record alone
+        // must not turn this changed live surface into a free no-op.
+
+        List<TownRoadPlanner.RoadCell> route = List.of(
+                new TownRoadPlanner.RoadCell(matching.getX(), matching.getZ(), matching.getY()),
+                new TownRoadPlanner.RoadCell(foreign.getX(), foreign.getZ(), foreign.getY()),
+                new TownRoadPlanner.RoadCell(protectedCell.getX(), protectedCell.getZ(), protectedCell.getY()),
+                new TownRoadPlanner.RoadCell(changedPaidSurface.getX(), changedPaidSurface.getZ(), changedPaidSurface.getY()),
+                new TownRoadPlanner.RoadCell(unpaidNatural.getX(), unpaidNatural.getZ(), unpaidNatural.getY()));
+        TownResourceStore store = storage.storeFor("test:road-changed-paid-surface");
+        store.credit(TownResourceCategory.STONE, TownConstants.ROAD_COST_PER_BLOCK);
+
+        int firstPlaced = TownRoadConstructionService.buildRoadCells(level, route, 1, storage, store);
+        helper.assertTrue(firstPlaced == 1 && level.getBlockState(changedPaidSurface).is(Blocks.DIRT_PATH),
+                "a changed owned natural surface must be rebuilt exactly once before funds run out");
+        helper.assertTrue(store.balance(TownResourceCategory.STONE) == 0 && level.getBlockState(unpaidNatural).is(Blocks.DIRT),
+                "the next natural cell must pause without funds, never mutate or charge");
+        helper.assertTrue(level.getBlockState(matching).is(Blocks.DIRT_PATH)
+                        && storage.isCellPlaced(level.dimension(), matching, matchingOwner, signature),
+                "a matching owned paid path must remain a no-op");
+        helper.assertTrue(level.getBlockState(foreign).is(Blocks.DIRT_PATH)
+                        && !storage.isCellPlaced(level.dimension(), foreign, roadOwnerAt(level, foreign), signature),
+                "a foreign dirt path must be preserved rather than adopted as paid progress");
+        helper.assertTrue(level.getBlockState(protectedCell).is(Blocks.CHEST)
+                        && !storage.isCellPlaced(level.dimension(), protectedCell, roadOwnerAt(level, protectedCell), signature),
+                "protected content must be preserved without a debit or ownership record");
+
+        TownStorage reloaded = TownStorage.load(storage.save(new CompoundTag(), level.registryAccess()), level.registryAccess());
+        TownResourceStore reloadedStore = reloaded.storeFor("test:road-changed-paid-surface");
+        helper.assertTrue(reloaded.isCellPlaced(level.dimension(), matching, matchingOwner, signature)
+                        && reloaded.isCellPlaced(level.dimension(), changedPaidSurface, changedOwner, signature),
+                "save/load must retain the exact owner/signature records for both previously paid road cells");
+        helper.assertTrue(!reloaded.isCellPlaced(level.dimension(), foreign, roadOwnerAt(level, foreign), signature)
+                        && !reloaded.isCellPlaced(level.dimension(), protectedCell, roadOwnerAt(level, protectedCell), signature)
+                        && !reloaded.isCellPlaced(level.dimension(), unpaidNatural, roadOwnerAt(level, unpaidNatural), signature),
+                "save/load must not fabricate paid road records for foreign, protected, or still-unpaid cells");
+        reloadedStore.credit(TownResourceCategory.STONE, TownConstants.ROAD_COST_PER_BLOCK);
+        int retryPlaced = TownRoadConstructionService.buildRoadCells(level, route, 1, reloaded, reloadedStore);
+        helper.assertTrue(retryPlaced == 1 && level.getBlockState(unpaidNatural).is(Blocks.DIRT_PATH)
+                        && reloadedStore.balance(TownResourceCategory.STONE) == 0
+                        && reloaded.isCellPlaced(level.dimension(), unpaidNatural, roadOwnerAt(level, unpaidNatural), signature)
+                        && !reloaded.isCellPlaced(level.dimension(), foreign, roadOwnerAt(level, foreign), signature)
+                        && !reloaded.isCellPlaced(level.dimension(), protectedCell, roadOwnerAt(level, protectedCell), signature),
+                "after reload, retrying with exactly one stone must build and debit only the paused natural cell");
+        reloadedStore.credit(TownResourceCategory.STONE, TownConstants.ROAD_COST_PER_BLOCK);
+        int completedBalance = reloadedStore.balance(TownResourceCategory.STONE);
+        helper.assertTrue(TownRoadConstructionService.buildRoadCells(level, route, 1, reloaded, reloadedStore) == 0
+                        && reloadedStore.balance(TownResourceCategory.STONE) == completedBalance
+                        && level.getBlockState(matching).is(Blocks.DIRT_PATH)
+                        && level.getBlockState(changedPaidSurface).is(Blocks.DIRT_PATH)
+                        && level.getBlockState(unpaidNatural).is(Blocks.DIRT_PATH)
+                        && level.getBlockState(foreign).is(Blocks.DIRT_PATH)
+                        && level.getBlockState(protectedCell).is(Blocks.CHEST)
+                        && reloaded.isCellPlaced(level.dimension(), matching, matchingOwner, signature)
+                        && reloaded.isCellPlaced(level.dimension(), changedPaidSurface, changedOwner, signature)
+                        && reloaded.isCellPlaced(level.dimension(), unpaidNatural, roadOwnerAt(level, unpaidNatural), signature)
+                        && !reloaded.isCellPlaced(level.dimension(), foreign, roadOwnerAt(level, foreign), signature)
+                        && !reloaded.isCellPlaced(level.dimension(), protectedCell, roadOwnerAt(level, protectedCell), signature),
+                "a positively funded completed retry must preserve exact paid records, live states, balance, and foreign ownership boundaries");
+        helper.succeed();
+    }
+
     // ---------------------------------------------------------------------------------------
     // Review round 2 regressions
     // ---------------------------------------------------------------------------------------

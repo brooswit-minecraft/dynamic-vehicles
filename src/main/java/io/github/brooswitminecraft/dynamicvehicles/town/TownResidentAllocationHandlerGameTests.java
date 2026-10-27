@@ -23,6 +23,9 @@ import net.minecraft.world.level.block.state.properties.BedPart;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
+import java.util.HashMap;
+import java.util.Map;
+
 /**
  * MINECRAFT-388/455: {@link TownResidentAllocationHandler} must give EVERY villager in a founded
  * town reachable accommodation/work - not only the one claimant a construction site's own handoff
@@ -246,6 +249,179 @@ public final class TownResidentAllocationHandlerGameTests {
                 "exactly ONE of the two competing villagers must end up assigned the single vacant bed, never both, never neither");
         helper.assertTrue(helper.getLevel().getPoiManager().getFreeTickets(absoluteBedHead) == 0,
                 "the single bed's ticket must be held exactly once, by whichever villager actually won it");
+        helper.succeed();
+    }
+
+    /** The pure demand query observes current shortage without granting a ticket or changing any
+     * resident state.  A valid held HOME/JOB_SITE removes demand; losing the matching job ticket
+     * restores only that retained profession's workplace demand. */
+    @GameTest(template = "settlement_test")
+    public static void unmetDemandUsesFoundedTownValidatedReservationsAndHasNoSideEffects(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos anchor = anchor(helper);
+        BlockPos bed = anchor.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        BlockPos workstation = anchor.offset(WORKSTATION_OFFSET.getX(), WORKSTATION_OFFSET.getY(), WORKSTATION_OFFSET.getZ());
+        placeValidBed(helper, bed);
+        placeWorkstation(helper, workstation, Blocks.BLAST_FURNACE);
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        BlockPos absoluteBed = helper.absolutePos(bed);
+        BlockPos absoluteWorkstation = helper.absolutePos(workstation);
+        markTownOwned(helper, storage, absoluteBed);
+        markTownOwned(helper, storage, absoluteWorkstation);
+
+        Villager armorer = spawnVillager(helper, anchor.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        armorer.setVillagerData(armorer.getVillagerData().setProfession(VillagerProfession.ARMORER));
+        takeTicketDirectly(helper.getLevel(), absoluteBed);
+        takeTicketDirectly(helper.getLevel(), absoluteWorkstation);
+        storage.setReservationOwner(helper.getLevel().dimension(), absoluteBed, armorer.getUUID());
+        storage.setReservationOwner(helper.getLevel().dimension(), absoluteWorkstation, armorer.getUUID());
+        armorer.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(helper.getLevel().dimension(), absoluteBed));
+        armorer.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteWorkstation));
+
+        storage.setDirty(false);
+        TownResidentDemand satisfied = TownResidentAllocationHandler.unmetDemand(helper.getLevel(), region, storage);
+        int baselineMissingHomes = satisfied.missingHomes();
+        int baselineArmorerDemand = satisfied.missingWorkplaces().getOrDefault(VillagerProfession.ARMORER, 0);
+        helper.assertTrue(baselineArmorerDemand == 0 && !storage.isDirty()
+                        && armorer.getBrain().getMemory(MemoryModuleType.HOME).map(gp -> gp.pos().equals(absoluteBed)).orElse(false)
+                        && armorer.getBrain().getMemory(MemoryModuleType.JOB_SITE).map(gp -> gp.pos().equals(absoluteWorkstation)).orElse(false)
+                        && helper.getLevel().getPoiManager().getFreeTickets(absoluteBed) == 0
+                        && helper.getLevel().getPoiManager().getFreeTickets(absoluteWorkstation) == 0,
+                "a valid existing HOME/JOB_SITE must suppress demand and the pure query must not mutate storage, memories, or POI tickets");
+
+        armorer.getBrain().eraseMemory(MemoryModuleType.HOME);
+        TownResidentDemand missingHome = TownResidentAllocationHandler.unmetDemand(helper.getLevel(), region, storage);
+        helper.assertTrue(missingHome.missingHomes() == baselineMissingHomes + 1 && !storage.isDirty()
+                        && armorer.getBrain().getMemory(MemoryModuleType.HOME).isEmpty()
+                        && helper.getLevel().getPoiManager().getFreeTickets(absoluteBed) == 0,
+                "a valid held HOME must suppress exactly this resident's housing demand without the query restoring a rejected memory");
+        armorer.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(helper.getLevel().dimension(), absoluteBed));
+        helper.getLevel().getPoiManager().release(absoluteWorkstation);
+        storage.setDirty(false);
+        TownResidentDemand missingWork = TownResidentAllocationHandler.unmetDemand(helper.getLevel(), region, storage);
+        helper.assertTrue(missingWork.missingWorkplaces().getOrDefault(VillagerProfession.ARMORER, 0) == baselineArmorerDemand + 1
+                        && !storage.isDirty()
+                        && armorer.getBrain().getMemory(MemoryModuleType.JOB_SITE).map(gp -> gp.pos().equals(absoluteWorkstation)).orElse(false)
+                        && helper.getLevel().getPoiManager().getFreeTickets(absoluteWorkstation) == 1,
+                "a released matching ticket must add exactly the retained Armorer's workplace demand without reclaiming it");
+        TownStorage foundedOtherRegion = newStorageWithFoundedTown(helper, GUARANTEED_EMPTY_REGION);
+        ServerLevel nether = helper.getLevel().getServer().getLevel(net.minecraft.world.level.Level.NETHER);
+        helper.assertTrue(TownResidentAllocationHandler.unmetDemand(helper.getLevel(), region, new TownStorage()) == TownResidentDemand.NONE,
+                "an unfounded Overworld town must report no demand");
+        helper.assertTrue(TownResidentAllocationHandler.unmetDemand(helper.getLevel(), GUARANTEED_EMPTY_REGION, foundedOtherRegion) == TownResidentDemand.NONE,
+                "a founded other region must not report this region's residents as demand");
+
+        helper.assertTrue(nether != null, "test setup: the Nether must be loaded in this GameTest server");
+        BlockPos netherResidentPos = helper.absolutePos(anchor).atY(80);
+        RegionCoord netherRegion = TownRegion.fromBlockCoords(netherResidentPos.getX(), netherResidentPos.getZ());
+        int netherChunkX = netherResidentPos.getX() >> 4;
+        int netherChunkZ = netherResidentPos.getZ() >> 4;
+        boolean forcedByThisTest = nether.setChunkForced(netherChunkX, netherChunkZ, true);
+        storage.markTownFounded(TownKeys.keyFor(nether.dimension(), netherRegion));
+        Villager netherResident = EntityType.VILLAGER.create(nether, null, netherResidentPos, MobSpawnType.EVENT, false, false);
+        helper.assertTrue(netherResident != null, "test setup: Nether villager must be constructible");
+        boolean added = nether.addFreshEntity(netherResident);
+        helper.startSequence()
+                // A forced chunk is synchronously block-readable but its entity manager is not
+                // necessarily tracking a just-added entity until normal GameTest ticks progress.
+                .thenIdle(20)
+                .thenExecute(() -> {
+                    try {
+                        boolean chunkLoaded = nether.hasChunkAt(netherResidentPos);
+                        boolean founded = storage.hasFoundedTown(TownKeys.keyFor(nether.dimension(), netherRegion));
+                        boolean uuidLookupMatches = nether.getEntity(netherResident.getUUID()) == netherResident;
+                        boolean alive = netherResident.isAlive();
+                        boolean unhoused = netherResident.getBrain().getMemory(MemoryModuleType.HOME).isEmpty();
+                        boolean correctRegion = TownRegion.fromBlockCoords(netherResident.blockPosition().getX(), netherResident.blockPosition().getZ())
+                                .equals(netherRegion);
+                        boolean inProductionIterable = false;
+                        for (Entity entity : nether.getEntities().getAll()) {
+                            if (entity == netherResident) {
+                                inProductionIterable = true;
+                                break;
+                            }
+                        }
+                        helper.assertTrue(chunkLoaded, "test setup: forced Nether resident chunk must be loaded at " + netherResidentPos);
+                        helper.assertTrue(founded, "test setup: Nether resident region must be founded: " + netherRegion);
+                        helper.assertTrue(added, "test setup: Nether resident must be accepted by the level entity manager");
+                        helper.assertTrue(uuidLookupMatches, "test setup: UUID lookup must return the Nether resident");
+                        helper.assertTrue(alive, "test setup: Nether resident must remain alive after tracking wait");
+                        helper.assertTrue(unhoused, "test setup: Nether resident must remain without HOME after tracking wait");
+                        helper.assertTrue(correctRegion, "test setup: Nether resident must remain in queried region " + netherRegion);
+                        helper.assertTrue(inProductionIterable,
+                                "test setup: Nether resident must appear in the production level.getEntities().getAll() iterable");
+                        TownResidentDemand netherDemand = TownResidentAllocationHandler.unmetDemand(nether, netherRegion, storage);
+                        helper.assertTrue(netherDemand == TownResidentDemand.NONE,
+                                "the non-Overworld guard must suppress demand despite a visible founded Nether resident; demand=" + netherDemand);
+                    } finally {
+                        netherResident.discard();
+                        if (forcedByThisTest) {
+                            nether.setChunkForced(netherChunkX, netherChunkZ, false);
+                        }
+                    }
+                })
+                .thenSucceed();
+    }
+
+    /** Actively claimed temporary Builders belong to the existing construction lifecycle and have no
+     * retained final profession for the pure resident-demand value to request. */
+    @GameTest(template = "settlement_test")
+    public static void unmetDemandExcludesActiveTemporaryBuildersAndDiscardedResidents(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos anchor = anchor(helper);
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        TownResidentDemand beforeBuilder = TownResidentAllocationHandler.unmetDemand(helper.getLevel(), region, storage);
+        Villager builder = spawnVillager(helper, anchor.offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        builder.setVillagerData(builder.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
+        BlockPos campfire = helper.absolutePos(anchor.offset(0, 1, 0));
+        helper.getLevel().setBlock(campfire, Blocks.CAMPFIRE.defaultBlockState(), Block.UPDATE_ALL);
+        builder.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), campfire));
+        TownResidentDemand withBuilder = TownResidentAllocationHandler.unmetDemand(helper.getLevel(), region, storage);
+        helper.assertTrue(withBuilder.equals(beforeBuilder),
+                "an active temporary Builder must not change preexisting shared-region demand; before="
+                        + beforeBuilder + ", withBuilder=" + withBuilder);
+
+        Villager nitwit = spawnVillager(helper, anchor.offset(2, 1, 0));
+        nitwit.setVillagerData(nitwit.getVillagerData().setProfession(VillagerProfession.NITWIT));
+        TownResidentDemand withNitwit = TownResidentAllocationHandler.unmetDemand(helper.getLevel(), region, storage);
+        helper.assertTrue(withNitwit.missingHomes() == withBuilder.missingHomes() + 1
+                        && withNitwit.missingWorkplaces().equals(withBuilder.missingWorkplaces())
+                        && !withNitwit.missingWorkplaces().containsKey(VillagerProfession.NITWIT),
+                "a live NITWIT must add housing only, preserving preexisting workplace demand; before="
+                        + withBuilder + ", withNitwit=" + withNitwit);
+        nitwit.discard();
+        Villager discarded = spawnVillager(helper, anchor.offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+        discarded.discard();
+
+        Villager waitingResident = spawnVillager(helper, anchor.offset(2, 1, 0));
+        TownResidentDemand withResident = TownResidentAllocationHandler.unmetDemand(helper.getLevel(), region, storage);
+        waitingResident.discard();
+        TownResidentDemand afterDiscard = TownResidentAllocationHandler.unmetDemand(helper.getLevel(), region, storage);
+        helper.assertTrue(withResident.missingHomes() == withBuilder.missingHomes() + 1
+                        && afterDiscard.equals(withBuilder),
+                "a live ordinary resident must count once, while a discarded resident must be filtered back out");
+        helper.succeed();
+    }
+
+    /** The record makes a defensive immutable copy so callers cannot mutate a demand observation
+     * after it has been returned by the resident/planning lane. */
+    @GameTest(template = "settlement_test")
+    public static void townResidentDemandIsImmutable(GameTestHelper helper) {
+        Map<VillagerProfession, Integer> mutable = new HashMap<>();
+        mutable.put(VillagerProfession.ARMORER, 1);
+        TownResidentDemand demand = new TownResidentDemand(2, mutable);
+        mutable.clear();
+        boolean immutable = false;
+        try {
+            demand.missingWorkplaces().put(VillagerProfession.FARMER, 1);
+        } catch (UnsupportedOperationException expected) {
+            immutable = true;
+        }
+        helper.assertTrue(immutable && demand.missingHomes() == 2
+                        && demand.missingWorkplaces().equals(Map.of(VillagerProfession.ARMORER, 1)),
+                "TownResidentDemand must retain an immutable defensive copy of workplace counts");
         helper.succeed();
     }
 

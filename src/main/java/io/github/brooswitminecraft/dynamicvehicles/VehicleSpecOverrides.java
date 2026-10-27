@@ -341,12 +341,16 @@ final class VehicleSpecOverrides {
      */
     private static VehicleSpec.SteeringTuning applySteering(VehicleCarConfigFile.TireKit tireKit,
             VehicleSpec stock) {
-        if (tireKit == null || tireKit.rearSteerRatio == null) {
+        if (tireKit == null || (tireKit.rearSteerRatio == null && tireKit.casterDeg == null)) {
             return stock.steeringTuning();
         }
-        return new VehicleSpec.SteeringTuning(VehicleSpecLimits.clamp(tireKit.rearSteerRatio,
-                VehicleSpecLimits.MIN_REAR_STEER_RATIO, VehicleSpecLimits.MAX_REAR_STEER_RATIO,
-                stock.steeringTuning().rearSteerRatio()));
+        return new VehicleSpec.SteeringTuning(tireKit.rearSteerRatio == null ? stock.steeringTuning().rearSteerRatio()
+                : VehicleSpecLimits.clamp(tireKit.rearSteerRatio,
+                        VehicleSpecLimits.MIN_REAR_STEER_RATIO, VehicleSpecLimits.MAX_REAR_STEER_RATIO,
+                        stock.steeringTuning().rearSteerRatio()),
+                tireKit.casterDeg == null ? stock.steeringTuning().casterDeg()
+                        : VehicleSpecLimits.clamp(tireKit.casterDeg, VehicleSpecLimits.MIN_CASTER_DEG,
+                                VehicleSpecLimits.MAX_CASTER_DEG, stock.steeringTuning().casterDeg()));
     }
 
     /**
@@ -393,6 +397,9 @@ final class VehicleSpecOverrides {
         double bumpStopRate = tireKit.bumpStopRate == null ? stockTuning.bumpStopRate()
                 : VehicleSpecLimits.clamp(tireKit.bumpStopRate, VehicleSpecLimits.MIN_BUMP_STOP_RATE,
                         VehicleSpecLimits.MAX_BUMP_STOP_RATE, stockTuning.bumpStopRate());
+        double rollCenterHeight = tireKit.rollCenterHeight == null ? stockTuning.rollCenterHeight()
+                : VehicleSpecLimits.clamp(tireKit.rollCenterHeight, VehicleSpecLimits.MIN_ROLL_CENTER_HEIGHT,
+                        VehicleSpecLimits.MAX_ROLL_CENTER_HEIGHT, stockTuning.rollCenterHeight());
         return new VehicleSpec.SuspensionTuning(fastCompressionDamping, slowReboundDamping, fastReboundDamping,
-                dampingKneeSpeed, bumpStopTravel, bumpStopRate);    }
+                dampingKneeSpeed, bumpStopTravel, bumpStopRate, rollCenterHeight);    }
 }

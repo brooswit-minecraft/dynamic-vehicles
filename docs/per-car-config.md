@@ -177,13 +177,11 @@ architecture this ticket does not change — `drift_car.json` can still set
 `camberDeg`/`toeDeg` (and they will be clamped and stored), but they will be
 inert until a future ticket connects `DriftTireModel` to them.
 
-### `tireKit` (MINECRAFT-445): damping, bump stops, steering, pressure and pitch
+### `tireKit`: damping, bump stops, steering, pressure, pitch and geometry
 
 MINECRAFT-445 owns the `tireKit` section and is filling it slice by slice.
-**Only the fields listed below are implemented**; the rest of that ticket's
-acceptance scope (caster, roll center) is not in this section yet, and no key
-for it is read, validated or
-applied — see "Still reserved" at the end of this section.
+Only the fields listed below are implemented. Caster and roll-center controls are connected to the
+production steering and lateral-force paths; they are not configuration-only fields.
 
 Every field is optional and nested under a single `tireKit` object. An absent
 `tireKit`, or an absent field within it, keeps that car's stock value for
@@ -211,6 +209,8 @@ whenever all four rates match, for any knee speed — pinned by
 | `antiDive` | fraction | 0.0 – 1.0 | Anti-dive geometry: how much of a wheel's longitudinal force is carried into the chassis directly instead of through a moment arm about the body centre, **while that force opposes the car's motion** (braking). `0.0` (every stock car) applies the force at the contact patch, which is what makes a car dive — unchanged from before this field. `1.0` cancels the pitch couple entirely. |
 | `antiSquat` | fraction | 0.0 – 1.0 | The same, **while the wheel's force drives the car** (acceleration), resisting the tail dropping. Separate from `antiDive` because they are separate geometries on a real car; the production tick picks between them per wheel, each sub-step, by whether the longitudinal impulse that wheel actually hands the chassis — its tire force plus any wheel-spin recovery reaction — opposes or drives the motion, so a braking wheel uses `antiDive` even mid-corner. Only that longitudinal part of the tire force moves; the tire's lateral (cornering) force keeps acting where it did before these fields existed. |
 | `rearSteerRatio` | fraction | -1.0 – 1.0 | Fraction of the FRONT wheels' steer angle applied to the rear wheels. `0.0` (the default, and every stock car's value) keeps the rear axle straight — exactly what the production code did before this field existed. **Negative is opposite-phase**: the rear steers against the front, tightening the turn (classic low-speed four-wheel steering). **Positive is same-phase**: the rear follows the front, pushing the car sideways rather than rotating it as sharply. This is real physics, not a rendered pose — the angle rotates each tire's own forward axis, which is what the tire's longitudinal/lateral force directions are measured against. |
+| `casterDeg` | degrees | 0.0 – 15.0 | Positive front steering-axis caster. The model has no separate steering-rack body, so its self-aligning moment is represented at the production steering seam as a bounded reduction in front-wheel angle that grows with speed. `0.0` is exact historical steering response and every stock car's default. |
+| `rollCenterHeight` | metres | 0.0 – 1.5 | Height above a tire contact patch at which its lateral force is applied. `0.0` is exact historical contact-patch application and every stock car's default. Raising it shortens the lateral-force lever arm to the body, reducing actual rigid-body roll impulse; longitudinal force retains its anti-dive/anti-squat geometry. |
 
 Ranges live in code as `VehicleSpecLimits`' `MIN/MAX_TIRE_KIT_DAMPING`,
 `MIN/MAX_DAMPING_KNEE_SPEED`, `MIN/MAX_BUMP_STOP_TRAVEL` and
@@ -415,8 +415,7 @@ behind it would itself be "unused config fields," which MINECRAFT-443's
 acceptance explicitly rules out and both MINECRAFT-445's and MINECRAFT-446's
 repeat. Each task adds its own fields here when it implements real behaviour,
 rather than inventing a parallel file or format. The same rule applies WITHIN an
-implemented section: `tireKit`'s remaining MINECRAFT-445 fields (caster, roll
-center) appear there only as that behaviour lands.
+implemented section: future tire-kit fields appear only as their real behaviour lands.
 
 `computer` is now implemented for MINECRAFT-448's frozen TC/ABS slice. The
 engine section remains reserved:

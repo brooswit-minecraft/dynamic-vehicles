@@ -733,7 +733,8 @@ final class SableCarBody {
                 // measured against.
                 double frontSteerAngle = steer * WheelMath.maxSteerAngle(forwardSpeed, WheelMath.BASE_FRICTION,
                         spec.wheelbase(), CarPhysics.MAX_STEER);
-                double wheelSteerAngle = front ? frontSteerAngle
+                double wheelSteerAngle = front ? WheelMath.casterAdjustedSteerAngle(frontSteerAngle,
+                        spec.steeringTuning().casterDeg(), forwardSpeed)
                         : frontSteerAngle * spec.steeringTuning().rearSteerRatio();
                 this.steerAngle[wheel] = wheelSteerAngle;
 
@@ -1018,13 +1019,21 @@ final class SableCarBody {
                         WheelMath.chassisLongitudinalImpulse(tire.longitudinal(), subDt, reactionImpulse),
                         forwardSpeed, spec.pitchTuning().antiDive(), spec.pitchTuning().antiSquat());
                 if (antiFraction == 0.0) {
-                    body.applyImpulseAtPoint(new Vector3d(local.x, tireY, local.z), horizontalLocal);
+                    // MINECRAFT-478: lateral force at the contact patch is the neutral historical
+                    // behaviour. Raising its application point by the configured roll-centre height shortens
+                    // its roll lever arm; longitudinal force keeps its existing pitch geometry.
+                    Vector3d lateralLocal = inverse.transform(new Vector3d(lateral).mul(tire.lateral() * subDt));
+                    Vector3d longitudinalLocal = new Vector3d(horizontalLocal).sub(lateralLocal);
+                    body.applyImpulseAtPoint(new Vector3d(local.x, tireY, local.z), longitudinalLocal);
+                    body.applyImpulseAtPoint(new Vector3d(local.x,
+                            tireY + spec.suspensionTuning().rollCenterHeight(), local.z), lateralLocal);
                 } else {
                     double pitchTireY = WheelMath.pitchResistApplicationHeight(tireY, BODY_TIRE_FORCE_HEIGHT, antiFraction);
                     Vector3d lateralLocal = inverse.transform(new Vector3d(lateral).mul(tire.lateral() * subDt));
                     Vector3d longitudinalLocal = new Vector3d(horizontalLocal).sub(lateralLocal);
                     body.applyImpulseAtPoint(new Vector3d(local.x, pitchTireY, local.z), longitudinalLocal);
-                    body.applyImpulseAtPoint(new Vector3d(local.x, tireY, local.z), lateralLocal);
+                    body.applyImpulseAtPoint(new Vector3d(local.x,
+                            tireY + spec.suspensionTuning().rollCenterHeight(), local.z), lateralLocal);
                 }
             }
             // Re-read velocity so the next sub-step's forces respond to the impulses just applied above -

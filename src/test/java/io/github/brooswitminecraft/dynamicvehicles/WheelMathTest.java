@@ -7,6 +7,15 @@ import org.junit.jupiter.api.Test;
 
 class WheelMathTest {
     @Test
+    void casterChangesSteeringResponseWithoutReversingItAndZeroIsNeutral() {
+        double command = 0.35;
+        assertEquals(command, WheelMath.casterAdjustedSteerAngle(command, 0.0, 25.0), 1e-12);
+        double adjusted = WheelMath.casterAdjustedSteerAngle(command, 8.0, 25.0);
+        assertTrue(adjusted > 0.0 && adjusted < command,
+                "positive caster must produce a bounded self-aligning reduction, not reverse steering");
+        assertEquals(-adjusted, WheelMath.casterAdjustedSteerAngle(-command, 8.0, 25.0), 1e-12);
+    }
+    @Test
     void noGroundContactMeansNoForce() {
         assertEquals(0.0, WheelMath.suspensionForce(-0.1, 5.0), 0);
         assertEquals(0.0, WheelMath.suspensionForce(0.0, 5.0), 0);

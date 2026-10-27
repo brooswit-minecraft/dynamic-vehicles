@@ -463,6 +463,19 @@ class VehicleSpecOverridesTest {
     }
 
     @Test
+    void casterAndRollCenterOverrideAndClampThroughTheProductionConfigContract(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", "{\"tireKit\": {\"casterDeg\": 99.0, \"rollCenterHeight\": 0.45}}");
+
+        VehicleSpecOverrides.load(configDir);
+        VehicleSpec resolved = VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR);
+
+        assertEquals(VehicleSpecLimits.MAX_CASTER_DEG, resolved.steeringTuning().casterDeg());
+        assertEquals(0.45, resolved.suspensionTuning().rollCenterHeight(), 1e-9);
+        assertEquals(0.0, resolved.steeringTuning().rearSteerRatio(), 1e-9,
+                "a caster-only override must preserve existing rear-steer geometry");
+    }
+
+    @Test
     void anOutOfRangeRearSteerRatioIsClampedNotRejected(@TempDir Path configDir) throws IOException {
         writeCarsFile(configDir, "car", "{\"tireKit\": {\"rearSteerRatio\": -9.0}}");
 

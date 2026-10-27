@@ -16,7 +16,10 @@ import net.minecraft.world.level.block.Blocks;
 import net.neoforged.neoforge.event.entity.EntityLeaveLevelEvent;
 import net.neoforged.neoforge.event.tick.LevelTickEvent;
 
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -68,10 +71,17 @@ public final class TownResidentAllocationHandler {
         if (!level.dimension().equals(Level.OVERWORLD)) {
             return;
         }
+        // The admission boundary is beneficiary-keyed.  Keep its first writer deterministic rather
+        // than letting the entity-manager iteration order decide which otherwise-identical resident
+        // becomes the capacity beneficiary after a reload.
+        List<Villager> villagers = new ArrayList<>();
         for (Entity entity : level.getEntities().getAll()) {
-            if (!(entity instanceof Villager villager) || !villager.isAlive()) {
-                continue;
+            if (entity instanceof Villager villager && villager.isAlive()) {
+                villagers.add(villager);
             }
+        }
+        villagers.sort(Comparator.comparing(villager -> villager.getUUID().toString()));
+        for (Villager villager : villagers) {
             // [Review round 25] Every loaded villager - founded town or not - is a live
             // observation that can contradict a stale ownership record. Reconciling here (and on
             // unload, see onEntityLeaveLevel) is what keeps a record from outliving the moment the
@@ -113,7 +123,51 @@ public final class TownResidentAllocationHandler {
             BlockPos townCenter = new BlockPos(plan.townCenterX(), villager.blockPosition().getY(), plan.townCenterZ());
             allocateHomeIfNeeded(level, villager, townCenter, region, storage);
             allocateWorkplaceIfNeeded(level, villager, townCenter, region, storage);
+            requestConstructionCapacityIfStillNeeded(level, villager, region, storage);
         }
+    }
+
+    /**
+     * Hands exactly this resident's remaining unmet capacity to M454's durable admission boundary.
+     * Existing-fixture allocation always runs first: an admission is neither a bed/workstation nor a
+     * reservation, and must never be manufactured for a resident whom this same pass just housed or
+     * employed.  The aggregate observation is only a consistency guard; passing it directly would
+     * multiply a whole-town shortage once per resident.
+     */
+    private static void requestConstructionCapacityIfStillNeeded(ServerLevel level, Villager villager,
+            RegionCoord region, TownStorage storage) {
+        TownResidentDemand residentDemand = unmetDemandForResident(level, villager, region, storage);
+        if (residentDemand == TownResidentDemand.NONE) {
+            return;
+        }
+        TownResidentDemand townDemand = unmetDemand(level, region, storage);
+        if (!isSupportedByTownDemand(residentDemand, townDemand)) {
+            return;
+        }
+        TownConstructionService.requestResidentCapacity(level, region, villager.getUUID(), residentDemand, storage);
+    }
+
+    /** Builds a one-resident demand value after normal fixture allocation. */
+    private static TownResidentDemand unmetDemandForResident(ServerLevel level, Villager villager,
+            RegionCoord region, TownStorage storage) {
+        int missingHomes = hasValidHome(level, villager, region, storage) ? 0 : 1;
+        VillagerProfession profession = villager.getVillagerData().getProfession();
+        Map<VillagerProfession, Integer> missingWorkplaces = new HashMap<>();
+        if (profession != VillagerProfession.NONE && profession != VillagerProfession.NITWIT
+                && profession != BuilderProfession.BUILDER.get()
+                && !hasValidWorkplace(level, villager, region, storage)) {
+            missingWorkplaces.put(profession, 1);
+        }
+        return missingHomes == 0 && missingWorkplaces.isEmpty()
+                ? TownResidentDemand.NONE : new TownResidentDemand(missingHomes, missingWorkplaces);
+    }
+
+    private static boolean isSupportedByTownDemand(TownResidentDemand residentDemand, TownResidentDemand townDemand) {
+        if (townDemand.missingHomes() < residentDemand.missingHomes()) {
+            return false;
+        }
+        return residentDemand.missingWorkplaces().entrySet().stream().allMatch(entry ->
+                townDemand.missingWorkplaces().getOrDefault(entry.getKey(), 0) >= entry.getValue());
     }
 
     /**

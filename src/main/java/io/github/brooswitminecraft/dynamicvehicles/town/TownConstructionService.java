@@ -50,11 +50,10 @@ public final class TownConstructionService {
      * durable stop, rather than becoming a later build-through. */
     static BlockPos testForceTerrainRollbackFailureAt = null;
     /**
-     * Test-only fault injection at the otherwise unobservable commit boundary after a building
-     * block has landed but before it is debited and recorded as paid progress.  A real process
-     * interruption at this point must never turn that live block into free or repeatable work, so
-     * the production path durably excludes the cell before returning.  Kept package-private so
-     * it is not a construction-consumer API.
+     * Test-only injection for the administrative quarantine path after a building write lands but
+     * before it is debited/recorded.  This verifies serialization of an explicitly requested
+     * exclusion; it is NOT crash recovery for a process that dies at this boundary.  Kept
+     * package-private so it is not a construction-consumer API.
      */
     static BlockPos testForcePlacementInterruptionAt = null;
 
@@ -482,11 +481,9 @@ public final class TownConstructionService {
             }
             if (pos.equals(testForcePlacementInterruptionAt)) {
                 testForcePlacementInterruptionAt = null;
-                // The world write is known to have landed, but no debit or paid-progress record
-                // has been committed.  Do not let a later tick/reload treat that gap as either a
-                // free pre-placed block or another billable placement.  The durable exclusion is
-                // deliberately conservative: a human/operator can reconcile it, but automatic
-                // construction cannot silently duplicate economic effects across this boundary.
+                // Explicit test quarantine: the world write landed but no debit/paid-progress
+                // record has been committed.  This only proves the persisted exclusion path; a
+                // genuine process-crash recovery contract remains separately unresolved.
                 storage.markCellBlocked(level.dimension(), pos);
                 if (reservedHandoff.isPresent()) {
                     releaseReservedHandoff(level, storage, reservedHandoff.get());

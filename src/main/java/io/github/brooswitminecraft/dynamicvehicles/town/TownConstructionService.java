@@ -1,6 +1,7 @@
 package io.github.brooswitminecraft.dynamicvehicles.town;
 
 import io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord;
+import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderProfession;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.GlobalPos;
 import net.minecraft.server.level.ServerLevel;
@@ -22,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * Ties the planning layer ({@link TownPlan}/{@link TownPlanner}), the resource layer
@@ -115,6 +117,60 @@ public final class TownConstructionService {
                 storage.setDirty();
             }
         }
+    }
+
+    /**
+     * Records one validated, durable request for construction capacity on behalf of a resident.
+     *
+     * <p>This boundary intentionally does <strong>not</strong> place a campfire, select a Builder,
+     * debit resources, reserve a POI, or assign HOME/JOB_SITE.  Those are transaction effects owned
+     * by the later construction/handoff path.  Persisting an admission before any such effect gives
+     * duplicate allocation ticks and a save/load cycle one identity to reuse, while failing closed
+     * until a later construction continuation can bind the intent to an actual claimed site.
+     */
+    static Optional<ResidentCapacityAdmission> requestResidentCapacity(ServerLevel level, RegionCoord region,
+            UUID beneficiaryId, TownResidentDemand demand, TownStorage storage) {
+        if (!level.dimension().equals(Level.OVERWORLD) || demand == TownResidentDemand.NONE
+                || (demand.missingHomes() == 0 && demand.missingWorkplaces().isEmpty())) {
+            return Optional.empty();
+        }
+        String townKey = TownKeys.keyFor(level.dimension(), region);
+        if (!storage.hasFoundedTown(townKey)) {
+            return Optional.empty();
+        }
+
+        Villager beneficiary = null;
+        for (Entity entity : level.getEntities().getAll()) {
+            if (entity instanceof Villager villager && villager.getUUID().equals(beneficiaryId) && villager.isAlive()) {
+                beneficiary = villager;
+                break;
+            }
+        }
+        if (beneficiary == null
+                || !TownRegion.fromBlockCoords(beneficiary.blockPosition().getX(), beneficiary.blockPosition().getZ()).equals(region)
+                // A temporary Builder is the real claimant of a site, never an allocation beneficiary.
+                || beneficiary.getVillagerData().getProfession() == BuilderProfession.BUILDER.get()) {
+            return Optional.empty();
+        }
+
+        Optional<ResidentCapacityAdmission> existing = storage.capacityAdmissionFor(level.dimension(), region, beneficiaryId);
+        if (existing.isPresent() && !existing.get().state().terminal()) {
+            return existing;
+        }
+
+        TownPlan plan = TownPlanner.generate(region, level.getSeed());
+        String siteOwner = "capacity:" + townKey + ":" + beneficiaryId;
+        String planSignature = "capacity-v1:" + plan.storehouseVariant() + ":" + demand.missingHomes() + ":"
+                + demand.missingWorkplaces().entrySet().stream()
+                .sorted(Map.Entry.comparingByKey(java.util.Comparator.comparing(
+                        profession -> net.minecraft.core.registries.BuiltInRegistries.VILLAGER_PROFESSION.getKey(profession).toString())))
+                .map(entry -> net.minecraft.core.registries.BuiltInRegistries.VILLAGER_PROFESSION.getKey(entry.getKey())
+                        + "=" + entry.getValue())
+                .reduce((left, right) -> left + "," + right).orElse("none");
+        ResidentCapacityAdmission admission = new ResidentCapacityAdmission(level.dimension(), townKey, region, beneficiaryId,
+                demand.missingHomes(), demand.missingWorkplaces(), siteOwner, planSignature,
+                ResidentCapacityAdmission.State.AWAITING_CLAIM);
+        return Optional.of(storage.createOrReuseCapacityAdmission(admission));
     }
 
     /** [Review round 4, finding #3] Which regions currently have a nearby online player AND are

@@ -348,4 +348,63 @@ public final class TownTerrainTransactionGameTests {
                 "an AIR-only paid-progress mismatch must hold the entire site without mutation, charges, or record changes");
         helper.succeed();
     }
+
+    /** A world write that lands before its debit/paid-record commit must be durably quarantined,
+     * rather than becoming a free block or being charged a second time after reload. */
+    @GameTest(template = "settlement_test")
+    public static void postPlacementInterruptionBlocksRetryWithoutDebitOrPaidRecord(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        helper.setBlock(ANCHOR, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(ANCHOR);
+        spawnClaimant(helper, absoluteCampfire);
+
+        TownStorage storage = new TownStorage();
+        TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 500);
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
+        TownPlan plan = TownPlanner.generate(region, helper.getLevel().getSeed());
+        int floorY = TownTerrain.estimateGroundHeightBelow(helper.getLevel(), absoluteCampfire);
+        boolean storehouse = Math.abs(absoluteCampfire.getX() - plan.townCenterX()) <= TownConstants.STOREHOUSE_FOOTPRINT_WIDTH
+                && Math.abs(absoluteCampfire.getZ() - plan.townCenterZ()) <= TownConstants.STOREHOUSE_FOOTPRINT_WIDTH;
+        TownBuildingTemplates.Kind kind = storehouse ? TownBuildingTemplates.Kind.STOREHOUSE
+                : TownBuildingTemplates.kindFor(plan.zoneAt(absoluteCampfire.getX(), absoluteCampfire.getZ()));
+        var profession = TownProfessionWorkstations.finalProfessionFor(kind, helper.getLevel().getSeed(),
+                absoluteCampfire.getX(), absoluteCampfire.getZ());
+        List<TownBuildingTemplates.Placement> template = TownBuildingTemplates.generate(kind, absoluteCampfire.getX(),
+                floorY, absoluteCampfire.getZ(), plan.storehouseVariant(), profession.orElse(null));
+        List<ConstructionSitePlan.PlannedBlock> ordered = ConstructionSitePlan.bottomUpOrder(
+                template.stream()
+                        .map(TownBuildingTemplates.Placement::toPlan).toList(),
+                absoluteCampfire.getX(), absoluteCampfire.getY(), absoluteCampfire.getZ());
+        ConstructionSitePlan.PlannedBlock first = ordered.get(0);
+        BlockPos interrupted = new BlockPos(first.x(), first.y(), first.z());
+        BlockState expectedState = template.stream().filter(placement -> placement.x() == first.x()
+                && placement.y() == first.y() && placement.z() == first.z()).findFirst().orElseThrow().state();
+        int stoneBefore = store.balance(TownResourceCategory.STONE);
+        int woodBefore = store.balance(TownResourceCategory.WOOD);
+
+        TownConstructionService.testForcePlacementInterruptionAt = interrupted;
+        TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
+
+        helper.assertTrue(helper.getBlockState(interrupted).is(expectedState.getBlock())
+                        && storage.isCellBlocked(helper.getLevel().dimension(), interrupted)
+                        && store.balance(TownResourceCategory.STONE) == stoneBefore
+                        && store.balance(TownResourceCategory.WOOD) == woodBefore,
+                "a post-write interruption must leave the landed block durably blocked with no debit");
+        CompoundTag saved = storage.save(new CompoundTag(), helper.getLevel().registryAccess());
+        String interruptedKey = helper.getLevel().dimension().location() + "@" + interrupted.getX() + ","
+                + interrupted.getY() + "," + interrupted.getZ();
+        helper.assertTrue(saved.getList("PlacedCells", Tag.TAG_COMPOUND).stream().map(CompoundTag.class::cast)
+                        .noneMatch(cell -> cell.getString("Key").equals(interruptedKey)),
+                "the interrupted write must not fabricate a paid-progress record");
+
+        TownStorage reloaded = TownStorage.load(saved, helper.getLevel().registryAccess());
+        TownResourceStore reloadedStore = reloaded.storeFor(TownKeys.keyFor(helper.getLevel().dimension(), region));
+        TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, reloaded);
+        helper.assertTrue(reloaded.isCellBlocked(helper.getLevel().dimension(), interrupted)
+                        && helper.getBlockState(interrupted).is(expectedState.getBlock())
+                        && reloadedStore.balance(TownResourceCategory.STONE) == stoneBefore
+                        && reloadedStore.balance(TownResourceCategory.WOOD) == woodBefore,
+                "a reload retry must preserve the uncharged landed block and cannot duplicate its debit or record");
+        helper.succeed();
+    }
 }

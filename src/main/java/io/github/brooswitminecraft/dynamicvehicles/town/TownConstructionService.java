@@ -49,6 +49,14 @@ public final class TownConstructionService {
     /** Test-only fault injection for proving that an unconfirmed terrain rollback remains a
      * durable stop, rather than becoming a later build-through. */
     static BlockPos testForceTerrainRollbackFailureAt = null;
+    /**
+     * Test-only fault injection at the otherwise unobservable commit boundary after a building
+     * block has landed but before it is debited and recorded as paid progress.  A real process
+     * interruption at this point must never turn that live block into free or repeatable work, so
+     * the production path durably excludes the cell before returning.  Kept package-private so
+     * it is not a construction-consumer API.
+     */
+    static BlockPos testForcePlacementInterruptionAt = null;
 
     public static void onLevelTick(LevelTickEvent.Post event) {
         if (!(event.getLevel() instanceof ServerLevel level)
@@ -471,6 +479,19 @@ public final class TownConstructionService {
                     releaseReservedHandoff(level, storage, reservedHandoff.get());
                 }
                 continue;
+            }
+            if (pos.equals(testForcePlacementInterruptionAt)) {
+                testForcePlacementInterruptionAt = null;
+                // The world write is known to have landed, but no debit or paid-progress record
+                // has been committed.  Do not let a later tick/reload treat that gap as either a
+                // free pre-placed block or another billable placement.  The durable exclusion is
+                // deliberately conservative: a human/operator can reconcile it, but automatic
+                // construction cannot silently duplicate economic effects across this boundary.
+                storage.markCellBlocked(level.dimension(), pos);
+                if (reservedHandoff.isPresent()) {
+                    releaseReservedHandoff(level, storage, reservedHandoff.get());
+                }
+                break;
             }
             if (!alreadyPlaced) {
                 ConstructionSitePlan.tryPayForBlock(store, block, TownConstants.CONSTRUCTION_COST_PER_BLOCK);

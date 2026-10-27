@@ -127,6 +127,11 @@ public final class TownConstructionService {
      * by the later construction/handoff path.  Persisting an admission before any such effect gives
      * duplicate allocation ticks and a save/load cycle one identity to reuse, while failing closed
      * until a later construction continuation can bind the intent to an actual claimed site.
+     *
+     * <p>{@code demand} is town-wide and can therefore describe several residents. This method
+     * apportions it to this single beneficiary: at most one home, and at most one workplace for the
+     * beneficiary's retained profession. A stale/excess aggregate or one with no share attributable
+     * to this beneficiary is rejected rather than becoming a speculative construction authority.
      */
     static Optional<ResidentCapacityAdmission> requestResidentCapacity(ServerLevel level, RegionCoord region,
             UUID beneficiaryId, TownResidentDemand demand, TownStorage storage) {
@@ -153,6 +158,24 @@ public final class TownConstructionService {
             return Optional.empty();
         }
 
+        TownResidentDemand currentDemand = TownResidentAllocationHandler.unmetDemand(level, region, storage);
+        if (currentDemand == TownResidentDemand.NONE || demand.missingHomes() > currentDemand.missingHomes()
+                || demand.missingWorkplaces().entrySet().stream().anyMatch(entry -> entry.getValue()
+                        > currentDemand.missingWorkplaces().getOrDefault(entry.getKey(), 0))) {
+            return Optional.empty();
+        }
+        VillagerProfession retainedProfession = beneficiary.getVillagerData().getProfession();
+        if (demand.missingWorkplaces().keySet().stream().anyMatch(profession -> profession == VillagerProfession.NONE
+                || profession == VillagerProfession.NITWIT || profession == BuilderProfession.BUILDER.get())) {
+            return Optional.empty();
+        }
+        int requestedHomes = demand.missingHomes() > 0 ? 1 : 0;
+        Map<VillagerProfession, Integer> requestedWorkplaces = demand.missingWorkplaces().containsKey(retainedProfession)
+                ? Map.of(retainedProfession, 1) : Map.of();
+        if (requestedHomes == 0 && requestedWorkplaces.isEmpty()) {
+            return Optional.empty();
+        }
+
         Optional<ResidentCapacityAdmission> existing = storage.capacityAdmissionFor(level.dimension(), region, beneficiaryId);
         if (existing.isPresent() && !existing.get().state().terminal()) {
             return existing;
@@ -160,15 +183,15 @@ public final class TownConstructionService {
 
         TownPlan plan = TownPlanner.generate(region, level.getSeed());
         String siteOwner = "capacity:" + townKey + ":" + beneficiaryId;
-        String planSignature = "capacity-v1:" + plan.storehouseVariant() + ":" + demand.missingHomes() + ":"
-                + demand.missingWorkplaces().entrySet().stream()
+        String planSignature = "capacity-v1:" + plan.storehouseVariant() + ":" + requestedHomes + ":"
+                + requestedWorkplaces.entrySet().stream()
                 .sorted(Map.Entry.comparingByKey(java.util.Comparator.comparing(
                         profession -> net.minecraft.core.registries.BuiltInRegistries.VILLAGER_PROFESSION.getKey(profession).toString())))
                 .map(entry -> net.minecraft.core.registries.BuiltInRegistries.VILLAGER_PROFESSION.getKey(entry.getKey())
                         + "=" + entry.getValue())
                 .reduce((left, right) -> left + "," + right).orElse("none");
         ResidentCapacityAdmission admission = new ResidentCapacityAdmission(level.dimension(), townKey, region, beneficiaryId,
-                demand.missingHomes(), demand.missingWorkplaces(), siteOwner, planSignature,
+                requestedHomes, requestedWorkplaces, siteOwner, planSignature,
                 ResidentCapacityAdmission.State.AWAITING_CLAIM);
         return Optional.of(storage.createOrReuseCapacityAdmission(admission));
     }

@@ -250,6 +250,10 @@ public final class TownStorage extends SavedData {
         return dimension.location() + "@" + region.x() + "," + region.z() + ":" + beneficiaryId;
     }
 
+    int capacityAdmissionCount() {
+        return capacityAdmissions.size();
+    }
+
     /**
      * [Review round 25] Reconciles {@code pos}'s ownership record against a LIVE observation that
      * {@code claimantId}'s own memory currently points at it. A record naming a DIFFERENT villager
@@ -550,18 +554,19 @@ public final class TownStorage extends SavedData {
         }
         ListTag admissions = tag.getList("ResidentCapacityAdmissions", Tag.TAG_COMPOUND);
         for (int i = 0; i < admissions.size(); i++) {
-            CompoundTag entry = admissions.getCompound(i);
-            Map<VillagerProfession, Integer> workplaces = new HashMap<>();
-            ListTag requestedWorkplaces = entry.getList("Workplaces", Tag.TAG_COMPOUND);
-            for (int j = 0; j < requestedWorkplaces.size(); j++) {
-                CompoundTag requested = requestedWorkplaces.getCompound(j);
-                VillagerProfession profession = BuiltInRegistries.VILLAGER_PROFESSION
-                        .get(ResourceLocation.parse(requested.getString("Profession")));
-                if (profession != null && requested.getInt("Count") > 0) {
+            try {
+                CompoundTag entry = admissions.getCompound(i);
+                Map<VillagerProfession, Integer> workplaces = new HashMap<>();
+                ListTag requestedWorkplaces = entry.getList("Workplaces", Tag.TAG_COMPOUND);
+                for (int j = 0; j < requestedWorkplaces.size(); j++) {
+                    CompoundTag requested = requestedWorkplaces.getCompound(j);
+                    VillagerProfession profession = BuiltInRegistries.VILLAGER_PROFESSION
+                            .get(ResourceLocation.parse(requested.getString("Profession")));
+                    if (profession == null || requested.getInt("Count") <= 0) {
+                        throw new IllegalArgumentException("invalid persisted capacity workplace");
+                    }
                     workplaces.put(profession, requested.getInt("Count"));
                 }
-            }
-            try {
                 ResourceKey<Level> dimension = ResourceKey.create(Registries.DIMENSION,
                         ResourceLocation.parse(entry.getString("Dimension")));
                 ResidentCapacityAdmission admission = new ResidentCapacityAdmission(dimension, entry.getString("TownKey"),

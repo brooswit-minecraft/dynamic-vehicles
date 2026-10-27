@@ -5,6 +5,8 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.Tag;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.entity.npc.Villager;
@@ -52,12 +54,25 @@ public final class TownResidentCapacityAdmissionGameTests {
                 "a duplicate tick must reuse one dimension-qualified beneficiary admission without advancing it to a POI/build effect");
 
         CompoundTag saved = storage.save(new CompoundTag(), helper.getLevel().registryAccess());
+        CompoundTag malformed = saved.copy();
+        ListTag malformedAdmissions = malformed.getList("ResidentCapacityAdmissions", Tag.TAG_COMPOUND);
+        malformedAdmissions.getCompound(0).getList("Workplaces", Tag.TAG_COMPOUND).getCompound(0)
+                .putString("Profession", "not a resource location");
+        TownStorage malformedReload = TownStorage.load(malformed, helper.getLevel().registryAccess());
+        helper.assertTrue(malformedReload.hasFoundedTown(TownKeys.keyFor(helper.getLevel().dimension(), region))
+                        && malformedReload.capacityAdmissionCount() == 0,
+                "a malformed nested profession must reject only that admission without aborting unrelated TownStorage data");
         TownStorage reloaded = TownStorage.load(saved, helper.getLevel().registryAccess());
+        Optional<ResidentCapacityAdmission> loaded = reloaded.capacityAdmissionFor(
+                helper.getLevel().dimension(), region, villager.getUUID());
+        helper.assertTrue(loaded.filter(first.get()::equals).isPresent() && reloaded.capacityAdmissionCount() == 1,
+                "save/load must restore the admission before any retry is allowed to recreate it");
         Optional<ResidentCapacityAdmission> afterReload = TownConstructionService.requestResidentCapacity(
                 helper.getLevel(), region, villager.getUUID(), demand, reloaded);
         helper.assertTrue(afterReload.isPresent() && afterReload.get().equals(first.get())
                         && reloaded.capacityAdmissionFor(helper.getLevel().dimension(), region, villager.getUUID())
                                 .filter(first.get()::equals).isPresent()
+                        && reloaded.capacityAdmissionCount() == 1
                         && helper.getLevel().getPoiManager().getFreeTickets(helper.absolutePos(RESIDENT)) == 0,
                 "save/load and a second request must preserve the single nonterminal admission and create no POI reservation");
         helper.succeed();

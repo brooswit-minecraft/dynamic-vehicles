@@ -12,6 +12,7 @@ import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.entity.ai.memory.MemoryModuleType;
 import net.minecraft.world.entity.ai.village.poi.PoiType;
@@ -123,7 +124,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         helper.succeed();
     }
 
-    @GameTest(template = "settlement_test")
+    @GameTest(template = "settlement_test", batch = "residentAdmissionProfileIsolated")
     public static void awaitingAdmissionReconcilesSameIdentityWhenProfessionChanges(GameTestHelper helper) {
         Villager villager = resident(helper, RESIDENT, VillagerProfession.ARMORER);
         RegionCoord region = TownRegion.fromBlockCoords(villager.blockPosition().getX(), villager.blockPosition().getZ());
@@ -148,18 +149,49 @@ public final class TownResidentCapacityAdmissionGameTests {
         villager.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), oldJob));
         villager.setVillagerData(villager.getVillagerData().setProfession(VillagerProfession.FARMER));
         TownResidentDemand changedDemand = TownResidentAllocationHandler.unmetDemand(helper.getLevel(), region, reloaded);
+        boolean inProductionIterable = false;
+        for (Entity entity : helper.getLevel().getEntities().getAll()) {
+            if (entity == villager) {
+                inProductionIterable = true;
+                break;
+            }
+        }
+        boolean exactHome = villager.getBrain().getMemory(MemoryModuleType.HOME)
+                .map(value -> value.dimension().equals(helper.getLevel().dimension()) && value.pos().equals(home)).orElse(false);
+        boolean homeTicketHeld = helper.getLevel().getPoiManager().getType(home)
+                .map(type -> type.is(PoiTypes.HOME)
+                        && helper.getLevel().getPoiManager().getFreeTickets(home) < type.value().maxTickets()).orElse(false);
+        boolean exactOldJob = villager.getBrain().getMemory(MemoryModuleType.JOB_SITE)
+                .map(value -> value.dimension().equals(helper.getLevel().dimension()) && value.pos().equals(oldJob)).orElse(false);
+        boolean oldJobMatchesFarmer = helper.getLevel().getPoiManager().getType(oldJob)
+                .map(type -> VillagerProfession.FARMER.heldJobSite().test(type)).orElse(false);
+        boolean sameRegion = TownRegion.fromBlockCoords(villager.blockPosition().getX(), villager.blockPosition().getZ()).equals(region);
+        helper.assertTrue(helper.getLevel().getEntity(villager.getUUID()) == villager && villager.isAlive()
+                        && inProductionIterable && sameRegion && exactHome && homeTicketHeld && exactOldJob
+                        && villager.getVillagerData().getProfession() == VillagerProfession.FARMER && !oldJobMatchesFarmer
+                        && changedDemand.missingWorkplaces().getOrDefault(VillagerProfession.FARMER, 0) >= 1,
+                "request boundary must retain the named live same-region FARMER with its held HOME and no matching workplace; "
+                        + "profession=" + villager.getVillagerData().getProfession() + ", sameRegion=" + sameRegion
+                        + ", exactHome=" + exactHome + ", homeTicketHeld=" + homeTicketHeld
+                        + ", exactOldJob=" + exactOldJob + ", oldJobMatchesFarmer=" + oldJobMatchesFarmer
+                        + ", aggregateDemand=" + changedDemand);
+        helper.assertTrue(changedDemand.missingHomes() == 0
+                        && changedDemand.missingWorkplaces().equals(Map.of(VillagerProfession.FARMER, 1)),
+                "the isolated changed-profile query must report exactly zero homes and one FARMER workplace; aggregateDemand="
+                        + changedDemand);
         Optional<ResidentCapacityAdmission> replacement = TownConstructionService.requestResidentCapacity(helper.getLevel(), region,
                 villager.getUUID(), changedDemand, reloaded);
         helper.assertTrue(original.isPresent() && replacement.filter(value -> value.requestedHomes() == 0
                                 && value.requestedWorkplaces().equals(Map.of(VillagerProfession.FARMER, 1))
                                 && value.beneficiaryId().equals(villager.getUUID())
                                 && value.state() == ResidentCapacityAdmission.State.AWAITING_CLAIM).isPresent()
-                        && changedDemand.missingHomes() == 0
-                        && changedDemand.missingWorkplaces().equals(Map.of(VillagerProfession.FARMER, 1))
                         && admissionCount(helper, reloaded) == 1
                         && reloaded.capacityAdmissionFor(helper.getLevel().dimension(), region, villager.getUUID())
                                 .filter(replacement.get()::equals).isPresent(),
-                "an unbound loaded admission must reconcile current resident need at the same durable identity");
+                "an unbound loaded admission must reconcile current resident need at the same durable identity; "
+                        + "aggregateDemand=" + changedDemand + ", replacement=" + replacement.map(Object::toString).orElse("absent")
+                        + ", persisted=" + reloaded.capacityAdmissionFor(helper.getLevel().dimension(), region, villager.getUUID())
+                                .map(Object::toString).orElse("absent") + ", admissionCount=" + admissionCount(helper, reloaded));
         helper.succeed();
     }
 

@@ -124,7 +124,48 @@ public final class TownRoadPlanner {
      */
     public static int edgeHeightFor(ServerLevel level, TownPlan plan, TownEdge edge) {
         int[] edgePos = plan.edgeConnectionAbsolute(edge);
-        return TownTerrain.estimateGroundHeight(level, edgePos[0], edgePos[1]);
+        int neighborX = edgePos[0] + switch (edge) {
+            case EAST -> 1;
+            case WEST -> -1;
+            default -> 0;
+        };
+        int neighborZ = edgePos[1] + switch (edge) {
+            case SOUTH -> 1;
+            case NORTH -> -1;
+            default -> 0;
+        };
+        if (!level.hasChunkAt(new net.minecraft.core.BlockPos(edgePos[0], level.getMinBuildHeight(), edgePos[1]))
+                || !level.hasChunkAt(new net.minecraft.core.BlockPos(neighborX, level.getMinBuildHeight(), neighborZ))) {
+            throw new IllegalStateException("shared-edge terrain is unavailable; defer road planning until both boundary chunks load");
+        }
+        // Neighbouring regions occupy adjacent, not identical, border columns.  Sample BOTH
+        // columns and select the higher natural surface: this is symmetric for either side of the
+        // same boundary, keeps the road from being buried in the higher column, and leaves the
+        // construction path to provide bounded support on the lower one.
+        return Math.max(sharedEdgeTerrainHeight(level, edgePos[0], edgePos[1]),
+                sharedEdgeTerrainHeight(level, neighborX, neighborZ));
+    }
+
+    public static boolean hasLoadedBoundaryTerrain(ServerLevel level, TownPlan plan) {
+        for (TownEdge edge : TownEdge.values()) {
+            int[] p = plan.edgeConnectionAbsolute(edge);
+            int nx = p[0] + (edge == TownEdge.EAST ? 1 : edge == TownEdge.WEST ? -1 : 0);
+            int nz = p[1] + (edge == TownEdge.SOUTH ? 1 : edge == TownEdge.NORTH ? -1 : 0);
+            if (!level.hasChunkAt(new net.minecraft.core.BlockPos(p[0], level.getMinBuildHeight(), p[1]))
+                    || !level.hasChunkAt(new net.minecraft.core.BlockPos(nx, level.getMinBuildHeight(), nz))) return false;
+        }
+        return true;
+    }
+
+    /** A paid road is not new terrain: ignore its one surface layer when a later planning pass
+     * re-reads the boundary heightmap, so an already-paid DIRT_PATH cannot ratchet its own endpoint
+     * upward on the next tick or after storage reload. */
+    private static int sharedEdgeTerrainHeight(ServerLevel level, int x, int z) {
+        int height = TownTerrain.estimateGroundHeight(level, x, z);
+        if (level.getBlockState(new net.minecraft.core.BlockPos(x, height - 1, z)).is(net.minecraft.world.level.block.Blocks.DIRT_PATH)) {
+            return height - 1;
+        }
+        return height;
     }
 
     /**

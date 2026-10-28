@@ -3,6 +3,7 @@ package io.github.brooswitminecraft.dynamicvehicles.town;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
@@ -54,17 +55,37 @@ public final class TownRoadConstructionService {
     static BlockPos testForceSurfaceFailureAt = null;
     static BlockPos testForceRollbackFailureAt = null;
 
+    /**
+     * A production outcome from the road builder's own core, retained separately from the boolean
+     * wrapper so callers that need the reason for a no-op do not have to infer it from unrelated
+     * availability and terrain guards.
+     */
+    enum RoadBuildOutcome {
+        EXCLUDED_DIMENSION,
+        NO_MUTATION,
+        MUTATED
+    }
+
     /** @return whether anything was actually mutated (so the caller knows whether to persist storage). */
     public static boolean buildRoadsForRegion(ServerLevel level, RegionCoord region, TownStorage storage, TownResourceStore store) {
+        return buildRoadsForRegionOutcome(level, region, storage, store) == RoadBuildOutcome.MUTATED;
+    }
+
+    /** The real road-builder core; the public boolean wrapper intentionally retains its behavior. */
+    static RoadBuildOutcome buildRoadsForRegionOutcome(ServerLevel level, RegionCoord region, TownStorage storage, TownResourceStore store) {
         // [Review round 4, finding #4] Dynamic Towns roads are an Overworld-only feature (see
         // TownConstructionService's own top-level gate) - this call path is reachable from a
         // GameTest directly, so it is re-checked here too rather than trusted to always come
         // through the gated production tick.
         if (!level.dimension().equals(Level.OVERWORLD)) {
-            return false;
+            return RoadBuildOutcome.EXCLUDED_DIMENSION;
         }
         TownPlan plan = TownPlanner.generate(region, level.getSeed());
-        int rawCenterHeight = TownTerrain.estimateGroundHeight(level, plan.townCenterX(), plan.townCenterZ());
+        if (!level.hasChunkAt(new BlockPos(plan.townCenterX(), level.getMinBuildHeight(), plan.townCenterZ()))
+                || !TownRoadPlanner.hasLoadedBoundaryTerrain(level, plan)) {
+            return RoadBuildOutcome.NO_MUTATION; // safe retry: never derive a route from an unloaded heightmap fallback
+        }
+        int rawCenterHeight = centerTerrainHeight(level, plan, storage);
         // [Review round 3, finding #6] Resolve ONE shared centre height every edge can actually
         // reach within the grade policy, instead of letting each edge independently chase the raw
         // terrain height and risk disagreeing with the others at the shared centre point.
@@ -76,7 +97,7 @@ public final class TownRoadConstructionService {
         // retried every tick, so a later pass can still recover.
         java.util.OptionalInt centerHeightResolution = TownRoadPlanner.resolveSharedCenterHeight(level, plan, rawCenterHeight);
         if (centerHeightResolution.isEmpty()) {
-            return false;
+            return RoadBuildOutcome.NO_MUTATION;
         }
         int centerHeight = centerHeightResolution.getAsInt();
 
@@ -100,7 +121,35 @@ public final class TownRoadConstructionService {
                 mutated |= branchResult[1] != 0;
             }
         }
-        return mutated;
+        return mutated ? RoadBuildOutcome.MUTATED : RoadBuildOutcome.NO_MUTATION;
+    }
+
+    /**
+     * The production centre sample. A live DIRT_PATH is only discounted when this exact regional
+     * road plan has already paid for it, so a completed centre cannot make the first-free
+     * heightmap ratchet the next plan upward while foreign/path-like terrain retains natural
+     * height semantics.
+     */
+    static int centerTerrainHeight(ServerLevel level, TownPlan plan, TownStorage storage) {
+        int height = TownTerrain.estimateGroundHeight(level, plan.townCenterX(), plan.townCenterZ());
+        String owner = TownStorage.roadOwner(level.dimension(), TownRegion.fromBlockCoords(plan.townCenterX(), plan.townCenterZ()));
+        String signature = "road:" + net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(ROAD_SURFACE)
+                + ":" + TownResourceCategory.STONE.name();
+        // The writer clears only two cells of headroom. A tree can therefore leave higher logs
+        // above that owned road with an air gap between them; TownTerrain correctly stops at the
+        // gap, but the resulting first-free height must still find the paid centre below it.
+        // Scan only that short air/tree clearing corridor and only accept an exact paid road record.
+        for (int depth = 1; depth <= TownConstants.ROAD_SUPPORT_FILL_MAX_DEPTH; depth++) {
+            BlockPos candidate = new BlockPos(plan.townCenterX(), height - depth, plan.townCenterZ());
+            BlockState state = level.getBlockState(candidate);
+            if (state.is(ROAD_SURFACE) && storage.isCellPlaced(level.dimension(), candidate, owner, signature)) {
+                return candidate.getY();
+            }
+            if (!state.isAir() && !state.is(BlockTags.LOGS) && !state.is(BlockTags.LEAVES)) {
+                break;
+            }
+        }
+        return height;
     }
 
     /**

@@ -71,7 +71,25 @@ public final class TownConstructionService {
      *  logic. [Review round 4, finding #3] exercises this directly to prove road construction for a
      *  FOUNDED region keeps progressing with NO claimed campfire present at all. */
     public static void runConstructionAndRoadsTick(ServerLevel level) {
-        runConstructionAndRoadsTick(level, TownStorage.of(level.getServer()), TownRoadConstructionService::buildRoadsForRegion);
+        runConstructionAndRoadsTick(level, TownStorage.of(level.getServer()));
+    }
+
+    /**
+     * Production's road binding with caller-supplied storage.  Keeping this distinct from the
+     * injected {@link RoadWork} overload lets isolated GameTests verify the same binding the
+     * normal level tick uses without replacing the server's global SavedData instance.
+     */
+    static void runConstructionAndRoadsTick(ServerLevel level, TownStorage storage) {
+        runConstructionAndRoadsTickOutcome(level, storage);
+    }
+
+    /**
+     * Production's caller-supplied-storage binding with an explicit outcome.  The ordinary void
+     * wrapper above deliberately ignores the result, preserving normal tick behavior while an
+     * isolated fixture can distinguish the existing dimension guard from later eligibility no-ops.
+     */
+    static ConstructionAndRoadsTickOutcome runConstructionAndRoadsTickOutcome(ServerLevel level, TownStorage storage) {
+        return runConstructionAndRoadsTickOutcome(level, storage, TownRoadConstructionService::buildRoadsForRegion);
     }
 
     /** The road-work boundary of the production construction tick. Package-private solely so a
@@ -82,13 +100,23 @@ public final class TownConstructionService {
         boolean build(ServerLevel level, RegionCoord region, TownStorage storage, TownResourceStore store);
     }
 
+    enum ConstructionAndRoadsTickOutcome {
+        EXCLUDED_DIMENSION,
+        PROCESSED
+    }
+
     static void runConstructionAndRoadsTick(ServerLevel level, TownStorage storage, RoadWork roadWork) {
+        runConstructionAndRoadsTickOutcome(level, storage, roadWork);
+    }
+
+    /** The existing production core with its guard order unchanged; void wrappers retain behavior. */
+    static ConstructionAndRoadsTickOutcome runConstructionAndRoadsTickOutcome(ServerLevel level, TownStorage storage, RoadWork roadWork) {
         // [Review round 4, finding #4] Dynamic Towns (founding, building, and road construction
         // alike) is an Overworld-only feature, matching vanilla's own village generation never
         // occurring in the Nether/End - an explicit, documented scope decision rather than letting
         // the same sea-level-biased road/terrain policy silently misbehave in every dimension.
         if (!level.dimension().equals(Level.OVERWORLD)) {
-            return;
+            return ConstructionAndRoadsTickOutcome.EXCLUDED_DIMENSION;
         }
 
         Map<BlockPos, Villager> claimedCampfires = findClaimedCampfireSites(level);
@@ -115,6 +143,7 @@ public final class TownConstructionService {
                 storage.setDirty();
             }
         }
+        return ConstructionAndRoadsTickOutcome.PROCESSED;
     }
 
     /** [Review round 4, finding #3] Which regions currently have a nearby online player AND are
@@ -141,7 +170,8 @@ public final class TownConstructionService {
      * fully funded one, per {@code TownPassiveProductionHandler}'s own passive credit) must never
      * register as an active region or start road/building construction.
      */
-    private static Map<BlockPos, Villager> findClaimedCampfireSites(ServerLevel level) {
+    /** Package-visible for the isolated GameTest's read-only noninterference precondition. */
+    static Map<BlockPos, Villager> findClaimedCampfireSites(ServerLevel level) {
         Map<BlockPos, Villager> sites = new HashMap<>();
         for (Entity entity : level.getEntities().getAll()) {
             if (!(entity instanceof Villager villager) || villager.getVillagerData().getProfession() == VillagerProfession.NONE) {

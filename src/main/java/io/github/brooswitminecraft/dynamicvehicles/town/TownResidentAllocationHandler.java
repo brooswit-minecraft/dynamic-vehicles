@@ -138,6 +138,9 @@ public final class TownResidentAllocationHandler {
             RegionCoord region, TownStorage storage) {
         TownResidentDemand residentDemand = unmetDemandForResident(level, villager, region, storage);
         if (residentDemand == TownResidentDemand.NONE) {
+            // Existing fixtures may have resolved an earlier unbound request during this same live
+            // allocation pass. Retire only AWAITING_CLAIM: BUILDING may already own a real site.
+            storage.cancelAwaitingCapacityAdmission(level.dimension(), region, villager.getUUID());
             return;
         }
         TownResidentDemand townDemand = unmetDemand(level, region, storage);

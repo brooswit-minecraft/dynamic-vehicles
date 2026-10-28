@@ -1,4 +1,4 @@
 bump: patch
 
 ### Fixed
-- Added regression coverage ensuring town-road paid-cell ownership survives save/load and that funded retries neither re-debit completed roads nor adopt foreign paths.
+- Strengthened town-road regression coverage for paid-cell ownership across save/load and funded retries, including lifecycle/eviction resumption, shared-edge and unloaded-boundary safety, excluded-dimension no-ops, and stable paid-center replanning after tree clearing.

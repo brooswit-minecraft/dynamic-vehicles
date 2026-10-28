@@ -7,7 +7,13 @@ import net.minecraft.core.Direction;
 import net.minecraft.core.GlobalPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.gametest.framework.GameTestInfo;
+import net.minecraft.gametest.framework.GameTestListener;
+import net.minecraft.gametest.framework.GameTestRunner;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.Tag;
+import net.minecraft.server.level.TicketType;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
@@ -15,6 +21,7 @@ import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.entity.ai.memory.MemoryModuleType;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.npc.VillagerProfession;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.BedBlock;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
@@ -25,6 +32,7 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * MINECRAFT-388/455: {@link TownResidentAllocationHandler} must give EVERY villager in a founded
@@ -82,6 +90,74 @@ public final class TownResidentAllocationHandlerGameTests {
     private static final BlockPos WORKSTATION_OFFSET = new BlockPos(-1, 1, -1);
     private static final BlockPos OLD_HOME_OFFSET = new BlockPos(2, 1, 2);
     private static final BlockPos OLD_WORKSTATION_OFFSET = new BlockPos(-2, 1, 2);
+
+    /** Read-only timeout context for the target's exact entity-ticking radius. */
+    private static String chunkDebugSnapshot(ServerLevel level, ChunkPos center) {
+        StringBuilder snapshot = new StringBuilder("[");
+        for (int zOffset = -2; zOffset <= 2; zOffset++) {
+            for (int xOffset = -2; xOffset <= 2; xOffset++) {
+                if (snapshot.length() > 1) {
+                    snapshot.append(", ");
+                }
+                int radius = Math.max(Math.abs(xOffset), Math.abs(zOffset));
+                String ring = radius == 0 ? "center" : radius == 1 ? "radius1" : "outerRing";
+                ChunkPos chunk = new ChunkPos(center.x + xOffset, center.z + zOffset);
+                snapshot.append(ring)
+                        .append(":")
+                        .append(chunk)
+                        .append("=")
+                        .append(level.getChunkSource().getChunkDebugData(chunk));
+            }
+        }
+        return snapshot.append("]").toString();
+    }
+
+    /**
+     * Prepares precisely the target's entity-ticking neighborhood through the public Level API.
+     * {@link ServerLevel#getChunk(int, int)} delegates to the required {@code ChunkStatus.FULL}
+     * load; normal transient tickets are owned by the engine, not this test.
+     */
+    private static void prepareEntityTickingNeighborhood(ServerLevel level, ChunkPos center) {
+        for (int zOffset = -2; zOffset <= 2; zOffset++) {
+            for (int xOffset = -2; xOffset <= 2; xOffset++) {
+                level.getChunk(center.x + xOffset, center.z + zOffset);
+            }
+        }
+    }
+
+    /** Keeps the complete distant takeover fixture inside one region without collapsing its lane. */
+    private static BlockPos distantFixtureHome(BlockPos absoluteAnchor, int laneX, int laneZ) {
+        int x = absoluteAnchor.getX() + laneX;
+        int z = absoluteAnchor.getZ() + laneZ;
+        int localX = Math.floorMod(x, TownConstants.REGION_SIZE_BLOCKS);
+        int localZ = Math.floorMod(z, TownConstants.REGION_SIZE_BLOCKS);
+        x += localX < 4 ? 4 - localX : localX > TownConstants.REGION_SIZE_BLOCKS - 9
+                ? TownConstants.REGION_SIZE_BLOCKS - 9 - localX : 0;
+        z += localZ < 1 ? 1 - localZ : 0;
+        return new BlockPos(x, 65, z);
+    }
+
+    private static boolean distantFixtureCaseHolds(int desiredX, int desiredZ, int expectedX, int expectedZ) {
+        BlockPos home = distantFixtureHome(new BlockPos(desiredX - 60_000, 0, desiredZ + 60_000), 60_000, -60_000);
+        RegionCoord region = TownRegion.fromBlockCoords(desiredX, desiredZ);
+        return home.equals(new BlockPos(expectedX, 65, expectedZ))
+                && TownRegion.fromBlockCoords(home.getX(), home.getZ()).equals(region)
+                && TownRegion.fromBlockCoords(home.north().getX(), home.north().getZ()).equals(region)
+                && TownRegion.fromBlockCoords(home.offset(4, 0, 0).getX(), home.offset(4, 0, 0).getZ()).equals(region)
+                && TownRegion.fromBlockCoords(home.offset(-4, 0, 0).getX(), home.offset(-4, 0, 0).getZ()).equals(region)
+                && TownRegion.fromBlockCoords(home.offset(-4, 0, 0).north().getX(), home.offset(-4, 0, 0).north().getZ()).equals(region)
+                && TownRegion.fromBlockCoords(home.offset(8, 0, 0).getX(), home.offset(8, 0, 0).getZ()).equals(region);
+    }
+
+    private static boolean distantFixtureHomeRegressionHolds() {
+        return distantFixtureCaseHolds(0, 100, 4, 100)
+                && distantFixtureCaseHolds(378, 100, 375, 100)
+                && distantFixtureCaseHolds(-384, 100, -380, 100)
+                && distantFixtureCaseHolds(-1, 100, -9, 100)
+                && distantFixtureCaseHolds(100, 0, 100, 1)
+                && distantFixtureCaseHolds(100, -384, 100, -383)
+                && distantFixtureCaseHolds(100, 100, 100, 100);
+    }
 
     private static void prepareFlatGround(GameTestHelper helper) {
         for (int x = 0; x < 10; x++) {
@@ -252,10 +328,181 @@ public final class TownResidentAllocationHandlerGameTests {
         helper.succeed();
     }
 
+    /** The consumer asks construction only for the resident still missing capacity after normal
+     * fixture allocation.  In particular, it must not pass the two-resident aggregate shortage to
+     * both residents and manufacture duplicate admissions across a retry/reload. */
+    @GameTest(template = "settlement_test", batch = "residentAllocationConsumerIsolated")
+    public static void allocationConsumerAdmitsOnlyTheStillUnhousedResidentAndReusesItAfterReload(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos bedHead = anchor(helper).offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        placeValidBed(helper, bedHead);
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        markTownOwned(helper, storage, helper.absolutePos(bedHead));
+        Villager first = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        Villager second = spawnVillager(helper, anchor(helper).offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+
+        // EntityType#create + addFreshEntity is synchronous for block access but a freshly spawned
+        // GameTest villager does not always appear in the exact production iterable
+        // level.getEntities().getAll() until normal ticks have progressed.
+        helper.startSequence()
+                .thenIdle(2)
+                .thenExecute(() -> {
+                    helper.assertTrue(helper.getLevel().getEntity(first.getUUID()) == first
+                                    && helper.getLevel().getEntity(second.getUUID()) == second
+                                    && first.isAlive() && second.isAlive(),
+                            "test setup: both named residents must be alive and UUID-resolvable in the level before whole-level allocation");
+                    helper.assertTrue(TownRegion.fromBlockCoords(first.blockPosition().getX(), first.blockPosition().getZ()).equals(region)
+                                    && TownRegion.fromBlockCoords(second.blockPosition().getX(), second.blockPosition().getZ()).equals(region)
+                                    && first.getBrain().getMemory(MemoryModuleType.HOME).isEmpty()
+                                    && second.getBrain().getMemory(MemoryModuleType.HOME).isEmpty()
+                                    && helper.getLevel().getPoiManager().getFreeTickets(helper.absolutePos(bedHead)) == 1,
+                            "test setup: both named residents must be unhoused in this region and the one town-owned bed must be free");
+                    TownResidentAllocationHandler.runResidentAllocationTick(helper.getLevel(), storage);
+                    boolean firstHoused = first.getBrain().getMemory(MemoryModuleType.HOME).isPresent();
+                    Villager waiting = firstHoused ? second : first;
+                    Villager housed = firstHoused ? first : second;
+                    Optional<ResidentCapacityAdmission> firstAdmission = storage.capacityAdmissionFor(helper.getLevel().dimension(), region, first.getUUID());
+                    Optional<ResidentCapacityAdmission> secondAdmission = storage.capacityAdmissionFor(helper.getLevel().dimension(), region, second.getUUID());
+                    Optional<ResidentCapacityAdmission> admission = firstHoused ? secondAdmission : firstAdmission;
+                    helper.assertTrue(firstHoused ^ second.getBrain().getMemory(MemoryModuleType.HOME).isPresent(),
+                            "exactly one named resident must receive the single town-owned bed");
+                    helper.assertTrue(housed.getBrain().getMemory(MemoryModuleType.HOME).isPresent()
+                                    && waiting.getBrain().getMemory(MemoryModuleType.HOME).isEmpty()
+                                    && helper.getLevel().getPoiManager().getFreeTickets(helper.absolutePos(bedHead)) == 0,
+                            "the single bed's real POI ticket must belong to the named housed resident, leaving the other named resident waiting");
+                    helper.assertTrue(firstAdmission.isPresent() ^ secondAdmission.isPresent()
+                                    && admission.isPresent()
+                                    && admission.get().beneficiaryId().equals(waiting.getUUID())
+                                    && admission.get().requestedHomes() == 1
+                                    && admission.get().requestedWorkplaces().isEmpty(),
+                            "only the named resident still without the one town-owned bed may receive one resident-sized admission");
+
+                    CompoundTag saved = storage.save(new CompoundTag(), helper.getLevel().registryAccess());
+                    ListTag savedAdmissions = saved.getList("ResidentCapacityAdmissions", Tag.TAG_COMPOUND);
+                    helper.assertTrue(savedAdmissions.size() == 1,
+                            "test setup: exactly one resident admission must be serialized before reload");
+                    TownStorage reloaded = TownStorage.load(saved, helper.getLevel().registryAccess());
+                    // Prove persistence BEFORE the retry can call the admission boundary.  If load
+                    // dropped the record, runResidentAllocationTick could otherwise recreate an
+                    // indistinguishable admission and make this look like a successful round trip.
+                    Optional<ResidentCapacityAdmission> loadedAdmission = reloaded.capacityAdmissionFor(
+                            helper.getLevel().dimension(), region, waiting.getUUID());
+                    ListTag loadedAdmissions = reloaded.save(new CompoundTag(), helper.getLevel().registryAccess())
+                            .getList("ResidentCapacityAdmissions", Tag.TAG_COMPOUND);
+                    helper.assertTrue(loadedAdmissions.size() == 1,
+                            "reload must retain exactly one admission before any retry can recreate it");
+                    helper.assertTrue(loadedAdmission.isPresent(),
+                            "reload must retain an admission under the waiting resident's durable identity before retry");
+                    helper.assertTrue(loadedAdmission.get().equals(admission.get())
+                                    && loadedAdmission.get().beneficiaryId().equals(waiting.getUUID())
+                                    && loadedAdmission.get().dimension().equals(helper.getLevel().dimension())
+                                    && loadedAdmission.get().region().equals(region)
+                                    && loadedAdmission.get().requestedHomes() == 1
+                                    && loadedAdmission.get().requestedWorkplaces().isEmpty()
+                                    && loadedAdmission.get().state() == ResidentCapacityAdmission.State.AWAITING_CLAIM,
+                            "reload must retain the waiting resident's exact one-home admission profile before any retry can recreate it");
+                    TownResidentAllocationHandler.runResidentAllocationTick(helper.getLevel(), reloaded);
+                    helper.assertTrue(reloaded.capacityAdmissionFor(helper.getLevel().dimension(), region, waiting.getUUID())
+                                    .filter(loadedAdmission.get()::equals).isPresent()
+                                    && reloaded.capacityAdmissionFor(helper.getLevel().dimension(), region, housed.getUUID()).isEmpty()
+                                    && helper.getLevel().getPoiManager().getFreeTickets(helper.absolutePos(bedHead)) == 0,
+                            "a retry after reload must reuse the one waiting resident admission and never add a second bed owner or admission");
+                })
+                .thenSucceed();
+    }
+
+    @GameTest(template = "settlement_test", batch = "residentAdmissionZeroNeedIsolated")
+    public static void allocationCancelsOnlyAnAwaitingAdmissionWhenExistingFixturesResolveNeed(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos anchor = anchor(helper);
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        Villager resident = spawnVillager(helper, anchor.offset(FIRST_VILLAGER_OFFSET.getX(),
+                FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        BlockPos bed = anchor.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        BlockPos workstation = anchor.offset(WORKSTATION_OFFSET.getX(), WORKSTATION_OFFSET.getY(), WORKSTATION_OFFSET.getZ());
+
+        helper.startSequence()
+                .thenIdle(2)
+                .thenExecute(() -> {
+                    resident.setVillagerData(resident.getVillagerData().setProfession(VillagerProfession.ARMORER));
+                    boolean inProductionIterable = false;
+                    for (Entity entity : helper.getLevel().getEntities().getAll()) {
+                        if (entity == resident) {
+                            inProductionIterable = true;
+                            break;
+                        }
+                    }
+                    RegionCoord actualRegion = TownRegion.fromBlockCoords(resident.blockPosition().getX(), resident.blockPosition().getZ());
+                    boolean hasHome = resident.getBrain().getMemory(MemoryModuleType.HOME).isPresent();
+                    boolean hasJobSite = resident.getBrain().getMemory(MemoryModuleType.JOB_SITE).isPresent();
+                    TownResidentDemand aggregateDemand = TownResidentAllocationHandler.unmetDemand(helper.getLevel(), region, storage);
+                    helper.assertTrue(helper.getLevel().getEntity(resident.getUUID()) == resident && resident.isAlive()
+                                    && inProductionIterable
+                                    && resident.getVillagerData().getProfession() == VillagerProfession.ARMORER
+                                    && actualRegion.equals(region)
+                                    && !hasHome
+                                    && !hasJobSite
+                                    && aggregateDemand.missingHomes() >= 1
+                                    && aggregateDemand.missingWorkplaces().getOrDefault(VillagerProfession.ARMORER, 0) >= 1,
+                            "test setup: live beneficiary must be iterable, retained ARMORER, unhoused, unassigned, and in the founded region "
+                                    + "with aggregate capacity for its shortage; profession=" + resident.getVillagerData().getProfession()
+                                    + ", actualRegion=" + actualRegion + ", expectedRegion=" + region
+                                    + ", hasHome=" + hasHome + ", hasJobSite=" + hasJobSite
+                                    + ", aggregateDemand=" + aggregateDemand);
+                    TownResidentAllocationHandler.runResidentAllocationTick(helper.getLevel(), storage);
+                    Optional<ResidentCapacityAdmission> awaiting = storage.capacityAdmissionFor(
+                            helper.getLevel().dimension(), region, resident.getUUID());
+                    helper.assertTrue(awaiting.filter(value -> value.state() == ResidentCapacityAdmission.State.AWAITING_CLAIM
+                                    && value.requestedHomes() == 1
+                                    && value.requestedWorkplaces().equals(Map.of(VillagerProfession.ARMORER, 1))).isPresent(),
+                            "a live resident missing both fixtures must first receive one resident-sized unbound admission; profession="
+                                    + resident.getVillagerData().getProfession() + ", region=" + actualRegion
+                                    + ", aggregateDemand=" + aggregateDemand
+                                    + ", returnedAdmission=" + awaiting.map(Object::toString).orElse("absent"));
+
+                    placeValidBed(helper, bed);
+                    placeWorkstation(helper, workstation, Blocks.BLAST_FURNACE);
+                    BlockPos absoluteBed = helper.absolutePos(bed);
+                    BlockPos absoluteWorkstation = helper.absolutePos(workstation);
+                    markTownOwned(helper, storage, absoluteBed);
+                    markTownOwned(helper, storage, absoluteWorkstation);
+                    TownResidentAllocationHandler.runResidentAllocationTick(helper.getLevel(), storage);
+
+                    Optional<ResidentCapacityAdmission> cancelled = storage.capacityAdmissionFor(
+                            helper.getLevel().dimension(), region, resident.getUUID());
+                    helper.assertTrue(resident.getBrain().getMemory(MemoryModuleType.HOME)
+                                    .map(home -> home.pos().equals(absoluteBed)).orElse(false)
+                                    && resident.getBrain().getMemory(MemoryModuleType.JOB_SITE)
+                                            .map(site -> site.pos().equals(absoluteWorkstation)).orElse(false)
+                                    && helper.getLevel().getPoiManager().getFreeTickets(absoluteBed) == 0
+                                    && helper.getLevel().getPoiManager().getFreeTickets(absoluteWorkstation) == 0
+                                    && TownResidentAllocationHandler.unmetDemand(helper.getLevel(), region, storage)
+                                            == TownResidentDemand.NONE
+                                    && cancelled.filter(value -> value.state() == ResidentCapacityAdmission.State.CANCELLED
+                                            && value.beneficiaryId().equals(resident.getUUID())
+                                            && value.requestedHomes() == 1
+                                            && value.requestedWorkplaces().equals(Map.of(VillagerProfession.ARMORER, 1))).isPresent(),
+                            "real town-owned HOME and matching JOB_SITE must resolve need and retire only the stale unbound intent");
+
+                    TownStorage reloaded = TownStorage.load(storage.save(new CompoundTag(), helper.getLevel().registryAccess()),
+                            helper.getLevel().registryAccess());
+                    helper.assertTrue(reloaded.capacityAdmissionFor(helper.getLevel().dimension(), region, resident.getUUID())
+                                    .filter(cancelled.get()::equals).isPresent(),
+                            "the terminal disposition of the resolved resident admission must survive reload before any later allocation pass");
+                    TownResidentAllocationHandler.runResidentAllocationTick(helper.getLevel(), reloaded);
+                    helper.assertTrue(reloaded.capacityAdmissionFor(helper.getLevel().dimension(), region, resident.getUUID())
+                                    .filter(cancelled.get()::equals).isPresent(),
+                            "the terminal disposition of the resolved resident admission must survive reload and a later allocation pass");
+                })
+                .thenSucceed();
+    }
+
     /** The pure demand query observes current shortage without granting a ticket or changing any
      * resident state.  A valid held HOME/JOB_SITE removes demand; losing the matching job ticket
      * restores only that retained profession's workplace demand. */
-    @GameTest(template = "settlement_test")
+    @GameTest(template = "settlement_test", batch = "residentDemandNetherFixtureIsolated")
     public static void unmetDemandUsesFoundedTownValidatedReservationsAndHasNoSideEffects(GameTestHelper helper) {
         prepareFlatGround(helper);
         BlockPos anchor = anchor(helper);
@@ -317,49 +564,137 @@ public final class TownResidentAllocationHandlerGameTests {
         RegionCoord netherRegion = TownRegion.fromBlockCoords(netherResidentPos.getX(), netherResidentPos.getZ());
         int netherChunkX = netherResidentPos.getX() >> 4;
         int netherChunkZ = netherResidentPos.getZ() >> 4;
-        boolean forcedByThisTest = nether.setChunkForced(netherChunkX, netherChunkZ, true);
+        ChunkPos netherChunk = new ChunkPos(netherResidentPos);
+        boolean initiallyForced = nether.getForcedChunks().contains(netherChunk.toLong());
+        long netherGameTimeAtSetup = nether.getGameTime();
+        Villager[] netherResident = {null};
+        boolean[] forcedByThisTest = {false};
+        boolean[] ticketOwnedByThisTest = {false};
+        boolean[] cleaned = {false};
+        Runnable cleanup = () -> {
+            if (cleaned[0]) {
+                return;
+            }
+            cleaned[0] = true;
+            try {
+                if (netherResident[0] != null && !netherResident[0].isRemoved()) {
+                    netherResident[0].discard();
+                }
+            } finally {
+                try {
+                    if (ticketOwnedByThisTest[0]) {
+                        nether.getChunkSource().removeRegionTicket(TicketType.PORTAL, netherChunk, 2, netherResidentPos, true);
+                        ticketOwnedByThisTest[0] = false;
+                    }
+                } finally {
+                    if (forcedByThisTest[0]) {
+                        nether.setChunkForced(netherChunkX, netherChunkZ, false);
+                        forcedByThisTest[0] = false;
+                    }
+                }
+            }
+        };
+        // Install terminal cleanup before any ticket, forced chunk, or sequence state is acquired.
+        helper.testInfo.addListener(new GameTestListener() {
+            @Override public void testStructureLoaded(GameTestInfo info) {}
+            @Override public void testPassed(GameTestInfo info, GameTestRunner runner) { cleanup.run(); }
+            @Override public void testFailed(GameTestInfo info, GameTestRunner runner) { cleanup.run(); }
+            @Override public void testAddedForRerun(GameTestInfo info, GameTestInfo retry, GameTestRunner runner) { cleanup.run(); }
+        });
+        forcedByThisTest[0] = nether.setChunkForced(netherChunkX, netherChunkZ, true);
+        // setChunkForced loads blocks but does not make an entity enter the ServerLevel's ticking
+        // entity manager.  A distance-two full-chunk ticket is ENTITY_TICKING (ChunkLevel level
+        // 31); forceTicks=true also records it in the ticking-ticket tracker.  This is deliberately
+        // test-owned and terminal-listener-released, unlike the founded-town state being observed.
+        nether.getChunkSource().addRegionTicket(TicketType.PORTAL, netherChunk, 2, netherResidentPos, true);
+        ticketOwnedByThisTest[0] = true;
+        // Public FULL preparation establishes the exact 5x5 prerequisite for the subsequent
+        // readiness gate; it neither substitutes for nor changes those real readiness probes.
+        prepareEntityTickingNeighborhood(nether, netherChunk);
         storage.markTownFounded(TownKeys.keyFor(nether.dimension(), netherRegion));
-        Villager netherResident = EntityType.VILLAGER.create(nether, null, netherResidentPos, MobSpawnType.EVENT, false, false);
-        helper.assertTrue(netherResident != null, "test setup: Nether villager must be constructible");
-        boolean added = nether.addFreshEntity(netherResident);
         helper.startSequence()
-                // A forced chunk is synchronously block-readable but its entity manager is not
-                // necessarily tracking a just-added entity until normal GameTest ticks progress.
-                .thenIdle(20)
+                // A ticket request is not readiness.  Wait for the same target chunk to report
+                // ticking completion, entity-manager visibility, and completed entity storage load
+                // before creating the exact resident that must be visible to production iteration.
+                .thenWaitUntil(() -> {
+                    long netherChunkLong = netherChunk.toLong();
+                    boolean fullChunkPresent = nether.getChunkSource().getChunkNow(netherChunk.x, netherChunk.z) != null;
+                    boolean blockTickEligible = nether.shouldTickBlocksAt(netherChunkLong);
+                    long netherGameTimeNow = nether.getGameTime();
+                    boolean chunkTicking = nether.getChunkSource().isPositionTicking(netherChunkLong);
+                    boolean entityManagerTicking = nether.isNaturalSpawningAllowed(netherChunk);
+                    boolean entitiesLoaded = nether.areEntitiesLoaded(netherChunkLong);
+                    String radius2DebugSnapshot = chunkTicking && entityManagerTicking && entitiesLoaded
+                            ? ""
+                            : chunkDebugSnapshot(nether, netherChunk);
+                    helper.assertTrue(chunkTicking && entityManagerTicking && entitiesLoaded,
+                            "test setup: Nether resident chunk readiness timed out; chunk=" + netherChunk
+                                    + ", initialForced=" + initiallyForced
+                                    + ", forceAdded=" + forcedByThisTest[0]
+                                    + ", currentlyForced=" + nether.getForcedChunks().contains(netherChunkLong)
+                                    + ", fullChunkPresent=" + fullChunkPresent
+                                    + ", blockTickEligible=" + blockTickEligible
+                                    + ", netherGameTimeAtSetup=" + netherGameTimeAtSetup
+                                    + ", netherGameTimeNow=" + netherGameTimeNow
+                                    + ", netherGameTimeDelta=" + (netherGameTimeNow - netherGameTimeAtSetup)
+                                    + ", chunkTicking=" + chunkTicking
+                                    + ", entityManagerTicking=" + entityManagerTicking
+                                    + ", entitiesLoaded=" + entitiesLoaded
+                                    + ", radius2ChunkDebug=" + radius2DebugSnapshot);
+                })
                 .thenExecute(() -> {
-                    try {
-                        boolean chunkLoaded = nether.hasChunkAt(netherResidentPos);
-                        boolean founded = storage.hasFoundedTown(TownKeys.keyFor(nether.dimension(), netherRegion));
-                        boolean uuidLookupMatches = nether.getEntity(netherResident.getUUID()) == netherResident;
-                        boolean alive = netherResident.isAlive();
-                        boolean unhoused = netherResident.getBrain().getMemory(MemoryModuleType.HOME).isEmpty();
-                        boolean correctRegion = TownRegion.fromBlockCoords(netherResident.blockPosition().getX(), netherResident.blockPosition().getZ())
+                    netherResident[0] = EntityType.VILLAGER.create(nether, null, netherResidentPos, MobSpawnType.EVENT, false, false);
+                    helper.assertTrue(netherResident[0] != null, "test setup: Nether villager must be constructible");
+                    boolean added = nether.addFreshEntity(netherResident[0]);
+                    boolean chunkLoaded = nether.hasChunkAt(netherResidentPos);
+                    boolean founded = storage.hasFoundedTown(TownKeys.keyFor(nether.dimension(), netherRegion));
+                    Entity uuidLookup = nether.getEntity(netherResident[0].getUUID());
+                    boolean uuidLookupMatches = uuidLookup == netherResident[0];
+                    boolean alive = netherResident[0].isAlive();
+                    boolean removed = netherResident[0].isRemoved();
+                    boolean unhoused = netherResident[0].getBrain().getMemory(MemoryModuleType.HOME).isEmpty();
+                    boolean correctRegion = TownRegion.fromBlockCoords(netherResident[0].blockPosition().getX(), netherResident[0].blockPosition().getZ())
                                 .equals(netherRegion);
-                        boolean inProductionIterable = false;
-                        for (Entity entity : nether.getEntities().getAll()) {
-                            if (entity == netherResident) {
-                                inProductionIterable = true;
-                                break;
-                            }
+                    boolean inProductionIterable = false;
+                    int sameRegionVillagers = 0;
+                    int sameUuidEntities = 0;
+                    for (Entity entity : nether.getEntities().getAll()) {
+                        if (entity == netherResident[0]) {
+                            inProductionIterable = true;
                         }
-                        helper.assertTrue(chunkLoaded, "test setup: forced Nether resident chunk must be loaded at " + netherResidentPos);
-                        helper.assertTrue(founded, "test setup: Nether resident region must be founded: " + netherRegion);
-                        helper.assertTrue(added, "test setup: Nether resident must be accepted by the level entity manager");
-                        helper.assertTrue(uuidLookupMatches, "test setup: UUID lookup must return the Nether resident");
-                        helper.assertTrue(alive, "test setup: Nether resident must remain alive after tracking wait");
-                        helper.assertTrue(unhoused, "test setup: Nether resident must remain without HOME after tracking wait");
-                        helper.assertTrue(correctRegion, "test setup: Nether resident must remain in queried region " + netherRegion);
-                        helper.assertTrue(inProductionIterable,
-                                "test setup: Nether resident must appear in the production level.getEntities().getAll() iterable");
-                        TownResidentDemand netherDemand = TownResidentAllocationHandler.unmetDemand(nether, netherRegion, storage);
-                        helper.assertTrue(netherDemand == TownResidentDemand.NONE,
-                                "the non-Overworld guard must suppress demand despite a visible founded Nether resident; demand=" + netherDemand);
-                    } finally {
-                        netherResident.discard();
-                        if (forcedByThisTest) {
-                            nether.setChunkForced(netherChunkX, netherChunkZ, false);
+                        if (entity.getUUID().equals(netherResident[0].getUUID())) {
+                            sameUuidEntities++;
+                        }
+                        if (entity instanceof Villager villager
+                                && TownRegion.fromBlockCoords(villager.blockPosition().getX(), villager.blockPosition().getZ())
+                                .equals(netherRegion)) {
+                            sameRegionVillagers++;
                         }
                     }
+                    String trackingState = "createdUuid=" + netherResident[0].getUUID()
+                                + ", added=" + added
+                                + ", lookup=" + uuidLookup
+                                + ", lookupUuid=" + (uuidLookup == null ? "none" : uuidLookup.getUUID())
+                                + ", sameInstance=" + uuidLookupMatches
+                                + ", alive=" + alive
+                                + ", removed=" + removed
+                                + ", iterable=" + inProductionIterable
+                                + ", sameUuidEntities=" + sameUuidEntities
+                                + ", sameRegionVillagers=" + sameRegionVillagers
+                                + ", requestedDimension=" + nether.dimension()
+                                + ", actualDimension=" + netherResident[0].level().dimension()
+                                + ", requestedRegion=" + netherRegion
+                                + ", actualRegion=" + TownRegion.fromBlockCoords(netherResident[0].blockPosition().getX(), netherResident[0].blockPosition().getZ())
+                                + ", position=" + netherResident[0].blockPosition();
+                    helper.assertTrue(chunkLoaded, "test setup: forced Nether resident chunk must be loaded at " + netherResidentPos);
+                    helper.assertTrue(founded, "test setup: Nether resident region must be founded: " + netherRegion);
+                    helper.assertTrue(added && uuidLookupMatches && alive && !removed && unhoused && correctRegion && inProductionIterable
+                                    && sameUuidEntities == 1,
+                            "test setup: the exact created Nether resident must remain uniquely UUID-resolvable, live, unremoved, unhoused, "
+                                    + "in the queried dimension/region, and visible to the production iterable; " + trackingState);
+                    TownResidentDemand netherDemand = TownResidentAllocationHandler.unmetDemand(nether, netherRegion, storage);
+                    helper.assertTrue(netherDemand == TownResidentDemand.NONE,
+                            "the non-Overworld guard must suppress demand despite a visible founded Nether resident; demand=" + netherDemand);
                 })
                 .thenSucceed();
     }
@@ -1211,15 +1546,19 @@ public final class TownResidentAllocationHandlerGameTests {
         // aResidentWhoseHomeIsOutsideItsCurrentRegionIsReassignedAndTheOldTicketReleased's own, so the
         // two tests' far fixtures can never land on each other.
         BlockPos absoluteAnchor = helper.absolutePos(anchor(helper));
-        BlockPos oldHome = absoluteAnchor.offset(60_000, 65 - absoluteAnchor.getY(), -60_000);
+        BlockPos oldHome = distantFixtureHome(absoluteAnchor, 60_000, -60_000);
         BlockPos oldWorkstation = oldHome.offset(4, 0, 0);
         BlockPos spareBed = oldHome.offset(-4, 0, 0);
         BlockPos spareWorkstation = oldHome.offset(8, 0, 0);
         RegionCoord oldRegion = TownRegion.fromBlockCoords(oldHome.getX(), oldHome.getZ());
+        BlockPos spareBedFoot = spareBed.north();
         helper.assertTrue(!oldRegion.equals(region)
+                        && TownRegion.fromBlockCoords(oldWorkstation.getX(), oldWorkstation.getZ()).equals(oldRegion)
                         && TownRegion.fromBlockCoords(spareBed.getX(), spareBed.getZ()).equals(oldRegion)
-                        && TownRegion.fromBlockCoords(spareWorkstation.getX(), spareWorkstation.getZ()).equals(oldRegion),
-                "test setup: the old fixtures must share one region, different from A's current one");
+                        && TownRegion.fromBlockCoords(spareBedFoot.getX(), spareBedFoot.getZ()).equals(oldRegion)
+                        && TownRegion.fromBlockCoords(spareWorkstation.getX(), spareWorkstation.getZ()).equals(oldRegion)
+                        && distantFixtureHomeRegressionHolds(),
+                "test setup: every old fixture position and bed foot must share one different region and deterministic lane-boundary cases");
         placeValidBedAt(level, oldHome);
         placeWorkstationAt(level, oldWorkstation, Blocks.BLAST_FURNACE);
         placeValidBedAt(level, spareBed);

@@ -1,5 +1,6 @@
 package io.github.brooswitminecraft.dynamicvehicles.town;
 
+import io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
 import net.minecraft.core.HolderLookup;
@@ -7,6 +8,9 @@ import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.entity.ai.village.poi.PoiTypes;
 import net.minecraft.world.level.Level;
@@ -19,6 +23,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import net.minecraft.world.entity.npc.VillagerProfession;
 
 /**
  * Server-wide persistence for Dynamic Towns: one {@link TownResourceStore} per town, plus the
@@ -82,6 +87,9 @@ public final class TownStorage extends SavedData {
      * position from the next preparation scan. */
     private final Set<String> blockedTerrainSites = new HashSet<>();
     private final Map<String, UUID> reservationOwners = new HashMap<>();
+    /** Durable, beneficiary-keyed capacity admissions.  They are intents only; no POI ticket or
+     * resource debit is represented here. */
+    private final Map<String, ResidentCapacityAdmission> capacityAdmissions = new HashMap<>();
 
     public static TownStorage of(MinecraftServer server) {
         return server.overworld().getDataStorage()
@@ -217,6 +225,59 @@ public final class TownStorage extends SavedData {
     public void clearReservationOwner(ResourceKey<Level> dimension, BlockPos pos) {
         reservationOwners.remove(cellKey(dimension, pos));
         setDirty();
+    }
+
+    Optional<ResidentCapacityAdmission> capacityAdmissionFor(ResourceKey<Level> dimension, RegionCoord region,
+            UUID beneficiaryId) {
+        return Optional.ofNullable(capacityAdmissions.get(capacityAdmissionKey(dimension, region, beneficiaryId)));
+    }
+
+    /** Creates one admission atomically for the durable beneficiary identity.  A later allocation
+     * tick must reuse a nonterminal admission rather than manufacture another anchor, debit, or
+     * reservation. */
+    ResidentCapacityAdmission createOrReuseCapacityAdmission(ResidentCapacityAdmission admission) {
+        String key = capacityAdmissionKey(admission.dimension(), admission.region(), admission.beneficiaryId());
+        ResidentCapacityAdmission existing = capacityAdmissions.get(key);
+        if (existing != null && !existing.state().terminal()) {
+            return existing;
+        }
+        capacityAdmissions.put(key, admission);
+        setDirty();
+        return admission;
+    }
+
+    /** Replaces only an unbound intent at its durable beneficiary identity.  A BUILDING admission
+     * remains fail-closed because it may already own in-flight construction work. */
+    Optional<ResidentCapacityAdmission> replaceAwaitingCapacityAdmission(ResidentCapacityAdmission admission) {
+        String key = capacityAdmissionKey(admission.dimension(), admission.region(), admission.beneficiaryId());
+        ResidentCapacityAdmission existing = capacityAdmissions.get(key);
+        if (existing == null || existing.state() != ResidentCapacityAdmission.State.AWAITING_CLAIM) {
+            return Optional.empty();
+        }
+        capacityAdmissions.put(key, admission);
+        setDirty();
+        return Optional.of(admission);
+    }
+
+    /** Retires only an unbound request after its live beneficiary has no remaining validated need.
+     * A BUILDING record is intentionally left untouched because it may already own construction. */
+    Optional<ResidentCapacityAdmission> cancelAwaitingCapacityAdmission(ResourceKey<Level> dimension, RegionCoord region,
+            UUID beneficiaryId) {
+        String key = capacityAdmissionKey(dimension, region, beneficiaryId);
+        ResidentCapacityAdmission existing = capacityAdmissions.get(key);
+        if (existing == null || existing.state() != ResidentCapacityAdmission.State.AWAITING_CLAIM) {
+            return Optional.empty();
+        }
+        ResidentCapacityAdmission cancelled = new ResidentCapacityAdmission(existing.dimension(), existing.townKey(),
+                existing.region(), existing.beneficiaryId(), existing.requestedHomes(), existing.requestedWorkplaces(),
+                existing.siteOwner(), existing.planSignature(), ResidentCapacityAdmission.State.CANCELLED);
+        capacityAdmissions.put(key, cancelled);
+        setDirty();
+        return Optional.of(cancelled);
+    }
+
+    static String capacityAdmissionKey(ResourceKey<Level> dimension, RegionCoord region, UUID beneficiaryId) {
+        return dimension.location() + "@" + region.x() + "," + region.z() + ":" + beneficiaryId;
     }
 
     /**
@@ -436,6 +497,30 @@ public final class TownStorage extends SavedData {
             reservationOwnerList.add(entryTag);
         }
         tag.put("ReservationOwners", reservationOwnerList);
+
+        ListTag admissions = new ListTag();
+        for (ResidentCapacityAdmission admission : capacityAdmissions.values()) {
+            CompoundTag entry = new CompoundTag();
+            entry.putString("Dimension", admission.dimension().location().toString());
+            entry.putString("TownKey", admission.townKey());
+            entry.putInt("RegionX", admission.region().x());
+            entry.putInt("RegionZ", admission.region().z());
+            entry.putUUID("Beneficiary", admission.beneficiaryId());
+            entry.putInt("Homes", admission.requestedHomes());
+            entry.putString("SiteOwner", admission.siteOwner());
+            entry.putString("PlanSignature", admission.planSignature());
+            entry.putString("State", admission.state().name());
+            ListTag workplaces = new ListTag();
+            for (Map.Entry<VillagerProfession, Integer> workplace : admission.requestedWorkplaces().entrySet()) {
+                CompoundTag requested = new CompoundTag();
+                requested.putString("Profession", BuiltInRegistries.VILLAGER_PROFESSION.getKey(workplace.getKey()).toString());
+                requested.putInt("Count", workplace.getValue());
+                workplaces.add(requested);
+            }
+            entry.put("Workplaces", workplaces);
+            admissions.add(entry);
+        }
+        tag.put("ResidentCapacityAdmissions", admissions);
         return tag;
     }
 
@@ -492,6 +577,36 @@ public final class TownStorage extends SavedData {
         for (int i = 0; i < reservationOwnerList.size(); i++) {
             CompoundTag entryTag = reservationOwnerList.getCompound(i);
             storage.reservationOwners.put(entryTag.getString("Key"), entryTag.getUUID("Owner"));
+        }
+        ListTag admissions = tag.getList("ResidentCapacityAdmissions", Tag.TAG_COMPOUND);
+        for (int i = 0; i < admissions.size(); i++) {
+            CompoundTag entry = admissions.getCompound(i);
+            try {
+                Map<VillagerProfession, Integer> workplaces = new HashMap<>();
+                ListTag requestedWorkplaces = entry.getList("Workplaces", Tag.TAG_COMPOUND);
+                for (int j = 0; j < requestedWorkplaces.size(); j++) {
+                    CompoundTag requested = requestedWorkplaces.getCompound(j);
+                    ResourceLocation professionId = ResourceLocation.tryParse(requested.getString("Profession"));
+                    VillagerProfession profession = professionId == null ? null
+                            : BuiltInRegistries.VILLAGER_PROFESSION.get(professionId);
+                    if (profession == null || requested.getInt("Count") <= 0) {
+                        throw new IllegalArgumentException("invalid persisted capacity workplace");
+                    }
+                    workplaces.put(profession, requested.getInt("Count"));
+                }
+                ResourceLocation dimensionId = ResourceLocation.tryParse(entry.getString("Dimension"));
+                if (dimensionId == null) {
+                    throw new IllegalArgumentException("invalid persisted capacity dimension");
+                }
+                ResourceKey<Level> dimension = ResourceKey.create(Registries.DIMENSION, dimensionId);
+                ResidentCapacityAdmission admission = new ResidentCapacityAdmission(dimension, entry.getString("TownKey"),
+                        new RegionCoord(entry.getInt("RegionX"), entry.getInt("RegionZ")), entry.getUUID("Beneficiary"),
+                        entry.getInt("Homes"), workplaces, entry.getString("SiteOwner"), entry.getString("PlanSignature"),
+                        ResidentCapacityAdmission.State.valueOf(entry.getString("State")));
+                storage.capacityAdmissions.put(capacityAdmissionKey(dimension, admission.region(), admission.beneficiaryId()), admission);
+            } catch (IllegalArgumentException ignored) {
+                // Skip only this malformed admission; unrelated persisted town records remain intact.
+            }
         }
         return storage;
     }

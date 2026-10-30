@@ -3,9 +3,14 @@ package io.github.brooswitminecraft.dynamicvehicles.town;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
 
 /**
  * MINECRAFT-388 review finding #1: before {@link TownConstructionService} mutates any block at a
@@ -61,36 +66,79 @@ public final class TownSitePreflight {
     public static boolean isSiteSafe(ServerLevel level, BlockPos campfire, int radius, int baseY, int plannedTopY,
             java.util.function.Predicate<BlockPos> matchesPlannedBlock, java.util.UUID claimantId,
             java.util.function.Predicate<BlockPos> isBlocked) {
+        return firstRejection(level, campfire, radius, baseY, plannedTopY, matchesPlannedBlock, claimantId, isBlocked, false).isEmpty();
+    }
+
+    /**
+     * Returns the first production preflight rejection using the same traversal and predicates as
+     * {@link #isSiteSafe}.  Package-visible so the town GameTest can report a failed fixture's
+     * exact cell and live state without recreating a second, potentially divergent preflight.
+     */
+    static Optional<Rejection> firstRejection(ServerLevel level, BlockPos campfire, int radius, int baseY, int plannedTopY,
+            java.util.function.Predicate<BlockPos> matchesPlannedBlock, java.util.UUID claimantId,
+            java.util.function.Predicate<BlockPos> isBlocked) {
+        return firstRejection(level, campfire, radius, baseY, plannedTopY, matchesPlannedBlock, claimantId, isBlocked, true);
+    }
+
+    private static Optional<Rejection> firstRejection(ServerLevel level, BlockPos campfire, int radius, int baseY, int plannedTopY,
+            java.util.function.Predicate<BlockPos> matchesPlannedBlock, java.util.UUID claimantId,
+            java.util.function.Predicate<BlockPos> isBlocked, boolean detailedOccupants) {
         for (int x = -radius; x <= radius; x++) {
             for (int z = -radius; z <= radius; z++) {
                 int columnX = campfire.getX() + x;
                 int columnZ = campfire.getZ() + z;
                 if (!level.hasChunkAt(new BlockPos(columnX, baseY, columnZ))) {
-                    return false;
+                    // Do not turn a failed availability guard into a chunk acquisition merely to
+                    // describe it.  The production path must remain no-load at this early exit.
+                    return Optional.of(Rejection.unavailable("unloaded-chunk", new BlockPos(columnX, baseY, columnZ)));
                 }
                 int columnTop = Math.max(plannedTopY, TownTerrain.rawCanopyTop(level, columnX, columnZ));
                 for (int y = baseY; y <= columnTop; y++) {
                     BlockPos pos = new BlockPos(columnX, y, columnZ);
                     if (!level.getWorldBorder().isWithinBounds(pos)) {
-                        return false;
+                        // A border rejection is likewise intentionally reported without reading
+                        // the cell: it may be outside the server's available world data.
+                        return Optional.of(Rejection.unavailable("world-border", pos));
                     }
                     if (isBlocked.test(pos)) {
-                        return false;
+                        return Optional.of(Rejection.at("blocked-cell", pos, level));
                     }
                     if (!isSafeToOverwrite(level, pos, campfire) && !matchesPlannedBlock.test(pos)) {
-                        return false;
+                        return Optional.of(Rejection.at("unsafe-block", pos, level));
                     }
                     // [Review round 4, finding #6] The whole-site preflight must reject an occupied
                     // footprint, not merely scan blocks: a player, mob, or other villager anywhere
                     // in the planned volume means this tick is not safe to start mutating, the same
                     // way protected block content already aborts the whole site.
-                    if (isEntityBlocking(level, pos, campfire, claimantId)) {
-                        return false;
+                    if (detailedOccupants) {
+                        List<String> occupants = blockingOccupants(level, pos, campfire, claimantId);
+                        if (!occupants.isEmpty()) {
+                            return Optional.of(Rejection.at("foreign-occupant", pos, level, occupants));
+                        }
+                    } else if (isEntityBlocking(level, pos, campfire, claimantId)) {
+                        return Optional.of(Rejection.at("foreign-occupant", pos, level));
                     }
                 }
             }
         }
-        return true;
+        return Optional.empty();
+    }
+
+    /** A lossless description of the cell that made production preflight refuse the site. */
+    static record Rejection(String reason, BlockPos position, String state, String blockEntity, List<String> occupants) {
+        private static Rejection unavailable(String reason, BlockPos position) {
+            return new Rejection(reason, position.immutable(), "unavailable", "unavailable", List.of());
+        }
+
+        private static Rejection at(String reason, BlockPos position, ServerLevel level) {
+            return at(reason, position, level, List.of());
+        }
+
+        private static Rejection at(String reason, BlockPos position, ServerLevel level, List<String> occupants) {
+            BlockEntity blockEntity = level.getBlockEntity(position);
+            return new Rejection(reason, position.immutable(), String.valueOf(level.getBlockState(position)),
+                    blockEntity == null ? "none" : String.valueOf(blockEntity.getType()), List.copyOf(occupants));
+        }
     }
 
     /**
@@ -117,15 +165,20 @@ public final class TownSitePreflight {
      * overlaps.
      */
     public static boolean isEntityBlocking(ServerLevel level, BlockPos pos, BlockPos campfire, java.util.UUID claimantId) {
+        return !blockingOccupants(level, pos, campfire, claimantId).isEmpty();
+    }
+
+    private static List<String> blockingOccupants(ServerLevel level, BlockPos pos, BlockPos campfire, java.util.UUID claimantId) {
         AABB cell = new AABB(pos);
         boolean inCampfireColumn = pos.getX() == campfire.getX() && pos.getZ() == campfire.getZ();
+        List<String> occupants = new ArrayList<>();
         for (Entity entity : level.getEntities((Entity) null, cell)) {
             if (inCampfireColumn && claimantId != null && entity.getUUID().equals(claimantId)) {
                 continue; // the EXACT claiming villager parking at its own reserved campfire column
             }
-            return true;
+            occupants.add(entity.getType() + " uuid=" + entity.getUUID() + " pos=" + entity.position());
         }
-        return false;
+        return occupants;
     }
 
     /**

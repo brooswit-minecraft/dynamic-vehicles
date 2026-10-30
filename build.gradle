@@ -64,12 +64,17 @@ def m478Profiles = [
         native     : 'dynamicvehicles_m478_native',
         interaction: 'dynamicvehicles_m478_interaction'
 ]
+def m454GameTestNamespaces = [
+        'dynamicvehicles_m454_donation',
+        'dynamicvehicles_m454_passive_stone',
+        'dynamicvehicles_m454_passive_unloaded'
+]
 def m478Profile = findProperty('m478GameTestProfile') as String
 if (m478Profile != null && !m478Profiles.containsKey(m478Profile)) {
     throw new GradleException("m478GameTestProfile must be one of ${m478Profiles.keySet()}, not '${m478Profile}'")
 }
 def gameTestNamespaces = m478Profile == null
-        ? ([project.mod_id] + m478Profiles.values()).join(',')
+        ? ([project.mod_id] + m478Profiles.values() + m454GameTestNamespaces).join(',')
         : m478Profiles.get(m478Profile)
 
 neoForge {
@@ -90,13 +95,13 @@ neoForge {
             if (project.hasProperty('quickPlayMp')) {
                 programArguments.addAll('--quickPlayMultiplayer', project.property('quickPlayMp'))
             }
-            systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+            systemProperty 'neoforge.enabledGameTestNamespaces', "${project.mod_id},dynamicvehicles_m454_donation,dynamicvehicles_m454_passive_stone,dynamicvehicles_m454_passive_unloaded"
         }
 
         server {
             server()
             programArgument '--nogui'
-            systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+            systemProperty 'neoforge.enabledGameTestNamespaces', "${project.mod_id},dynamicvehicles_m454_donation,dynamicvehicles_m454_passive_stone,dynamicvehicles_m454_passive_unloaded"
         }
 
         gameTestServer {
@@ -107,6 +112,80 @@ neoForge {
             if (project.hasProperty('m478GameDirectory')) {
                 gameDirectory.fileValue(file(project.property('m478GameDirectory')))
             }
+        }
+
+        m454DonationGameTestServer {
+            type = "gameTestServer"
+            gameDirectory = layout.dir(providers.provider { file('/tmp/m454-gametest-donation-20261029/game') })
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m454_donation'
+        }
+
+        m454PassiveStoneGameTestServer {
+            type = "gameTestServer"
+            gameDirectory = layout.dir(providers.provider { file('/tmp/m454-gametest-passive-stone-retry3-20261029/game') })
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m454_passive_stone'
+        }
+
+        m454PassiveUnloadedGameTestServer {
+            type = "gameTestServer"
+            gameDirectory = layout.dir(providers.provider { file('/tmp/m454-gametest-passive-unloaded-retry2-20261030/game') })
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m454_passive_unloaded'
+        }
+
+        m454WanderingClaimGameTestServer {
+            type = "gameTestServer"
+            gameDirectory = layout.dir(providers.provider { file('/tmp/m454-wandering-claim-diagnostic-retry-20261030/game') })
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m454_wandering_claim'
+        }
+
+        m454OldHomeFixtureGameTestServer {
+            type = "gameTestServer"
+            gameDirectory = layout.dir(providers.provider { file('/tmp/m454-old-home-fixture-20261030/game') })
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m454_old_home_fixture'
+        }
+
+        m454OldHomeFixtureFailureGameTestServer {
+            type = "gameTestServer"
+            gameDirectory = layout.dir(providers.provider { file('/tmp/m454-old-home-fixture-failure-20261030/game') })
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m454_old_home_fixture_failure'
+        }
+
+        m454WingTwoSpeedDiagnosticGameTestServer {
+            type = "gameTestServer"
+            gameDirectory = layout.dir(providers.provider { file('/tmp/m454-wing-two-speed-diagnostic-20261030/game') })
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m454_wing_two_speed_diagnostic'
+        }
+
+        m454PartialContactDiagnosticGameTestServer {
+            type = "gameTestServer"
+            gameDirectory = layout.dir(providers.provider { file('/tmp/m454-partial-contact-diagnostic-20261030/game') })
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m454_partial_contact_diagnostic'
+        }
+
+        m454DonationBoxGameTestServer {
+            type = "gameTestServer"
+            gameDirectory = layout.dir(providers.provider { file('/tmp/m454-donation-box-crosssave-20261030/game') })
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m454_donation_box'
+        }
+        m454DonationBoxInteractionGameTestServer {
+            type = "gameTestServer"
+            gameDirectory = layout.dir(providers.provider { file('/tmp/m454-donation-box-interaction-20261030/game') })
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m454_donation_box_interaction'
+        }
+        m454DonationBoxReverseSaveGameTestServer {
+            type = "gameTestServer"
+            gameDirectory = layout.dir(providers.provider { file('/tmp/m454-donation-box-reversesave-20261030/game') })
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m454_donation_box_reversesave'
+        }
+        m454DonationBoxFinalTwoGameTestServer {
+            type = "gameTestServer"
+            gameDirectory = layout.dir(providers.provider { file('/tmp/m454-donation-box-finaltwo-20261030/game') })
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m454_donation_box_finaltwo'
+        }
+        m454DonationBoxRemovalGameTestServer {
+            type = "gameTestServer"
+            gameDirectory = layout.dir(providers.provider { file('/tmp/m454-donation-box-removal-20261030/game') })
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m454_donation_box_removal'
         }
 
         data {

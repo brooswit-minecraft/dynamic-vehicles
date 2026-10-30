@@ -3,10 +3,16 @@ package io.github.brooswitminecraft.dynamicvehicles;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.gametest.framework.GameTestInfo;
+import net.minecraft.gametest.framework.GameTestListener;
+import net.minecraft.gametest.framework.GameTestRunner;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
@@ -325,8 +331,12 @@ public final class WingAeroGameTests {
      *
      * <p>Both carry the same wing AND the same stock drag coefficient, so the only material difference
      * between the two readings is the speed each is travelling at. */
-    @GameTest(template = "settlement_test", timeoutTicks = 400 + VehicleLanes.CHUNK_LOAD_ALLOWANCE)
+    @GameTest(template = "settlement_test", timeoutTicks = 400 + VehicleLanes.CHUNK_LOAD_ALLOWANCE, batch = "wingTwoSpeedDownforceIsolated")
     public static void wingDownforceLoadsTheSuspensionMoreAtHigherSpeed(GameTestHelper helper) {
+        TwoSpeedDiagnostic diagnostic = new TwoSpeedDiagnostic();
+        // This listener is deliberately registered before VehicleLanes registers its cleanup listener, so a
+        // terminal failure records the live cars before fixture cleanup discards them.
+        helper.testInfo.addListener(diagnostic);
         VehicleLanes.build(helper, VehicleLanes.Site.WING_AT_TWO_SPEEDS, lanes -> {
             Vec3 fastSpawn = stoneLane(lanes, FIRST_CAR_LANE_X);
             Vec3 slowSpawn = stoneLane(lanes, SECOND_CAR_LANE_X);
@@ -334,17 +344,25 @@ public final class WingAeroGameTests {
                     wingJsonWithOnlyDownforce(STRONG_DOWNFORCE_COEFF, STRONG_DOWNFORCE_COEFF), () -> {
                         CarEntity fastCar = lanes.spawn(DynamicVehiclesMod.CAR.get(), fastSpawn);
                         CarEntity slowCar = lanes.spawn(DynamicVehiclesMod.CAR.get(), slowSpawn);
+                        diagnostic.capture("spawned", helper.getTick(), fastCar, slowCar);
                         lanes.assertStaysOnLane(fastCar, FIRST_CAR_LANE_X, STONE_WHEELS, LANE_WEAR, SETTLE_TICKS,
                                 COAST_SPIN_UP_TICKS + LAUNCH_TRANSIENT_TICKS - 1L, "faster car");
                         lanes.assertStaysOnLane(slowCar, SECOND_CAR_LANE_X, STONE_WHEELS, LANE_WEAR, SETTLE_TICKS,
                                 COAST_SPIN_UP_TICKS + LAUNCH_TRANSIENT_TICKS - 1L, "slower car");
                         fastCar.forceDrive(FULL_THROTTLE, NO_STEER, COAST_SPIN_UP_TICKS);
                         slowCar.forceDrive(FULL_THROTTLE, NO_STEER, SHORT_SPIN_UP_TICKS);
-                        helper.runAfterDelay(SHORT_SPIN_UP_TICKS, () -> slowCar.selectGear(CarPhysics.Gear.NEUTRAL));
-                        helper.runAfterDelay(COAST_SPIN_UP_TICKS, () -> fastCar.selectGear(CarPhysics.Gear.NEUTRAL));
+                        helper.runAfterDelay(SHORT_SPIN_UP_TICKS, () -> {
+                            slowCar.selectGear(CarPhysics.Gear.NEUTRAL);
+                            diagnostic.capture("slow-neutral", helper.getTick(), fastCar, slowCar);
+                        });
+                        helper.runAfterDelay(COAST_SPIN_UP_TICKS, () -> {
+                            fastCar.selectGear(CarPhysics.Gear.NEUTRAL);
+                            diagnostic.capture("fast-neutral", helper.getTick(), fastCar, slowCar);
+                        });
                         // Both are coasting with their launch transient decayed by this point: the slow car
                         // released throttle earlier, which only widens the speed gap being tested.
                         helper.runAfterDelay(COAST_SPIN_UP_TICKS + LAUNCH_TRANSIENT_TICKS, () -> {
+                            diagnostic.capture("final-sample", helper.getTick(), fastCar, slowCar);
                             double fastSpeed = horizontalSpeed(fastCar);
                             double slowSpeed = horizontalSpeed(slowCar);
                             double fastCompression = totalTravel(fastCar);
@@ -376,6 +394,43 @@ public final class WingAeroGameTests {
                         });
                     });
         });
+    }
+
+    /** Terminal receipt for the two-speed setup; it observes the production entity state without changing
+     * controls, timing, or any assertion. */
+    private static final class TwoSpeedDiagnostic implements GameTestListener {
+        private final List<String> history = new ArrayList<>();
+
+        void capture(String phase, long gameTick, CarEntity fastCar, CarEntity slowCar) {
+            history.add(phase + "@gameTick=" + gameTick + " fast=[" + describe(fastCar) + "] slow=["
+                    + describe(slowCar) + "]");
+        }
+
+        private static String describe(CarEntity car) {
+            if (car == null) {
+                return "absent";
+            }
+            String airflow = car.sableBody() instanceof SableCarBody body
+                    ? Double.toString(body.lastAeroAirflowSpeed()) : "no-body";
+            return "age=" + car.tickCount + " pos=" + car.position() + " speed=" + horizontalSpeed(car)
+                    + " airflow=" + airflow + " throttle=" + car.debugLastThrottle() + " gear=" + car.debugLastGear()
+                    + " contacts=" + Arrays.toString(car.debugWheelContactSubSteps());
+        }
+
+        private void emit(String outcome) {
+            DynamicVehiclesMod.LOGGER.info("M454 wing two-speed diagnostic outcome={} history={}", outcome,
+                    history.isEmpty() ? "none" : String.join(" | ", history));
+        }
+
+        @Override public void testStructureLoaded(GameTestInfo info) {}
+        @Override public void testPassed(GameTestInfo info, GameTestRunner runner) { emit("passed"); }
+        @Override public void testAddedForRerun(GameTestInfo info, GameTestInfo retry, GameTestRunner runner) {}
+
+        @Override
+        public void testFailed(GameTestInfo info, GameTestRunner runner) {
+            DynamicVehiclesMod.LOGGER.error("M454 wing two-speed diagnostic outcome=failed history={}",
+                    history.isEmpty() ? "none" : String.join(" | ", history));
+        }
     }
 
     /** Mean suspension compression across every wheel &mdash; front and rear axles combined, the quantity

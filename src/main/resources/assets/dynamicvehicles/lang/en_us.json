@@ -36,6 +36,7 @@
   "entity.minecraft.villager.dynamicvehicles.pathfinder": "Pathfinder",
   "block.dynamicvehicles.dispatch_board": "Dispatch Board",
   "block.dynamicvehicles.route_board": "Route Board",
+  "block.dynamicvehicles.town_donation_box": "Town Donation Box",
   "gui.dynamicvehicles.dispatcher.no_offers": "No destinations available right now.",
   "gui.dynamicvehicles.pathfinder.wrong_dimension": "Wrong dimension for this checkpoint",
   "gauge.dynamicvehicles.danger.safe": "Safe",

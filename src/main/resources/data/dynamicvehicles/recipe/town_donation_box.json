@@ -1,0 +1,6 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": ["PPP", "PCP", "PPP"],
+  "key": {"P": {"item": "minecraft:oak_planks"}, "C": {"item": "minecraft:chest"}},
+  "result": {"id": "dynamicvehicles:town_donation_box", "count": 1}
+}

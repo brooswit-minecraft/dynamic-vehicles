@@ -13,6 +13,8 @@ import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.entity.ai.memory.MemoryModuleType;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.npc.VillagerProfession;
+import net.minecraft.world.entity.ai.village.poi.PoiTypes;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.trading.ItemCost;
@@ -62,9 +64,17 @@ public final class TownDonationHandlerGameTests {
      *  region must actually be founded - marks both so these tests exercise genuinely live
      *  activity, not merely a bare coordinate in open air. */
     private static void markLiveAndFounded(GameTestHelper helper, BlockPos relativeJobSiteBlock, BlockPos absoluteJobSite) {
-        helper.setBlock(relativeJobSiteBlock, Blocks.SMOKER);
+        helper.setBlock(relativeJobSiteBlock, Blocks.COMPOSTER);
+        registerAndTakeJobSite(helper, absoluteJobSite);
         RegionCoord region = TownRegion.fromBlockCoords(absoluteJobSite.getX(), absoluteJobSite.getZ());
         TownStorage.of(helper.getLevel().getServer()).markTownFounded(TownKeys.keyFor(helper.getLevel().dimension(), region));
+    }
+
+    private static void registerAndTakeJobSite(GameTestHelper helper, BlockPos absoluteJobSite) {
+        PoiTypes.forState(helper.getLevel().getBlockState(absoluteJobSite)).ifPresent(type -> {
+            helper.getLevel().getPoiManager().add(absoluteJobSite, type);
+            helper.getLevel().getPoiManager().take(t -> true, (t, pos) -> pos.equals(absoluteJobSite), absoluteJobSite, 1);
+        });
     }
 
     /**
@@ -132,16 +142,42 @@ public final class TownDonationHandlerGameTests {
      * current physical position happens to fall in - here the villager's JOB_SITE is far across a
      * region boundary from where it is standing (and trading) right now.
      */
-    @GameTest(template = "settlement_test")
+    @GameTest(templateNamespace = "dynamicvehicles_m454_donation", template = "settlement_test")
     public static void donationCreditsTheClaimedJobSiteRegionNotTheVillagersCurrentPosition(GameTestHelper helper) {
         prepareFlatGround(helper);
+        var level = helper.getLevel();
         BlockPos absoluteAnchor = helper.absolutePos(ANCHOR);
-        Villager villager = EntityType.VILLAGER.create(helper.getLevel(), null, absoluteAnchor, MobSpawnType.EVENT, false, false);
-        helper.getLevel().addFreshEntity(villager);
-        villager.setVillagerData(villager.getVillagerData().setProfession(VillagerProfession.FARMER));
         // A claimed job site far across a 384-block region boundary from the villager's CURRENT
         // position - the exact "wandered since taking its job" scenario the review describes.
         BlockPos claimedJobSite = absoluteAnchor.offset(TownConstants.REGION_SIZE_BLOCKS * 2, 0, 0);
+        int chunkX = claimedJobSite.getX() >> 4;
+        int chunkZ = claimedJobSite.getZ() >> 4;
+        helper.assertTrue(!level.getPoiManager().exists(claimedJobSite, type -> true), "the remote claim fixture must not take or release another fixture's POI");
+        var originalState = level.getBlockState(claimedJobSite);
+        final boolean[] forcedByThisTest = {false};
+        final boolean[] blockWritten = {false};
+        final boolean[] poiInserted = {false};
+        final boolean[] ownedTicket = {false};
+        TownPassiveProductionHandlerGameTests.OwnedFixtureCleanup cleanup = new TownPassiveProductionHandlerGameTests.OwnedFixtureCleanup();
+        helper.testInfo.addListener(cleanup);
+        cleanup.add(() -> { if (forcedByThisTest[0]) level.setChunkForced(chunkX, chunkZ, false); });
+        cleanup.add(() -> { if (blockWritten[0] && level.getBlockState(claimedJobSite).equals(Blocks.COMPOSTER.defaultBlockState())) level.setBlock(claimedJobSite, originalState, Block.UPDATE_ALL); });
+        cleanup.add(() -> { if (poiInserted[0] && level.getBlockState(claimedJobSite).equals(Blocks.COMPOSTER.defaultBlockState())) level.getPoiManager().remove(claimedJobSite); });
+        cleanup.add(() -> { if (ownedTicket[0]) level.getPoiManager().release(claimedJobSite); });
+        forcedByThisTest[0] = level.setChunkForced(chunkX, chunkZ, true);
+        level.setBlock(claimedJobSite, Blocks.COMPOSTER.defaultBlockState(), Block.UPDATE_ALL);
+        blockWritten[0] = true;
+        PoiTypes.forState(level.getBlockState(claimedJobSite)).ifPresent(type -> {
+            level.getPoiManager().add(claimedJobSite, type);
+            poiInserted[0] = true;
+            ownedTicket[0] = level.getPoiManager().take(t -> true, (t, pos) -> pos.equals(claimedJobSite), claimedJobSite, 1).isPresent();
+        });
+        helper.assertTrue(ownedTicket[0], "test setup: cross-region Farmer must acquire its own POI ticket");
+        Villager villager = EntityType.VILLAGER.create(level, null, absoluteAnchor, MobSpawnType.EVENT, false, false);
+        helper.assertTrue(villager != null, "test setup: cross-region Farmer must be constructible");
+        cleanup.add(villager::discard);
+        level.addFreshEntity(villager);
+        villager.setVillagerData(villager.getVillagerData().setProfession(VillagerProfession.FARMER));
         villager.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), claimedJobSite));
         ServerPlayer player = GameTestMockPlayers.create(helper);
 
@@ -156,15 +192,18 @@ public final class TownDonationHandlerGameTests {
         int currentBefore = storage.storeFor(currentKey).balance(TownResourceCategory.STONE);
         int claimedBefore = storage.storeFor(claimedKey).balance(TownResourceCategory.STONE);
 
-        MerchantOffer offer = new MerchantOffer(new ItemCost(Items.COBBLESTONE, 16), new ItemStack(Items.STICK), 6, 5, 0.05F);
-        TownDonationHandler.onTrade(new TradeWithVillagerEvent(player, offer, villager));
+        try {
+            MerchantOffer offer = new MerchantOffer(new ItemCost(Items.COBBLESTONE, 16), new ItemStack(Items.STICK), 6, 5, 0.05F);
+            TownDonationHandler.onTrade(new TradeWithVillagerEvent(player, offer, villager));
 
-        int currentAfter = storage.storeFor(currentKey).balance(TownResourceCategory.STONE);
-        int claimedAfter = storage.storeFor(claimedKey).balance(TownResourceCategory.STONE);
-        helper.assertTrue(currentAfter == currentBefore,
-                "the region the villager is merely STANDING in must not be credited");
-        helper.assertTrue(claimedAfter > claimedBefore,
-                "the region the villager is actually CLAIMED/working for (its JOB_SITE) must be credited");
+            int currentAfter = storage.storeFor(currentKey).balance(TownResourceCategory.STONE);
+            int claimedAfter = storage.storeFor(claimedKey).balance(TownResourceCategory.STONE);
+            helper.assertTrue(currentAfter == currentBefore,
+                    "the region the villager is merely STANDING in must not be credited");
+            helper.assertTrue(claimedAfter > claimedBefore,
+                    "the region the villager is actually CLAIMED/working for (its JOB_SITE) must be credited");
+        } catch (RuntimeException primary) { cleanup.cleanupPreserving(primary); throw primary; }
+          finally { cleanup.cleanup(); }
         helper.succeed();
     }
 

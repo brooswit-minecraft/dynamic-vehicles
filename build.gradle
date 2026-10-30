@@ -75,18 +75,57 @@ neoForge {
             if (project.hasProperty('quickPlayMp')) {
                 programArguments.addAll('--quickPlayMultiplayer', project.property('quickPlayMp'))
             }
-            systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+            systemProperty 'neoforge.enabledGameTestNamespaces', "${project.mod_id},dynamicvehicles_m454_donation,dynamicvehicles_m454_passive_stone,dynamicvehicles_m454_passive_unloaded"
         }
 
         server {
             server()
             programArgument '--nogui'
-            systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+            systemProperty 'neoforge.enabledGameTestNamespaces', "${project.mod_id},dynamicvehicles_m454_donation,dynamicvehicles_m454_passive_stone,dynamicvehicles_m454_passive_unloaded"
         }
 
         gameTestServer {
             type = "gameTestServer"
-            systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+            systemProperty 'neoforge.enabledGameTestNamespaces', "${project.mod_id},dynamicvehicles_m454_donation,dynamicvehicles_m454_passive_stone,dynamicvehicles_m454_passive_unloaded"
+        }
+
+        m454DonationGameTestServer {
+            type = "gameTestServer"
+            gameDirectory = layout.dir(providers.provider { file('/tmp/m454-gametest-donation-20261029/game') })
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m454_donation'
+        }
+
+        m454PassiveStoneGameTestServer {
+            type = "gameTestServer"
+            gameDirectory = layout.dir(providers.provider { file('/tmp/m454-gametest-passive-stone-retry3-20261029/game') })
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m454_passive_stone'
+        }
+
+        m454PassiveUnloadedGameTestServer {
+            type = "gameTestServer"
+            gameDirectory = layout.dir(providers.provider { file('/tmp/m454-gametest-passive-unloaded-retry2-20261030/game') })
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m454_passive_unloaded'
+        }
+
+        m454DonationBoxGameTestServer {
+            type = "gameTestServer"
+            gameDirectory = layout.dir(providers.provider { file('/tmp/m454-donation-box-crosssave-20261030/game') })
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m454_donation_box'
+        }
+        m454DonationBoxInteractionGameTestServer {
+            type = "gameTestServer"
+            gameDirectory = layout.dir(providers.provider { file('/tmp/m454-donation-box-interaction-20261030/game') })
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m454_donation_box_interaction'
+        }
+        m454DonationBoxReverseSaveGameTestServer {
+            type = "gameTestServer"
+            gameDirectory = layout.dir(providers.provider { file('/tmp/m454-donation-box-reversesave-20261030/game') })
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m454_donation_box_reversesave'
+        }
+        m454DonationBoxFinalTwoGameTestServer {
+            type = "gameTestServer"
+            gameDirectory = layout.dir(providers.provider { file('/tmp/m454-donation-box-finaltwo-20261030/game') })
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m454_donation_box_finaltwo'
         }
 
         data {

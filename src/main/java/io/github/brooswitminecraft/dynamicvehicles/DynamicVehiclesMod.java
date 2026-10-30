@@ -52,6 +52,9 @@ import io.github.brooswitminecraft.dynamicvehicles.town.TownPassiveProductionHan
 import io.github.brooswitminecraft.dynamicvehicles.town.TownConstructionService;
 import io.github.brooswitminecraft.dynamicvehicles.town.TownResidentAllocationHandler;
 import io.github.brooswitminecraft.dynamicvehicles.town.TownDonationHandler;
+import io.github.brooswitminecraft.dynamicvehicles.town.TownDonationBoxes;
+import io.github.brooswitminecraft.dynamicvehicles.town.TownDonationBoxEntities;
+import io.github.brooswitminecraft.dynamicvehicles.town.TownDonationBoxProtection;
 import io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderBlocks;
 import io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderHudPayload;
 import io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderInteractionHandler;
@@ -159,6 +162,8 @@ public class DynamicVehiclesMod {
         ModSounds.SOUNDS.register(modEventBus);
         ENTITIES.register(modEventBus);
         ITEMS.register(modEventBus);
+        TownDonationBoxes.BLOCKS.register(modEventBus);
+        TownDonationBoxEntities.TYPES.register(modEventBus);
         DispatcherBlocks.BLOCKS.register(modEventBus);
         DispatchBoardBlockEntities.BLOCK_ENTITY_TYPES.register(modEventBus);
         DispatcherPoiTypes.POI_TYPES.register(modEventBus);
@@ -193,6 +198,8 @@ public class DynamicVehiclesMod {
         NeoForge.EVENT_BUS.addListener(TownResidentAllocationHandler::onLevelTick);
         NeoForge.EVENT_BUS.addListener(TownResidentAllocationHandler::onEntityLeaveLevel);
         NeoForge.EVENT_BUS.addListener(TownDonationHandler::onTrade);
+        NeoForge.EVENT_BUS.addListener(TownDonationBoxProtection::onBreak);
+        NeoForge.EVENT_BUS.addListener(TownDonationBoxProtection::onExplosion);
         NeoForge.EVENT_BUS.addListener(ContractTickHandler::onServerTick);
         NeoForge.EVENT_BUS.addListener(ContractTickHandler::onPlayerLoggedIn);
         NeoForge.EVENT_BUS.addListener(ContractTickHandler::onPlayerLoggedOut);

@@ -1,9 +1,11 @@
 package io.github.brooswitminecraft.dynamicvehicles.town;
 
 import io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.GlobalPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.ai.memory.MemoryModuleType;
+import net.minecraft.world.entity.ai.village.poi.PoiTypes;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.npc.VillagerProfession;
 
@@ -40,10 +42,12 @@ public final class TownRegion {
      * same validation can never drift between them. Empty for an unemployed villager, one with no
      * JOB_SITE memory at all, one whose JOB_SITE memory's own dimension does not match {@code level}
      * (a villager cannot be actively working a job site in a dimension it is not currently in, so
-     * such a memory is stale/foreign), one whose remembered position no longer holds ANY physical
-     * block at all (destroyed since the memory was recorded - nothing left to actively be working),
-     * or one whose region was never actually founded in {@code storage} (a memory predating, or
-     * surviving past, this town's own existence is not live activity to credit).
+     * such a memory is stale/foreign), one whose remembered position is unavailable (income must
+     * defer rather than force-load or release a possibly legitimate claim), one whose current block
+     * and POI no longer match the villager's present profession, one whose POI ticket/ownership no
+     * longer represents this villager's live claim, or one whose region was never actually founded
+     * in {@code storage} (a memory predating, or surviving past, this town's own existence is not
+     * live activity to credit).
      */
     public static Optional<RegionCoord> liveClaimedRegion(ServerLevel level, Villager villager, TownStorage storage) {
         if (villager.getVillagerData().getProfession() == VillagerProfession.NONE) {
@@ -53,13 +57,27 @@ public final class TownRegion {
         if (jobSite.isEmpty() || !jobSite.get().dimension().equals(level.dimension())) {
             return Optional.empty();
         }
-        net.minecraft.core.BlockPos pos = jobSite.get().pos();
-        // hasChunkAt (not isLoaded - GameTest structure chunks do not reliably report as "loaded"
-        // via that check even though their blocks are genuinely placed and readable) tells whether
-        // this position is somewhere we can actually trust an air reading from at all.
-        if (level.hasChunkAt(pos) && level.getBlockState(pos).isAir()) {
-            // The remembered job site has since been destroyed/removed entirely - nothing physical
-            // is actually there to be working right now, regardless of what the stale memory says.
+        BlockPos pos = jobSite.get().pos();
+        // Never make an attribution decision from an unavailable chunk. In particular, do not read
+        // a synthetic air state, force-load it, clear the memory, or release its ticket/ownership:
+        // normal loading must establish whether this is still a real claim.
+        if (!level.hasChunkAt(pos)) {
+            return Optional.empty();
+        }
+        VillagerProfession profession = villager.getVillagerData().getProfession();
+        // Checking the live block as well as the POI record closes the stale-POI window: replacing
+        // a blast furnace/composter with STONE must not continue to credit solely because an old POI
+        // record or JOB_SITE memory still exists. Then require the occupied POI ticket and both of
+        // the existing ownership guards used by resident allocation.
+        boolean compatibleLiveClaim = PoiTypes.forState(level.getBlockState(pos))
+                .map(profession.heldJobSite()::test)
+                .orElse(false)
+                && level.getPoiManager().getType(pos).map(profession.heldJobSite()::test).orElse(false)
+                && level.getPoiManager().getType(pos)
+                        .map(type -> level.getPoiManager().getFreeTickets(pos) < type.value().maxTickets()).orElse(false)
+                && !storage.isReservedByADifferentVillager(level.dimension(), pos, villager.getUUID())
+                && !TownResidentAllocationHandler.isCurrentlyClaimedByAnotherVillager(level, pos, villager);
+        if (!compatibleLiveClaim) {
             return Optional.empty();
         }
         RegionCoord region = fromBlockCoords(pos.getX(), pos.getZ());

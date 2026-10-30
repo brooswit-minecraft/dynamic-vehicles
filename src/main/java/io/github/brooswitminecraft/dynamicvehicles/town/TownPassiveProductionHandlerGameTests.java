@@ -5,16 +5,27 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.GlobalPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.gametest.framework.GameTestInfo;
+import net.minecraft.gametest.framework.GameTestListener;
+import net.minecraft.gametest.framework.GameTestRunner;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.entity.ai.memory.MemoryModuleType;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.npc.VillagerProfession;
+import net.minecraft.world.entity.ai.village.poi.PoiTypes;
+import net.minecraft.world.entity.ai.village.poi.PoiManager;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * MINECRAFT-388 review round 4, finding #7: {@link TownPassiveProductionHandler} must validate a
@@ -28,6 +39,45 @@ public final class TownPassiveProductionHandlerGameTests {
     private TownPassiveProductionHandlerGameTests() {}
 
     private static final BlockPos ANCHOR = new BlockPos(5, 2, 5);
+    private static final int ISOLATED_REGION_OFFSET = 40_000;
+
+    /** Cleanup is registered before an isolated fixture mutates remote world state.  It runs on
+     * success, assertion failure, and timeout; each owned restoration is attempted independently.
+     * Cleanup never replaces a test's primary failure. */
+    static final class OwnedFixtureCleanup implements GameTestListener {
+        private final List<Runnable> restorations = new ArrayList<>();
+        private boolean cleaned;
+
+        void add(Runnable restoration) { restorations.add(restoration); }
+
+        void cleanup() {
+            if (cleaned) return;
+            cleaned = true;
+            RuntimeException cleanupFailure = null;
+            for (int i = restorations.size() - 1; i >= 0; i--) {
+                try {
+                    restorations.get(i).run();
+                } catch (RuntimeException failure) {
+                    if (cleanupFailure == null) cleanupFailure = failure;
+                    else cleanupFailure.addSuppressed(failure);
+                }
+            }
+            if (cleanupFailure != null) throw cleanupFailure;
+        }
+
+        void cleanupPreserving(Throwable primary) {
+            try {
+                cleanup();
+            } catch (RuntimeException cleanupFailure) {
+                primary.addSuppressed(cleanupFailure);
+            }
+        }
+
+        @Override public void testStructureLoaded(GameTestInfo test) {}
+        @Override public void testPassed(GameTestInfo test, GameTestRunner runner) { cleanup(); }
+        @Override public void testFailed(GameTestInfo test, GameTestRunner runner) { cleanupPreserving(test.getError()); }
+        @Override public void testAddedForRerun(GameTestInfo oldTest, GameTestInfo newTest, GameTestRunner runner) {}
+    }
 
     private static void prepareFlatGround(GameTestHelper helper) {
         for (int x = 0; x < 10; x++) {
@@ -37,6 +87,58 @@ public final class TownPassiveProductionHandlerGameTests {
                 }
             }
         }
+    }
+
+    /** Establishes the same compatible, occupied Farmer workplace that production attribution
+     * requires. GameTest's normal POI update is deferred, so register and occupy it explicitly. */
+    private static void placeAndClaimFarmerWorkstation(GameTestHelper helper, BlockPos relativePos) {
+        helper.setBlock(relativePos, Blocks.COMPOSTER);
+        BlockPos absolutePos = helper.absolutePos(relativePos);
+        PoiTypes.forState(helper.getLevel().getBlockState(absolutePos)).ifPresent(type -> {
+            helper.getLevel().getPoiManager().add(absolutePos, type);
+            helper.getLevel().getPoiManager().take(t -> true, (t, pos) -> pos.equals(absolutePos), absolutePos, 1);
+        });
+    }
+
+    private static boolean appearsInProductionIterable(ServerLevel level, Villager villager) {
+        for (Entity entity : level.getEntities().getAll()) {
+            if (entity.getUUID().equals(villager.getUUID())) return true;
+        }
+        return false;
+    }
+
+    private static int liveWorkersInRegion(ServerLevel level, TownStorage storage, RegionCoord region) {
+        int workers = 0;
+        for (Entity entity : level.getEntities().getAll()) {
+            if (entity instanceof Villager villager
+                    && TownRegion.liveClaimedRegion(level, villager, storage).filter(region::equals).isPresent()) {
+                workers++;
+            }
+        }
+        return workers;
+    }
+
+    private static String workerDiagnostics(ServerLevel level, Villager villager, TownStorage storage, RegionCoord region, BlockPos jobSite, boolean ownedTicket) {
+        return "uuid=" + villager.getUUID() + " present=" + appearsInProductionIterable(level, villager)
+                + " alive=" + villager.isAlive() + " removed=" + villager.isRemoved()
+                + " chunkLoaded=" + level.hasChunkAt(villager.blockPosition()) + " chunkTicking=" + level.isPositionEntityTicking(villager.blockPosition())
+                + " profession=" + villager.getVillagerData().getProfession() + " jobSite=" + villager.getBrain().getMemory(MemoryModuleType.JOB_SITE).orElse(null)
+                + " poi=" + PoiTypes.forState(level.getBlockState(jobSite)).map(Object::toString).orElse(null)
+                + " ownedTicket=" + ownedTicket + " liveClaim=" + TownRegion.liveClaimedRegion(level, villager, storage).orElse(null)
+                + " founded=" + storage.hasFoundedTown(TownKeys.keyFor(level.dimension(), region)) + " liveWorkers=" + liveWorkersInRegion(level, storage, region);
+    }
+
+    private static String unloadedWorkerDiagnostics(ServerLevel level, Villager villager, TownStorage storage, BlockPos unavailableSite, TownResourceStore store) {
+        BlockPos workerPos = villager.blockPosition();
+        return "uuid=" + villager.getUUID() + " pos=" + workerPos
+                + " alive=" + villager.isAlive() + " removed=" + villager.isRemoved()
+                + " iterable=" + appearsInProductionIterable(level, villager)
+                + " workerChunkLoaded=" + level.hasChunkAt(workerPos) + " workerChunkTicking=" + level.isPositionEntityTicking(workerPos)
+                + " profession=" + villager.getVillagerData().getProfession()
+                + " jobSite=" + villager.getBrain().getMemory(MemoryModuleType.JOB_SITE).orElse(null)
+                + " unavailableChunkLoaded=" + level.hasChunkAt(unavailableSite)
+                + " ownedReservation=" + storage.isReservedBySelf(level.dimension(), unavailableSite, villager.getUUID())
+                + " balance=" + store.balance(TownResourceCategory.FOOD);
     }
 
     /** A JOB_SITE memory pointing at the right position but the WRONG dimension must never credit
@@ -53,7 +155,7 @@ public final class TownPassiveProductionHandlerGameTests {
     @GameTest(template = "settlement_test")
     public static void aCrossDimensionJobSiteMemoryIsNeverCreditedToThisLevelsOwnTown(GameTestHelper helper) {
         prepareFlatGround(helper);
-        helper.setBlock(ANCHOR, Blocks.SMOKER);
+        placeAndClaimFarmerWorkstation(helper, ANCHOR);
         BlockPos absoluteAnchor = helper.absolutePos(ANCHOR);
         Villager villager = EntityType.VILLAGER.create(helper.getLevel(), null, absoluteAnchor, MobSpawnType.EVENT, false, false);
         helper.getLevel().addFreshEntity(villager);
@@ -79,7 +181,7 @@ public final class TownPassiveProductionHandlerGameTests {
     @GameTest(template = "settlement_test")
     public static void aSameDimensionJobSiteMemoryIsStillCreditedNormally(GameTestHelper helper) {
         prepareFlatGround(helper);
-        helper.setBlock(ANCHOR, Blocks.SMOKER); // a real, live job site - not a bare coordinate in open air
+        placeAndClaimFarmerWorkstation(helper, ANCHOR);
         BlockPos absoluteAnchor = helper.absolutePos(ANCHOR);
         Villager villager = EntityType.VILLAGER.create(helper.getLevel(), null, absoluteAnchor, MobSpawnType.EVENT, false, false);
         helper.getLevel().addFreshEntity(villager);
@@ -171,5 +273,132 @@ public final class TownPassiveProductionHandlerGameTests {
         helper.assertTrue(TownRegion.liveClaimedRegion(helper.getLevel(), villager, storage).isEmpty(),
                 "a JOB_SITE memory whose remembered position no longer holds any physical block must never resolve to a live claimed region");
         helper.succeed();
+    }
+
+    /** A remembered Farmer job site replaced with a solid non-POI block is no more live than AIR:
+     * the actual passive handler must make no new credit from that stale claim. */
+    @GameTest(templateNamespace = "dynamicvehicles_m454_passive_stone", template = "settlement_test", batch = "incomeAuthorityPassiveIsolated")
+    public static void aSolidReplacementForAFarmerJobSiteReceivesNoPassiveCredit(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        ServerLevel level = helper.getLevel();
+        BlockPos absoluteAnchor = helper.absolutePos(ANCHOR);
+        RegionCoord templateRegion = TownRegion.fromBlockCoords(absoluteAnchor.getX(), absoluteAnchor.getZ());
+        RegionCoord region = new RegionCoord(templateRegion.x() + ISOLATED_REGION_OFFSET, templateRegion.z() - ISOLATED_REGION_OFFSET);
+        BlockPos jobSite = new BlockPos(TownRegion.minBlockX(region) + 8, absoluteAnchor.getY(), TownRegion.minBlockZ(region) + 8);
+        int chunkX = jobSite.getX() >> 4;
+        int chunkZ = jobSite.getZ() >> 4;
+        helper.assertTrue(!level.getPoiManager().exists(jobSite, type -> true), "isolated job-site fixture must not take or release another fixture's POI");
+        var originalState = level.getBlockState(jobSite);
+        final boolean[] forcedByThisTest = {false};
+        final boolean[] blockWritten = {false};
+        final boolean[] poiInserted = {false};
+        final boolean[] ownedTicket = {false};
+        var expectedFixturePoi = PoiTypes.forState(Blocks.COMPOSTER.defaultBlockState()).orElseThrow();
+        OwnedFixtureCleanup cleanup = new OwnedFixtureCleanup();
+        helper.testInfo.addListener(cleanup);
+        cleanup.add(() -> { if (forcedByThisTest[0]) level.setChunkForced(chunkX, chunkZ, false); });
+        cleanup.add(() -> { if (blockWritten[0] && (level.getBlockState(jobSite).equals(Blocks.COMPOSTER.defaultBlockState()) || level.getBlockState(jobSite).equals(Blocks.STONE.defaultBlockState()))) level.setBlock(jobSite, originalState, Block.UPDATE_ALL); });
+        cleanup.add(() -> { if (poiInserted[0] && (level.getBlockState(jobSite).equals(Blocks.COMPOSTER.defaultBlockState()) || level.getBlockState(jobSite).equals(Blocks.STONE.defaultBlockState()))) level.getPoiManager().remove(jobSite); });
+        cleanup.add(() -> {
+            boolean fixturePoiStillPresent = level.getBlockState(jobSite).equals(Blocks.COMPOSTER.defaultBlockState())
+                    && level.getPoiManager().exists(jobSite, type -> type.equals(expectedFixturePoi));
+            boolean ticketStillOccupied = level.getPoiManager().getCountInRange(type -> type.equals(expectedFixturePoi), jobSite, 0, PoiManager.Occupancy.IS_OCCUPIED) == 1;
+            if (ownedTicket[0] && fixturePoiStillPresent && ticketStillOccupied) level.getPoiManager().release(jobSite);
+        });
+        forcedByThisTest[0] = level.setChunkForced(chunkX, chunkZ, true);
+        level.setBlock(jobSite, Blocks.COMPOSTER.defaultBlockState(), Block.UPDATE_ALL);
+        blockWritten[0] = true;
+        PoiTypes.forState(level.getBlockState(jobSite)).ifPresent(type -> {
+            level.getPoiManager().add(jobSite, type);
+            poiInserted[0] = true;
+            ownedTicket[0] = level.getPoiManager().take(t -> true, (t, pos) -> pos.equals(jobSite), jobSite, 1).isPresent();
+        });
+        helper.assertTrue(ownedTicket[0], "test setup: isolated Farmer must acquire its own POI ticket");
+        Villager villager = EntityType.VILLAGER.create(level, null, jobSite, MobSpawnType.EVENT, false, false);
+        helper.assertTrue(villager != null, "test setup: isolated Farmer must be constructible");
+        cleanup.add(villager::discard);
+        helper.assertTrue(level.addFreshEntity(villager), "test setup: isolated Farmer must be accepted by ServerLevel");
+        TownStorage storage = TownStorage.of(level.getServer());
+        String key = TownKeys.keyFor(level.dimension(), region);
+        storage.markTownFounded(key);
+        TownResourceStore store = storage.storeFor(key);
+        helper.startSequence().thenWaitUntil(() -> helper.assertTrue(appearsInProductionIterable(level, villager),
+                "the controlled Farmer UUID must become visible to the production iterable: " + workerDiagnostics(level, villager, storage, region, jobSite, ownedTicket[0])))
+        .thenExecute(() -> {
+            try {
+                villager.setVillagerData(villager.getVillagerData().setProfession(VillagerProfession.FARMER));
+                villager.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), jobSite));
+                helper.assertTrue(liveWorkersInRegion(level, storage, region) == 1,
+                        "the controlled Farmer must be this town's only live worker (expected=1): " + workerDiagnostics(level, villager, storage, region, jobSite, ownedTicket[0]));
+                int before = store.balance(TownResourceCategory.FOOD);
+                TownPassiveProductionHandler.runPassiveProductionTick(level);
+                int afterValidCredit = store.balance(TownResourceCategory.FOOD);
+                helper.assertTrue(afterValidCredit == before + TownConstants.PASSIVE_PRODUCTION_PER_WORKER,
+                        "one visible compatible Farmer must produce exactly one passive credit before replacement");
+                level.setBlock(jobSite, Blocks.STONE.defaultBlockState(), Block.UPDATE_ALL);
+                helper.assertTrue(TownRegion.liveClaimedRegion(level, villager, storage).isEmpty(),
+                        "a solid but profession-incompatible replacement must invalidate the remembered JOB_SITE");
+                TownPassiveProductionHandler.runPassiveProductionTick(level);
+                helper.assertTrue(store.balance(TownResourceCategory.FOOD) == afterValidCredit,
+                        "the actual passive handler must add no credit after this visible Farmer's job site becomes STONE");
+            } catch (RuntimeException primary) { cleanup.cleanupPreserving(primary); throw primary; }
+              finally { cleanup.cleanup(); }
+        }).thenSucceed();
+    }
+
+    /** An unavailable job site defers passive credit without loading its chunk or mutating the
+     * unresolved memory/reservation; a later normal load may validate it. */
+    @GameTest(templateNamespace = "dynamicvehicles_m454_passive_unloaded", template = "settlement_test", batch = "incomeAuthorityPassiveIsolated")
+    public static void anUnloadedJobSiteDefersPassiveCreditWithoutReleasingTheClaim(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        ServerLevel level = helper.getLevel();
+        BlockPos absoluteAnchor = helper.absolutePos(ANCHOR);
+        RegionCoord templateRegion = TownRegion.fromBlockCoords(absoluteAnchor.getX(), absoluteAnchor.getZ());
+        RegionCoord workerRegion = new RegionCoord(templateRegion.x() + ISOLATED_REGION_OFFSET + 1, templateRegion.z() - ISOLATED_REGION_OFFSET);
+        BlockPos workerPos = new BlockPos(TownRegion.minBlockX(workerRegion) + 8, absoluteAnchor.getY(), TownRegion.minBlockZ(workerRegion) + 8);
+        int workerChunkX = workerPos.getX() >> 4;
+        int workerChunkZ = workerPos.getZ() >> 4;
+        OwnedFixtureCleanup cleanup = new OwnedFixtureCleanup();
+        helper.testInfo.addListener(cleanup);
+        boolean forcedByThisTest = level.setChunkForced(workerChunkX, workerChunkZ, true);
+        cleanup.add(() -> { if (forcedByThisTest) level.setChunkForced(workerChunkX, workerChunkZ, false); });
+        BlockPos unavailableSite = workerPos.offset(987_654_321, 0, 0);
+        GlobalPos rememberedSite = GlobalPos.of(level.dimension(), unavailableSite);
+        Villager villager = EntityType.VILLAGER.create(level, null, workerPos, MobSpawnType.EVENT, false, false);
+        helper.assertTrue(villager != null, "test setup: unavailable-site Farmer must be constructible");
+        cleanup.add(villager::discard);
+        helper.assertTrue(level.addFreshEntity(villager),
+                "test setup: unavailable-site worker insertion must succeed uuid=" + villager.getUUID() + " pos=" + workerPos);
+
+        RegionCoord region = TownRegion.fromBlockCoords(unavailableSite.getX(), unavailableSite.getZ());
+        TownStorage storage = TownStorage.of(level.getServer());
+        String key = TownKeys.keyFor(level.dimension(), region);
+        storage.markTownFounded(key);
+        TownResourceStore store = storage.storeFor(key);
+        final int[] balanceBefore = new int[1];
+        helper.assertTrue(!level.hasChunkAt(unavailableSite), "test setup: the remembered site must be unavailable");
+        helper.startSequence().thenWaitUntil(() -> helper.assertTrue(appearsInProductionIterable(level, villager),
+                "readiness: unavailable-site worker UUID must become visible before profession/claim setup: "
+                        + unloadedWorkerDiagnostics(level, villager, storage, unavailableSite, store)))
+        .thenExecute(() -> {
+            villager.setVillagerData(villager.getVillagerData().setProfession(VillagerProfession.FARMER));
+            villager.getBrain().setMemory(MemoryModuleType.JOB_SITE, rememberedSite);
+            storage.setReservationOwner(level.dimension(), unavailableSite, villager.getUUID());
+            balanceBefore[0] = store.balance(TownResourceCategory.FOOD);
+        }).thenIdle(20).thenExecute(() -> {
+            try {
+                helper.assertTrue(appearsInProductionIterable(level, villager),
+                        "final: unavailable-site Farmer UUID must remain visible after the full lifecycle interval: "
+                                + unloadedWorkerDiagnostics(level, villager, storage, unavailableSite, store));
+                TownPassiveProductionHandler.runPassiveProductionTick(level);
+                helper.assertTrue(!level.hasChunkAt(unavailableSite)
+                                && villager.getBrain().getMemory(MemoryModuleType.JOB_SITE).map(rememberedSite::equals).orElse(false)
+                                && storage.isReservedBySelf(level.dimension(), unavailableSite, villager.getUUID())
+                                && store.balance(TownResourceCategory.FOOD) == balanceBefore[0],
+                        "final: unavailable JOB_SITE must remain unloaded and claimed while a visible worker produces no credit: "
+                                + unloadedWorkerDiagnostics(level, villager, storage, unavailableSite, store));
+            } catch (RuntimeException primary) { cleanup.cleanupPreserving(primary); throw primary; }
+              finally { cleanup.cleanup(); }
+        }).thenSucceed();
     }
 }

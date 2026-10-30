@@ -8,6 +8,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.ai.memory.MemoryModuleType;
+import net.minecraft.world.entity.ai.village.poi.PoiTypes;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.npc.VillagerProfession;
 import net.minecraft.world.level.Level;
@@ -172,13 +173,14 @@ public final class TownConstructionService {
         int requestedHomes = demand.missingHomes() > 0 ? 1 : 0;
         Map<VillagerProfession, Integer> requestedWorkplaces = demand.missingWorkplaces().containsKey(retainedProfession)
                 ? Map.of(retainedProfession, 1) : Map.of();
+        if (requestedHomes > 0 && hasValidBeneficiaryHome(level, beneficiary, region, storage)) {
+            requestedHomes = 0;
+        }
+        if (!requestedWorkplaces.isEmpty() && hasValidBeneficiaryWorkplace(level, beneficiary, region, storage)) {
+            requestedWorkplaces = Map.of();
+        }
         if (requestedHomes == 0 && requestedWorkplaces.isEmpty()) {
             return Optional.empty();
-        }
-
-        Optional<ResidentCapacityAdmission> existing = storage.capacityAdmissionFor(level.dimension(), region, beneficiaryId);
-        if (existing.isPresent() && !existing.get().state().terminal()) {
-            return existing;
         }
 
         TownPlan plan = TownPlanner.generate(region, level.getSeed());
@@ -193,7 +195,47 @@ public final class TownConstructionService {
         ResidentCapacityAdmission admission = new ResidentCapacityAdmission(level.dimension(), townKey, region, beneficiaryId,
                 requestedHomes, requestedWorkplaces, siteOwner, planSignature,
                 ResidentCapacityAdmission.State.AWAITING_CLAIM);
+        Optional<ResidentCapacityAdmission> existing = storage.capacityAdmissionFor(level.dimension(), region, beneficiaryId);
+        if (existing.isPresent() && !existing.get().state().terminal()) {
+            ResidentCapacityAdmission current = existing.get();
+            if (current.requestedHomes() == requestedHomes
+                    && current.requestedWorkplaces().equals(requestedWorkplaces)) {
+                // Same current beneficiary need: preserve the one durable admission identity.
+                return existing;
+            }
+            // An unbound intent has no externally visible construction effect yet, so reconcile it
+            // at the same identity. A BUILDING intent is in-flight and must never be overwritten,
+            // rebound, or accompanied by another site merely because the resident's profile moved.
+            return storage.replaceAwaitingCapacityAdmission(admission);
+        }
         return Optional.of(storage.createOrReuseCapacityAdmission(admission));
+    }
+
+    private static boolean hasValidBeneficiaryHome(ServerLevel level, Villager villager, RegionCoord region,
+            TownStorage storage) {
+        return villager.getBrain().getMemory(MemoryModuleType.HOME)
+                .filter(home -> home.dimension().equals(level.dimension()))
+                .filter(home -> TownRegion.fromBlockCoords(home.pos().getX(), home.pos().getZ()).equals(region))
+                .filter(home -> !storage.isReservedByADifferentVillager(level.dimension(), home.pos(), villager.getUUID()))
+                .filter(home -> !TownResidentAllocationHandler.isCurrentlyClaimedByAnotherVillager(level, home.pos(), villager))
+                .map(home -> level.getPoiManager().exists(home.pos(), type -> type.is(PoiTypes.HOME))
+                        && level.getPoiManager().getType(home.pos())
+                                .map(type -> level.getPoiManager().getFreeTickets(home.pos()) < type.value().maxTickets()).orElse(false))
+                .orElse(false);
+    }
+
+    private static boolean hasValidBeneficiaryWorkplace(ServerLevel level, Villager villager, RegionCoord region,
+            TownStorage storage) {
+        VillagerProfession profession = villager.getVillagerData().getProfession();
+        return profession != VillagerProfession.NONE && villager.getBrain().getMemory(MemoryModuleType.JOB_SITE)
+                .filter(site -> site.dimension().equals(level.dimension()))
+                .filter(site -> TownRegion.fromBlockCoords(site.pos().getX(), site.pos().getZ()).equals(region))
+                .filter(site -> !storage.isReservedByADifferentVillager(level.dimension(), site.pos(), villager.getUUID()))
+                .filter(site -> !TownResidentAllocationHandler.isCurrentlyClaimedByAnotherVillager(level, site.pos(), villager))
+                .map(site -> level.getPoiManager().getType(site.pos()).map(profession.heldJobSite()::test).orElse(false)
+                        && level.getPoiManager().getType(site.pos())
+                                .map(type -> level.getPoiManager().getFreeTickets(site.pos()) < type.value().maxTickets()).orElse(false))
+                .orElse(false);
     }
 
     /** [Review round 4, finding #3] Which regions currently have a nearby online player AND are

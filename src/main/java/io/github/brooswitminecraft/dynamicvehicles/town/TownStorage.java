@@ -90,6 +90,23 @@ public final class TownStorage extends SavedData {
     /** Durable, beneficiary-keyed capacity admissions.  They are intents only; no POI ticket or
      * resource debit is represented here. */
     private final Map<String, ResidentCapacityAdmission> capacityAdmissions = new HashMap<>();
+    /** Narrow, server-owned identity for donation boxes.  This is deliberately not a general
+     * container ownership system: it records only the box placed at this exact world cell. */
+    private final Map<String, DonationBoxBinding> donationBoxes = new HashMap<>();
+    private final Map<String, Long> donationBoxGenerations = new HashMap<>();
+    private final Map<String, DonationOperation> donationOperations = new HashMap<>();
+
+    public record DonationBoxBinding(ResourceKey<Level> dimension, BlockPos pos, String townKey, UUID boxId, long generation) {}
+    public record DonationPayload(String itemId, int count, TownResourceCategory category, int credit) {
+        public DonationPayload {
+            if (itemId == null || itemId.isEmpty() || count <= 0 || credit <= 0) {
+                throw new IllegalArgumentException("invalid donation payload");
+            }
+        }
+    }
+    public enum DonationOperationState { RESERVED, APPLIED, ABORTED, COMPLETED }
+    public record DonationOperation(DonationBoxBinding binding, long sequence, DonationPayload payload,
+                                    DonationOperationState state) {}
 
     public static TownStorage of(MinecraftServer server) {
         return server.overworld().getDataStorage()
@@ -140,6 +157,112 @@ public final class TownStorage extends SavedData {
             setDirty();
         }
         return debited;
+    }
+
+    /** Allocates a replacement-safe donation-box identity only for an already founded town. */
+    public Optional<DonationBoxBinding> bindDonationBox(ResourceKey<Level> dimension, BlockPos pos) {
+        String townKey = TownKeys.keyFor(dimension, TownRegion.fromBlockCoords(pos.getX(), pos.getZ()));
+        if (!hasFoundedTown(townKey)) return Optional.empty();
+        String key = cellKey(dimension, pos);
+        long generation = donationBoxGenerations.getOrDefault(key, 0L) + 1L;
+        donationBoxGenerations.put(key, generation);
+        DonationBoxBinding binding = new DonationBoxBinding(dimension, pos.immutable(), townKey, UUID.randomUUID(), generation);
+        donationBoxes.put(key, binding);
+        setDirty();
+        return Optional.of(binding);
+    }
+
+    public boolean isActiveDonationBox(DonationBoxBinding binding) {
+        return binding != null && binding.equals(donationBoxes.get(cellKey(binding.dimension(), binding.pos())));
+    }
+
+    public Optional<DonationBoxBinding> activeDonationBoxAt(ResourceKey<Level> dimension, BlockPos pos) {
+        return Optional.ofNullable(donationBoxes.get(cellKey(dimension, pos)));
+    }
+
+    /** Retires only the live binding; donationBoxGenerations deliberately remains as the
+     * replacement high-water, so a later box at this cell cannot reuse receipts. */
+    public boolean retireDonationBox(DonationBoxBinding binding) {
+        if (!isActiveDonationBox(binding) || activeDonationOperation(binding).isPresent()) return false;
+        donationBoxes.remove(cellKey(binding.dimension(), binding.pos()));
+        setDirty();
+        return true;
+    }
+
+    public Optional<DonationOperation> activeDonationOperation(DonationBoxBinding binding) {
+        DonationOperation operation = binding == null ? null : donationOperations.get(donationOperationKey(binding));
+        return operation == null || operation.state() == DonationOperationState.COMPLETED || operation.state() == DonationOperationState.ABORTED
+                ? Optional.empty() : Optional.of(operation);
+    }
+
+    /** Includes COMPLETED/ABORTED for load reconciliation; callers deciding new intake must use
+     * activeDonationOperation instead. */
+    Optional<DonationOperation> donationOperationReceipt(DonationBoxBinding binding) {
+        return binding == null ? Optional.empty() : Optional.ofNullable(donationOperations.get(donationOperationKey(binding)));
+    }
+
+    /** Storage, never a block-entity snapshot, allocates the next sequence before escrow changes. */
+    public Optional<DonationOperation> reserveDonationOperation(DonationBoxBinding binding, DonationPayload payload) {
+        if (!isActiveDonationBox(binding)) return Optional.empty();
+        String key = donationOperationKey(binding);
+        DonationOperation existing = donationOperations.get(key);
+        if (existing != null && (existing.state() == DonationOperationState.RESERVED || existing.state() == DonationOperationState.APPLIED)) {
+            return Optional.empty();
+        }
+        long sequence = existing == null ? 1L : existing.sequence() + 1L;
+        DonationOperation operation = new DonationOperation(binding, sequence, payload, DonationOperationState.RESERVED);
+        donationOperations.put(key, operation);
+        setDirty();
+        return Optional.of(operation);
+    }
+
+    /** Credits exactly one currently reserved payload.  A same-sequence different payload is never a replay. */
+    public boolean applyDonationReceipt(DonationOperation operation) {
+        DonationOperation current = operation == null ? null : donationOperations.get(donationOperationKey(operation.binding()));
+        // State is intentionally excluded from receipt identity: a replay of the original
+        // RESERVED request after storage has persisted APPLIED is the normal retry case.
+        if (current == null || !sameDonationReceipt(current, operation) || !isActiveDonationBox(operation.binding())) return false;
+        if (current.state() == DonationOperationState.APPLIED) return true;
+        if (current.state() != DonationOperationState.RESERVED) return false;
+        creditStore(operation.binding().townKey(), operation.payload().category(), operation.payload().credit());
+        donationOperations.put(donationOperationKey(operation.binding()),
+                new DonationOperation(operation.binding(), operation.sequence(), operation.payload(), DonationOperationState.APPLIED));
+        setDirty();
+        return true;
+    }
+
+    private static boolean sameDonationReceipt(DonationOperation left, DonationOperation right) {
+        return left.binding().equals(right.binding()) && DonationBoxReceiptReducer.matches(
+                new DonationBoxReceiptReducer.Pending(left.sequence(), reducerPayload(left.payload()),
+                        left.state() == DonationOperationState.APPLIED), right.sequence(), reducerPayload(right.payload()));
+    }
+
+    private static DonationBoxReceiptReducer.Payload reducerPayload(DonationPayload payload) {
+        return new DonationBoxReceiptReducer.Payload(payload.itemId(), payload.count(), payload.category(), payload.credit());
+    }
+
+    /** Ends the one active recovery operation.  Its sequence remains in the binding's high-water. */
+    public boolean completeDonationOperation(DonationOperation operation) {
+        DonationOperation current = operation == null ? null : donationOperations.get(donationOperationKey(operation.binding()));
+        if (current == null || current.sequence() != operation.sequence() || !current.payload().equals(operation.payload())
+                || current.state() != DonationOperationState.APPLIED) return false;
+        donationOperations.put(donationOperationKey(operation.binding()),
+                new DonationOperation(current.binding(), current.sequence(), current.payload(), DonationOperationState.COMPLETED));
+        setDirty();
+        return true;
+    }
+
+    public boolean abortDonationOperation(DonationOperation operation) {
+        DonationOperation current = operation == null ? null : donationOperations.get(donationOperationKey(operation.binding()));
+        if (current == null || !current.equals(operation) || current.state() != DonationOperationState.RESERVED) return false;
+        donationOperations.put(donationOperationKey(operation.binding()),
+                new DonationOperation(current.binding(), current.sequence(), current.payload(), DonationOperationState.ABORTED));
+        setDirty();
+        return true;
+    }
+
+    private static String donationOperationKey(DonationBoxBinding binding) {
+        return cellKey(binding.dimension(), binding.pos()) + "#" + binding.boxId() + "#" + binding.generation();
     }
 
     /** {@code true} iff Dynamic Towns' plan identified by {@code owner} (e.g.
@@ -244,6 +367,25 @@ public final class TownStorage extends SavedData {
         capacityAdmissions.put(key, admission);
         setDirty();
         return admission;
+    }
+
+    /**
+     * Reconciles only an unbound capacity intent at its existing durable beneficiary identity.
+     * {@link ResidentCapacityAdmission.State#AWAITING_CLAIM} has not placed an anchor, selected a
+     * builder, debited resources, or reserved a POI, so replacing its now-stale requested profile
+     * cannot abandon started work or create a second site. BUILDING is deliberately not replaceable:
+     * a changed beneficiary need must fail closed until the existing construction lifecycle resolves
+     * that in-flight transaction.
+     */
+    Optional<ResidentCapacityAdmission> replaceAwaitingCapacityAdmission(ResidentCapacityAdmission admission) {
+        String key = capacityAdmissionKey(admission.dimension(), admission.region(), admission.beneficiaryId());
+        ResidentCapacityAdmission existing = capacityAdmissions.get(key);
+        if (existing == null || existing.state() != ResidentCapacityAdmission.State.AWAITING_CLAIM) {
+            return Optional.empty();
+        }
+        capacityAdmissions.put(key, admission);
+        setDirty();
+        return Optional.of(admission);
     }
 
     static String capacityAdmissionKey(ResourceKey<Level> dimension, RegionCoord region, UUID beneficiaryId) {
@@ -416,6 +558,32 @@ public final class TownStorage extends SavedData {
         }
         tag.put("Stores", storeList);
 
+        ListTag donationBindings = new ListTag();
+        for (Map.Entry<String, DonationBoxBinding> entry : donationBoxes.entrySet()) {
+            DonationBoxBinding binding = entry.getValue();
+            CompoundTag value = new CompoundTag();
+            value.putString("Key", entry.getKey());
+            value.putString("Dimension", binding.dimension().location().toString());
+            value.putInt("X", binding.pos().getX()); value.putInt("Y", binding.pos().getY()); value.putInt("Z", binding.pos().getZ());
+            value.putString("Town", binding.townKey()); value.putUUID("Box", binding.boxId()); value.putLong("Generation", binding.generation());
+            value.putLong("HighWater", donationBoxGenerations.getOrDefault(entry.getKey(), binding.generation()));
+            donationBindings.add(value);
+        }
+        tag.put("DonationBoxes", donationBindings);
+        ListTag donationOps = new ListTag();
+        for (DonationOperation operation : donationOperations.values()) {
+            CompoundTag value = new CompoundTag();
+            DonationBoxBinding binding = operation.binding();
+            value.putString("Dimension", binding.dimension().location().toString());
+            value.putInt("X", binding.pos().getX()); value.putInt("Y", binding.pos().getY()); value.putInt("Z", binding.pos().getZ());
+            value.putString("Town", binding.townKey()); value.putUUID("Box", binding.boxId()); value.putLong("Generation", binding.generation());
+            value.putLong("Sequence", operation.sequence()); value.putString("Item", operation.payload().itemId());
+            value.putInt("Count", operation.payload().count()); value.putString("Category", operation.payload().category().name());
+            value.putInt("Credit", operation.payload().credit()); value.putString("State", operation.state().name());
+            donationOps.add(value);
+        }
+        tag.put("DonationOperations", donationOps);
+
         ListTag placedList = new ListTag();
         for (Map.Entry<String, PlacedCell> entry : placedCells.entrySet()) {
             CompoundTag entryTag = new CompoundTag();
@@ -520,6 +688,39 @@ public final class TownStorage extends SavedData {
             store.loadFrom(snapshot);
             storage.stores.put(storeTag.getString("Key"), store);
         }
+        ListTag donationBindings = tag.getList("DonationBoxes", Tag.TAG_COMPOUND);
+        for (int i = 0; i < donationBindings.size(); i++) {
+            try {
+                CompoundTag value = donationBindings.getCompound(i);
+                ResourceLocation id = ResourceLocation.tryParse(value.getString("Dimension"));
+                if (id == null) throw new IllegalArgumentException("bad donation dimension");
+                ResourceKey<Level> dimension = ResourceKey.create(Registries.DIMENSION, id);
+                BlockPos pos = new BlockPos(value.getInt("X"), value.getInt("Y"), value.getInt("Z"));
+                DonationBoxBinding binding = new DonationBoxBinding(dimension, pos, value.getString("Town"), value.getUUID("Box"), value.getLong("Generation"));
+                String key = value.getString("Key");
+                if (key.isEmpty() || binding.generation() <= 0) throw new IllegalArgumentException("bad donation binding");
+                storage.donationBoxes.put(key, binding);
+                storage.donationBoxGenerations.put(key, Math.max(binding.generation(), value.getLong("HighWater")));
+            } catch (IllegalArgumentException ignored) { }
+        }
+        ListTag donationOps = tag.getList("DonationOperations", Tag.TAG_COMPOUND);
+        for (int i = 0; i < donationOps.size(); i++) {
+            try {
+                CompoundTag value = donationOps.getCompound(i);
+                ResourceLocation id = ResourceLocation.tryParse(value.getString("Dimension"));
+                if (id == null) throw new IllegalArgumentException("bad donation dimension");
+                ResourceKey<Level> dimension = ResourceKey.create(Registries.DIMENSION, id);
+                DonationBoxBinding binding = new DonationBoxBinding(dimension,
+                        new BlockPos(value.getInt("X"), value.getInt("Y"), value.getInt("Z")), value.getString("Town"),
+                        value.getUUID("Box"), value.getLong("Generation"));
+                DonationPayload payload = new DonationPayload(value.getString("Item"), value.getInt("Count"),
+                        TownResourceCategory.valueOf(value.getString("Category")), value.getInt("Credit"));
+                DonationOperation operation = new DonationOperation(binding, value.getLong("Sequence"), payload,
+                        DonationOperationState.valueOf(value.getString("State")));
+                if (operation.sequence() <= 0 || !storage.isActiveDonationBox(binding)) throw new IllegalArgumentException("orphan donation operation");
+                storage.donationOperations.put(donationOperationKey(binding), operation);
+            } catch (IllegalArgumentException ignored) { }
+        }
         ListTag placedList = tag.getList("PlacedCells", Tag.TAG_COMPOUND);
         for (int i = 0; i < placedList.size(); i++) {
             CompoundTag entryTag = placedList.getCompound(i);
@@ -560,15 +761,19 @@ public final class TownStorage extends SavedData {
                 ListTag requestedWorkplaces = entry.getList("Workplaces", Tag.TAG_COMPOUND);
                 for (int j = 0; j < requestedWorkplaces.size(); j++) {
                     CompoundTag requested = requestedWorkplaces.getCompound(j);
-                    VillagerProfession profession = BuiltInRegistries.VILLAGER_PROFESSION
-                            .get(ResourceLocation.parse(requested.getString("Profession")));
+                    ResourceLocation professionId = ResourceLocation.tryParse(requested.getString("Profession"));
+                    VillagerProfession profession = professionId == null ? null
+                            : BuiltInRegistries.VILLAGER_PROFESSION.get(professionId);
                     if (profession == null || requested.getInt("Count") <= 0) {
                         throw new IllegalArgumentException("invalid persisted capacity workplace");
                     }
                     workplaces.put(profession, requested.getInt("Count"));
                 }
-                ResourceKey<Level> dimension = ResourceKey.create(Registries.DIMENSION,
-                        ResourceLocation.parse(entry.getString("Dimension")));
+                ResourceLocation dimensionId = ResourceLocation.tryParse(entry.getString("Dimension"));
+                if (dimensionId == null) {
+                    throw new IllegalArgumentException("invalid persisted capacity dimension");
+                }
+                ResourceKey<Level> dimension = ResourceKey.create(Registries.DIMENSION, dimensionId);
                 ResidentCapacityAdmission admission = new ResidentCapacityAdmission(dimension, entry.getString("TownKey"),
                         new RegionCoord(entry.getInt("RegionX"), entry.getInt("RegionZ")), entry.getUUID("Beneficiary"),
                         entry.getInt("Homes"), workplaces, entry.getString("SiteOwner"), entry.getString("PlanSignature"),

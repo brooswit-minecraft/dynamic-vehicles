@@ -57,6 +57,21 @@ base {
 // Mojang ships Java 21 to end users in 1.21.1, so mods target Java 21.
 java.toolchain.languageVersion = JavaLanguageVersion.of(21)
 
+// NeoForge 21.1.250 filters automatic GameTest registration by template namespace.
+// These two namespaces each contain exactly one M478 acceptance method; the default
+// retains them in the normal dynamicvehicles full-suite registry.
+def m478Profiles = [
+        native     : 'dynamicvehicles_m478_native',
+        interaction: 'dynamicvehicles_m478_interaction'
+]
+def m478Profile = findProperty('m478GameTestProfile') as String
+if (m478Profile != null && !m478Profiles.containsKey(m478Profile)) {
+    throw new GradleException("m478GameTestProfile must be one of ${m478Profiles.keySet()}, not '${m478Profile}'")
+}
+def gameTestNamespaces = m478Profile == null
+        ? ([project.mod_id] + m478Profiles.values()).join(',')
+        : m478Profiles.get(m478Profile)
+
 neoForge {
     version = project.neo_version
     accessTransformers.from('src/main/resources/META-INF/accesstransformer.cfg')
@@ -86,7 +101,12 @@ neoForge {
 
         gameTestServer {
             type = "gameTestServer"
-            systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+            systemProperty 'neoforge.enabledGameTestNamespaces', gameTestNamespaces
+            // MINECRAFT-478 validation may select a fresh, isolated game directory.  Normal
+            // developer runs deliberately retain ModDev's default run directory.
+            if (project.hasProperty('m478GameDirectory')) {
+                gameDirectory.fileValue(file(project.property('m478GameDirectory')))
+            }
         }
 
         data {
@@ -104,6 +124,14 @@ neoForge {
         "${mod_id}" {
             sourceSet(sourceSets.main)
         }
+    }
+}
+
+// RunModel retains --gameDir . in its generated program arguments.  Keep that relative argument
+// anchored at the isolated root when M478 explicitly selects one, without changing normal runs.
+if (project.hasProperty('m478GameDirectory')) {
+    tasks.named('runGameTestServer') {
+        workingDir(file(project.property('m478GameDirectory')))
     }
 }
 

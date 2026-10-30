@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -55,6 +56,19 @@ class VehicleSpecOverridesTest {
     @Test
     void beforeLoadIsCalledResolveReturnsTheExactStockInstance() {
         assertSame(VehicleSpec.CAR, VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR));
+    }
+
+    @Test
+    void scopedSnapshotRestoresTheExactPreviouslyResolvedTable(@TempDir Path configDir) throws IOException {
+        writeCarsFile(configDir, "car", "{\"enginePeakTorque\":321}");
+        VehicleSpecOverrides.load(configDir);
+        Map<String, VehicleSpec> before = VehicleSpecOverrides.snapshotForTest();
+        VehicleSpec resolved = VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR);
+        VehicleSpecOverrides.load(configDir.resolve("missing"));
+        VehicleSpecOverrides.restoreForTest(before);
+        assertSame(resolved, VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR));
+        assertEquals(321.0, VehicleSpecOverrides.resolve(VehicleIds.CAR, VehicleSpec.CAR)
+                .drivetrainCoupling().enginePeakTorque(), 1e-12);
     }
 
     @Test

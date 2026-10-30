@@ -94,6 +94,9 @@ final class SableCompat {
         return ((SableCarBody) body).bodyAngularVelocity();
     }
 
+    static double[] bodyPosition(Object body) { return ((SableCarBody) body).bodyPosition(); }
+    static double[] bodyLinearVelocity(Object body) { return ((SableCarBody) body).bodyLinearVelocity(); }
+
     static double clutchWheelForce(Object body) {
         return ((SableCarBody) body).clutchWheelForce();
     }
@@ -215,6 +218,15 @@ final class SableCompat {
     static double[] wheelLateralForces(Object body) {
         return ((SableCarBody) body).wheelLateralForces();
     }
+
+    static double[] wheelSteerEntrySpeeds(Object body) { return ((SableCarBody) body).wheelSteerEntrySpeeds(); }
+    static double[] wheelTireForceApplicationYs(Object body) { return ((SableCarBody) body).wheelTireForceApplicationYs(); }
+    static double[] wheelLateralForceApplicationYs(Object body) { return ((SableCarBody) body).wheelLateralForceApplicationYs(); }
+    static double[] wheelContactPatchYs(Object body) { return ((SableCarBody) body).wheelContactPatchYs(); }
+    static boolean[] wheelUsedLegacyCombinedImpulses(Object body) { return ((SableCarBody) body).wheelUsedLegacyCombinedImpulses(); }
+    static boolean[] wheelForceReceiptValid(Object body) { return ((SableCarBody) body).wheelForceReceiptValid(); }
+    static long[] wheelForceReceiptSequences(Object body) { return ((SableCarBody) body).wheelForceReceiptSequences(); }
+    static ProductionImpulseReceipts.Snapshot productionImpulseReceipt(Object body) { return ((SableCarBody) body).productionImpulseReceipt(); }
 
     static double[] wheelFrictionLimits(Object body) {
         return ((SableCarBody) body).wheelFrictionLimits();

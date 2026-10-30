@@ -7,7 +7,11 @@ import net.minecraft.core.Direction;
 import net.minecraft.core.GlobalPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.gametest.framework.GameTestInfo;
+import net.minecraft.gametest.framework.GameTestListener;
+import net.minecraft.gametest.framework.GameTestRunner;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.server.level.TicketType;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
@@ -15,6 +19,7 @@ import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.entity.ai.memory.MemoryModuleType;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.npc.VillagerProfession;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.BedBlock;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
@@ -82,6 +87,40 @@ public final class TownResidentAllocationHandlerGameTests {
     private static final BlockPos WORKSTATION_OFFSET = new BlockPos(-1, 1, -1);
     private static final BlockPos OLD_HOME_OFFSET = new BlockPos(2, 1, 2);
     private static final BlockPos OLD_WORKSTATION_OFFSET = new BlockPos(-2, 1, 2);
+
+    /** Read-only timeout context for the target's exact entity-ticking radius. */
+    private static String chunkDebugSnapshot(ServerLevel level, ChunkPos center) {
+        StringBuilder snapshot = new StringBuilder("[");
+        for (int zOffset = -2; zOffset <= 2; zOffset++) {
+            for (int xOffset = -2; xOffset <= 2; xOffset++) {
+                if (snapshot.length() > 1) {
+                    snapshot.append(", ");
+                }
+                int radius = Math.max(Math.abs(xOffset), Math.abs(zOffset));
+                String ring = radius == 0 ? "center" : radius == 1 ? "radius1" : "outerRing";
+                ChunkPos chunk = new ChunkPos(center.x + xOffset, center.z + zOffset);
+                snapshot.append(ring)
+                        .append(":")
+                        .append(chunk)
+                        .append("=")
+                        .append(level.getChunkSource().getChunkDebugData(chunk));
+            }
+        }
+        return snapshot.append("]").toString();
+    }
+
+    /**
+     * Prepares precisely the target's entity-ticking neighborhood through the public Level API.
+     * {@link ServerLevel#getChunk(int, int)} delegates to the required {@code ChunkStatus.FULL}
+     * load; normal transient tickets are owned by the engine, not this test.
+     */
+    private static void prepareEntityTickingNeighborhood(ServerLevel level, ChunkPos center) {
+        for (int zOffset = -2; zOffset <= 2; zOffset++) {
+            for (int xOffset = -2; xOffset <= 2; xOffset++) {
+                level.getChunk(center.x + xOffset, center.z + zOffset);
+            }
+        }
+    }
 
     private static void prepareFlatGround(GameTestHelper helper) {
         for (int x = 0; x < 10; x++) {
@@ -251,11 +290,10 @@ public final class TownResidentAllocationHandlerGameTests {
                 "the single bed's ticket must be held exactly once, by whichever villager actually won it");
         helper.succeed();
     }
-
     /** The pure demand query observes current shortage without granting a ticket or changing any
      * resident state.  A valid held HOME/JOB_SITE removes demand; losing the matching job ticket
      * restores only that retained profession's workplace demand. */
-    @GameTest(template = "settlement_test")
+    @GameTest(template = "settlement_test", batch = "residentDemandNetherFixtureIsolated")
     public static void unmetDemandUsesFoundedTownValidatedReservationsAndHasNoSideEffects(GameTestHelper helper) {
         prepareFlatGround(helper);
         BlockPos anchor = anchor(helper);
@@ -317,49 +355,137 @@ public final class TownResidentAllocationHandlerGameTests {
         RegionCoord netherRegion = TownRegion.fromBlockCoords(netherResidentPos.getX(), netherResidentPos.getZ());
         int netherChunkX = netherResidentPos.getX() >> 4;
         int netherChunkZ = netherResidentPos.getZ() >> 4;
-        boolean forcedByThisTest = nether.setChunkForced(netherChunkX, netherChunkZ, true);
+        ChunkPos netherChunk = new ChunkPos(netherResidentPos);
+        boolean initiallyForced = nether.getForcedChunks().contains(netherChunk.toLong());
+        long netherGameTimeAtSetup = nether.getGameTime();
+        Villager[] netherResident = {null};
+        boolean[] forcedByThisTest = {false};
+        boolean[] ticketOwnedByThisTest = {false};
+        boolean[] cleaned = {false};
+        Runnable cleanup = () -> {
+            if (cleaned[0]) {
+                return;
+            }
+            cleaned[0] = true;
+            try {
+                if (netherResident[0] != null && !netherResident[0].isRemoved()) {
+                    netherResident[0].discard();
+                }
+            } finally {
+                try {
+                    if (ticketOwnedByThisTest[0]) {
+                        nether.getChunkSource().removeRegionTicket(TicketType.PORTAL, netherChunk, 2, netherResidentPos, true);
+                        ticketOwnedByThisTest[0] = false;
+                    }
+                } finally {
+                    if (forcedByThisTest[0]) {
+                        nether.setChunkForced(netherChunkX, netherChunkZ, false);
+                        forcedByThisTest[0] = false;
+                    }
+                }
+            }
+        };
+        // Install terminal cleanup before any ticket, forced chunk, or sequence state is acquired.
+        helper.testInfo.addListener(new GameTestListener() {
+            @Override public void testStructureLoaded(GameTestInfo info) {}
+            @Override public void testPassed(GameTestInfo info, GameTestRunner runner) { cleanup.run(); }
+            @Override public void testFailed(GameTestInfo info, GameTestRunner runner) { cleanup.run(); }
+            @Override public void testAddedForRerun(GameTestInfo info, GameTestInfo retry, GameTestRunner runner) { cleanup.run(); }
+        });
+        forcedByThisTest[0] = nether.setChunkForced(netherChunkX, netherChunkZ, true);
+        // setChunkForced loads blocks but does not make an entity enter the ServerLevel's ticking
+        // entity manager.  A distance-two full-chunk ticket is ENTITY_TICKING (ChunkLevel level
+        // 31); forceTicks=true also records it in the ticking-ticket tracker.  This is deliberately
+        // test-owned and terminal-listener-released, unlike the founded-town state being observed.
+        nether.getChunkSource().addRegionTicket(TicketType.PORTAL, netherChunk, 2, netherResidentPos, true);
+        ticketOwnedByThisTest[0] = true;
+        // Public FULL preparation establishes the exact 5x5 prerequisite for the subsequent
+        // readiness gate; it neither substitutes for nor changes those real readiness probes.
+        prepareEntityTickingNeighborhood(nether, netherChunk);
         storage.markTownFounded(TownKeys.keyFor(nether.dimension(), netherRegion));
-        Villager netherResident = EntityType.VILLAGER.create(nether, null, netherResidentPos, MobSpawnType.EVENT, false, false);
-        helper.assertTrue(netherResident != null, "test setup: Nether villager must be constructible");
-        boolean added = nether.addFreshEntity(netherResident);
         helper.startSequence()
-                // A forced chunk is synchronously block-readable but its entity manager is not
-                // necessarily tracking a just-added entity until normal GameTest ticks progress.
-                .thenIdle(20)
+                // A ticket request is not readiness.  Wait for the same target chunk to report
+                // ticking completion, entity-manager visibility, and completed entity storage load
+                // before creating the exact resident that must be visible to production iteration.
+                .thenWaitUntil(() -> {
+                    long netherChunkLong = netherChunk.toLong();
+                    boolean fullChunkPresent = nether.getChunkSource().getChunkNow(netherChunk.x, netherChunk.z) != null;
+                    boolean blockTickEligible = nether.shouldTickBlocksAt(netherChunkLong);
+                    long netherGameTimeNow = nether.getGameTime();
+                    boolean chunkTicking = nether.getChunkSource().isPositionTicking(netherChunkLong);
+                    boolean entityManagerTicking = nether.isNaturalSpawningAllowed(netherChunk);
+                    boolean entitiesLoaded = nether.areEntitiesLoaded(netherChunkLong);
+                    String radius2DebugSnapshot = chunkTicking && entityManagerTicking && entitiesLoaded
+                            ? ""
+                            : chunkDebugSnapshot(nether, netherChunk);
+                    helper.assertTrue(chunkTicking && entityManagerTicking && entitiesLoaded,
+                            "test setup: Nether resident chunk readiness timed out; chunk=" + netherChunk
+                                    + ", initialForced=" + initiallyForced
+                                    + ", forceAdded=" + forcedByThisTest[0]
+                                    + ", currentlyForced=" + nether.getForcedChunks().contains(netherChunkLong)
+                                    + ", fullChunkPresent=" + fullChunkPresent
+                                    + ", blockTickEligible=" + blockTickEligible
+                                    + ", netherGameTimeAtSetup=" + netherGameTimeAtSetup
+                                    + ", netherGameTimeNow=" + netherGameTimeNow
+                                    + ", netherGameTimeDelta=" + (netherGameTimeNow - netherGameTimeAtSetup)
+                                    + ", chunkTicking=" + chunkTicking
+                                    + ", entityManagerTicking=" + entityManagerTicking
+                                    + ", entitiesLoaded=" + entitiesLoaded
+                                    + ", radius2ChunkDebug=" + radius2DebugSnapshot);
+                })
                 .thenExecute(() -> {
-                    try {
-                        boolean chunkLoaded = nether.hasChunkAt(netherResidentPos);
-                        boolean founded = storage.hasFoundedTown(TownKeys.keyFor(nether.dimension(), netherRegion));
-                        boolean uuidLookupMatches = nether.getEntity(netherResident.getUUID()) == netherResident;
-                        boolean alive = netherResident.isAlive();
-                        boolean unhoused = netherResident.getBrain().getMemory(MemoryModuleType.HOME).isEmpty();
-                        boolean correctRegion = TownRegion.fromBlockCoords(netherResident.blockPosition().getX(), netherResident.blockPosition().getZ())
+                    netherResident[0] = EntityType.VILLAGER.create(nether, null, netherResidentPos, MobSpawnType.EVENT, false, false);
+                    helper.assertTrue(netherResident[0] != null, "test setup: Nether villager must be constructible");
+                    boolean added = nether.addFreshEntity(netherResident[0]);
+                    boolean chunkLoaded = nether.hasChunkAt(netherResidentPos);
+                    boolean founded = storage.hasFoundedTown(TownKeys.keyFor(nether.dimension(), netherRegion));
+                    Entity uuidLookup = nether.getEntity(netherResident[0].getUUID());
+                    boolean uuidLookupMatches = uuidLookup == netherResident[0];
+                    boolean alive = netherResident[0].isAlive();
+                    boolean removed = netherResident[0].isRemoved();
+                    boolean unhoused = netherResident[0].getBrain().getMemory(MemoryModuleType.HOME).isEmpty();
+                    boolean correctRegion = TownRegion.fromBlockCoords(netherResident[0].blockPosition().getX(), netherResident[0].blockPosition().getZ())
                                 .equals(netherRegion);
-                        boolean inProductionIterable = false;
-                        for (Entity entity : nether.getEntities().getAll()) {
-                            if (entity == netherResident) {
-                                inProductionIterable = true;
-                                break;
-                            }
+                    boolean inProductionIterable = false;
+                    int sameRegionVillagers = 0;
+                    int sameUuidEntities = 0;
+                    for (Entity entity : nether.getEntities().getAll()) {
+                        if (entity == netherResident[0]) {
+                            inProductionIterable = true;
                         }
-                        helper.assertTrue(chunkLoaded, "test setup: forced Nether resident chunk must be loaded at " + netherResidentPos);
-                        helper.assertTrue(founded, "test setup: Nether resident region must be founded: " + netherRegion);
-                        helper.assertTrue(added, "test setup: Nether resident must be accepted by the level entity manager");
-                        helper.assertTrue(uuidLookupMatches, "test setup: UUID lookup must return the Nether resident");
-                        helper.assertTrue(alive, "test setup: Nether resident must remain alive after tracking wait");
-                        helper.assertTrue(unhoused, "test setup: Nether resident must remain without HOME after tracking wait");
-                        helper.assertTrue(correctRegion, "test setup: Nether resident must remain in queried region " + netherRegion);
-                        helper.assertTrue(inProductionIterable,
-                                "test setup: Nether resident must appear in the production level.getEntities().getAll() iterable");
-                        TownResidentDemand netherDemand = TownResidentAllocationHandler.unmetDemand(nether, netherRegion, storage);
-                        helper.assertTrue(netherDemand == TownResidentDemand.NONE,
-                                "the non-Overworld guard must suppress demand despite a visible founded Nether resident; demand=" + netherDemand);
-                    } finally {
-                        netherResident.discard();
-                        if (forcedByThisTest) {
-                            nether.setChunkForced(netherChunkX, netherChunkZ, false);
+                        if (entity.getUUID().equals(netherResident[0].getUUID())) {
+                            sameUuidEntities++;
+                        }
+                        if (entity instanceof Villager villager
+                                && TownRegion.fromBlockCoords(villager.blockPosition().getX(), villager.blockPosition().getZ())
+                                .equals(netherRegion)) {
+                            sameRegionVillagers++;
                         }
                     }
+                    String trackingState = "createdUuid=" + netherResident[0].getUUID()
+                                + ", added=" + added
+                                + ", lookup=" + uuidLookup
+                                + ", lookupUuid=" + (uuidLookup == null ? "none" : uuidLookup.getUUID())
+                                + ", sameInstance=" + uuidLookupMatches
+                                + ", alive=" + alive
+                                + ", removed=" + removed
+                                + ", iterable=" + inProductionIterable
+                                + ", sameUuidEntities=" + sameUuidEntities
+                                + ", sameRegionVillagers=" + sameRegionVillagers
+                                + ", requestedDimension=" + nether.dimension()
+                                + ", actualDimension=" + netherResident[0].level().dimension()
+                                + ", requestedRegion=" + netherRegion
+                                + ", actualRegion=" + TownRegion.fromBlockCoords(netherResident[0].blockPosition().getX(), netherResident[0].blockPosition().getZ())
+                                + ", position=" + netherResident[0].blockPosition();
+                    helper.assertTrue(chunkLoaded, "test setup: forced Nether resident chunk must be loaded at " + netherResidentPos);
+                    helper.assertTrue(founded, "test setup: Nether resident region must be founded: " + netherRegion);
+                    helper.assertTrue(added && uuidLookupMatches && alive && !removed && unhoused && correctRegion && inProductionIterable
+                                    && sameUuidEntities == 1,
+                            "test setup: the exact created Nether resident must remain uniquely UUID-resolvable, live, unremoved, unhoused, "
+                                    + "in the queried dimension/region, and visible to the production iterable; " + trackingState);
+                    TownResidentDemand netherDemand = TownResidentAllocationHandler.unmetDemand(nether, netherRegion, storage);
+                    helper.assertTrue(netherDemand == TownResidentDemand.NONE,
+                            "the non-Overworld guard must suppress demand despite a visible founded Nether resident; demand=" + netherDemand);
                 })
                 .thenSucceed();
     }

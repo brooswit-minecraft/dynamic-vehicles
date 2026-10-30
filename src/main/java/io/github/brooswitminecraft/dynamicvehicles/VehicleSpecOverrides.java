@@ -132,6 +132,21 @@ final class VehicleSpecOverrides {
     }
 
     /**
+     * Scoped GameTest construction support.  A fixture may temporarily replace the resolved table while it
+     * constructs unregistered entities, but it must restore this exact immutable snapshot in a finally
+     * block; clearing to stock defaults is not equivalent when a server already supplied overrides.
+     */
+    static Map<String, VehicleSpec> snapshotForTest() {
+        return Map.copyOf(OVERRIDES);
+    }
+
+    /** Restores an exact prior table captured by {@link #snapshotForTest()}, without filesystem I/O. */
+    static void restoreForTest(Map<String, VehicleSpec> snapshot) {
+        OVERRIDES.clear();
+        OVERRIDES.putAll(snapshot);
+    }
+
+    /**
      * MINECRAFT-443 review fix (comment 48829, "client/lifecycle"): the side-aware decision {@code
      * CarEntity}'s constructor actually makes, extracted here (a plain {@code boolean} plus two immutable
      * values, no {@code Level}) rather than as a method on {@code CarEntity} itself, specifically so it is

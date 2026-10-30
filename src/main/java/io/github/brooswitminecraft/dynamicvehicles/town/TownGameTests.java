@@ -47,6 +47,10 @@ public final class TownGameTests {
     private TownGameTests() {}
 
     private static final BlockPos ANCHOR = new BlockPos(5, 2, 5);
+    // Keep the standalone old-home fixture inside this test's own 24x8x24 structure.  The former
+    // ANCHOR.offset(30, 50, 30) escaped into later GameTest grid slots (and its bed foot could
+    // become foreign canopy content for a neighboring construction preflight).
+    private static final BlockPos OWNED_OLD_HOME_HEAD = new BlockPos(15, 3, 15);
 
     private static void prepareFlatGround(GameTestHelper helper) {
         for (int x = 0; x < 10; x++) {
@@ -269,6 +273,34 @@ public final class TownGameTests {
                 "no other cell in the footprint should have been built either - the whole site must abort, not just the blocked cell");
         helper.assertTrue(store.balance(TownResourceCategory.STONE) == 1000 && store.balance(TownResourceCategory.WOOD) == 1000,
                 "an aborted site must not charge any resources at all");
+        helper.succeed();
+    }
+
+    /** A valid foreign bed is protected content too: preflight must refuse it before any debit. */
+    @GameTest(template = "settlement_test")
+    public static void constructionAbortsWhenAForeignBedOccupiesTheSelectedFootprint(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos campfireCell = ANCHOR;
+        helper.setBlock(campfireCell, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(campfireCell);
+        spawnClaimedVillager(helper, absoluteCampfire);
+        OwnedStandaloneBedFixture foreignBed = placeOwnedStandaloneBedFixture(helper, campfireCell.north());
+        TownStorage storage = new TownStorage();
+        TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 1000);
+        Throwable failure = null;
+        try {
+            TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
+            helper.assertTrue(helper.getLevel().getBlockState(foreignBed.head()).equals(foreignBed.expectedHead())
+                            && helper.getLevel().getBlockState(foreignBed.foot()).equals(foreignBed.expectedFoot()),
+                    "a foreign valid bed in the selected footprint must remain untouched");
+            helper.assertTrue(store.balance(TownResourceCategory.STONE) == 1000 && store.balance(TownResourceCategory.WOOD) == 1000,
+                    "a foreign bed must reject the whole site before any resource debit");
+        } catch (RuntimeException | Error exception) {
+            failure = exception;
+            throw exception;
+        } finally {
+            finishOwnedBedFixture(foreignBed, failure);
+        }
         helper.succeed();
     }
 
@@ -620,10 +652,14 @@ public final class TownGameTests {
                                 + ", missing=" + footprint);
             }
         }
-        helper.assertTrue(TownSitePreflight.isSiteSafe(helper.getLevel(), absoluteCampfire, radius, floorY,
-                        floorY + TownBuildingTemplates.heightFor(kind, plan.storehouseVariant()), pos -> false,
-                        claimant.getUUID(), pos -> storage.isCellBlocked(helper.getLevel().dimension(), pos)),
-                "the prepared selected footprint must pass production preflight before testing construction progress: " + planDiagnostic);
+        java.util.Optional<TownSitePreflight.Rejection> preflightRejection = TownSitePreflight.firstRejection(
+                helper.getLevel(), absoluteCampfire, radius, floorY,
+                floorY + TownBuildingTemplates.heightFor(kind, plan.storehouseVariant()), pos -> false,
+                claimant.getUUID(), pos -> storage.isCellBlocked(helper.getLevel().dimension(), pos));
+        helper.assertTrue(preflightRejection.isEmpty(),
+                "the prepared selected footprint must pass production preflight before testing construction progress: "
+                        + planDiagnostic + ", seed=" + helper.getLevel().getSeed()
+                        + ", firstRejection=" + preflightRejection.orElse(null));
 
         TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
 
@@ -906,22 +942,18 @@ public final class TownGameTests {
         claimant.setVillagerData(claimant.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
         claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteCampfire));
 
-        // A real, pre-existing home this claimant already had BEFORE this construction - well
-        // outside the footprint's own columns AND well above ground, so it is never disturbed by
-        // the build itself and its handling here can be observed in isolation. Deliberately NOT
-        // directly above the campfire's own column: TownSitePreflight's whole-site scan unions the
-        // real terrain top with the planned footprint for EVERY footprint column, so a block
-        // placed high above the campfire's own column would poison that scan and reject the whole
-        // site outright, exactly like foreign/protected content would.
-        BlockPos absoluteOldHome = helper.absolutePos(campfireCell.offset(30, 50, 30));
-        placeStandaloneBedFixture(helper, absoluteOldHome);
+        OwnedStandaloneBedFixture oldHomeFixture = placeOwnedStandaloneBedFixture(helper);
+        BlockPos absoluteOldHome = oldHomeFixture.head();
         claimant.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(helper.getLevel().dimension(), absoluteOldHome));
 
         TownStorage storage = new TownStorage();
+        Throwable failure = null;
+        try {
         // [Review round 24] Releasing an old home now requires POSITIVE proof of self-ownership -
         // genuinely record it as this claimant's own, as production code would have on the
         // original grant.
         storage.setReservationOwner(helper.getLevel().dimension(), absoluteOldHome, claimant.getUUID());
+        oldHomeFixture.trackReservationOwner(storage, helper.getLevel().dimension(), claimant.getUUID());
         TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
 
         RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
@@ -951,6 +983,12 @@ public final class TownGameTests {
                     "a kind with its own bed must replace the claimant's HOME with the new bed, not keep the stale one");
             helper.assertTrue(helper.getLevel().getPoiManager().getFreeTickets(absoluteOldHome) > 0,
                     "the old home's ticket must be released once a real replacement is actually secured");
+        }
+        } catch (RuntimeException | Error exception) {
+            failure = exception;
+            throw exception;
+        } finally {
+            finishOwnedBedFixture(oldHomeFixture, failure);
         }
         helper.succeed();
     }
@@ -1223,22 +1261,326 @@ public final class TownGameTests {
         helper.succeed();
     }
 
-    /** Places a genuinely valid, correctly-paired (HEAD+FOOT) bed at the given ABSOLUTE head
-     *  position and immediately registers + fully reserves its POI record, standing in for a
-     *  fixture some OTHER, unrelated villager already holds. Deliberately places BOTH halves - a
-     *  single bare bed half (e.g. just {@code Blocks.RED_BED.defaultBlockState()}) is an invalid
-     *  configuration vanilla's own bed validity check pops back to air (taking its freshly-added POI
-     *  record with it) the moment anything triggers a neighbour update there. */
-    private static void placeStandaloneBedFixture(GameTestHelper helper, BlockPos absoluteHeadPos) {
-        net.minecraft.world.level.block.state.BlockState head = Blocks.RED_BED.defaultBlockState()
+    /**
+     * Creates the old-home fixture in this structure's own unused cells.  It deliberately refuses
+     * to overwrite a pre-existing block: a foreign fixture must remain foreign rather than being
+     * silently adopted by cleanup.
+     */
+    private static OwnedStandaloneBedFixture placeOwnedStandaloneBedFixture(GameTestHelper helper) {
+        return placeOwnedStandaloneBedFixture(helper, OWNED_OLD_HOME_HEAD);
+    }
+
+    private static OwnedStandaloneBedFixture placeOwnedStandaloneBedFixture(GameTestHelper helper, BlockPos localHeadPos) {
+        return placeOwnedStandaloneBedFixture(helper, localHeadPos, false);
+    }
+
+    /** Test-only setup failpoint: verifies the helper rolls back its first successful write. */
+    private static OwnedStandaloneBedFixture placeOwnedStandaloneBedFixture(GameTestHelper helper, BlockPos localHeadPos,
+            boolean failAfterHeadWrite) {
+        ServerLevel level = helper.getLevel();
+        BlockPos headPos = helper.absolutePos(localHeadPos);
+        BlockPos footPos = headPos.north();
+        helper.assertTrue(level.getBlockState(headPos).isAir() && level.getBlockState(footPos).isAir(),
+                "old-home fixture cells must start empty and owned by this test: head=" + level.getBlockState(headPos)
+                        + ", foot=" + level.getBlockState(footPos));
+        BlockState head = Blocks.RED_BED.defaultBlockState()
                 .setValue(BedBlock.FACING, net.minecraft.core.Direction.SOUTH)
                 .setValue(BedBlock.PART, BedPart.HEAD);
-        net.minecraft.world.level.block.state.BlockState foot = Blocks.RED_BED.defaultBlockState()
+        BlockState foot = Blocks.RED_BED.defaultBlockState()
                 .setValue(BedBlock.FACING, net.minecraft.core.Direction.SOUTH)
                 .setValue(BedBlock.PART, BedPart.FOOT);
-        helper.getLevel().setBlock(absoluteHeadPos, head, net.minecraft.world.level.block.Block.UPDATE_ALL);
-        helper.getLevel().setBlock(absoluteHeadPos.north(), foot, net.minecraft.world.level.block.Block.UPDATE_ALL);
-        registerAndTakeTicket(helper, absoluteHeadPos);
+        OwnedStandaloneBedFixture fixture = new OwnedStandaloneBedFixture(level, headPos, footPos, head, foot);
+        try {
+            fixture.placeAndTakeTicket(failAfterHeadWrite);
+            return fixture;
+        } catch (RuntimeException | Error exception) {
+            // This helper owns partial setup until it returns the fixture to a caller.  Roll back
+            // only writes whose successful completion it recorded, while retaining this setup
+            // failure as the primary error.
+            finishOwnedBedFixture(fixture, exception);
+            throw exception;
+        }
+    }
+
+    /** Runs every independent cleanup action while retaining the original assertion as primary. */
+    private static void finishOwnedBedFixture(OwnedStandaloneBedFixture fixture, Throwable primary) {
+        Throwable cleanupFailure = fixture.restoreOwnedState();
+        if (cleanupFailure == null) return;
+        if (primary != null) {
+            primary.addSuppressed(cleanupFailure);
+            return;
+        }
+        if (cleanupFailure instanceof Error error) throw error;
+        if (cleanupFailure instanceof RuntimeException exception) throw exception;
+        throw new IllegalStateException("old-home fixture cleanup failed", cleanupFailure);
+    }
+
+    /** Owns exactly the writes and ticket it successfully created, never foreign state. */
+    private static final class OwnedStandaloneBedFixture {
+        private final ServerLevel level;
+        private final BlockPos head;
+        private final BlockPos foot;
+        private final BlockState expectedHead;
+        private final BlockState expectedFoot;
+        private final net.minecraft.core.Holder<net.minecraft.world.entity.ai.village.poi.PoiType> expectedPoiType;
+        private boolean headWritten;
+        private boolean footWritten;
+        private boolean poiAdded;
+        private boolean ticketTaken;
+        private TownStorage reservationStorage;
+        private ResourceKey<Level> reservationDimension;
+        private java.util.UUID reservationOwner;
+        private java.util.UUID ticketOwner;
+        private final java.util.Set<java.util.UUID> trackedTestOwners = new java.util.HashSet<>();
+
+        private OwnedStandaloneBedFixture(ServerLevel level, BlockPos head, BlockPos foot,
+                BlockState expectedHead, BlockState expectedFoot) {
+            this.level = level;
+            this.head = head;
+            this.foot = foot;
+            this.expectedHead = expectedHead;
+            this.expectedFoot = expectedFoot;
+            this.expectedPoiType = net.minecraft.world.entity.ai.village.poi.PoiTypes.forState(expectedHead)
+                    .orElseThrow(() -> new IllegalStateException("old-home fixture bed has no POI type"));
+        }
+
+        private BlockPos head() { return head; }
+        private BlockPos foot() { return foot; }
+        private BlockState expectedHead() { return expectedHead; }
+        private BlockState expectedFoot() { return expectedFoot; }
+
+        private void placeAndTakeTicket(boolean failAfterHeadWrite) {
+            if (level.getPoiManager().exists(head, type -> true)) {
+                throw new IllegalStateException("old-home fixture found an unexpected existing POI at " + head);
+            }
+            if (!level.setBlock(head, expectedHead, Block.UPDATE_ALL)) {
+                throw new IllegalStateException("old-home fixture could not write its head at " + head);
+            }
+            headWritten = true;
+            if (failAfterHeadWrite) {
+                throw new IllegalStateException("test-only old-home fixture setup failure after head write");
+            }
+            if (!level.setBlock(foot, expectedFoot, Block.UPDATE_ALL)) {
+                throw new IllegalStateException("old-home fixture could not write its foot at " + foot);
+            }
+            footWritten = true;
+            level.getPoiManager().add(head, expectedPoiType);
+            poiAdded = true;
+            if (level.getPoiManager().take(type -> type.equals(expectedPoiType), (type, pos) -> pos.equals(head), head, 1)
+                    .filter(head::equals).isEmpty()) {
+                throw new IllegalStateException("old-home fixture could not take its own POI ticket at " + head);
+            }
+            ticketTaken = true;
+        }
+
+        private void trackReservationOwner(TownStorage storage, ResourceKey<Level> dimension, java.util.UUID owner) {
+            reservationStorage = storage;
+            reservationDimension = dimension;
+            reservationOwner = owner;
+            trackedTestOwners.add(owner);
+        }
+
+        private void releaseFixtureTicketForRegrant() {
+            if (!ticketTaken || !poiMatchesExpected()) {
+                throw new IllegalStateException("old-home fixture cannot release an unowned or changed POI at " + head);
+            }
+            if (!level.getPoiManager().release(head)) {
+                throw new IllegalStateException("old-home fixture ticket was not held at " + head);
+            }
+            ticketTaken = false;
+            ticketOwner = null;
+        }
+
+        private void takeTicketForTestOwner(java.util.UUID owner) {
+            if (!poiMatchesExpected()) {
+                throw new IllegalStateException("old-home fixture cannot regrant a changed POI at " + head);
+            }
+            if (level.getPoiManager().take(type -> type.equals(expectedPoiType), (type, pos) -> pos.equals(head), head, 1)
+                    .filter(head::equals).isEmpty()) {
+                throw new IllegalStateException("old-home fixture could not regrant its ticket at " + head);
+            }
+            ticketTaken = true;
+            ticketOwner = owner;
+            trackedTestOwners.add(owner);
+        }
+
+        private boolean poiMatchesExpected() {
+            return level.getPoiManager().exists(head, type -> type.equals(expectedPoiType));
+        }
+
+        private Throwable restoreOwnedState() {
+            Throwable failure = ownershipFailure();
+            if (failure != null) return failure;
+            java.util.UUID trackedReservationOwner = trackedReservationOwner();
+            if (trackedReservationOwner != null) {
+                try {
+                    reservationStorage.clearReservationOwner(reservationDimension, head);
+                } catch (Throwable exception) {
+                    failure = appendCleanupFailure(failure, exception);
+                }
+            }
+            if (ticketTaken && level.getPoiManager().getFreeTickets(head) == 0) {
+                try {
+                    if (!level.getPoiManager().release(head)) {
+                        failure = appendCleanupFailure(failure, new IllegalStateException(
+                                "old-home fixture expected its tracked ticket owner " + ticketOwner + " at " + head));
+                    }
+                } catch (Throwable exception) {
+                    failure = appendCleanupFailure(failure, exception);
+                }
+            }
+            if (poiAdded) {
+                try {
+                    level.getPoiManager().remove(head);
+                } catch (Throwable exception) {
+                    failure = appendCleanupFailure(failure, exception);
+                }
+            }
+            if (footWritten) {
+                try {
+                    level.setBlock(foot, Blocks.AIR.defaultBlockState(), Block.UPDATE_ALL);
+                } catch (Throwable exception) {
+                    failure = appendCleanupFailure(failure, exception);
+                }
+            }
+            if (headWritten) {
+                try {
+                    level.setBlock(head, Blocks.AIR.defaultBlockState(), Block.UPDATE_ALL);
+                } catch (Throwable exception) {
+                    failure = appendCleanupFailure(failure, exception);
+                }
+            }
+            if ((headWritten && !level.getBlockState(head).isAir()) || (footWritten && !level.getBlockState(foot).isAir())) {
+                failure = appendCleanupFailure(failure, new IllegalStateException(
+                        "old-home fixture cleanup did not restore its owned cells at head=" + level.getBlockState(head)
+                                + ", foot=" + level.getBlockState(foot)));
+            }
+            return failure;
+        }
+
+        private Throwable ownershipFailure() {
+            if (hasForeignReservationOwner()) {
+                return new IllegalStateException("old-home fixture reservation was taken over by another owner; refusing all cleanup at "
+                        + head + " (tracked=" + reservationOwner + ", ticketOwner=" + ticketOwner + ")");
+            }
+            BlockState actualHead = level.getBlockState(head);
+            BlockState actualFoot = level.getBlockState(foot);
+            if ((headWritten && !actualHead.equals(expectedHead)) || (!headWritten && !actualHead.isAir())
+                    || (footWritten && !actualFoot.equals(expectedFoot)) || (!footWritten && !actualFoot.isAir())) {
+                return new IllegalStateException("old-home fixture changed by a foreign writer; refusing cleanup head="
+                        + actualHead + ", foot=" + actualFoot);
+            }
+            if (poiAdded && !poiMatchesExpected()) {
+                return new IllegalStateException("old-home fixture POI changed or missing at " + head + "; refusing cleanup");
+            }
+            return null;
+        }
+
+        private boolean hasForeignReservationOwner() {
+            if (reservationStorage == null || trackedTestOwners.isEmpty()) return false;
+            for (java.util.UUID testOwner : trackedTestOwners) {
+                if (reservationStorage.isReservedBySelf(reservationDimension, head, testOwner)
+                        || !reservationStorage.isReservedByADifferentVillager(reservationDimension, head, testOwner)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private java.util.UUID trackedReservationOwner() {
+            if (reservationStorage == null) return null;
+            for (java.util.UUID testOwner : trackedTestOwners) {
+                if (reservationStorage.isReservedBySelf(reservationDimension, head, testOwner)) return testOwner;
+            }
+            return null;
+        }
+    }
+
+    private static Throwable appendCleanupFailure(Throwable first, Throwable next) {
+        if (first == null) return next;
+        first.addSuppressed(next);
+        return first;
+    }
+
+    /** A foreign overwrite must be preserved while its cleanup failure stays suppressed on the primary error. */
+    @GameTest(template = "settlement_test")
+    public static void ownedOldHomeFixtureFailureCleanupPreservesPrimaryError(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        OwnedStandaloneBedFixture fixture = placeOwnedStandaloneBedFixture(helper);
+        TownStorage storage = new TownStorage();
+        java.util.UUID fixtureOwner = java.util.UUID.randomUUID();
+        java.util.UUID deliberateForeignOwner = java.util.UUID.randomUUID();
+        storage.setReservationOwner(helper.getLevel().dimension(), fixture.head(), fixtureOwner);
+        fixture.trackReservationOwner(storage, helper.getLevel().dimension(), fixtureOwner);
+        storage.setReservationOwner(helper.getLevel().dimension(), fixture.head(), deliberateForeignOwner);
+        boolean deliberateReplacementInstalled = false;
+        Throwable failure = null;
+        try {
+            BlockPos local = fixture.head().subtract(helper.absolutePos(BlockPos.ZERO));
+            helper.assertTrue(local.equals(OWNED_OLD_HOME_HEAD)
+                            && local.getX() >= 0 && local.getX() < 24
+                            && local.getY() >= 0 && local.getY() < 8
+                            && local.getZ() >= 0 && local.getZ() < 24,
+                    "old-home fixture must stay inside its own settlement_test bounds: local=" + local);
+            helper.assertTrue(helper.getLevel().getBlockState(fixture.head()).equals(fixture.expectedHead())
+                            && helper.getLevel().getBlockState(fixture.foot()).equals(fixture.expectedFoot()),
+                    "old-home fixture must own both complete bed halves before cleanup");
+            // Do not notify neighbours here: the test needs a deliberately foreign foot state
+            // without causing vanilla to dismantle the fixture's own head/POI first.
+            helper.getLevel().setBlock(fixture.foot(), Blocks.CHEST.defaultBlockState(), Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE);
+            deliberateReplacementInstalled = true;
+            IllegalStateException primary = new IllegalStateException("primary fixture assertion");
+            finishOwnedBedFixture(fixture, primary);
+            helper.assertTrue(primary.getSuppressed().length == 1,
+                    "a foreign-state cleanup failure must stay suppressed on the primary assertion");
+            helper.assertTrue(helper.getLevel().getBlockState(fixture.foot()).is(Blocks.CHEST),
+                    "cleanup must not clear a foreign replacement after ownership validation fails");
+            helper.assertTrue(storage.isReservedBySelf(helper.getLevel().dimension(), fixture.head(), deliberateForeignOwner)
+                            && helper.getLevel().getPoiManager().getFreeTickets(fixture.head()) == 0,
+                    "a foreign reservation takeover must preserve the bed, POI ticket, and foreign owner before all cleanup");
+
+            BlockPos partialHead = OWNED_OLD_HOME_HEAD.east(4);
+            try {
+                placeOwnedStandaloneBedFixture(helper, partialHead, true);
+                helper.assertTrue(false, "test-only setup failpoint must abort after the first owned write");
+            } catch (IllegalStateException expected) {
+                helper.assertTrue(expected.getMessage().contains("after head write"),
+                        "partial setup must retain its original first-write failure");
+            }
+            BlockPos absolutePartialHead = helper.absolutePos(partialHead);
+            helper.assertTrue(helper.getLevel().getBlockState(absolutePartialHead).isAir()
+                            && helper.getLevel().getBlockState(absolutePartialHead.north()).isAir()
+                            && !helper.getLevel().getPoiManager().exists(absolutePartialHead, type -> true),
+                    "a partial setup failure must roll back only its successful head write and no POI");
+        } catch (RuntimeException | Error exception) {
+            failure = exception;
+            throw exception;
+        } finally {
+            Throwable restorationFailure = null;
+            try {
+                // This regression alone installed the chest and foreign reservation.  Restore
+                // neither if another writer has changed either exact state in the meantime.
+                if (deliberateReplacementInstalled && helper.getLevel().getBlockState(fixture.foot()).is(Blocks.CHEST)) {
+                    helper.getLevel().setBlock(fixture.foot(), fixture.expectedFoot(), Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE);
+                }
+                if (storage.isReservedBySelf(helper.getLevel().dimension(), fixture.head(), deliberateForeignOwner)) {
+                    storage.clearReservationOwner(helper.getLevel().dimension(), fixture.head());
+                }
+            } catch (Throwable exception) {
+                restorationFailure = exception;
+            }
+            if (restorationFailure != null) {
+                if (failure != null) failure.addSuppressed(restorationFailure);
+                else if (restorationFailure instanceof Error error) throw error;
+                else if (restorationFailure instanceof RuntimeException exception) throw exception;
+                else throw new IllegalStateException("old-home fixture regression restoration failed", restorationFailure);
+            }
+            finishOwnedBedFixture(fixture, failure);
+        }
+        helper.assertTrue(helper.getLevel().getBlockState(fixture.head()).isAir()
+                        && helper.getLevel().getBlockState(fixture.foot()).isAir(),
+                "after restoring only its own deliberate state, normal fixture cleanup must restore both cells to air");
+        helper.succeed();
     }
 
     /** Steals the ticket for a fixture {@code TownConstructionService} has ALREADY correctly placed
@@ -2775,18 +3117,19 @@ public final class TownGameTests {
             return;
         }
         Villager claimant = spawnBuilderClaimant(helper, absoluteCampfire);
-        // The claimant's original home, granted by this mod - the same placement
-        // anExistingHomeIsNeverLeakedOrErasedWithoutAnActualReplacement uses, clear of the footprint.
-        BlockPos absoluteOldHome = helper.absolutePos(ANCHOR.offset(30, 50, 30));
-        placeStandaloneBedFixture(helper, absoluteOldHome);
+        OwnedStandaloneBedFixture oldHomeFixture = placeOwnedStandaloneBedFixture(helper);
+        BlockPos absoluteOldHome = oldHomeFixture.head();
         claimant.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), absoluteOldHome));
         TownStorage storage = new TownStorage();
+        Throwable failure = null;
+        try {
         storage.setReservationOwner(level.dimension(), absoluteOldHome, claimant.getUUID());
+        oldHomeFixture.trackReservationOwner(storage, level.dimension(), claimant.getUUID());
 
         // Vanilla releases it and re-grants it to B, who stays loaded.
-        level.getPoiManager().release(absoluteOldHome);
+        oldHomeFixture.releaseFixtureTicketForRegrant();
         Villager b = spawnBystander(helper);
-        registerAndTakeTicket(helper, absoluteOldHome);
+        oldHomeFixture.takeTicketForTestOwner(b.getUUID());
         b.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), absoluteOldHome));
 
         fundStore(helper, storage, absoluteCampfire, 100000);
@@ -2805,6 +3148,12 @@ public final class TownGameTests {
         helper.assertTrue(!storage.isReservedBySelf(level.dimension(), absoluteOldHome, claimant.getUUID())
                         && !storage.isReservedBySelf(level.dimension(), absoluteOldHome, b.getUUID()),
                 "the contradicted record must be dropped, and B must not be recorded in its place");
+        } catch (RuntimeException | Error exception) {
+            failure = exception;
+            throw exception;
+        } finally {
+            finishOwnedBedFixture(oldHomeFixture, failure);
+        }
         helper.succeed();
     }
 
@@ -2825,15 +3174,18 @@ public final class TownGameTests {
         helper.setBlock(ANCHOR, Blocks.CAMPFIRE);
         BlockPos absoluteCampfire = helper.absolutePos(ANCHOR);
         Villager claimant = spawnBuilderClaimant(helper, absoluteCampfire);
-        BlockPos absoluteOldHome = helper.absolutePos(ANCHOR.offset(30, 50, 30));
-        placeStandaloneBedFixture(helper, absoluteOldHome);
+        OwnedStandaloneBedFixture oldHomeFixture = placeOwnedStandaloneBedFixture(helper);
+        BlockPos absoluteOldHome = oldHomeFixture.head();
         claimant.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), absoluteOldHome));
         TownStorage real = TownStorage.of(level.getServer());
+        Throwable failure = null;
+        try {
         real.setReservationOwner(level.dimension(), absoluteOldHome, claimant.getUUID());
+        oldHomeFixture.trackReservationOwner(real, level.dimension(), claimant.getUUID());
 
-        level.getPoiManager().release(absoluteOldHome);
+        oldHomeFixture.releaseFixtureTicketForRegrant();
         Villager b = spawnBystander(helper);
-        registerAndTakeTicket(helper, absoluteOldHome);
+        oldHomeFixture.takeTicketForTestOwner(b.getUUID());
         b.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), absoluteOldHome));
 
         // B unloads before anything has reconciled it.
@@ -2856,34 +3208,38 @@ public final class TownGameTests {
         TownBuildingTemplates.Kind kind = siteKind(helper, absoluteCampfire);
         if (kind == TownBuildingTemplates.Kind.STOREHOUSE) {
             claimant.discard();
-            helper.succeed(); // no bed of its own, so HOME is never touched; the reconciliation above is still proven
-            return;
+        } else {
+            fundStore(helper, reloaded, absoluteCampfire, 100000);
+            buildUntilHandedOff(helper, absoluteCampfire, claimant, reloaded);
+            helper.assertTrue(claimant.getVillagerData().getProfession() != BuilderProfession.BUILDER.get(),
+                    "test setup: the site never finished (kind=" + kind + ")");
+            int floorY = TownTerrain.estimateGroundHeightBelow(level, absoluteCampfire);
+            BlockPos expectedBed = TownBuildingTemplates.bedPosition(absoluteCampfire.getX(), floorY, absoluteCampfire.getZ());
+            helper.assertTrue(claimant.getBrain().getMemory(MemoryModuleType.HOME).map(gp -> gp.pos().equals(expectedBed)).orElse(false),
+                    "the claimant must be handed its new bed");
+            helper.assertTrue(level.getPoiManager().getFreeTickets(absoluteOldHome) == 0,
+                    "B's ticket must be preserved while B is unloaded - nothing proves the claimant still owns it");
+
+            // B's chunk loads again.
+            Villager reloadedB = (Villager) EntityType.create(savedB, level).orElseThrow();
+            helper.assertTrue(level.addFreshEntity(reloadedB), "test setup: B must load back into the level");
+            BlockPos spareBed = absoluteOldHome.offset(3, 0, 0);
+            placePlayerBed(level, spareBed.north(), Direction.SOUTH, Blocks.RED_BED);
+            reloaded.markCellPlaced(level.dimension(), spareBed, "site:test-owner", "test-signature", level.getBlockState(spareBed));
+            TownResidentAllocationHandler.allocateHomeIfNeeded(level, reloadedB, absoluteOldHome,
+                    TownRegion.fromBlockCoords(absoluteOldHome.getX(), absoluteOldHome.getZ()), reloaded);
+            helper.assertTrue(reloadedB.getBrain().getMemory(MemoryModuleType.HOME).map(gp -> gp.pos().equals(absoluteOldHome)).orElse(false)
+                            && level.getPoiManager().getFreeTickets(spareBed) > 0,
+                    "the reloaded B must still be validly housed at its own home, never moved off it");
+            helper.assertTrue(level.getPoiManager().getFreeTickets(absoluteOldHome) == 0,
+                    "B's ticket must still be held after B reloads");
         }
-
-        fundStore(helper, reloaded, absoluteCampfire, 100000);
-        buildUntilHandedOff(helper, absoluteCampfire, claimant, reloaded);
-        helper.assertTrue(claimant.getVillagerData().getProfession() != BuilderProfession.BUILDER.get(),
-                "test setup: the site never finished (kind=" + kind + ")");
-        int floorY = TownTerrain.estimateGroundHeightBelow(level, absoluteCampfire);
-        BlockPos expectedBed = TownBuildingTemplates.bedPosition(absoluteCampfire.getX(), floorY, absoluteCampfire.getZ());
-        helper.assertTrue(claimant.getBrain().getMemory(MemoryModuleType.HOME).map(gp -> gp.pos().equals(expectedBed)).orElse(false),
-                "the claimant must be handed its new bed");
-        helper.assertTrue(level.getPoiManager().getFreeTickets(absoluteOldHome) == 0,
-                "B's ticket must be preserved while B is unloaded - nothing proves the claimant still owns it");
-
-        // B's chunk loads again.
-        Villager reloadedB = (Villager) EntityType.create(savedB, level).orElseThrow();
-        helper.assertTrue(level.addFreshEntity(reloadedB), "test setup: B must load back into the level");
-        BlockPos spareBed = absoluteOldHome.offset(3, 0, 0);
-        placePlayerBed(level, spareBed.north(), Direction.SOUTH, Blocks.RED_BED);
-        reloaded.markCellPlaced(level.dimension(), spareBed, "site:test-owner", "test-signature", level.getBlockState(spareBed));
-        TownResidentAllocationHandler.allocateHomeIfNeeded(level, reloadedB, absoluteOldHome,
-                TownRegion.fromBlockCoords(absoluteOldHome.getX(), absoluteOldHome.getZ()), reloaded);
-        helper.assertTrue(reloadedB.getBrain().getMemory(MemoryModuleType.HOME).map(gp -> gp.pos().equals(absoluteOldHome)).orElse(false)
-                        && level.getPoiManager().getFreeTickets(spareBed) > 0,
-                "the reloaded B must still be validly housed at its own home, never moved off it");
-        helper.assertTrue(level.getPoiManager().getFreeTickets(absoluteOldHome) == 0,
-                "B's ticket must still be held after B reloads");
+        } catch (RuntimeException | Error exception) {
+            failure = exception;
+            throw exception;
+        } finally {
+            finishOwnedBedFixture(oldHomeFixture, failure);
+        }
         helper.succeed();
     }
 }

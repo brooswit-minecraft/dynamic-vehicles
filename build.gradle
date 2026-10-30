@@ -134,8 +134,32 @@ neoForge {
 
         m454WanderingClaimGameTestServer {
             type = "gameTestServer"
-            gameDirectory = layout.dir(providers.provider { file('/tmp/m454-wandering-claim-20261030/game') })
+            gameDirectory = layout.dir(providers.provider { file('/tmp/m454-wandering-claim-diagnostic-retry-20261030/game') })
             systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m454_wandering_claim'
+        }
+
+        m454OldHomeFixtureGameTestServer {
+            type = "gameTestServer"
+            gameDirectory = layout.dir(providers.provider { file('/tmp/m454-old-home-fixture-20261030/game') })
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m454_old_home_fixture'
+        }
+
+        m454OldHomeFixtureFailureGameTestServer {
+            type = "gameTestServer"
+            gameDirectory = layout.dir(providers.provider { file('/tmp/m454-old-home-fixture-failure-20261030/game') })
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m454_old_home_fixture_failure'
+        }
+
+        m454WingTwoSpeedDiagnosticGameTestServer {
+            type = "gameTestServer"
+            gameDirectory = layout.dir(providers.provider { file('/tmp/m454-wing-two-speed-diagnostic-20261030/game') })
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m454_wing_two_speed_diagnostic'
+        }
+
+        m454PartialContactDiagnosticGameTestServer {
+            type = "gameTestServer"
+            gameDirectory = layout.dir(providers.provider { file('/tmp/m454-partial-contact-diagnostic-20261030/game') })
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m454_partial_contact_diagnostic'
         }
 
         m454DonationBoxGameTestServer {

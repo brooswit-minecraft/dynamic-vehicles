@@ -2025,32 +2025,70 @@ public final class CarDrivetrainGameTests {
      */
     @GameTest(template = "settlement_test", timeoutTicks = 300)
     public static void aPartiallyUnloadedDrivenWheelKeepsTurningWithoutBreakingTheBooksOrGroundRecovery(GameTestHelper helper) {
+        String[] phase = {"before-lane-build"};
+        CarEntity[] car = new CarEntity[1];
+        int[] tick = {0};
+        int[] partialTicks = {0};
+        int[] drivenPartialTicks = {0};
+        int[] pastSlotAt = {-1};
+        boolean[] recovered = {false};
+        StringBuilder phaseHistory = new StringBuilder("before-lane-build@gameTick=").append(helper.getTick());
+        // Registered before Lane registers its cleanup listener, so either terminal outcome records live
+        // state instead of the discarded entity. This observation does not alter the sequence.
+        helper.testInfo.addListener(new GameTestListener() {
+            @Override public void testStructureLoaded(GameTestInfo info) {}
+            @Override public void testAddedForRerun(GameTestInfo info, GameTestInfo retry, GameTestRunner runner) {}
+
+            private void emit(String outcome) {
+                CarEntity current = car[0];
+                String state = current == null ? "absent" : "age=" + current.tickCount + " pos=" + current.position()
+                        + " speed=" + current.debugSpeed() + " throttle=" + current.debugLastThrottle()
+                        + " gear=" + current.debugLastGear() + " contacts="
+                        + java.util.Arrays.toString(current.debugWheelContactSubSteps());
+                DynamicVehiclesMod.LOGGER.info("M454 partial-contact diagnostic outcome={} phase={} history={} lastSample={} "
+                                + "partialTicks={} drivenPartialTicks={} pastSlotAt={} recovered={} car=[{}]",
+                        outcome, phase[0], phaseHistory, tick[0], partialTicks[0], drivenPartialTicks[0], pastSlotAt[0],
+                        recovered[0], state);
+            }
+
+            @Override public void testPassed(GameTestInfo info, GameTestRunner runner) { emit("passed"); }
+            @Override public void testFailed(GameTestInfo info, GameTestRunner runner) { emit("failed"); }
+        });
         Lane lane = Lane.build(helper, LANE_PARTIAL, 110);
+        phase[0] = "lane-built";
+        phaseHistory.append(" -> lane-built@gameTick=").append(helper.getTick());
         int slotFrom = 16;
         int slotTo = 18;
         int window = 110;
         // The car spawns at the lane's centre line, so its left (-x) wheels run 0.8 m left of it: over the
         // block column one left of the lane's origin column.
         lane.cutSlot(-1, slotFrom, slotTo, 3);
-        CarEntity[] car = new CarEntity[1];
         ExchangeBooks[] books = new ExchangeBooks[1];
-        int[] tick = {0};
         double[][] previousSpins = {null};
-        int[] partialTicks = {0};
-        int[] drivenPartialTicks = {0};
         double[] worstUnloadedWheelBooks = {0.0};
         double[] worstShareSum = {0.0};
         double[] slowestWhilePartial = {Double.MAX_VALUE};
-        int[] pastSlotAt = {-1};
-        boolean[] recovered = {false};
         lane.startWhenSettled(() -> {
                     car[0] = lane.spawnCar("car crossing the slot", 0.0, 2.0, 0.0f, CarPhysics.Gear.D2);
                     lane.board(car[0]);
                     books[0] = new ExchangeBooks(car[0], "car crossing the slot");
+                    phase[0] = "spawned";
+                    phaseHistory.append(" -> spawned@gameTick=").append(helper.getTick())
+                            .append(" age=").append(car[0].tickCount);
                 })
-                .thenExecute(() -> car[0].forceDrive(0.3, 0.0, window))
+                .thenExecute(() -> {
+                    phase[0] = "settled-and-drive-commanded";
+                    phaseHistory.append(" -> settled-and-drive-commanded@gameTick=").append(helper.getTick())
+                            .append(" age=").append(car[0].tickCount);
+                    car[0].forceDrive(0.3, 0.0, window);
+                })
                 .thenIdle(1)
                 .thenExecuteFor(window, () -> {
+                    if (tick[0] == 0) {
+                        phaseHistory.append(" -> sampling@gameTick=").append(helper.getTick())
+                                .append(" age=").append(car[0].tickCount);
+                    }
+                    phase[0] = "sampling";
                     int t = ++tick[0];
                     CarEntity c = car[0];
                     books[0].sample();
@@ -2106,6 +2144,9 @@ public final class CarDrivetrainGameTests {
                     previousSpins[0] = spins;
                 })
                 .thenExecute(() -> {
+                    phase[0] = "final-assertions";
+                    phaseHistory.append(" -> final-assertions@gameTick=").append(helper.getTick())
+                            .append(" age=").append(car[0].tickCount);
                     lane.assertOnLane(car[0], "car crossing the slot");
                     books[0].assertBalanced(helper);
                     helper.assertTrue(partialTicks[0] >= 2 && drivenPartialTicks[0] >= 1,

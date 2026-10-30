@@ -122,6 +122,40 @@ public final class TownResidentAllocationHandlerGameTests {
         }
     }
 
+    /** Keeps the complete distant takeover fixture inside one region without collapsing its lane. */
+    private static BlockPos distantFixtureHome(BlockPos absoluteAnchor, int laneX, int laneZ) {
+        int x = absoluteAnchor.getX() + laneX;
+        int z = absoluteAnchor.getZ() + laneZ;
+        int localX = Math.floorMod(x, TownConstants.REGION_SIZE_BLOCKS);
+        int localZ = Math.floorMod(z, TownConstants.REGION_SIZE_BLOCKS);
+        x += localX < 4 ? 4 - localX : localX > TownConstants.REGION_SIZE_BLOCKS - 9
+                ? TownConstants.REGION_SIZE_BLOCKS - 9 - localX : 0;
+        z += localZ < 1 ? 1 - localZ : 0;
+        return new BlockPos(x, 65, z);
+    }
+
+    private static boolean distantFixtureCaseHolds(int desiredX, int desiredZ, int expectedX, int expectedZ) {
+        BlockPos home = distantFixtureHome(new BlockPos(desiredX - 60_000, 0, desiredZ + 60_000), 60_000, -60_000);
+        RegionCoord region = TownRegion.fromBlockCoords(desiredX, desiredZ);
+        return home.equals(new BlockPos(expectedX, 65, expectedZ))
+                && TownRegion.fromBlockCoords(home.getX(), home.getZ()).equals(region)
+                && TownRegion.fromBlockCoords(home.north().getX(), home.north().getZ()).equals(region)
+                && TownRegion.fromBlockCoords(home.offset(4, 0, 0).getX(), home.offset(4, 0, 0).getZ()).equals(region)
+                && TownRegion.fromBlockCoords(home.offset(-4, 0, 0).getX(), home.offset(-4, 0, 0).getZ()).equals(region)
+                && TownRegion.fromBlockCoords(home.offset(-4, 0, 0).north().getX(), home.offset(-4, 0, 0).north().getZ()).equals(region)
+                && TownRegion.fromBlockCoords(home.offset(8, 0, 0).getX(), home.offset(8, 0, 0).getZ()).equals(region);
+    }
+
+    private static boolean distantFixtureHomeRegressionHolds() {
+        return distantFixtureCaseHolds(0, 100, 4, 100)
+                && distantFixtureCaseHolds(378, 100, 375, 100)
+                && distantFixtureCaseHolds(-384, 100, -380, 100)
+                && distantFixtureCaseHolds(-1, 100, -9, 100)
+                && distantFixtureCaseHolds(100, 0, 100, 1)
+                && distantFixtureCaseHolds(100, -384, 100, -383)
+                && distantFixtureCaseHolds(100, 100, 100, 100);
+    }
+
     private static void prepareFlatGround(GameTestHelper helper) {
         for (int x = 0; x < 10; x++) {
             for (int z = 0; z < 10; z++) {
@@ -1337,15 +1371,19 @@ public final class TownResidentAllocationHandlerGameTests {
         // aResidentWhoseHomeIsOutsideItsCurrentRegionIsReassignedAndTheOldTicketReleased's own, so the
         // two tests' far fixtures can never land on each other.
         BlockPos absoluteAnchor = helper.absolutePos(anchor(helper));
-        BlockPos oldHome = absoluteAnchor.offset(60_000, 65 - absoluteAnchor.getY(), -60_000);
+        BlockPos oldHome = distantFixtureHome(absoluteAnchor, 60_000, -60_000);
         BlockPos oldWorkstation = oldHome.offset(4, 0, 0);
         BlockPos spareBed = oldHome.offset(-4, 0, 0);
         BlockPos spareWorkstation = oldHome.offset(8, 0, 0);
         RegionCoord oldRegion = TownRegion.fromBlockCoords(oldHome.getX(), oldHome.getZ());
+        BlockPos spareBedFoot = spareBed.north();
         helper.assertTrue(!oldRegion.equals(region)
+                        && TownRegion.fromBlockCoords(oldWorkstation.getX(), oldWorkstation.getZ()).equals(oldRegion)
                         && TownRegion.fromBlockCoords(spareBed.getX(), spareBed.getZ()).equals(oldRegion)
-                        && TownRegion.fromBlockCoords(spareWorkstation.getX(), spareWorkstation.getZ()).equals(oldRegion),
-                "test setup: the old fixtures must share one region, different from A's current one");
+                        && TownRegion.fromBlockCoords(spareBedFoot.getX(), spareBedFoot.getZ()).equals(oldRegion)
+                        && TownRegion.fromBlockCoords(spareWorkstation.getX(), spareWorkstation.getZ()).equals(oldRegion)
+                        && distantFixtureHomeRegressionHolds(),
+                "test setup: every old fixture position and bed foot must share one different region and deterministic lane-boundary cases");
         placeValidBedAt(level, oldHome);
         placeWorkstationAt(level, oldWorkstation, Blocks.BLAST_FURNACE);
         placeValidBedAt(level, spareBed);

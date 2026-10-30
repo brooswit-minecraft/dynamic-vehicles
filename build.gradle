@@ -132,6 +132,12 @@ neoForge {
             systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m454_passive_unloaded'
         }
 
+        m454WanderingClaimGameTestServer {
+            type = "gameTestServer"
+            gameDirectory = layout.dir(providers.provider { file('/tmp/m454-wandering-claim-20261030/game') })
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m454_wandering_claim'
+        }
+
         m454DonationBoxGameTestServer {
             type = "gameTestServer"
             gameDirectory = layout.dir(providers.provider { file('/tmp/m454-donation-box-crosssave-20261030/game') })

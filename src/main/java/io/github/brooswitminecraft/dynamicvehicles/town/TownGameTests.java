@@ -1,6 +1,7 @@
 package io.github.brooswitminecraft.dynamicvehicles.town;
 
 import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderProfession;
+import io.github.brooswitminecraft.dynamicvehicles.DynamicVehiclesMod;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.GameTestMockPlayers;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord;
 import net.minecraft.core.BlockPos;
@@ -55,6 +56,25 @@ public final class TownGameTests {
                 }
             }
         }
+    }
+
+    /** Prepares exactly the selected construction footprint, rather than assuming every site is
+     *  the ordinary five-wide template. */
+    private static void prepareFlatGround(GameTestHelper helper, BlockPos center, int radius) {
+        for (int x = center.getX() - radius; x <= center.getX() + radius; x++) {
+            for (int z = center.getZ() - radius; z <= center.getZ() + radius; z++) {
+                for (int y = 0; y <= 12; y++) {
+                    helper.setBlock(new BlockPos(x, y, z), y < 2 ? Blocks.DIRT : Blocks.AIR);
+                }
+            }
+        }
+    }
+
+    private static TownBuildingTemplates.Placement placementAt(List<TownBuildingTemplates.Placement> template,
+            ConstructionSitePlan.PlannedBlock planned) {
+        return template.stream().filter(placement -> placement.x() == planned.x()
+                        && placement.y() == planned.y() && placement.z() == planned.z())
+                .findFirst().orElseThrow(() -> new IllegalStateException("production plan lost placement " + planned));
     }
 
     /** Road progress belongs to the region containing each individual surface cell, not to the
@@ -552,34 +572,80 @@ public final class TownGameTests {
     // ---------------------------------------------------------------------------------------
 
     /** Review round 2, finding #1: the claim must be the villager's real JOB_SITE memory, NEVER
-     *  spatial proximity - an employed villager far outside the old 2-block search radius (here,
-     *  diagonally opposite corners of the prepared footprint, ~9.9 blocks apart, while still
-     *  leaving room for the campfire's own 5-wide construction footprint to fit) must still read
-     *  as claimed, and construction must still progress for it. */
+     *  spatial proximity.  The campfire is far from the claimant but centered so even a selected
+     *  seven-wide STOREHOUSE fits in the fixture; construction progress is checked against the
+     *  exact plan/order rather than two cells that only observe a five-wide site's first tick. */
     @GameTest(template = "settlement_test")
     public static void claimSurvivesTheClaimingVillagerWanderingFarFromTheCampfire(GameTestHelper helper) {
-        prepareFlatGround(helper);
-        BlockPos campfireCell = new BlockPos(7, 2, 7);
-        helper.setBlock(campfireCell, Blocks.CAMPFIRE);
+        BlockPos campfireCell = new BlockPos(6, 2, 6);
         BlockPos absoluteCampfire = helper.absolutePos(campfireCell);
+        TownPlan plan = TownPlanner.generate(TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ()),
+                helper.getLevel().getSeed());
+        TownBuildingTemplates.Kind kind = siteKind(helper, absoluteCampfire);
+        int radius = (kind == TownBuildingTemplates.Kind.STOREHOUSE ? TownConstants.STOREHOUSE_FOOTPRINT_WIDTH : 5) / 2;
+        prepareFlatGround(helper, campfireCell, radius);
+        helper.setBlock(campfireCell, Blocks.CAMPFIRE);
         BlockPos farCorner = helper.absolutePos(new BlockPos(0, 2, 0));
         Villager claimant = EntityType.VILLAGER.create(helper.getLevel(), null, farCorner, MobSpawnType.EVENT, false, false);
-        helper.getLevel().addFreshEntity(claimant);
+        helper.assertTrue(helper.getLevel().addFreshEntity(claimant),
+                "test setup: distant claimant insertion was rejected");
         claimant.setVillagerData(claimant.getVillagerData().setProfession(VillagerProfession.FARMER));
         claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteCampfire));
+        double claimantDistanceSquared = farCorner.distSqr(absoluteCampfire);
+        helper.assertTrue(claimantDistanceSquared > 4.0,
+                "test setup: claimant must be more than two blocks from its campfire, distanceSquared=" + claimantDistanceSquared);
 
         helper.assertTrue(TownCampfireClaims.isClaimed(helper.getLevel(), absoluteCampfire),
-                "a villager 500+ blocks from its own claimed campfire must still read as claimed - this is never spatial proximity");
+                "a villager more than two blocks from its own claimed campfire must still read as claimed - this is never spatial proximity"
+                        + "; distanceSquared=" + claimantDistanceSquared);
 
         TownStorage storage = new TownStorage();
         TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 1000);
+        int floorY = TownTerrain.estimateGroundHeightBelow(helper.getLevel(), absoluteCampfire);
+        java.util.Optional<VillagerProfession> finalProfession = TownProfessionWorkstations.finalProfessionFor(
+                kind, helper.getLevel().getSeed(), absoluteCampfire.getX(), absoluteCampfire.getZ());
+        List<TownBuildingTemplates.Placement> template = TownBuildingTemplates.generate(kind, absoluteCampfire.getX(), floorY,
+                absoluteCampfire.getZ(), plan.storehouseVariant(), finalProfession.orElse(null));
+        List<ConstructionSitePlan.PlannedBlock> ordered = ConstructionSitePlan.bottomUpOrder(
+                template.stream().map(TownBuildingTemplates.Placement::toPlan).toList(),
+                absoluteCampfire.getX(), absoluteCampfire.getY(), absoluteCampfire.getZ());
+        String planDiagnostic = "kind=" + kind + ", radius=" + radius + ", floorY=" + floorY
+                + ", center=" + plan.townCenterX() + "," + plan.townCenterZ()
+                + ", variant=" + plan.storehouseVariant();
+        for (int x = -radius; x <= radius; x++) {
+            for (int z = -radius; z <= radius; z++) {
+                BlockPos footprint = absoluteCampfire.offset(x, 0, z);
+                helper.assertTrue(helper.getLevel().hasChunkAt(footprint),
+                        "the selected full footprint must be loaded before testing construction progress: " + planDiagnostic
+                                + ", missing=" + footprint);
+            }
+        }
+        helper.assertTrue(TownSitePreflight.isSiteSafe(helper.getLevel(), absoluteCampfire, radius, floorY,
+                        floorY + TownBuildingTemplates.heightFor(kind, plan.storehouseVariant()), pos -> false,
+                        claimant.getUUID(), pos -> storage.isCellBlocked(helper.getLevel().dimension(), pos)),
+                "the prepared selected footprint must pass production preflight before testing construction progress: " + planDiagnostic);
+
         TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
 
-        boolean anyBlockPlaced = !helper.getBlockState(campfireCell.offset(-2, 0, -2)).isAir()
-                || !helper.getBlockState(campfireCell.offset(2, 0, 2)).isAir();
-        helper.assertTrue(anyBlockPlaced, "construction must still progress for a site whose claimant is far away");
-        helper.assertTrue(store.balance(TownResourceCategory.STONE) < 1000 || store.balance(TownResourceCategory.WOOD) < 1000,
-                "construction progressing should have debited some resource category");
+        for (int i = 0; i < TownConstants.CONSTRUCTION_BLOCKS_PER_TICK; i++) {
+            TownBuildingTemplates.Placement placement = placementAt(template, ordered.get(i));
+            BlockPos placed = new BlockPos(placement.x(), placement.y(), placement.z());
+            helper.assertTrue(helper.getLevel().getBlockState(placed).equals(placement.state()),
+                    "construction must place the selected plan's ordered cell " + i + " for a distant claimant: "
+                            + planDiagnostic + ", expected=" + placement.state() + ", found=" + helper.getLevel().getBlockState(placed));
+        }
+        TownResourceCategory cost = TownBuildingTemplates.costFor(kind);
+        int expectedStone = 1000 - (cost == TownResourceCategory.STONE ? TownConstants.CONSTRUCTION_BLOCKS_PER_TICK : 0);
+        int expectedWood = 1000 - (cost == TownResourceCategory.WOOD ? TownConstants.CONSTRUCTION_BLOCKS_PER_TICK : 0);
+        helper.assertTrue(store.balance(TownResourceCategory.STONE) == expectedStone
+                        && store.balance(TownResourceCategory.WOOD) == expectedWood,
+                "construction must debit exactly its selected category for the four attributable placements: " + planDiagnostic
+                        + ", stone=" + store.balance(TownResourceCategory.STONE) + ", wood=" + store.balance(TownResourceCategory.WOOD));
+        DynamicVehiclesMod.LOGGER.info(
+                "M454 wandering-claim success seed={} origin={} campfire={} kind={} radius={} firstPlacements={} stone={} wood={}",
+                helper.getLevel().getSeed(), helper.absolutePos(BlockPos.ZERO), absoluteCampfire, kind, radius,
+                ordered.subList(0, TownConstants.CONSTRUCTION_BLOCKS_PER_TICK),
+                store.balance(TownResourceCategory.STONE), store.balance(TownResourceCategory.WOOD));
         helper.succeed();
     }
 

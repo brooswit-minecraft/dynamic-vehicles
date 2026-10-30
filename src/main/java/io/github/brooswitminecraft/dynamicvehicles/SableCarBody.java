@@ -181,6 +181,22 @@ final class SableCarBody {
     // alone - a test checking only wheelForce against the circle's own ceiling could pass while the
     // COMBINED force silently exceeds it, if cornering lateral force moved into the budget this tick.
     private final double[] wheelLateralForce;
+    // Tick-synchronous geometry receipts. These record the exact values consumed by the last grounded
+    // production sub-step, rather than reconstructing them later from a body velocity already changed by
+    // that sub-step's impulses.
+    private final double[] wheelSteerEntrySpeed;
+    private final double[] wheelTireForceApplicationY;
+    private final double[] wheelLateralForceApplicationY;
+    private final double[] wheelContactPatchY;
+    private final boolean[] wheelUsedLegacyCombinedImpulse;
+    private final boolean[] wheelForceReceiptValid;
+    private final long[] wheelForceReceiptSequence;
+    private long forceReceiptSequence;
+    private final ForceApplicationReceipts forceReceipts;
+    // Per-production-tick, copy-on-read impulse evidence for the controlled M478 native-body response
+    // fixture.  Unlike forceReceipts' current-substep geometry validity, this intentionally accumulates
+    // every real native application across the tick.
+    private final ProductionImpulseReceipts productionImpulseReceipts = new ProductionImpulseReceipts();
     // Review, round 10: this tick's own actual mu*normalForce circle (Tire#frictionLimit), so a test can
     // check the delivered force against the REAL per-wheel-per-tick budget instead of a fixed global
     // worst-case ceiling - tighter, and catches a smaller overflow the generous global bound would miss.
@@ -276,6 +292,14 @@ final class SableCarBody {
         this.wheelForce = new double[spec.mounts().length];
         this.wheelReactionForce = new double[spec.mounts().length];
         this.wheelLateralForce = new double[spec.mounts().length];
+        this.wheelSteerEntrySpeed = new double[spec.mounts().length];
+        this.wheelTireForceApplicationY = new double[spec.mounts().length];
+        this.wheelLateralForceApplicationY = new double[spec.mounts().length];
+        this.wheelContactPatchY = new double[spec.mounts().length];
+        this.wheelUsedLegacyCombinedImpulse = new boolean[spec.mounts().length];
+        this.wheelForceReceiptValid = new boolean[spec.mounts().length];
+        this.wheelForceReceiptSequence = new long[spec.mounts().length];
+        this.forceReceipts = new ForceApplicationReceipts(spec.mounts().length);
         this.wheelFrictionLimit = new double[spec.mounts().length];
         this.wheelDriveCommand = new double[spec.mounts().length];
         this.wheelRealizedDriveImpulse = new double[spec.mounts().length];
@@ -321,6 +345,7 @@ final class SableCarBody {
 
     /** Apply this tick's wheel forces, then move the entity to where the body is. */
     void tick(CarEntity car, double throttle, double steer, boolean handbrake, CarPhysics.Gear gear, double dt) {
+        productionImpulseReceipts.reset();
         VehicleSpec.VehicleTuning tuning = car.vehicleTuning();
         box.updatePose();
         Pose3d pose = new Pose3d(box.getPose());
@@ -614,6 +639,16 @@ final class SableCarBody {
         boolean constraintHeldThisTick = false;
         boolean anyDrivenWheelInContact = false;
         for (int sub = 0; sub < subSteps; sub++) {
+            productionImpulseReceipts.beginSubstep();
+            // Receipts describe this exact production sub-step only.  A ray miss or unloaded wheel must
+            // invalidate rather than inherit a preceding grounded application's geometry.
+            forceReceiptSequence++;
+            forceReceipts.reset();
+            java.util.Arrays.fill(wheelForceReceiptValid, false);
+            java.util.Arrays.fill(wheelUsedLegacyCombinedImpulse, false);
+            java.util.Arrays.fill(wheelTireForceApplicationY, Double.NaN);
+            java.util.Arrays.fill(wheelLateralForceApplicationY, Double.NaN);
+            java.util.Arrays.fill(wheelContactPatchY, Double.NaN);
             double forwardSpeed = subLinear.dot(carForward);
             boolean constraintHeldThisSubStep = true;
 
@@ -731,11 +766,9 @@ final class SableCarBody {
                 // physics, not just a rendered pose: this angle rotates the tire's own forward axis
                 // below, which is what vLong/vLat -- and therefore the tire's force directions -- are
                 // measured against.
-                double frontSteerAngle = steer * WheelMath.maxSteerAngle(forwardSpeed, WheelMath.BASE_FRICTION,
-                        spec.wheelbase(), CarPhysics.MAX_STEER);
-                double wheelSteerAngle = front ? frontSteerAngle
-                        : frontSteerAngle * spec.steeringTuning().rearSteerRatio();
+                double wheelSteerAngle = wheelSteerAngle(mount, steer, forwardSpeed);
                 this.steerAngle[wheel] = wheelSteerAngle;
+                this.wheelSteerEntrySpeed[wheel] = forwardSpeed;
 
                 BlockHitResult hit = wheelHits[wheel];
                 double force = forces[wheel];
@@ -990,6 +1023,8 @@ final class SableCarBody {
                 // is applied at body height as before.
                 Vector3d contactLocal = new Vector3d(local.x, local.y - distance, local.z);
                 Vector3d suspensionLocal = inverse.transform(new Vector3d(up).mul(force * subDt));
+                productionImpulseReceipts.applied(contactLocal.x, contactLocal.y, contactLocal.z,
+                        suspensionLocal.x, suspensionLocal.y, suspensionLocal.z, 0.0, 0.0, 0.0, false);
                 body.applyImpulseAtPoint(contactLocal, suspensionLocal);
                 Vector3d horizontalLocal = new Vector3d(impulseLocal).sub(suspensionLocal);
                 double tireY = CarConfig.TIRE_FORCE_AT_CONTACT.get() ? contactLocal.y : BODY_TIRE_FORCE_HEIGHT;
@@ -1017,14 +1052,70 @@ final class SableCarBody {
                 double antiFraction = WheelMath.pitchResistFraction(
                         WheelMath.chassisLongitudinalImpulse(tire.longitudinal(), subDt, reactionImpulse),
                         forwardSpeed, spec.pitchTuning().antiDive(), spec.pitchTuning().antiSquat());
-                if (antiFraction == 0.0) {
-                    body.applyImpulseAtPoint(new Vector3d(local.x, tireY, local.z), horizontalLocal);
+                if (antiFraction == 0.0 && spec.suspensionTuning().rollCenterHeight() == 0.0) {
+                    // The stock/zero-default path must stay a *single* native Sable impulse.  Algebraically
+                    // splitting it into longitudinal and lateral calls at the same point is not identical at
+                    // Rapier's native boundary (and changes the legacy drivetrain fixture), so reserve the
+                    // split path for an actual nonzero geometry change or existing pitch geometry.
+                    Vector3d applicationLocal = new Vector3d(local.x, tireY, local.z);
+                    Vector3d lateralLocal = inverse.transform(new Vector3d(lateral).mul(tire.lateral() * subDt));
+                    productionImpulseReceipts.applied(applicationLocal.x, applicationLocal.y, applicationLocal.z,
+                            horizontalLocal.x, horizontalLocal.y, horizontalLocal.z,
+                            lateralLocal.x, lateralLocal.y, lateralLocal.z, true);
+                    body.applyImpulseAtPoint(applicationLocal, horizontalLocal);
+                    wheelUsedLegacyCombinedImpulse[wheel] = true;
+                    wheelForceReceiptValid[wheel] = true;
+                    wheelForceReceiptSequence[wheel] = forceReceiptSequence;
+                    forceReceipts.publish(wheel, true, contactLocal.y, tireY, tireY);
+                    wheelContactPatchY[wheel] = contactLocal.y;
+                    wheelTireForceApplicationY[wheel] = tireY;
+                    wheelLateralForceApplicationY[wheel] = tireY;
+                } else if (antiFraction == 0.0) {
+                    // MINECRAFT-478: lateral force at the contact patch is the neutral historical
+                    // behaviour. Raising its application point by the configured roll-centre height shortens
+                    // its roll lever arm; longitudinal force keeps its existing pitch geometry.
+                    Vector3d lateralLocal = inverse.transform(new Vector3d(lateral).mul(tire.lateral() * subDt));
+                    Vector3d longitudinalLocal = new Vector3d(horizontalLocal).sub(lateralLocal);
+                    wheelTireForceApplicationY[wheel] = tireY;
+                    wheelContactPatchY[wheel] = contactLocal.y;
+                    wheelLateralForceApplicationY[wheel] = rollCenterLateralY(contactLocal.y, tireY);
+                    wheelUsedLegacyCombinedImpulse[wheel] = false;
+                    wheelForceReceiptValid[wheel] = true;
+                    wheelForceReceiptSequence[wheel] = forceReceiptSequence;
+                    forceReceipts.publish(wheel, false, contactLocal.y, tireY,
+                            rollCenterLateralY(contactLocal.y, tireY));
+                    Vector3d longitudinalPoint = new Vector3d(local.x, tireY, local.z);
+                    Vector3d lateralPoint = new Vector3d(local.x,
+                            rollCenterLateralY(contactLocal.y, tireY), local.z);
+                    productionImpulseReceipts.applied(longitudinalPoint.x, longitudinalPoint.y, longitudinalPoint.z,
+                            longitudinalLocal.x, longitudinalLocal.y, longitudinalLocal.z, 0.0, 0.0, 0.0, false);
+                    body.applyImpulseAtPoint(longitudinalPoint, longitudinalLocal);
+                    productionImpulseReceipts.applied(lateralPoint.x, lateralPoint.y, lateralPoint.z,
+                            lateralLocal.x, lateralLocal.y, lateralLocal.z,
+                            lateralLocal.x, lateralLocal.y, lateralLocal.z, true);
+                    body.applyImpulseAtPoint(lateralPoint, lateralLocal);
                 } else {
                     double pitchTireY = WheelMath.pitchResistApplicationHeight(tireY, BODY_TIRE_FORCE_HEIGHT, antiFraction);
                     Vector3d lateralLocal = inverse.transform(new Vector3d(lateral).mul(tire.lateral() * subDt));
                     Vector3d longitudinalLocal = new Vector3d(horizontalLocal).sub(lateralLocal);
-                    body.applyImpulseAtPoint(new Vector3d(local.x, pitchTireY, local.z), longitudinalLocal);
-                    body.applyImpulseAtPoint(new Vector3d(local.x, tireY, local.z), lateralLocal);
+                    wheelTireForceApplicationY[wheel] = pitchTireY;
+                    wheelContactPatchY[wheel] = contactLocal.y;
+                    wheelLateralForceApplicationY[wheel] = rollCenterLateralY(contactLocal.y, tireY);
+                    wheelUsedLegacyCombinedImpulse[wheel] = false;
+                    wheelForceReceiptValid[wheel] = true;
+                    wheelForceReceiptSequence[wheel] = forceReceiptSequence;
+                    forceReceipts.publish(wheel, false, contactLocal.y, pitchTireY,
+                            rollCenterLateralY(contactLocal.y, tireY));
+                    Vector3d longitudinalPoint = new Vector3d(local.x, pitchTireY, local.z);
+                    Vector3d lateralPoint = new Vector3d(local.x,
+                            rollCenterLateralY(contactLocal.y, tireY), local.z);
+                    productionImpulseReceipts.applied(longitudinalPoint.x, longitudinalPoint.y, longitudinalPoint.z,
+                            longitudinalLocal.x, longitudinalLocal.y, longitudinalLocal.z, 0.0, 0.0, 0.0, false);
+                    body.applyImpulseAtPoint(longitudinalPoint, longitudinalLocal);
+                    productionImpulseReceipts.applied(lateralPoint.x, lateralPoint.y, lateralPoint.z,
+                            lateralLocal.x, lateralLocal.y, lateralLocal.z,
+                            lateralLocal.x, lateralLocal.y, lateralLocal.z, true);
+                    body.applyImpulseAtPoint(lateralPoint, lateralLocal);
                 }
             }
             // Re-read velocity so the next sub-step's forces respond to the impulses just applied above -
@@ -1063,7 +1154,9 @@ final class SableCarBody {
         engineReactionTorque = DrivetrainMath.engineReactionTorque(priorEngineOmega, engineOmega, dt, coupling,
                 spec.forceScale());
         if (engineReactionTorque != 0.0) {
-            body.applyAngularImpulse(new Vector3d(ENGINE_SPIN_AXIS_LOCAL).mul(engineReactionTorque * dt));
+            Vector3d engineAngularImpulse = new Vector3d(ENGINE_SPIN_AXIS_LOCAL).mul(engineReactionTorque * dt);
+            productionImpulseReceipts.directAngular(engineAngularImpulse.x, engineAngularImpulse.y, engineAngularImpulse.z);
+            body.applyAngularImpulse(engineAngularImpulse);
         }
         double recoveryEffectiveMass = spec.massKg() / 4.0;
         // forwardSpeed itself is sub-step-loop-local; this re-derives it the same way (subLinear.dot
@@ -1112,7 +1205,10 @@ final class SableCarBody {
                     EnvironmentMath.buoyantForce(spec.massKg(), GRAVITY, waterFraction, EnvironmentMath.WATER_BUOYANCY)
                     + EnvironmentMath.buoyantForce(spec.massKg(), GRAVITY, lavaFraction, EnvironmentMath.LAVA_BUOYANCY));
             Vector3d buoyantImpulse = inverse.transform(new Vector3d(0, buoyancy * dt, 0));
-            body.applyImpulseAtPoint(new Vector3d(0, 0, 0), buoyantImpulse);
+            Vector3d origin = new Vector3d(0, 0, 0);
+            productionImpulseReceipts.applied(origin.x, origin.y, origin.z,
+                    buoyantImpulse.x, buoyantImpulse.y, buoyantImpulse.z, 0.0, 0.0, 0.0, false);
+            body.applyImpulseAtPoint(origin, buoyantImpulse);
         }
         // MINECRAFT-259: pass-through foliage resistance -- sampled at each wheel's own horizontal
         // position, at the car's feet height, since that is where a block like tall grass actually sits
@@ -1155,7 +1251,10 @@ final class SableCarBody {
                     + EnvironmentMath.fluidDragCoefficient(lavaFraction, EnvironmentMath.LAVA_DRAG));
             double dragCoeff = spec.wingDragCoeff() + fluidDrag + foliageDragTotal;
             Vector3d drag = inverse.transform(new Vector3d(subLinear).mul(-dragCoeff * spec.forceScale() * speed * dt));
-            body.applyImpulseAtPoint(new Vector3d(0, 0, 0), drag);
+            Vector3d origin = new Vector3d(0, 0, 0);
+            productionImpulseReceipts.applied(origin.x, origin.y, origin.z,
+                    drag.x, drag.y, drag.z, 0.0, 0.0, 0.0, false);
+            body.applyImpulseAtPoint(origin, drag);
         }
         // Hand the verdict to the next tick's clutch solve (see contactConstraintHeld's own comment).
         contactConstraintHeld = anyDrivenWheelInContact && constraintHeldThisTick;
@@ -1201,12 +1300,16 @@ final class SableCarBody {
             int applications = 0;
             if (frontDownforce > 0.0 && frontCount > 0) {
                 Vector3d impulse = inverse.transform(new Vector3d(0, -frontDownforce * spec.forceScale() * dt, 0));
+                productionImpulseReceipts.applied(frontAxlePoint.x, frontAxlePoint.y, frontAxlePoint.z,
+                        impulse.x, impulse.y, impulse.z, 0.0, 0.0, 0.0, false);
                 body.applyImpulseAtPoint(frontAxlePoint, impulse);
                 appliedNewtons += frontDownforce * spec.forceScale();
                 applications++;
             }
             if (rearDownforce > 0.0 && rearCount > 0) {
                 Vector3d impulse = inverse.transform(new Vector3d(0, -rearDownforce * spec.forceScale() * dt, 0));
+                productionImpulseReceipts.applied(rearAxlePoint.x, rearAxlePoint.y, rearAxlePoint.z,
+                        impulse.x, impulse.y, impulse.z, 0.0, 0.0, 0.0, false);
                 body.applyImpulseAtPoint(rearAxlePoint, impulse);
                 appliedNewtons += rearDownforce * spec.forceScale();
                 applications++;
@@ -1406,7 +1509,11 @@ final class SableCarBody {
         Vector3d leverLocalNeg = inverse.transform(new Vector3d(leverWorld).negate());
         Vector3d impulseLocalPos = inverse.transform(new Vector3d(forceWorld).mul(dt));
         Vector3d impulseLocalNeg = inverse.transform(new Vector3d(forceWorld).mul(-dt));
+        productionImpulseReceipts.applied(leverLocalPos.x, leverLocalPos.y, leverLocalPos.z,
+                impulseLocalPos.x, impulseLocalPos.y, impulseLocalPos.z, 0.0, 0.0, 0.0, false);
         body.applyImpulseAtPoint(leverLocalPos, impulseLocalPos);
+        productionImpulseReceipts.applied(leverLocalNeg.x, leverLocalNeg.y, leverLocalNeg.z,
+                impulseLocalNeg.x, impulseLocalNeg.y, impulseLocalNeg.z, 0.0, 0.0, 0.0, false);
         body.applyImpulseAtPoint(leverLocalNeg, impulseLocalNeg);
     }
 
@@ -1452,6 +1559,21 @@ final class SableCarBody {
         return -1;
     }
 
+    /** The one steering-geometry resolution used by both applied and predicted wheel response. */
+    private double wheelSteerAngle(double[] mount, double steer, double forwardSpeed) {
+        double commandedFront = steer * WheelMath.maxSteerAngle(forwardSpeed, WheelMath.BASE_FRICTION,
+                spec.wheelbase(), CarPhysics.MAX_STEER);
+        double effectiveFront = WheelMath.casterAdjustedSteerAngle(commandedFront,
+                spec.steeringTuning().casterDeg(), forwardSpeed);
+        return mount[2] > 0.0 ? effectiveFront : effectiveFront * spec.steeringTuning().rearSteerRatio();
+    }
+
+    /** Zero preserves the legacy force-height switch; nonzero tuning is explicitly contact-patch-relative. */
+    private double rollCenterLateralY(double contactY, double legacyTireY) {
+        double height = spec.suspensionTuning().rollCenterHeight();
+        return height == 0.0 ? legacyTireY : contactY + height;
+    }
+
     /** Debug overlay: the body box corners (red) and where each suspension ray meets the ground (green). */
     /** Evaluate the same wheel response used below, without applying any body impulses.
      * The accepted exchange must dissipate work at the actual two shaft midpoint speeds. */
@@ -1467,9 +1589,7 @@ final class SableCarBody {
         for (int wheel = 0; wheel < spins.length; wheel++) {
             double[] mount = spec.mounts()[wheel];
             boolean front = mount[2] > 0.0;
-            double frontSteerAngle = steer * WheelMath.maxSteerAngle(forwardSpeed, WheelMath.BASE_FRICTION,
-                    spec.wheelbase(), CarPhysics.MAX_STEER);
-            double wheelSteerAngle = front ? frontSteerAngle : frontSteerAngle * spec.steeringTuning().rearSteerRatio();
+            double wheelSteerAngle = wheelSteerAngle(mount, steer, forwardSpeed);
                 double drive = GearDrive.driveThroughClutch(throttle, forwardSpeed, gear, offer);
                 double brake = GearDrive.brake(throttle, forwardSpeed, BRAKE_FORCE, spec.forceScale());
                 double lateralScale = 1.0;
@@ -1736,6 +1856,15 @@ final class SableCarBody {
         return wheelLateralForce.clone();
     }
 
+    double[] wheelSteerEntrySpeeds() { return wheelSteerEntrySpeed.clone(); }
+    double[] wheelTireForceApplicationYs() { return wheelTireForceApplicationY.clone(); }
+    double[] wheelLateralForceApplicationYs() { return wheelLateralForceApplicationY.clone(); }
+    double[] wheelContactPatchYs() { return wheelContactPatchY.clone(); }
+    boolean[] wheelUsedLegacyCombinedImpulses() { return wheelUsedLegacyCombinedImpulse.clone(); }
+    boolean[] wheelForceReceiptValid() { boolean[] r=new boolean[wheelForceReceiptValid.length]; for(int i=0;i<r.length;i++) r[i]=forceReceipts.valid(i); return r; }
+    long[] wheelForceReceiptSequences() { long[] r=new long[wheelForceReceiptSequence.length]; for(int i=0;i<r.length;i++) r[i]=forceReceipts.sequence(i); return r; }
+    ProductionImpulseReceipts.Snapshot productionImpulseReceipt() { return productionImpulseReceipts.snapshot(); }
+
     /** Review, round 10: this tick's own actual {@code Tire#frictionLimit()} per wheel (0 when not
      * gripping at all), so a test can check the delivered force against the REAL per-tick circle instead
      * of a fixed global worst-case ceiling. */
@@ -1823,6 +1952,19 @@ final class SableCarBody {
     double[] bodyAngularVelocity() {
         Vector3d angular = body.getAngularVelocity(new Vector3d());
         return new double[] {angular.x, angular.y, angular.z};
+    }
+
+    /** Current native body position in world metres, copied for the controlled M478 fixture. */
+    double[] bodyPosition() {
+        box.updatePose();
+        Vector3d position = new Pose3d(box.getPose()).position();
+        return new double[] {position.x, position.y, position.z};
+    }
+
+    /** Current native body linear velocity in world m/s, copied for the controlled M478 fixture. */
+    double[] bodyLinearVelocity() {
+        Vector3d linear = body.getLinearVelocity(new Vector3d());
+        return new double[] {linear.x, linear.y, linear.z};
     }
 
     double engineReactionTorque() {

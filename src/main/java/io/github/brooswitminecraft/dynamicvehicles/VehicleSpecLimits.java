@@ -101,6 +101,14 @@ final class VehicleSpecLimits {
     static final double MIN_PITCH_RESIST = 0.0;
     static final double MAX_PITCH_RESIST = 1.0;
 
+    /** MINECRAFT-478: steering-axis caster, degrees. Zero preserves direct steering response. */
+    static final double MIN_CASTER_DEG = 0.0;
+    static final double MAX_CASTER_DEG = 15.0;
+
+    /** MINECRAFT-478: lateral-force application height above the tire contact patch, metres. */
+    static final double MIN_ROLL_CENTER_HEIGHT = 0.0;
+    static final double MAX_ROLL_CENTER_HEIGHT = 1.5;
+
     /** Wing downforce coefficient (MINECRAFT-446), N per (m/s)^2 applied at one axle. Identity is 0.0 (no
      * wing at all, the whole roster today); generous headroom above the roster's own existing 0.4 N/(m/s)^2
      * global air-drag constant, since a real wing's downforce coefficient is routinely several times its

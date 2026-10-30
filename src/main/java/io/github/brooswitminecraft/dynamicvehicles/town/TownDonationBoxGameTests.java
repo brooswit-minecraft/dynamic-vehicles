@@ -10,6 +10,7 @@ import net.minecraft.world.InteractionHand;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.GameTestMockPlayers;
+import io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.gametest.GameTestHolder;
@@ -143,6 +144,60 @@ public final class TownDonationBoxGameTests {
                 || helper.getLevel().getBlockEntity(absolute) != box || !before.contains("Escrow") || !before.contains("Sequence")
                 || receipt.isEmpty() || receipt.get().state() != TownStorage.DonationOperationState.RESERVED || !before.equals(after) || storage.storeFor(key).balance(TownResourceCategory.STONE) != balance || !receipt.equals(storage.donationOperationReceipt(binding))) helper.fail("pending donation break was not safely cancelled");
         else helper.succeed();
+    }
+
+    @GameTest(template = "settlement_test")
+    public static void cleanReloadedBoxAllowsRealPlayerBreakAndRetiresExactBinding(GameTestHelper helper) {
+        TownDonationBoxEntity box = placeAndBind(helper); BlockPos absolute = helper.absolutePos(POS);
+        CompoundTag saved = new CompoundTag(); box.saveAdditional(saved, helper.getLevel().registryAccess());
+        TownDonationBoxEntity reloaded = new TownDonationBoxEntity(absolute, TownDonationBoxes.DONATION_BOX.get().defaultBlockState());
+        reloaded.loadAdditional(saved, helper.getLevel().registryAccess()); helper.getLevel().setBlockEntity(reloaded);
+        TownStorage storage = TownStorage.of(helper.getLevel().getServer());
+        var player = GameTestMockPlayers.create(helper);
+        BlockEvent.BreakEvent event = new BlockEvent.BreakEvent(helper.getLevel(), absolute, helper.getLevel().getBlockState(absolute), player);
+        NeoForge.EVENT_BUS.post(event);
+        if (event.isCanceled()) { helper.fail("clean exact loaded donation box break was cancelled"); return; }
+        helper.getLevel().setBlock(absolute, net.minecraft.world.level.block.Blocks.AIR.defaultBlockState(), 3);
+        if (storage.activeDonationBoxAt(helper.getLevel().dimension(), absolute).isPresent()) helper.fail("clean loaded donation binding was not retired after allowed break");
+        else helper.succeed();
+    }
+
+    @GameTest(template = "settlement_test")
+    public static void neverBoundUnfoundedBoxAllowsRealPlayerBreak(GameTestHelper helper) {
+        // Deliberately exercise the floor-divided negative quadrant instead of an offset which can
+        // remain inside this template's founded 384-block town region.
+        RegionCoord unfoundedRegion = new RegionCoord(-1, -1);
+        BlockPos absolute = new BlockPos(TownRegion.minBlockX(unfoundedRegion) + 1, helper.absolutePos(POS).getY(),
+                TownRegion.minBlockZ(unfoundedRegion) + 1);
+        TownStorage storage = TownStorage.of(helper.getLevel().getServer());
+        String town = TownKeys.keyFor(helper.getLevel().dimension(), TownRegion.fromBlockCoords(absolute.getX(), absolute.getZ()));
+        net.minecraft.world.level.block.state.BlockState originalState = helper.getLevel().getBlockState(absolute);
+        var originalEntity = helper.getLevel().getBlockEntity(absolute);
+        String failure = null;
+        try {
+            if (!TownRegion.fromBlockCoords(absolute.getX(), absolute.getZ()).equals(unfoundedRegion)
+                    || absolute.getX() >= 0 || absolute.getZ() >= 0) failure = "negative floor-derived fixture region was not selected";
+            else if (storage.hasFoundedTown(town)) failure = "unfounded removal fixture unexpectedly has a founded town";
+            // The test owns only an observed-empty coordinate and always restores that exact state;
+            // it never overwrites another fixture's physical block or block entity.
+            else if (!originalState.isAir() || originalEntity != null) failure = "unfounded removal fixture position was not empty";
+            else if (!helper.getLevel().setBlock(absolute, TownDonationBoxes.DONATION_BOX.get().defaultBlockState(), 3)) failure = "could not place unfounded donation box";
+            else {
+                var player = GameTestMockPlayers.create(helper);
+                BlockEvent.BreakEvent event = new BlockEvent.BreakEvent(helper.getLevel(), absolute, helper.getLevel().getBlockState(absolute), player);
+                NeoForge.EVENT_BUS.post(event);
+                if (event.isCanceled()) failure = "never-bound unfounded donation box break was cancelled";
+                else {
+                    helper.getLevel().setBlock(absolute, net.minecraft.world.level.block.Blocks.AIR.defaultBlockState(), 3);
+                    if (storage.activeDonationBoxAt(helper.getLevel().dimension(), absolute).isPresent()) failure = "never-bound box fabricated or retained a storage binding";
+                }
+            }
+        } finally {
+            if (!helper.getLevel().getBlockState(absolute).equals(originalState)
+                    && !helper.getLevel().setBlock(absolute, originalState, 3) && failure == null) failure = "could not restore unfounded fixture block";
+            if (!helper.getLevel().getBlockState(absolute).equals(originalState) && failure == null) failure = "unfounded fixture block did not restore";
+        }
+        if (failure != null) helper.fail(failure); else helper.succeed();
     }
 
     @GameTest(template = "settlement_test")

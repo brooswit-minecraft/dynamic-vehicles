@@ -290,10 +290,10 @@ public record VehicleSpec(
      *        low-speed four-wheel-steer behaviour); POSITIVE is same-phase (rear follows the front, which
      *        pushes the car sideways rather than rotating it as sharply).
      */
-    public record SteeringTuning(double rearSteerRatio) {
+    public record SteeringTuning(double rearSteerRatio, double casterDeg) {
 
         /** No rear steering at all -- the rear axle holds exactly {@code 0.0} steer angle. */
-        public static final SteeringTuning IDENTITY = new SteeringTuning(0.0);
+        public static final SteeringTuning IDENTITY = new SteeringTuning(0.0, 0.0);
     }
 
     /** As the full (canonical) constructor above, minus the trailing {@link #suspensionTuning}
@@ -567,7 +567,8 @@ public record VehicleSpec(
      * @param bumpStopRate N/m applied only to the compression past {@code bumpStopTravel}
      */
     public record SuspensionTuning(double fastCompressionDamping, double slowReboundDamping,
-            double fastReboundDamping, double dampingKneeSpeed, double bumpStopTravel, double bumpStopRate) {
+            double fastReboundDamping, double dampingKneeSpeed, double bumpStopTravel, double bumpStopRate,
+            double rollCenterHeight) {
 
         /** The {@link #dampingKneeSpeed} a car carries until it tunes one, m/s. Any value is equally
          * correct for a car whose four damping rates are all equal ({@link #singleRate}): the slow rate
@@ -596,7 +597,7 @@ public record VehicleSpec(
          * {@code dampingRate}. */
         public static SuspensionTuning singleRate(double dampingRate) {
             return new SuspensionTuning(dampingRate, dampingRate, dampingRate, DEFAULT_DAMPING_KNEE_SPEED,
-                    BUMP_STOP_DISABLED_TRAVEL, NO_BUMP_STOP_RATE);
+                    BUMP_STOP_DISABLED_TRAVEL, NO_BUMP_STOP_RATE, 0.0);
         }
     }
 

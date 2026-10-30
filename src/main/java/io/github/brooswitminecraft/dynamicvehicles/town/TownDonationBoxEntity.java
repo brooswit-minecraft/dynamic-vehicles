@@ -122,11 +122,34 @@ public final class TownDonationBoxEntity extends BlockEntity {
     }
     boolean isEmptyAndRetirable(ServerLevel level) {
         TownStorage storage = TownStorage.of(level.getServer());
-        return !quarantined && escrow.isEmpty() && pending == null && binding != null
+        if (quarantined || !escrow.isEmpty() || pending != null || savedPayload != null) return false;
+        // A break check must never drive receipt recovery: a loaded completed watermark plus an
+        // older RESERVED/APPLIED storage receipt could otherwise credit and complete while the
+        // BreakEvent is deciding whether removal is safe.  First recover only the exact persisted
+        // binding, then reject every active receipt before any full reconciliation.
+        if (binding == null && savedBoxId != null) {
+            TownStorage.DonationBoxBinding candidate = storage.activeDonationBoxAt(level.dimension(), worldPosition)
+                    .filter(activeBinding -> activeBinding.boxId().equals(savedBoxId) && activeBinding.generation() == savedGeneration
+                            && activeBinding.townKey().equals(savedTown)).orElse(null);
+            if (candidate == null || storage.activeDonationOperation(candidate).isPresent()) return false;
+        }
+        // A fresh box outside a founded town has never received a storage identity.  It has no
+        // escrow or receipt to strand, so normal removal must not fabricate one merely to retire it.
+        if (binding == null && savedBoxId == null) return true;
+        if (binding != null && (!binding.dimension().equals(level.dimension()) || !binding.pos().equals(worldPosition)
+                || !storage.isActiveDonationBox(binding) || storage.activeDonationOperation(binding).isPresent())) return false;
+        // With no active receipt, reconciliation can only validate an exact terminal watermark or
+        // quarantine a mismatch; it cannot apply/complete an operation during break eligibility.
+        if (savedBoxId != null) reconcileLoadedState(level, storage);
+        return !quarantined && escrow.isEmpty() && pending == null && savedPayload == null && binding != null
+                && binding.dimension().equals(level.dimension()) && binding.pos().equals(worldPosition)
                 && storage.isActiveDonationBox(binding) && storage.activeDonationOperation(binding).isEmpty();
     }
     boolean retireAfterRemoval(ServerLevel level) {
-        return isEmptyAndRetirable(level) && TownStorage.of(level.getServer()).retireDonationBox(binding);
+        if (!isEmptyAndRetirable(level)) return false;
+        // Never-bound boxes have no storage identity to retire.  Exact loaded bindings are
+        // validated above and retire through the storage high-water path.
+        return binding == null || TownStorage.of(level.getServer()).retireDonationBox(binding);
     }
     @Override protected void saveAdditional(CompoundTag tag, HolderLookup.Provider registries) {
         super.saveAdditional(tag, registries);

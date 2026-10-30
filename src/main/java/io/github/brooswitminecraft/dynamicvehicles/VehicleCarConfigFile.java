@@ -39,6 +39,10 @@ final class VehicleCarConfigFile {
         Double tirePressureBar;
         Double antiDive;
         Double antiSquat;
+        /** MINECRAFT-478: positive caster angle of the front steering axis, degrees. */
+        Double casterDeg;
+        /** MINECRAFT-478: lateral-force application height above the tire contact patch, metres. */
+        Double rollCenterHeight;
     }
 
     // Engine/clutch coupling (MINECRAFT-444). Deliberately flat top-level fields, like every field above,

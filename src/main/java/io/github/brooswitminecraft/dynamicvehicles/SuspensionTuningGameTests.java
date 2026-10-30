@@ -63,6 +63,9 @@ import java.util.function.Supplier;
 public final class SuspensionTuningGameTests {
     private SuspensionTuningGameTests() {}
 
+    private static final String M478_NATIVE_TEMPLATE_NAMESPACE = "dynamicvehicles_m478_native";
+    private static final String M478_INTERACTION_TEMPLATE_NAMESPACE = "dynamicvehicles_m478_interaction";
+
     /** The tick a test's assertions run at when its cars were all spawned at tick 0: comfortably past
      * {@link #SAMPLE_WINDOW_TICKS}, so every per-tick sample it compares has already been taken.
      *
@@ -139,6 +142,15 @@ public final class SuspensionTuningGameTests {
             {"tireKit": {"rearSteerRatio": %s}}
             """.formatted(REAR_STEER_RATIO);
 
+    /** Nonzero caster makes this a production check of the effective, rather than commanded, front angle. */
+    private static final double CASTER_DEG = 8.0;
+    private static final String CASTER_OPPOSITE_PHASE_REAR_STEER = """
+            {"tireKit": {"casterDeg": %s, "rearSteerRatio": -0.25}}
+            """.formatted(CASTER_DEG);
+    private static final String CASTER_SAME_PHASE_REAR_STEER = """
+            {"tireKit": {"casterDeg": %s, "rearSteerRatio": 0.25}}
+            """.formatted(CASTER_DEG);
+
     /** Steering input held while the rear-steer angles are read: full lock, so the front angle is as large
      * as this car's own speed-dependent limit allows and the rear share of it is unambiguous. */
     private static final double FULL_STEER = 1.0;
@@ -146,6 +158,263 @@ public final class SuspensionTuningGameTests {
     /** Tolerance for comparing a published steer angle against the ratio times the front angle, radians.
      * Tight: this is one multiplication in production, not an integrated physical quantity. */
     private static final double STEER_ANGLE_TOLERANCE = 1e-9;
+    private static final double ROLL_CENTER_HEIGHT = 0.4;
+    /** The only world volume the contact-loss fixture may alter.  It is deliberately prepared as this
+     * test's own plain stone/air rig before the car exists, rather than treating arbitrary raycast hits as
+     * disposable.  Relative (0,0,0) is the GameTest framework's StructureBlockEntity marker, so this rig
+     * starts at x=1.  With the car moved to (6,3,6), its x=+/-0.8, z=+/-1.2 wheel mounts and four-block
+     * margin give the bounded first-loss envelope x=1..10, z=0..11 inside this 11 x 4 x 13 volume. */
+    private static final BlockPos CONTACT_LOSS_FIXTURE_MIN = new BlockPos(1, -1, 0);
+    private static final BlockPos CONTACT_LOSS_FIXTURE_MAX = new BlockPos(11, 2, 12);
+    private static final int CONTACT_LOSS_MAX_MUTATIONS = 11 * 4 * 13;
+    private static final String ROLL_CENTER_ONLY = """
+            {"tireKit": {"rollCenterHeight": %s}}
+            """.formatted(ROLL_CENTER_HEIGHT);
+
+    /** First M478 roll-centre switch acceptance: with tire force at the contact patch, the production
+     * lateral application must be exactly the current contact patch plus configured height. */
+    @GameTest(template = "settlement_test", timeoutTicks = 100, batch = "suspensionTuningRollCenterContactIsolated")
+    public static void nonzeroRollCenterRaisesLateralForceFromTheContactPatch(GameTestHelper helper) {
+        boolean original = CarConfig.TIRE_FORCE_AT_CONTACT.get();
+        runOnEveryTerminalOutcome(helper, () -> CarConfig.TIRE_FORCE_AT_CONTACT.set(original));
+        CarConfig.TIRE_FORCE_AT_CONTACT.set(true);
+        pad(helper, 5);
+        CarEntity car = driving(spawnWithOverride(helper, ROLL_CENTER_ONLY, new BlockPos(5, 3, 5)));
+        helper.runAfterDelay(MEASURE_TICK, () -> {
+            helper.assertTrue(car.spec().suspensionTuning().rollCenterHeight() == ROLL_CENTER_HEIGHT,
+                    "nonzero roll-centre override was not resolved into the production car");
+            boolean[] valid = SableCompat.wheelForceReceiptValid(car.sableBody());
+            double[] contact = SableCompat.wheelContactPatchYs(car.sableBody());
+            double[] tire = SableCompat.wheelTireForceApplicationYs(car.sableBody());
+            double[] lateral = SableCompat.wheelLateralForceApplicationYs(car.sableBody());
+            boolean observed = false;
+            for (int i=0;i<valid.length;i++) if (valid[i]) {
+                observed = true;
+                helper.assertTrue(Math.abs(tire[i] - contact[i]) < 1e-9,
+                        "contact-force switch did not use this wheel's actual contact patch");
+                helper.assertTrue(Math.abs(lateral[i] - (contact[i] + ROLL_CENTER_HEIGHT)) < 1e-9,
+                        "roll centre did not raise actual lateral force from the contact patch");
+            }
+            helper.assertTrue(observed, "no valid production force receipt observed");
+            helper.succeed();
+        });
+    }
+
+    /** Complementary switch mode: longitudinal/tire baseline remains the configured legacy body height,
+     * while the nonzero lateral roll-centre remains contact-patch-relative. */
+    @GameTest(template = "settlement_test", timeoutTicks = 100, batch = "suspensionTuningRollCenterBodyHeightIsolated")
+    public static void nonzeroRollCenterKeepsBodyHeightTireForceButUsesContactRelativeLateral(GameTestHelper helper) {
+        boolean original = CarConfig.TIRE_FORCE_AT_CONTACT.get();
+        runOnEveryTerminalOutcome(helper, () -> CarConfig.TIRE_FORCE_AT_CONTACT.set(original));
+        CarConfig.TIRE_FORCE_AT_CONTACT.set(false);
+        pad(helper, 5);
+        CarEntity car = driving(spawnWithOverride(helper, ROLL_CENTER_ONLY, new BlockPos(5, 3, 5)));
+        helper.runAfterDelay(MEASURE_TICK, () -> {
+            boolean[] valid = SableCompat.wheelForceReceiptValid(car.sableBody());
+            double[] contact = SableCompat.wheelContactPatchYs(car.sableBody());
+            double[] tire = SableCompat.wheelTireForceApplicationYs(car.sableBody());
+            double[] lateral = SableCompat.wheelLateralForceApplicationYs(car.sableBody());
+            boolean observed = false;
+            for (int i=0;i<valid.length;i++) if (valid[i]) {
+                observed = true;
+                helper.assertTrue(Math.abs(tire[i] - (-0.1)) < 1e-9,
+                        "body-height switch did not retain the configured -0.1m tire-force baseline");
+                helper.assertTrue(Math.abs(lateral[i] - (contact[i] + ROLL_CENTER_HEIGHT)) < 1e-9,
+                        "roll centre did not keep lateral force contact-patch-relative with body-height tire force");
+            }
+            helper.assertTrue(observed, "no valid production force receipt observed");
+            helper.succeed();
+        });
+    }
+
+    /** The former manual split-body experiment is deliberately replaced: native split calls proved not
+     * identical, so the compatibility invariant belongs at the actual production tick call site. */
+    @GameTest(template = "settlement_test", timeoutTicks = 100, batch = "suspensionTuningZeroRollCenterSableIsolated")
+    public static void zeroRollCenterProductionTickUsesHistoricalCombinedImpulse(GameTestHelper helper) {
+        helper.testInfo.addListener(new GameTestListener() {
+            @Override public void testStructureLoaded(GameTestInfo info) {}
+            @Override public void testPassed(GameTestInfo info, GameTestRunner runner) {
+                DynamicVehiclesMod.LOGGER.info("MINECRAFT-478 GameTest zeroRollCenterProductionTickUsesHistoricalCombinedImpulse PASS");
+            }
+            @Override public void testFailed(GameTestInfo info, GameTestRunner runner) {}
+            @Override public void testAddedForRerun(GameTestInfo info, GameTestInfo retry, GameTestRunner runner) {}
+        });
+        pad(helper, 5);
+        CarEntity car = driving(helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5)));
+        helper.runAfterDelay(MEASURE_TICK, () -> {
+            helper.assertTrue(car.spec().suspensionTuning().rollCenterHeight() == 0.0
+                            && car.spec().pitchTuning().equals(VehicleSpec.PitchTuning.IDENTITY),
+                    "control did not enter the zero-default geometry path");
+            boolean[] combined = SableCompat.wheelUsedLegacyCombinedImpulses(car.sableBody());
+            double[] travel = SableCompat.wheelTravel(car.sableBody());
+            boolean sawGroundedCombined = false;
+            for (int wheel = 0; wheel < combined.length; wheel++) {
+                if (travel[wheel] > 0.0) {
+                    helper.assertTrue(combined[wheel], "grounded zero-default wheel " + wheel + " split its historical combined impulse");
+                    sawGroundedCombined = true;
+                }
+            }
+            helper.assertTrue(sawGroundedCombined, "zero-default control never had a grounded production wheel");
+            helper.succeed();
+        });
+    }
+
+    /** Production-caller receipt transition: a bounded, real world-space pit opens beneath every observed
+     * wheel and must invalidate the very next production tick rather than preserving a prior combined
+     * receipt or its heights.  This deliberately changes blocks under the live Sable body: moving only the
+     * entity would leave Sable's physics body at the old pose and prove nothing about its caller path. */
+    @GameTest(template = "settlement_test", timeoutTicks = 180, batch = "suspensionTuningReceiptTransitionIsolated")
+    public static void productionReceiptDoesNotSurviveContactLoss(GameTestHelper helper) {
+        ContactLossFixture fixture = prepareContactLossFixture(helper);
+        CarEntity car = driving(helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(6, 3, 6)));
+        long[] prior = new long[1];
+        java.util.Map<BlockPos, net.minecraft.world.level.block.state.BlockState> removed = new java.util.HashMap<>();
+        runOnEveryTerminalOutcome(helper, () -> {
+            String cleanupFailure = restoreContactSupportVolume(helper, removed);
+            if (cleanupFailure != null) {
+                // A listener runs after the framework has recorded an assertion/timeout.  Log rather than
+                // throw here so a cleanup failure cannot replace the original test failure.
+                DynamicVehiclesMod.LOGGER.error("MINECRAFT-478 contact-loss fixture cleanup: {}", cleanupFailure);
+            }
+        });
+        helper.runAtTickTime(40, () -> {
+            boolean[] valid = SableCompat.wheelForceReceiptValid(car.sableBody());
+            boolean[] combined = SableCompat.wheelUsedLegacyCombinedImpulses(car.sableBody());
+            long[] sequence = SableCompat.wheelForceReceiptSequences(car.sableBody());
+            boolean seen = false;
+            for (int i=0;i<valid.length;i++) if (valid[i] && combined[i]) { prior[0]=sequence[i]; seen=true; }
+            helper.assertTrue(seen, "production control did not first publish a grounded combined receipt");
+            net.minecraft.core.BlockPos[] observedContacts = SableCompat.wheelContactBlocks(car.sableBody());
+            for (int i = 0; i < observedContacts.length; i++) {
+                helper.assertTrue(observedContacts[i] != null, "wheel " + i + " had no observed production contact before removal");
+                helper.assertTrue(fixture.ownedWorldCells.contains(observedContacts[i]),
+                        "wheel " + i + " contacted outside the explicitly test-owned support rig: " + observedContacts[i]);
+            }
+            // Sable reports world positions.  Dig a support volume around those exact positions through the
+            // floor and three blocks beneath it; the 4-block horizontal margin covers the car's 0.95m
+            // half-track, 1.5m half-wheelbase, and one coasting production tick.  Direct ServerLevel
+            // mutation is intentional: GameTestHelper#setBlock would interpret a world position as
+            // template-relative and offset it again.  Every changed block is snapshot/restored via the
+            // terminal listener above, so this remains confined to this disposable fixture.
+            clearContactSupportVolume(helper, fixture, observedContacts, removed);
+            // End the fixture drive now.  The following tick still uses the same live body, but cannot be
+            // re-accelerated onto adjacent support while the loss-of-contact receipt is observed.
+            car.forceDrive(0.0, 0.0, 1);
+        });
+        helper.runAtTickTime(41, () -> {
+            boolean[] valid=SableCompat.wheelForceReceiptValid(car.sableBody());
+            boolean[] combined=SableCompat.wheelUsedLegacyCombinedImpulses(car.sableBody());
+            long[] sequence=SableCompat.wheelForceReceiptSequences(car.sableBody());
+            net.minecraft.core.BlockPos[] contacts=SableCompat.wheelContactBlocks(car.sableBody());
+            double[] contactY=SableCompat.wheelContactPatchYs(car.sableBody());
+            double[] tireY=SableCompat.wheelTireForceApplicationYs(car.sableBody());
+            double[] lateralY=SableCompat.wheelLateralForceApplicationYs(car.sableBody());
+            for(int i=0;i<valid.length;i++) {
+                helper.assertTrue(contacts[i] == null, "wheel " + i + " still has real production contact " + contacts[i]
+                        + "; receipt invalidation is not yet the assertion under test");
+                helper.assertTrue(sequence[i]>prior[0], "receipt sequence did not advance after verified contact loss");
+                helper.assertTrue(!valid[i] && !combined[i], "contact-loss receipt retained combined/valid state");
+                helper.assertTrue(Double.isNaN(contactY[i]) && Double.isNaN(tireY[i]) && Double.isNaN(lateralY[i]),
+                        "contact-loss receipt retained application heights");
+            }
+            String cleanupFailure = restoreContactSupportVolume(helper, removed);
+            helper.assertTrue(cleanupFailure == null, "contact-loss fixture did not restore every saved world cell: " + cleanupFailure);
+            helper.succeed();
+        });
+    }
+
+    /** Creates the fixture's sole owned mutation region in template-relative coordinates, then remembers
+     * every transformed world cell.  The y=2 surface matches {@link #pad}; below it is forced plain air,
+     * so no block entity or hidden support is introduced by the template. */
+    private static ContactLossFixture prepareContactLossFixture(GameTestHelper helper) {
+        java.util.Set<BlockPos> owned = new java.util.HashSet<>();
+        for (int x = CONTACT_LOSS_FIXTURE_MIN.getX(); x <= CONTACT_LOSS_FIXTURE_MAX.getX(); x++) {
+            for (int z = CONTACT_LOSS_FIXTURE_MIN.getZ(); z <= CONTACT_LOSS_FIXTURE_MAX.getZ(); z++) {
+                for (int y = CONTACT_LOSS_FIXTURE_MIN.getY(); y <= CONTACT_LOSS_FIXTURE_MAX.getY(); y++) {
+                    BlockPos relative = new BlockPos(x, y, z);
+                    BlockPos world = helper.absolutePos(relative).immutable();
+                    helper.assertTrue(helper.getLevel().getBlockEntity(world) == null,
+                            "contact-loss fixture refuses to claim a template block entity at " + world);
+                    owned.add(world);
+                }
+            }
+        }
+        // The preflight above completes for the whole volume before this test writes even one cell.
+        for (int x = CONTACT_LOSS_FIXTURE_MIN.getX(); x <= CONTACT_LOSS_FIXTURE_MAX.getX(); x++) {
+            for (int z = CONTACT_LOSS_FIXTURE_MIN.getZ(); z <= CONTACT_LOSS_FIXTURE_MAX.getZ(); z++) {
+                for (int y = CONTACT_LOSS_FIXTURE_MIN.getY(); y <= CONTACT_LOSS_FIXTURE_MAX.getY(); y++) {
+                    BlockPos relative = new BlockPos(x, y, z);
+                    helper.setBlock(relative, y == 2 ? Blocks.STONE : Blocks.AIR);
+                }
+            }
+        }
+        return new ContactLossFixture(java.util.Set.copyOf(owned));
+    }
+
+    /** Opens a small, raycast-deeper pit around the contacts published by this test's immediately prior
+     * Sable tick.  It is intentionally not a four-block removal: a rolling car can otherwise acquire a
+     * fresh contact just beyond one wheel's old block before the next observation. */
+    private static void clearContactSupportVolume(GameTestHelper helper, ContactLossFixture fixture, BlockPos[] contacts,
+            java.util.Map<BlockPos, net.minecraft.world.level.block.state.BlockState> removed) {
+        int minX = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE;
+        int minY = Integer.MAX_VALUE, maxY = Integer.MIN_VALUE;
+        int minZ = Integer.MAX_VALUE, maxZ = Integer.MIN_VALUE;
+        for (BlockPos contact : contacts) {
+            minX = Math.min(minX, contact.getX()); maxX = Math.max(maxX, contact.getX());
+            minY = Math.min(minY, contact.getY()); maxY = Math.max(maxY, contact.getY());
+            minZ = Math.min(minZ, contact.getZ()); maxZ = Math.max(maxZ, contact.getZ());
+        }
+        java.util.List<BlockPos> planned = new java.util.ArrayList<>();
+        for (int x = minX - 4; x <= maxX + 4; x++) {
+            for (int z = minZ - 4; z <= maxZ + 4; z++) {
+                for (int y = minY - 3; y <= maxY; y++) {
+                    planned.add(new BlockPos(x, y, z));
+                }
+            }
+        }
+        helper.assertTrue(planned.size() <= CONTACT_LOSS_MAX_MUTATIONS,
+                "contact-loss pit exceeded its fixture mutation cap: " + planned.size());
+        for (BlockPos worldPos : planned) {
+            helper.assertTrue(fixture.ownedWorldCells.contains(worldPos),
+                    "contact-loss pit escaped its explicit fixture-owned volume at " + worldPos);
+            helper.assertTrue(helper.getLevel().getBlockEntity(worldPos) == null,
+                    "contact-loss pit refuses to replace a block entity at " + worldPos);
+        }
+        // All ownership, size and block-entity checks happen before the first world mutation.
+        for (BlockPos worldPos : planned) {
+            removed.putIfAbsent(worldPos, helper.getLevel().getBlockState(worldPos));
+            boolean wrote = helper.getLevel().setBlock(worldPos, Blocks.AIR.defaultBlockState(), 3);
+            helper.assertTrue(wrote || helper.getLevel().getBlockState(worldPos).isAir(),
+                    "contact-loss pit could not clear fixture support at " + worldPos);
+            helper.assertTrue(helper.getLevel().getBlockState(worldPos).isAir(),
+                    "contact-loss pit readback was not air at " + worldPos);
+        }
+    }
+
+    /** Restores every saved position even when earlier writes/readbacks fail, returning diagnostics for a
+     * normal test-path assertion while terminal listeners merely report it and preserve the original error. */
+    private static String restoreContactSupportVolume(GameTestHelper helper,
+            java.util.Map<BlockPos, net.minecraft.world.level.block.state.BlockState> removed) {
+        java.util.List<String> failures = new java.util.ArrayList<>();
+        for (java.util.Map.Entry<BlockPos, net.minecraft.world.level.block.state.BlockState> entry : removed.entrySet()) {
+            try {
+                helper.getLevel().setBlock(entry.getKey(), entry.getValue(), 3);
+                if (!helper.getLevel().getBlockState(entry.getKey()).equals(entry.getValue())) {
+                    failures.add(entry.getKey() + " read back " + helper.getLevel().getBlockState(entry.getKey()));
+                }
+            } catch (RuntimeException failure) {
+                failures.add(entry.getKey() + " threw " + failure);
+            }
+        }
+        return failures.isEmpty() ? null : String.join("; ", failures);
+    }
+
+    private record ContactLossFixture(java.util.Set<BlockPos> ownedWorldCells) {}
+
+    private static double maxComponentGap(org.joml.Vector3dc first, org.joml.Vector3dc second) {
+        return Math.max(Math.abs(first.x() - second.x()),
+                Math.max(Math.abs(first.y() - second.y()), Math.abs(first.z() - second.z())));
+    }
 
     /** A soft tire and nothing else: well under nominal, so it buys grip and pays in rolling drag. The
      * rolling side is what this fixture measures, because cruise speed under a fixed throttle is the
@@ -578,6 +847,43 @@ public final class SuspensionTuningGameTests {
         });
     }
 
+    /** Both rear-steer signs must be fractions of the caster-adjusted front response actually published by
+     * the production tick, not the pre-caster driver command. */
+    @GameTest(template = "settlement_test", timeoutTicks = 200, batch = "suspensionTuningCasterRearSteerNegativeIsolated")
+    public static void casterAdjustedFrontAngleDrivesNegativeRearSteerInProduction(GameTestHelper helper) {
+        assertCasterAdjustedRearSteer(helper, CASTER_OPPOSITE_PHASE_REAR_STEER, -0.25, "negative ratio");
+    }
+
+    @GameTest(template = "settlement_test", timeoutTicks = 200, batch = "suspensionTuningCasterRearSteerPositiveIsolated")
+    public static void casterAdjustedFrontAngleDrivesPositiveRearSteerInProduction(GameTestHelper helper) {
+        assertCasterAdjustedRearSteer(helper, CASTER_SAME_PHASE_REAR_STEER, 0.25, "positive ratio");
+    }
+
+    private static void assertCasterAdjustedRearSteer(GameTestHelper helper, String json, double ratio, String label) {
+        pad(helper, 5);
+        CarEntity configured = driving(spawnWithOverride(helper, json, new BlockPos(5, 3, 5)));
+        configured.forceDrive(GENTLE_THROTTLE, FULL_STEER, DRIVE_TICKS);
+        helper.runAfterDelay(MEASURE_TICK, () -> {
+            double[] angles = SableCompat.wheelSteerAngles(configured.sableBody());
+            double[] entrySpeeds = SableCompat.wheelSteerEntrySpeeds(configured.sableBody());
+            for (int wheel = 0; wheel < angles.length; wheel++) {
+                double speed = entrySpeeds[wheel];
+                double commanded = FULL_STEER * WheelMath.maxSteerAngle(speed, WheelMath.BASE_FRICTION,
+                        configured.spec().wheelbase(), CarPhysics.MAX_STEER);
+                double predictedEffective = WheelMath.casterAdjustedSteerAngle(commanded, CASTER_DEG, speed);
+                boolean front = configured.spec().mounts()[wheel][2] > 0.0;
+                double expected = front ? predictedEffective : predictedEffective * ratio;
+                helper.assertTrue(Math.abs(angles[wheel] - expected) < STEER_ANGLE_TOLERANCE,
+                        label + " caster/rear-steer wheel " + wheel + " differs from the predicted effective front angle: expected "
+                                + expected + " got " + angles[wheel] + " speed=" + speed + " commanded=" + commanded
+                                + " effective=" + predictedEffective);
+                helper.assertTrue(Math.abs(predictedEffective) < Math.abs(commanded),
+                        label + " did not apply its nonzero caster: commanded=" + commanded + " effective=" + predictedEffective);
+            }
+            helper.succeed();
+        });
+    }
+
     /** Checks every wheel's published steer angle against this car's own front angle: front wheels carry
      * the front angle itself, rear wheels exactly {@code ratio} times it. Front/rear is decided the same
      * way production decides it -- {@code mounts()[wheel][2] > 0} -- rather than by assuming an index
@@ -889,19 +1195,356 @@ public final class SuspensionTuningGameTests {
         });
     }
 
+    /**
+     * Retained interaction coverage for the real handbrake/contact path.  This is deliberately NOT the
+     * physical roll-centre A/B oracle: the prior long-drive signed averages cancelled during oscillation
+     * and the cars reached unequal trajectories, so their ratio could not establish a geometry response.
+     * The controlled native-body test below owns that acceptance; this test keeps the finite-force,
+     * supported-contact, handbrake and cleanup checks at the same thresholds without making a false
+     * matched-trajectory claim.
+     *
+     * M478's application-height receipts prove where lateral force is applied, but not that a real lateral
+     * load produces the expected rigid-body response.  This deliberately uses the existing Sable cornering
+     * sampler rather than a hand-built impulse: matched stock/nonzero-roll-centre cars first accelerate on
+     * the same stone plane, then corner with the rear handbrake held.  The handbrake keeps the tire path
+     * relevant (rear brake and grip-cut are both live) while the assertions reject a vacuous zero-force or
+     * airborne comparison.  The same manoeuvre is run at the supported one and four wheel-substep counts;
+     * the global value is restored on every terminal outcome.
+     */
+    @GameTest(template = "settlement_test", templateNamespace = M478_INTERACTION_TEMPLATE_NAMESPACE,
+            timeoutTicks = 300, batch = "suspensionTuningRollCenterHandbrakeInteractionIsolated")
+    public static void rollCenterHandbrakeInteractionRetainsFiniteSupportedContactAtOneAndFourSubSteps(GameTestHelper helper) {
+        int originalSubSteps = CarConfig.WHEEL_SUB_STEPS.get();
+        Runnable restore = () -> CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
+        runOnEveryTerminalOutcome(helper, restore);
+        try {
+            for (int x = 0; x <= TEMPLATE_MAX; x++) {
+                for (int z = 0; z <= TEMPLATE_MAX; z++) {
+                    helper.setBlock(new BlockPos(x, 2, z), Blocks.STONE);
+                }
+            }
+            RollCenterCorneringPhase oneStep = new RollCenterCorneringPhase();
+            RollCenterCorneringPhase fourStep = new RollCenterCorneringPhase();
+            runOnEveryTerminalOutcome(helper, () -> {
+                try { discardRollCenterPhaseTerminal(oneStep); discardRollCenterPhaseTerminal(fourStep); }
+                finally { restore.run(); }
+            });
+            scheduleRollCenterCorneringPhase(helper, oneStep, 0L, 1, new BlockPos(5, 3, 3), new BlockPos(16, 3, 3));
+            helper.runAtTickTime(CORNER_SPIN_UP_TICKS + CORNER_TICKS + 1, () -> { assertHandbrakeInteraction(helper, oneStep, 1); discardRollCenterPhase(oneStep); });
+            scheduleRollCenterCorneringPhase(helper, fourStep, 90L, 4, new BlockPos(5, 3, 3), new BlockPos(16, 3, 3));
+            helper.runAtTickTime(90L + CORNER_SPIN_UP_TICKS + CORNER_TICKS + 1, () -> {
+                try {
+                    assertHandbrakeInteraction(helper, fourStep, 4);
+                    discardRollCenterPhase(fourStep);
+                    restore.run();
+                    helper.succeed();
+                } catch (RuntimeException e) {
+                    restore.run();
+                    throw e;
+                }
+            });
+        } catch (RuntimeException e) {
+            restore.run();
+            throw e;
+        }
+    }
+
+    /**
+     * A deliberately one-tick, explicitly owned production-body comparison.  Unlike the long handbrake
+     * manoeuvre above, each car is an unregistered entity whose one and only physics path is the direct
+     * production {@link SableCompat#tick} call below.  The native body is removed before the next is
+     * created, so no world entity tick, rider input, or preceding trajectory can contaminate the matched
+     * stock/configured comparison.  The response is native angular velocity, not entity orientation: this
+     * test makes no claim about a solver integration step it does not invoke.
+     */
+    @GameTest(template = "settlement_test", templateNamespace = M478_NATIVE_TEMPLATE_NAMESPACE,
+            timeoutTicks = 80, batch = "suspensionTuningRollCenterNativeResponseIsolated")
+    public static void nonzeroRollCenterChangesControlledNativeAngularResponseAtOneAndFourSubSteps(GameTestHelper helper) {
+        int originalSubSteps = CarConfig.WHEEL_SUB_STEPS.get();
+        runOnEveryTerminalOutcome(helper, () -> CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps));
+        for (int x = 0; x <= TEMPLATE_MAX; x++) for (int z = 0; z <= TEMPLATE_MAX; z++) {
+            helper.setBlock(new BlockPos(x, 2, z), Blocks.STONE);
+        }
+        helper.runAtTickTime(1, () -> {
+            try {
+                ControlledNativeResponse one = controlledNativeResponse(helper, 1);
+                ControlledNativeResponse four = controlledNativeResponse(helper, 4);
+                assertControlledNativeResponse(helper, one, 1);
+                assertControlledNativeResponse(helper, four, 4);
+                CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
+                helper.succeed();
+            } finally {
+                CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
+            }
+        });
+    }
+
+    private static ControlledNativeResponse controlledNativeResponse(GameTestHelper helper, int substeps) {
+        CarConfig.WHEEL_SUB_STEPS.set(substeps);
+        BlockPos spawn = helper.absolutePos(new BlockPos(5, 3, 5));
+        // Sable's native constructor stores horizontal pose coordinates through binary32.  Map both
+        // patch-centred intended axes before either body exists; neither axis gets a location-specific
+        // offset.  The expected pose below is therefore derived from these chosen pre-creation inputs.
+        double intendedX = spawn.getX() + 1.0;
+        double intendedZ = spawn.getZ() + 0.5;
+        net.minecraft.world.phys.Vec3 entryCarPosition = new net.minecraft.world.phys.Vec3(
+                ControlledNativePoseMapping.toBinary32(intendedX), spawn.getY(),
+                ControlledNativePoseMapping.toBinary32(intendedZ));
+        java.util.Map<String, VehicleSpec> entryOverrides = VehicleSpecOverrides.snapshotForTest();
+        try {
+            CarEntity stock = freshUnregisteredCar(helper, entryCarPosition);
+            VehicleSpec configuredSpec = withRollCenter(stock.spec());
+            VehicleSpecOverrides.restoreForTest(java.util.Map.of(VehicleIds.CAR, configuredSpec));
+            CarEntity configured = freshUnregisteredCar(helper, entryCarPosition);
+            assertSameControlledSpec(helper, stock.spec(), configured.spec());
+            assertBinary32ControlledEntry(helper, entryCarPosition, stock.spec());
+            assertControlledFixtureFootprint(helper, stock, entryCarPosition);
+            assertControlledFixtureFootprint(helper, configured, entryCarPosition);
+            double[] expectedBodyPosition = {entryCarPosition.x, entryCarPosition.y + stock.spec().halfY(),
+                    entryCarPosition.z};
+            ControlledNativeSample stockSample = tickOwnedNativeBody(helper, stock, expectedBodyPosition, substeps);
+            ControlledNativeSample configuredSample = tickOwnedNativeBody(helper, configured, expectedBodyPosition, substeps);
+            return new ControlledNativeResponse(stockSample, configuredSample);
+        } finally {
+            VehicleSpecOverrides.restoreForTest(entryOverrides);
+        }
+    }
+
+    /** Builds the entity but never adds it to the level, so it cannot receive an automatic entity tick. */
+    private static CarEntity freshUnregisteredCar(GameTestHelper helper, net.minecraft.world.phys.Vec3 entryPosition) {
+        CarEntity car = new CarEntity(DynamicVehiclesMod.CAR.get(), helper.getLevel());
+        car.moveTo(entryPosition.x, entryPosition.y, entryPosition.z, 0.0f, 0.0f);
+        return car;
+    }
+
+    private static void assertBinary32ControlledEntry(GameTestHelper helper,
+            net.minecraft.world.phys.Vec3 entryPosition, VehicleSpec spec) {
+        double bodyCenterY = entryPosition.y + spec.halfY();
+        helper.assertTrue(isFiniteBinary32(entryPosition.x) && isFiniteBinary32(entryPosition.z)
+                        && isFiniteBinary32(bodyCenterY),
+                "controlled native entry pose must be finite and binary32-exact: car=" + entryPosition
+                        + " bodyCenterY=" + bodyCenterY);
+    }
+
+    private static boolean isFiniteBinary32(double value) {
+        return Double.isFinite(value) && (double) (float) value == value;
+    }
+
+    /** Verifies the yaw-zero chassis bounds and each wheel contact footprint remain on this test's stone plane. */
+    private static void assertControlledFixtureFootprint(GameTestHelper helper, CarEntity car,
+            net.minecraft.world.phys.Vec3 entryPosition) {
+        BlockPos patchMin = helper.absolutePos(new BlockPos(0, 2, 0));
+        double patchMaxX = helper.absolutePos(new BlockPos(TEMPLATE_MAX, 2, 0)).getX() + 1.0;
+        double patchMaxZ = helper.absolutePos(new BlockPos(0, 2, TEMPLATE_MAX)).getZ() + 1.0;
+        VehicleSpec spec = car.spec();
+        assertOnOwnedStonePatch(helper, entryPosition.x - spec.halfX(), entryPosition.z - spec.halfZ(),
+                patchMin, patchMaxX, patchMaxZ, "controlled chassis minimum");
+        assertOnOwnedStonePatch(helper, entryPosition.x + spec.halfX(), entryPosition.z + spec.halfZ(),
+                patchMin, patchMaxX, patchMaxZ, "controlled chassis maximum");
+        double wheelFootprintRadius = spec.wheelRadius() + spec.wheelWidth() * 0.5;
+        for (int wheel = 0; wheel < spec.mounts().length; wheel++) {
+            double[] mount = spec.mounts()[wheel];
+            double wheelX = entryPosition.x + mount[0];
+            double wheelZ = entryPosition.z + mount[2];
+            // Conservatively include the tire's radius and half-width in either horizontal direction;
+            // this remains valid for the one-tick production steer before a contact is sampled.
+            assertOnOwnedStonePatch(helper, wheelX - wheelFootprintRadius, wheelZ - wheelFootprintRadius,
+                    patchMin, patchMaxX, patchMaxZ, "controlled wheel " + wheel + " minimum");
+            assertOnOwnedStonePatch(helper, wheelX + wheelFootprintRadius, wheelZ + wheelFootprintRadius,
+                    patchMin, patchMaxX, patchMaxZ, "controlled wheel " + wheel + " maximum");
+        }
+    }
+
+    private static void assertOnOwnedStonePatch(GameTestHelper helper, double x, double z, BlockPos patchMin,
+            double patchMaxX, double patchMaxZ, String subject) {
+        helper.assertTrue(x >= patchMin.getX() && x < patchMaxX && z >= patchMin.getZ() && z < patchMaxZ,
+                subject + " escaped the owned stone patch: x=" + x + " z=" + z + " patch=["
+                        + patchMin.getX() + ',' + patchMaxX + ")x[" + patchMin.getZ() + ',' + patchMaxZ + ')');
+    }
+
+    private static void assertSameControlledSpec(GameTestHelper helper, VehicleSpec stock, VehicleSpec configured) {
+        helper.assertTrue(sameSpecExceptRollCenter(stock, configured),
+                "controlled configured spec differs from stock in more than roll-centre height");
+    }
+
+    /** Copies every resolved field, changing only suspension roll-centre height for this fixture. */
+    private static VehicleSpec withRollCenter(VehicleSpec s) {
+        VehicleSpec.SuspensionTuning suspension = s.suspensionTuning();
+        return new VehicleSpec(s.halfX(), s.halfY(), s.halfZ(), s.mounts(), s.wheelRadius(), s.wheelWidth(),
+                s.rideHeight(), s.restLength(), s.massKg(), s.springRate(), s.dampingRate(), s.maxSpringForce(),
+                s.wheelbase(), s.maxSpeed(), s.forceScale(), s.enginePitch(), s.seatY(), s.seatZ(), s.looseGrip(),
+                s.rollingScale(), s.tireTuning(), s.downforceGripPerSpeed(), s.antiRollScale(), s.seats(),
+                s.vehicleTuning(), s.handbrakeScale(), new VehicleSpec.SuspensionTuning(
+                        suspension.fastCompressionDamping(), suspension.slowReboundDamping(),
+                        suspension.fastReboundDamping(), suspension.dampingKneeSpeed(), suspension.bumpStopTravel(),
+                        suspension.bumpStopRate(), ROLL_CENTER_HEIGHT), s.steeringTuning(), s.tirePressureBar(),
+                s.pitchTuning(), s.frontWingDownforceCoeff(), s.rearWingDownforceCoeff(), s.wingDragCoeff(),
+                s.drivetrainCoupling(), s.diffuserTuning(), s.computerTuning());
+    }
+
+    private static boolean sameSpecExceptRollCenter(VehicleSpec stock, VehicleSpec configured) {
+        return withRollCenter(stock).equals(configured)
+                && java.util.Arrays.deepEquals(stock.mounts(), configured.mounts());
+    }
+
+    private static ControlledNativeSample tickOwnedNativeBody(GameTestHelper helper, CarEntity car,
+            double[] expectedPosition, int expectedSubsteps) {
+        Object body = SableCompat.create(helper.getLevel(), car);
+        helper.assertTrue(body != null, "controlled fixture could not create its owned native body");
+        try {
+            assertVector(helper, expectedPosition, SableCompat.bodyPosition(body), 1e-9,
+                    "native construction pose did not match the pre-creation entity pose");
+            assertVector(helper, new double[] {0.0, 0.0, 0.0}, SableCompat.bodyLinearVelocity(body), 1e-12,
+                    "fresh native body did not begin at zero linear velocity");
+            assertVector(helper, new double[] {0.0, 0.0, 0.0}, SableCompat.bodyAngularVelocity(body), 1e-12,
+                    "fresh native body did not begin at zero angular velocity");
+            double[] entryPosition = SableCompat.bodyPosition(body);
+            double[] entryAngular = SableCompat.bodyAngularVelocity(body);
+            org.joml.Vector3d entryLinear = new org.joml.Vector3d(0.0, 0.0, 4.0);
+            SableCompat.addLinearVelocityForTest(body, entryLinear);
+            assertVector(helper, new double[] {entryLinear.x, entryLinear.y, entryLinear.z},
+                    SableCompat.bodyLinearVelocity(body), 1e-12,
+                    "additive test velocity did not establish the verified native entry state");
+            double[] injectedEntryLinear = SableCompat.bodyLinearVelocity(body);
+            SableCompat.tick(body, car, 0.0, CORNER_STEER, false, CarPhysics.Gear.NEUTRAL, 1.0 / 20.0);
+            ProductionImpulseReceipts.Snapshot receipt = SableCompat.productionImpulseReceipt(body);
+            int[] contacts = SableCompat.wheelContactSubSteps(body);
+            double[] lateral = SableCompat.wheelLateralForces(body);
+            helper.assertTrue(receipt.substeps() == expectedSubsteps,
+                    "receipt did not observe every production substep: " + receipt.substeps());
+            helper.assertTrue(receipt.lateralApplications() > 0 && receipt.nativeApplications() >= receipt.lateralApplications(),
+                    "controlled tick did not apply a real lateral native impulse");
+            for (int wheel = 0; wheel < contacts.length; wheel++) {
+                helper.assertTrue(contacts[wheel] > 0 && Double.isFinite(lateral[wheel]),
+                        "controlled native response lacked finite supported wheel " + wheel + " contacts="
+                                + contacts[wheel] + " lateral=" + lateral[wheel]);
+            }
+            return new ControlledNativeSample(entryPosition, injectedEntryLinear, entryAngular,
+                    SableCompat.bodyAngularVelocity(body), receipt, contacts, lateral);
+        } finally {
+            SableCompat.remove(body);
+        }
+    }
+
+    private static void assertControlledNativeResponse(GameTestHelper helper, ControlledNativeResponse response,
+            int substeps) {
+        ControlledNativeSample stock = response.stock, configured = response.configured;
+        assertVector(helper, stock.entryPosition, configured.entryPosition, 1e-9,
+                "stock/configured native entry poses differ");
+        assertVector(helper, stock.entryLinear, configured.entryLinear, 1e-12,
+                "stock/configured native entry velocities differ");
+        assertVector(helper, stock.entryAngular, configured.entryAngular, 1e-12,
+                "stock/configured native entry angular velocities differ");
+        double stockRollDelta = stock.afterAngular[2] - stock.entryAngular[2];
+        double configuredRollDelta = configured.afterAngular[2] - configured.entryAngular[2];
+        double lateralTorqueDifference = configured.receipt.lateralAngularImpulse()[2]
+                - stock.receipt.lateralAngularImpulse()[2];
+        double nonLateralTorqueDifference = configured.receipt.nonLateralAngularImpulse()[2]
+                - stock.receipt.nonLateralAngularImpulse()[2];
+        helper.assertTrue(Math.abs(lateralTorqueDifference) > 1e-9,
+                "roll-centre did not change measured signed lateral lever impulse at " + substeps + " substeps");
+        helper.assertTrue(Math.abs(nonLateralTorqueDifference) < Math.abs(lateralTorqueDifference),
+                "unmatched non-lateral angular contribution obscures controlled lateral comparison at " + substeps
+                        + " substeps: lateral=" + lateralTorqueDifference + " nonLateral=" + nonLateralTorqueDifference);
+        helper.assertTrue(Math.signum(configuredRollDelta - stockRollDelta) == Math.signum(lateralTorqueDifference),
+                "native roll angular-velocity response did not follow the measured signed lateral lever impulse at "
+                        + substeps + " substeps: delta=" + (configuredRollDelta - stockRollDelta)
+                        + " lateralTorque=" + lateralTorqueDifference + " nonLateral=" + nonLateralTorqueDifference);
+    }
+
+    private static void assertVector(GameTestHelper helper, double[] expected, double[] actual, double tolerance,
+            String message) {
+        helper.assertTrue(expected.length == actual.length, message + " length mismatch");
+        for (int i = 0; i < expected.length; i++) helper.assertTrue(Math.abs(expected[i] - actual[i]) <= tolerance,
+                message + " axis=" + i + " expected=" + expected[i] + " actual=" + actual[i]);
+    }
+
+    private record ControlledNativeResponse(ControlledNativeSample stock, ControlledNativeSample configured) {}
+    private record ControlledNativeSample(double[] entryPosition, double[] entryLinear, double[] entryAngular,
+            double[] afterAngular, ProductionImpulseReceipts.Snapshot receipt, int[] contacts, double[] lateral) {}
+
+    private static void scheduleRollCenterCorneringPhase(GameTestHelper helper, RollCenterCorneringPhase phase,
+            long startTick, int subSteps, BlockPos stockSpawn, BlockPos configuredSpawn) {
+        phase.stockResponse = sampleCornering(helper, () -> phase.stock, startTick + CORNER_SPIN_UP_TICKS);
+        phase.configuredResponse = sampleCornering(helper, () -> phase.configured, startTick + CORNER_SPIN_UP_TICKS);
+        helper.runAtTickTime(startTick, () -> {
+            CarConfig.WHEEL_SUB_STEPS.set(subSteps);
+            phase.stock = helper.spawn(DynamicVehiclesMod.CAR.get(), stockSpawn);
+            phase.configured = spawnWithOverride(helper, ROLL_CENTER_ONLY, configuredSpawn);
+            phase.stock.forceDrive(GENTLE_THROTTLE, 0.0, (int) CORNER_SPIN_UP_TICKS);
+            phase.configured.forceDrive(GENTLE_THROTTLE, 0.0, (int) CORNER_SPIN_UP_TICKS);
+        });
+        helper.runAtTickTime(startTick + CORNER_SPIN_UP_TICKS, () -> {
+            helper.assertTrue(horizontalSpeed(phase.stock) > MIN_MEANINGFUL_CRUISE_SPEED
+                            && horizontalSpeed(phase.configured) > MIN_MEANINGFUL_CRUISE_SPEED,
+                    "roll-centre cornering setup did not get both real bodies moving at " + subSteps
+                            + " substeps: stock=" + horizontalSpeed(phase.stock) + " configured="
+                            + horizontalSpeed(phase.configured));
+            phase.stock.setWheelPaddles(false, true);
+            phase.configured.setWheelPaddles(false, true);
+            phase.stock.forceDrive(0.0, CORNER_STEER, (int) CORNER_TICKS);
+            phase.configured.forceDrive(0.0, CORNER_STEER, (int) CORNER_TICKS);
+        });
+    }
+
+    private static void discardRollCenterPhase(RollCenterCorneringPhase phase) {
+        RuntimeException failure = null;
+        for (CarEntity car : new CarEntity[] {phase.stock, phase.configured}) try {
+            if (car != null && !car.isRemoved()) car.discard();
+        } catch (RuntimeException e) { if (failure == null) failure = e; else failure.addSuppressed(e); }
+        if (failure != null) throw failure;
+    }
+
+    private static void discardRollCenterPhaseTerminal(RollCenterCorneringPhase phase) {
+        try { discardRollCenterPhase(phase); }
+        catch (RuntimeException e) { DynamicVehiclesMod.LOGGER.error("M478 roll-centre fixture cleanup", e); }
+    }
+
+    private static void assertHandbrakeInteraction(GameTestHelper helper, RollCenterCorneringPhase phase,
+            int subSteps) {
+        CorneringResponse stock = phase.stockResponse;
+        CorneringResponse configured = phase.configuredResponse;
+        DynamicVehiclesMod.LOGGER.info("MINECRAFT-478 handbrake interaction substeps={} stock=[{}] configured=[{}]",
+                subSteps, stock.windowDiagnostic(), configured.windowDiagnostic());
+        helper.assertTrue(stock.ticks == CORNER_TICKS && configured.ticks == CORNER_TICKS,
+                "roll-centre cornering missed a production tick at " + subSteps + " substeps: stock="
+                        + stock.ticks + " configured=" + configured.ticks);
+        helper.assertTrue(stock.groundedTicks >= CORNER_TICKS * 3 / 4 && configured.groundedTicks >= CORNER_TICKS * 3 / 4
+                        && stock.finiteTicks == CORNER_TICKS && configured.finiteTicks == CORNER_TICKS,
+                "roll-centre cornering lacked finite grounded tire response at " + subSteps + " substeps: stock="
+                        + stock.groundedTicks + "/" + stock.finiteTicks + " configured=" + configured.groundedTicks
+                        + "/" + configured.finiteTicks);
+        helper.assertTrue(stock.meanLateralForce() > 100.0 && configured.meanLateralForce() > 100.0,
+                "handbrake cornering had no meaningful real lateral load at " + subSteps + " substeps: stock="
+                        + stock.meanLateralForce() + " configured=" + configured.meanLateralForce());
+    }
+
+    private static final class RollCenterCorneringPhase {
+        CarEntity stock;
+        CarEntity configured;
+        CorneringResponse stockResponse;
+        CorneringResponse configuredResponse;
+    }
+
     /** Samples, every tick of the brake+steer window, the front-minus-rear (dive) and left-minus-right
      * (roll) mean spring compression and the car's total lateral tire force. Front/rear and left/right are
      * decided the way production decides them ({@code mounts()[wheel][2] > 0}, {@code mounts()[wheel][0] <
      * 0.0}). */
     private static CorneringResponse sampleCornering(GameTestHelper helper, CarEntity car, long fromTick) {
+        return sampleCornering(helper, () -> car, fromTick);
+    }
+
+    private static CorneringResponse sampleCornering(GameTestHelper helper, Supplier<CarEntity> carSupplier, long fromTick) {
         CorneringResponse response = new CorneringResponse();
         for (long tick = fromTick + 1; tick <= fromTick + CORNER_TICKS; tick++) {
             helper.runAtTickTime(tick, () -> {
+                CarEntity car = carSupplier.get();
                 if (car.sableBody() == null) {
                     return;
                 }
                 double[] travel = SableCompat.wheelTravel(car.sableBody());
                 double[] lateralForces = SableCompat.wheelLateralForces(car.sableBody());
+                int[] contacts = SableCompat.wheelContactSubSteps(car.sableBody());
                 double[][] mounts = car.spec().mounts();
                 double front = 0.0;
                 double rear = 0.0;
@@ -910,6 +1553,8 @@ public final class SuspensionTuningGameTests {
                 int frontCount = 0;
                 int leftCount = 0;
                 double totalLateral = 0.0;
+                boolean grounded = false;
+                boolean finite = true;
                 for (int wheel = 0; wheel < travel.length; wheel++) {
                     if (mounts[wheel][2] > 0) {
                         front += travel[wheel];
@@ -924,6 +1569,8 @@ public final class SuspensionTuningGameTests {
                         right += travel[wheel];
                     }
                     totalLateral += lateralForces[wheel];
+                    grounded |= contacts[wheel] > 0;
+                    finite &= Double.isFinite(travel[wheel]) && Double.isFinite(lateralForces[wheel]);
                 }
                 int rearCount = travel.length - frontCount;
                 int rightCount = travel.length - leftCount;
@@ -934,6 +1581,15 @@ public final class SuspensionTuningGameTests {
                 response.peakDive = Math.max(response.peakDive, front / frontCount - rear / rearCount);
                 response.rollSum += left / leftCount - right / rightCount;
                 response.lateralForceSum += Math.abs(totalLateral);
+                double roll = left / leftCount - right / rightCount;
+                response.absoluteRollSum += Math.abs(roll);
+                response.peakAbsoluteRoll = Math.max(response.peakAbsoluteRoll, Math.abs(roll));
+                if (response.previousRoll != null && Math.signum(response.previousRoll) != Math.signum(roll)) response.rollSignChanges++;
+                response.previousRoll = roll;
+                response.peakLateralForce = Math.max(response.peakLateralForce, Math.abs(totalLateral));
+                response.speedSum += horizontalSpeed(car);
+                if (grounded) response.groundedTicks++;
+                if (finite && Double.isFinite(totalLateral)) response.finiteTicks++;
             });
         }
         return response;
@@ -945,7 +1601,12 @@ public final class SuspensionTuningGameTests {
         double peakDive = Double.NEGATIVE_INFINITY;
         double rollSum = 0.0;
         double lateralForceSum = 0.0;
+        double absoluteRollSum = 0.0, peakAbsoluteRoll = 0.0, peakLateralForce = 0.0, speedSum = 0.0;
+        Double previousRoll = null;
+        long rollSignChanges = 0;
         long ticks = 0;
+        long groundedTicks = 0;
+        long finiteTicks = 0;
 
         /** Mean left-minus-right compression gap over the sampled ticks, m. */
         double meanRoll() {
@@ -955,6 +1616,13 @@ public final class SuspensionTuningGameTests {
         /** Mean magnitude of the car's summed per-wheel lateral tire force over the sampled ticks, N. */
         double meanLateralForce() {
             return ticks == 0 ? 0.0 : lateralForceSum / ticks;
+        }
+        String windowDiagnostic() {
+            return "signedMean=" + meanRoll() + " meanAbs=" + (ticks == 0 ? 0.0 : absoluteRollSum / ticks)
+                    + " peakAbs=" + peakAbsoluteRoll + " signChanges=" + rollSignChanges + " lateralMean="
+                    + meanLateralForce() + " lateralPeak=" + peakLateralForce + " speedMean="
+                    + (ticks == 0 ? 0.0 : speedSum / ticks) + " supported=" + groundedTicks + "/" + ticks
+                    + " finite=" + finiteTicks + "/" + ticks;
         }
     }
 

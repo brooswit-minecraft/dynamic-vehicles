@@ -45,6 +45,18 @@ public final class WheelMath {
     }
 
     /**
+     * Bounded quasi-static caster response (MINECRAFT-478). Positive caster makes the contact patch trail
+     * the steering axis, producing a self-aligning moment which grows with speed. The rigid-body model has
+     * no separate steering-rack body, so the production seam represents that moment as a bounded reduction
+     * in commanded wheel angle. Zero caster returns the command exactly and the gain never reverses input.
+     */
+    public static double casterAdjustedSteerAngle(double commandedAngle, double casterDeg, double speed) {
+        double casterRad = Math.toRadians(Math.max(0.0, casterDeg));
+        double aligning = Math.tan(casterRad) * Math.min(Math.abs(speed), 40.0) / 40.0;
+        return commandedAngle / (1.0 + aligning);
+    }
+
+    /**
      * What one tire does this tick.
      *
      * @param longitudinal force along the wheel's rolling direction, N

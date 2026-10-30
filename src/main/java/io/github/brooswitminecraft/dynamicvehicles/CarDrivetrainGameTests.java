@@ -1683,7 +1683,7 @@ public final class CarDrivetrainGameTests {
      * limiter (D1 at full throttle reaches it well within the window) and a closed-throttle coast in gear
      * (engine braking: a negative exchange), each asserted to have actually happened.
      */
-    @GameTest(template = "settlement_test", timeoutTicks = 280)
+    @GameTest(template = "settlement_test", timeoutTicks = 280, batch = "clutchLaunchLimiterCoastIsolated")
     public static void theRealizedClutchExchangeBalancesSignedThroughALaunchTheLimiterAndACoast(GameTestHelper helper) {
         Lane lane = Lane.build(helper, LANE_BOOKS_LAUNCH, 110);
         CarEntity[] car = new CarEntity[1];

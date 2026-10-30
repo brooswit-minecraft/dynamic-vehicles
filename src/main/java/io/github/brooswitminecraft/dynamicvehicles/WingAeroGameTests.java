@@ -325,7 +325,7 @@ public final class WingAeroGameTests {
      *
      * <p>Both carry the same wing AND the same stock drag coefficient, so the only material difference
      * between the two readings is the speed each is travelling at. */
-    @GameTest(template = "settlement_test", timeoutTicks = 400 + VehicleLanes.CHUNK_LOAD_ALLOWANCE)
+    @GameTest(template = "settlement_test", timeoutTicks = 400 + VehicleLanes.CHUNK_LOAD_ALLOWANCE, batch = "wingTwoSpeedDownforceIsolated")
     public static void wingDownforceLoadsTheSuspensionMoreAtHigherSpeed(GameTestHelper helper) {
         VehicleLanes.build(helper, VehicleLanes.Site.WING_AT_TWO_SPEEDS, lanes -> {
             Vec3 fastSpawn = stoneLane(lanes, FIRST_CAR_LANE_X);

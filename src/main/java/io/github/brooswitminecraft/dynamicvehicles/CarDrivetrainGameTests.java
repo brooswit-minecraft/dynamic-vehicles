@@ -1307,6 +1307,8 @@ public final class CarDrivetrainGameTests {
     private static final int LANE_MIRRORED_LOAD = 7;
     private static final int LANE_AIRBORNE = 8;
     private static final int LANE_PARTIAL = 9;
+    private static final int LANE_ENGINE_CLUTCH_ONE = 10;
+    private static final int LANE_ENGINE_CLUTCH_FOUR = 11;
     /** Ticks a freshly built lane idles before its cars are spawned -- vanilla's own
      * {@code GameTestInfo#ticksToWaitForChunkLoading}, which carRecoversCleanlyAfterDrivingOffALedgeAndLanding
      * also idles before spawning onto its own forced chunks. */
@@ -1596,78 +1598,74 @@ public final class CarDrivetrainGameTests {
     }
 
     /**
-     * MINECRAFT-444 review round 1 (tick/substep consistency of the new production path), round 2 finding
-     * 3: this mutates the process-global {@code WHEEL_SUB_STEPS}, so like every other sub-step fixture in
-     * this file it declares its OWN batch -- one batch runs at a time, so no other test's car is ticking
-     * while the global is changed -- and restores it on every exit path including a thrown assertion. The
-     * engine and
-     * clutch are integrated ONCE per tick at the tick's own dt, deliberately -- unlike the wheel loop, they
-     * are not re-integrated per sub-step (see {@code SableCarBody}'s own engine/clutch block), so changing
-     * {@code wheelSubSteps} must not change whether their invariants hold. Runs the same pinned
-     * full-throttle launch at {@code wheelSubSteps} 1 and 4 and asserts, at both, that the reaction impulse
-     * still exactly matches the engine's own realized momentum change and the clutch still never exceeds
-     * its own capacity -- the two properties a per-sub-step re-integration would have broken by applying
-     * either N times or at the wrong dt.
+     * Audits the engine reaction and clutch capacity through a fresh, grounded launch at each
+     * sub-step count. A shared car switched after 50 ticks does not establish the same launch:
+     * its wheels may already be unloaded or its clutch decoupled. Fixed-coordinate lanes also
+     * avoid float32 physics precision depending on GameTest's random structure position.
      */
-    @GameTest(template = "settlement_test", timeoutTicks = 160, batch = "carDrivetrainEngineClutchSubStepIsolated")
+    @GameTest(template = "settlement_test",
+            timeoutTicks = 220, batch = "carDrivetrainEngineClutchSubStepIsolated")
     public static void engineAndClutchInvariantsHoldAtEverySubStepCount(GameTestHelper helper) {
-        helper.setBlock(new BlockPos(5, 2, 5), Blocks.STONE);
-        helper.setBlock(new BlockPos(5, 3, 5), Blocks.AIR);
-        for (int dx = 4; dx <= 6; dx++) {
-            for (int dy = 2; dy <= 5; dy++) {
-                helper.setBlock(new BlockPos(dx, dy, 7), Blocks.STONE);
-            }
-        }
         int originalSubSteps = CarConfig.WHEEL_SUB_STEPS.get();
-        try {
-            CarConfig.WHEEL_SUB_STEPS.set(1);
-            CarEntity car = helper.spawn(DynamicVehiclesMod.CAR.get(), new BlockPos(5, 3, 5));
-            car.setYRot(0.0f);
-            car.selectGear(CarPhysics.Gear.D1);
-            Player rider = helper.makeMockPlayer(GameType.CREATIVE);
-            helper.assertTrue(rider.startRiding(car), "mock player failed to board the car");
-            rider.zza = 1.0f;
-            double[] worstIdentityGap = {0.0, 0.0};
-            double[] worstClutchTorque = {0.0, 0.0};
-            for (long tick = 1; tick <= 100; tick++) {
-                long thisTick = tick;
-                helper.runAfterDelay(tick, () -> {
-                    try {
-                        if (thisTick == 50L) {
-                            CarConfig.WHEEL_SUB_STEPS.set(4);
-                            return;
-                        }
-                        int phase = thisTick < 50L ? 0 : 1;
-                        double expectedReaction = -(car.debugEngineOmega() - car.debugPriorEngineOmega())
-                                * DrivetrainMath.ENGINE_INERTIA / TICK_DT;
-                        worstIdentityGap[phase] = Math.max(worstIdentityGap[phase],
-                                Math.abs(car.debugEngineReactionTorque() - expectedReaction));
-                        worstClutchTorque[phase] = Math.max(worstClutchTorque[phase], Math.abs(car.debugClutchTorque()));
-                    } catch (RuntimeException e) {
-                        CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
-                        throw e;
+        Lane one = Lane.build(helper, LANE_ENGINE_CLUTCH_ONE, 110);
+        one.alsoOnCleanup(() -> CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps));
+        Lane four = Lane.build(helper, LANE_ENGINE_CLUTCH_FOUR, 110);
+        CarEntity[] cars = new CarEntity[2];
+        double[] worstIdentityGap = {0.0, 0.0};
+        double[] worstClutchTorque = {0.0, 0.0};
+        int[] samples = {0, 0};
+        one.startWhenSettled(() -> {
+                    CarConfig.WHEEL_SUB_STEPS.set(1);
+                    cars[0] = one.spawnCar("one-substep car", 0.0, 0.0, 0.0f, CarPhysics.Gear.D1);
+                    one.board(cars[0]);
+                    cars[1] = four.spawnCar("four-substep car", 0.0, 0.0, 0.0f, CarPhysics.Gear.D1);
+                    four.board(cars[1]);
+                })
+                .thenWaitUntil(() -> helper.assertTrue(cars[1].tickCount >= SETTLE_TICKS,
+                        "four-substep car has not run its own settling ticks"))
+                .thenExecute(() -> {
+                    four.assertSettledAndGrounded(cars[1], "four-substep car");
+                    cars[0].forceDrive(1.0, 0.0, 30);
+                })
+                .thenIdle(1)
+                .thenExecuteFor(30, () -> sampleEngineClutchInvariants(cars[0], 0, worstIdentityGap, worstClutchTorque, samples))
+                .thenExecute(() -> {
+                    one.assertOnLane(cars[0], "one-substep car");
+                    cars[0].discard();
+                    four.assertSettledAndGrounded(cars[1], "four-substep car");
+                    CarConfig.WHEEL_SUB_STEPS.set(4);
+                    cars[1].forceDrive(1.0, 0.0, 30);
+                })
+                .thenIdle(1)
+                .thenExecuteFor(30, () -> sampleEngineClutchInvariants(cars[1], 1, worstIdentityGap, worstClutchTorque, samples))
+                .thenExecute(() -> {
+                    four.assertOnLane(cars[1], "four-substep car");
+                    for (int phase = 0; phase < 2; phase++) {
+                        int subSteps = phase == 0 ? 1 : 4;
+                        helper.assertTrue(samples[phase] == 30, "each launch must audit 30 physics ticks");
+                        helper.assertTrue(worstIdentityGap[phase] < REACTION_IDENTITY_TOLERANCE,
+                                "at wheelSubSteps=" + subSteps + " the applied engine-axis reaction diverged from the engine's own realized momentum change by "
+                                        + worstIdentityGap[phase] + " N*m");
+                        helper.assertTrue(worstClutchTorque[phase] <= DrivetrainMath.CLUTCH_TORQUE_CAPACITY + CLUTCH_SATURATION_TOLERANCE,
+                                "at wheelSubSteps=" + subSteps + " the clutch transmitted more than its own capacity: "
+                                        + worstClutchTorque[phase] + " N*m");
+                        helper.assertTrue(worstClutchTorque[phase] > 0.0,
+                                "test setup invalid at wheelSubSteps=" + subSteps + " -- the clutch never transmitted anything, so nothing above was exercised");
+                        System.out.println("CLUTCH_SUBSTEP_ACCEPTANCE phase=" + subSteps + " samples=" + samples[phase]
+                                + " reactionGap=" + worstIdentityGap[phase] + " maxClutch=" + worstClutchTorque[phase]);
                     }
-                });
-            }
-            helper.runAfterDelay(105L, () -> {
-                CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
-                for (int phase = 0; phase < 2; phase++) {
-                    int subSteps = phase == 0 ? 1 : 4;
-                    helper.assertTrue(worstIdentityGap[phase] < REACTION_IDENTITY_TOLERANCE,
-                            "at wheelSubSteps=" + subSteps + " the applied engine-axis reaction diverged from the engine's own realized momentum change by "
-                                    + worstIdentityGap[phase] + " N*m");
-                    helper.assertTrue(worstClutchTorque[phase] <= DrivetrainMath.CLUTCH_TORQUE_CAPACITY + CLUTCH_SATURATION_TOLERANCE,
-                            "at wheelSubSteps=" + subSteps + " the clutch transmitted more than its own capacity: "
-                                    + worstClutchTorque[phase] + " N*m");
-                    helper.assertTrue(worstClutchTorque[phase] > 0.0,
-                            "test setup invalid at wheelSubSteps=" + subSteps + " -- the clutch never transmitted anything, so nothing above was exercised");
-                }
-                helper.succeed();
-            });
-        } catch (RuntimeException e) {
-            CarConfig.WHEEL_SUB_STEPS.set(originalSubSteps);
-            throw e;
-        }
+                })
+                .thenSucceed();
+    }
+
+    private static void sampleEngineClutchInvariants(CarEntity car, int phase, double[] worstIdentityGap,
+            double[] worstClutchTorque, int[] samples) {
+        double expectedReaction = -(car.debugEngineOmega() - car.debugPriorEngineOmega())
+                * DrivetrainMath.ENGINE_INERTIA / TICK_DT;
+        worstIdentityGap[phase] = Math.max(worstIdentityGap[phase],
+                Math.abs(car.debugEngineReactionTorque() - expectedReaction));
+        worstClutchTorque[phase] = Math.max(worstClutchTorque[phase], Math.abs(car.debugClutchTorque()));
+        samples[phase]++;
     }
 
     /**

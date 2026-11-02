@@ -1747,7 +1747,9 @@ public final class TownResidentCapacityAdmissionGameTests {
         claimant.setVillagerData(claimant.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
         claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteCampfire));
 
-        BlockPos beneficiarySpot = helper.absolutePos(new BlockPos(9, 2, 1));
+        // The old (9,2,1) spot crossed the town boundary in CI: campfire x=-1584004,
+        // beneficiary x=-1584000. Spawn at the same anchor so translation cannot change town.
+        BlockPos beneficiarySpot = absoluteCampfire;
         Villager beneficiary = EntityType.VILLAGER.create(helper.getLevel(), null, beneficiarySpot, MobSpawnType.EVENT, false, false);
         helper.getLevel().addFreshEntity(beneficiary);
 
@@ -1756,48 +1758,56 @@ public final class TownResidentCapacityAdmissionGameTests {
         RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
         storage.markTownFounded(TownKeys.keyFor(helper.getLevel().dimension(), region));
         TownResidentDemand demand = new TownResidentDemand(1, Map.of());
-        Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
-                helper.getLevel(), region, beneficiary.getUUID(), demand, storage);
-        helper.assertTrue(admission.isPresent(), "test setup: the home-only admission must be created");
+        claimant.setNoAi(true);
+        beneficiary.setNoAi(true);
+        helper.startSequence().thenIdle(2).thenExecute(() -> {
+            helper.assertTrue(TownRegion.fromBlockCoords(beneficiary.blockPosition().getX(), beneficiary.blockPosition().getZ()).equals(region),
+                    "test setup: beneficiary must belong to the campfire's exact town");
+            helper.assertTrue(java.util.stream.StreamSupport.stream(helper.getLevel().getEntities().getAll().spliterator(), false)
+                            .anyMatch(entity -> entity == beneficiary),
+                    "test setup: beneficiary must be visible in the exact production entity iterable");
+            Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
+                    helper.getLevel(), region, beneficiary.getUUID(), demand, storage);
+            helper.assertTrue(admission.isPresent(), "test setup: the home-only admission must be created");
 
-        for (int i = 0; i < 3; i++) {
-            TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
-        }
-        helper.assertTrue(helper.getBlockState(ANCHOR).is(Blocks.CAMPFIRE), "test setup: the site must not have finished yet");
-        Optional<ResidentCapacityAdmission> boundBeforeTamper = storage.capacityAdmissionFor(
-                helper.getLevel().dimension(), region, beneficiary.getUUID());
-        helper.assertTrue(boundBeforeTamper.filter(value -> value.state() == ResidentCapacityAdmission.State.BUILDING).isPresent(),
-                "test setup: the admission must already be a real, production-bound BUILDING record");
-        int stoneBeforeTamper = store.balance(TownResourceCategory.STONE);
-        int woodBeforeTamper = store.balance(TownResourceCategory.WOOD);
+            for (int i = 0; i < 3; i++) {
+                TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
+            }
+            helper.assertTrue(helper.getBlockState(ANCHOR).is(Blocks.CAMPFIRE), "test setup: the site must not have finished yet");
+            Optional<ResidentCapacityAdmission> boundBeforeTamper = storage.capacityAdmissionFor(
+                    helper.getLevel().dimension(), region, beneficiary.getUUID());
+            helper.assertTrue(boundBeforeTamper.filter(value -> value.state() == ResidentCapacityAdmission.State.BUILDING).isPresent(),
+                    "test setup: the admission must already be a real, production-bound BUILDING record");
+            int stoneBeforeTamper = store.balance(TownResourceCategory.STONE);
+            int woodBeforeTamper = store.balance(TownResourceCategory.WOOD);
 
-        CompoundTag saved = storage.save(new CompoundTag(), helper.getLevel().registryAccess());
-        ListTag admissions = saved.getList("ResidentCapacityAdmissions", Tag.TAG_COMPOUND);
-        helper.assertTrue(admissions.size() == 1, "test setup: exactly one persisted admission expected");
-        String realPlanSignature = admissions.getCompound(0).getString("BoundPlanSignature");
-        helper.assertTrue(!realPlanSignature.isEmpty(), "test setup: the real production plan signature must have been persisted");
-        // Simulate a plan that changed at this exact coordinate since binding (e.g. a mod-version
-        // zoning change) - the live world/seed is UNCHANGED, so buildAt's own freshly recomputed
-        // plan signature on the next tick will still be realPlanSignature; only the PERSISTED one is
-        // tampered, to desynchronize them exactly the way a genuine drift would.
-        admissions.getCompound(0).putString("BoundPlanSignature", realPlanSignature + "-DIFFERENT");
-        TownStorage reloaded = TownStorage.load(saved, helper.getLevel().registryAccess());
-        TownResourceStore reloadedStore = reloaded.storeFor(TownKeys.keyFor(helper.getLevel().dimension(), region));
+            CompoundTag saved = storage.save(new CompoundTag(), helper.getLevel().registryAccess());
+            ListTag admissions = saved.getList("ResidentCapacityAdmissions", Tag.TAG_COMPOUND);
+            helper.assertTrue(admissions.size() == 1, "test setup: exactly one persisted admission expected");
+            String realPlanSignature = admissions.getCompound(0).getString("BoundPlanSignature");
+            helper.assertTrue(!realPlanSignature.isEmpty(), "test setup: the real production plan signature must have been persisted");
+            // Simulate a plan that changed at this exact coordinate since binding (e.g. a mod-version
+            // zoning change) - the live world/seed is UNCHANGED, so buildAt's own freshly recomputed
+            // plan signature on the next tick will still be realPlanSignature; only the PERSISTED one is
+            // tampered, to desynchronize them exactly the way a genuine drift would.
+            admissions.getCompound(0).putString("BoundPlanSignature", realPlanSignature + "-DIFFERENT");
+            TownStorage reloaded = TownStorage.load(saved, helper.getLevel().registryAccess());
+            TownResourceStore reloadedStore = reloaded.storeFor(TownKeys.keyFor(helper.getLevel().dimension(), region));
 
-        for (int i = 0; i < 5; i++) {
-            TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, reloaded);
-        }
+            for (int i = 0; i < 5; i++) {
+                TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, reloaded);
+            }
 
-        helper.assertTrue(helper.getBlockState(ANCHOR).is(Blocks.CAMPFIRE),
-                "a desynchronized plan signature must stop ALL further construction, through the REAL production authority gate");
-        helper.assertTrue(reloadedStore.balance(TownResourceCategory.STONE) == stoneBeforeTamper
-                        && reloadedStore.balance(TownResourceCategory.WOOD) == woodBeforeTamper,
-                "a desynchronized plan signature must cause no further debit at all");
-        helper.assertTrue(reloaded.capacityAdmissionFor(helper.getLevel().dimension(), region, beneficiary.getUUID())
-                        .filter(value -> (realPlanSignature + "-DIFFERENT").equals(value.boundPlanSignature())
-                                && value.state() == ResidentCapacityAdmission.State.BUILDING).isPresent(),
-                "the admission's own record must stay exactly as tampered/reloaded - never silently repaired or advanced");
-        helper.succeed();
+            helper.assertTrue(helper.getBlockState(ANCHOR).is(Blocks.CAMPFIRE),
+                    "a desynchronized plan signature must stop ALL further construction, through the REAL production authority gate");
+            helper.assertTrue(reloadedStore.balance(TownResourceCategory.STONE) == stoneBeforeTamper
+                            && reloadedStore.balance(TownResourceCategory.WOOD) == woodBeforeTamper,
+                    "a desynchronized plan signature must cause no further debit at all");
+            helper.assertTrue(reloaded.capacityAdmissionFor(helper.getLevel().dimension(), region, beneficiary.getUUID())
+                            .filter(value -> (realPlanSignature + "-DIFFERENT").equals(value.boundPlanSignature())
+                                    && value.state() == ResidentCapacityAdmission.State.BUILDING).isPresent(),
+                    "the admission's own record must stay exactly as tampered/reloaded - never silently repaired or advanced");
+        }).thenSucceed();
     }
 
     /**

@@ -43,3 +43,20 @@ that suite was not repeated merely to regenerate its already available receipt. 
 run compiles test sources but is not a new claim of unit-test execution.
 
 Scope excludes construction durability, PR approval/merge, deployment, and held owner work.
+
+## CI review correction
+
+CI run 41438200872 passed the changed one/four-substep fixture but exposed two separate fixture
+preconditions and a missing changelog fragment. The admission case placed its beneficiary at
+x=-1584000 while the anchor was x=-1584004, across an exact 384-block town boundary. It now
+uses the anchor's town and asserts production entity-iterable membership after two normal ticks.
+The production region/ownership checks remain unchanged.
+
+The coast case stopped after only 30 closed-throttle ticks. CI still showed 2832 RPM against
+approximately 2060 RPM at the wheel-side shaft, so the engine had not yet spun below the wheels.
+The fixture now derives a spin-down budget from the stock limiter, engine inertia and drag,
+then retains 15 additional ticks to audit the negative exchange. All signed books, braking,
+limiter and slip assertions remain. A two-case focused run passed, exit 0, with 120 actual
+throttle/gear/contact/exchange samples retained outside the repository. In that run braking first
+occurred at sample 89; the longer coast continued to audit negative exchange through sample 120.
+This is targeted local evidence; the changed head still requires CI acceptance.

@@ -1688,16 +1688,30 @@ public final class CarDrivetrainGameTests {
         ExchangeBooks[] books = new ExchangeBooks[1];
         boolean[] sawSlip = {false};
         boolean[] sawLimiter = {false};
+        int[] sample = {0};
+        // At the limiter, a closed throttle first sheds engine momentum before the wheels can
+        // overrun it. Stock inertia/drag need up to 45 ticks even against a stationary shaft.
+        int spinDownTicks = (int) Math.ceil(DrivetrainMath.LIMITER_RPM * (2.0 * Math.PI / 60.0)
+                * DrivetrainMath.ENGINE_INERTIA / (DrivetrainMath.ENGINE_BRAKING_TORQUE * TICK_DT));
+        int coastTicks = spinDownTicks + 15;
         lane.startWhenSettled(() -> {
                     car[0] = lane.spawnCar("D1 car", 0.0, 0.0, 0.0f, CarPhysics.Gear.D1);
                     lane.board(car[0]);
                     books[0] = new ExchangeBooks(car[0], "D1 car");
                 })
-                // 60 ticks of full throttle, then the rider's own shut throttle for a 30-tick coast in gear.
+                // Full launch, followed by enough closed-throttle ticks to spin down AND audit engine braking.
                 .thenExecute(() -> car[0].forceDrive(1.0, 0.0, 60))
                 .thenIdle(1)
-                .thenExecuteFor(90, () -> {
+                .thenExecuteFor(60 + coastTicks, () -> {
                     books[0].sample();
+                    int currentSample = ++sample[0];
+                    if (Boolean.getBoolean("dynamicvehicles.clutchLaunchDiagnostics")) {
+                        System.out.println("CLUTCH_LAUNCH_SAMPLE sample=" + currentSample + " age=" + car[0].tickCount
+                                + " throttle=" + car[0].debugLastThrottle() + " gear=" + car[0].debugLastGear()
+                                + " contacts=" + java.util.Arrays.toString(car[0].debugWheelContactSubSteps())
+                                + " exchange=" + car[0].debugClutchTorque() + " engineOmega=" + car[0].debugEngineOmega()
+                                + " wheelOmega=" + car[0].debugClutchWheelSideOmega());
+                    }
                     double[] commands = car[0].debugWheelDriveCommands();
                     double[] forces = car[0].debugWheelForces();
                     for (int wheel = 0; wheel < Math.min(commands.length, forces.length); wheel++) {

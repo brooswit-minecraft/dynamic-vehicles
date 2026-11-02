@@ -163,9 +163,16 @@ public final class SuspensionTuningGameTests {
      * test's own plain stone/air rig before the car exists, rather than treating arbitrary raycast hits as
      * disposable.  Relative (0,0,0) is the GameTest framework's StructureBlockEntity marker, so this rig
      * starts at x=1.  With the car moved to (6,3,6), its x=+/-0.8, z=+/-1.2 wheel mounts and four-block
-     * margin give the bounded first-loss envelope x=1..10, z=0..11 inside this 11 x 4 x 13 volume. */
+     * margin give a first-loss envelope whose PLANNED CLEARING PIT - the observed contact position's own
+     * four-block margin, not the observed contact position itself - can reach z=13: a real production
+     * observation this fixture's own previous z=0..12 bound was too narrow to safely contain (see
+     * {@link #clearContactSupportVolume}'s own ownedWorldCells check, which is what caught it: the
+     * mutation was correctly PREVENTED, never silently clipped). Positive Z is extended through 23 - the
+     * same 24-wide settlement_test template's own remaining bound - while x=1..11/y=-1..2 and the
+     * unchanged per-pit {@link #CONTACT_LOSS_MAX_MUTATIONS} cap, block-entity checks, preflight and
+     * restoration below all stay exactly as they were; only the pre-owned envelope widens. */
     private static final BlockPos CONTACT_LOSS_FIXTURE_MIN = new BlockPos(1, -1, 0);
-    private static final BlockPos CONTACT_LOSS_FIXTURE_MAX = new BlockPos(11, 2, 12);
+    private static final BlockPos CONTACT_LOSS_FIXTURE_MAX = new BlockPos(11, 2, 23);
     private static final int CONTACT_LOSS_MAX_MUTATIONS = 11 * 4 * 13;
     private static final String ROLL_CENTER_ONLY = """
             {"tireKit": {"rollCenterHeight": %s}}

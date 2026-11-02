@@ -4,6 +4,7 @@ import io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderProfession;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.GlobalPos;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
@@ -59,6 +60,12 @@ public final class TownConstructionService {
      * package-private so it is not a construction-consumer API.
      */
     static BlockPos testForcePlacementInterruptionAt = null;
+
+    /** MINECRAFT-454 [coordinator review 51271/51274]: namespaced key for the physical-anchor
+     *  generation token written into a live campfire's own {@code BlockEntity#getPersistentData()}
+     *  (NeoForge's "NeoForgeData") at bind time - see {@link #writeFreshAnchorGenerationToken} /
+     *  {@link #liveAnchorGenerationTokenMatches}. */
+    private static final String ANCHOR_GENERATION_KEY = "dynamicvehicles:admission_generation";
 
     public static void onLevelTick(LevelTickEvent.Post event) {
         if (!(event.getLevel() instanceof ServerLevel level)
@@ -223,7 +230,7 @@ public final class TownConstructionService {
                 .reduce((left, right) -> left + "," + right).orElse("none");
         ResidentCapacityAdmission admission = new ResidentCapacityAdmission(level.dimension(), townKey, region, beneficiaryId,
                 requestedHomes, requestedWorkplaces, siteOwner, planSignature,
-                ResidentCapacityAdmission.State.AWAITING_CLAIM);
+                ResidentCapacityAdmission.State.AWAITING_CLAIM, null, null, null, null);
         Optional<ResidentCapacityAdmission> existing = storage.capacityAdmissionFor(level.dimension(), region, beneficiaryId);
         if (existing.isPresent() && !existing.get().state().terminal()) {
             ResidentCapacityAdmission current = existing.get();
@@ -303,6 +310,13 @@ public final class TownConstructionService {
                 continue;
             }
             BlockPos pos = jobSite.get().pos();
+            // MINECRAFT-454 [coordinator review 51318/51321/51362]: getBlockState force-loads/
+            // generates an unloaded chunk (matching TownRegion#liveClaimedRegion's own established
+            // ordering) - a JOB_SITE memory pointing at a position whose chunk is not actually
+            // available right now must defer, never synchronously load it just to check.
+            if (!level.hasChunkAt(pos)) {
+                continue;
+            }
             if (!level.getBlockState(pos).is(Blocks.CAMPFIRE)) {
                 continue;
             }
@@ -329,6 +343,27 @@ public final class TownConstructionService {
         if (storage.isTerrainSiteBlocked(level.dimension(), campfire)) {
             return;
         }
+        // MINECRAFT-454 [coordinator review 51268, P2]: checked here, BEFORE floor computation (and
+        // its own persistence) ever runs - not merely before the full admission authority gate
+        // further below, which genuinely needs the plan/floor pipeline already in place. A
+        // quarantined site (ambiguous/unrecoverable persisted admission-binding state) must cause
+        // literally NO state effect at all, floor-persistence included.
+        if (storage.isAdmissionSiteQuarantined(level.dimension(), siteOwner)) {
+            return;
+        }
+        // MINECRAFT-454 [coordinator review 51270, P1]: the permanent everBoundAdmissionSites fence
+        // only ever gated a NEW bind - it did nothing to stop THIS tick from falling through to the
+        // ordinary claimant-only path once the original binding's own beneficiary record was
+        // replaced (TownStorage#createOrReuseCapacityAdmission legitimately overwrites a TERMINAL
+        // record for a later, unrelated request - see aCompletedSitesFenceSurvivesItsOwnBeneficiarysLaterUnrelatedRequest).
+        // "Ever bound, but no CURRENT admission record claims it" is itself an authoritative,
+        // reliably observable signal - distinct from "never bound at all" (ordinary construction,
+        // untouched) and from "currently, validly bound" (continues below) - and must stop EVERY
+        // effect here exactly like quarantine, not merely refuse a new bind.
+        if (storage.hasSiteEverBeenBoundToAnAdmission(level.dimension(), siteOwner)
+                && storage.capacityAdmissionBoundToSite(level.dimension(), siteOwner).isEmpty()) {
+            return;
+        }
 
         RegionCoord region = TownRegion.fromBlockCoords(campfire.getX(), campfire.getZ());
         TownPlan plan = TownPlanner.generate(region, level.getSeed());
@@ -337,6 +372,85 @@ public final class TownConstructionService {
         TownBuildingTemplates.Kind kind = isStorehouseSite
                 ? TownBuildingTemplates.Kind.STOREHOUSE
                 : TownBuildingTemplates.kindFor(plan.zoneAt(campfire.getX(), campfire.getZ()));
+
+        // [Review round 4, finding #8] The workstation (and, on completion, the claimant's own
+        // final job) for a commercial/industrial site is the ZONE's own deterministically-assigned
+        // final profession - a pure function of this site's own seed/position - never the
+        // claimant's current (always, in production, the temporary Builder) profession. "Another
+        // campfire" was never a real workstation. Neither this nor planSignature below needs floorY,
+        // so both are computed here, BEFORE floor - see the admission authority gate immediately
+        // below, which [coordinator review 51270/51274] must run (BE-token check included) before
+        // ANY effect, floor read/persistence included.
+        Optional<VillagerProfession> finalProfession =
+                TownProfessionWorkstations.finalProfessionFor(kind, level.getSeed(), campfire.getX(), campfire.getZ());
+
+        // [Review round 7, finding #1] A pure identifier for THIS exact plan (kind, storehouse
+        // variant, and final profession all deterministically decide what generate() produces) -
+        // combined per-cell with that cell's own expected block/cost in cellSignature below, so a
+        // persisted "already placed" record is only ever honored when it was paid for under THIS
+        // precise plan, never merely at this owner's position under some other (recreated/upgraded/
+        // differently-seeded) plan.
+        String planSignature = kind.name() + ":" + plan.storehouseVariant() + ":"
+                + finalProfession.map(net.minecraft.core.registries.BuiltInRegistries.VILLAGER_PROFESSION::getKey).map(Object::toString).orElse("none");
+
+        // MINECRAFT-454 [coordinator review, comment 51266/51268/51270/51271/51274]: resolve (and,
+        // the first time, bind) this site's own ResidentCapacityAdmission BEFORE any construction
+        // effect at all, floor computation/persistence included (moved here, above the floor block,
+        // for exactly that reason) - not deferred to the closing placement, which happens only after
+        // every OTHER cell's own mutation/debit already landed under whatever claimant was active
+        // then. Once BUILDING, only the EXACT builder that originally bound it, continuing the EXACT
+        // same concrete plan AND presenting the matching live physical-anchor generation token (see
+        // below), may advance it any further: a competing/swapped claimant, a plan that changed
+        // since binding, or a same-coordinate/same-Builder/same-plan RECREATED anchor, must never
+        // silently inherit it or fall back to claimant-only construction - this whole tick makes no
+        // mutation, no debit, and no POI/ownership change at all.
+        Optional<ResidentCapacityAdmission> boundAdmission = storage.capacityAdmissionBoundToSite(level.dimension(), siteOwner);
+        if (boundAdmission.isPresent()) {
+            ResidentCapacityAdmission bound = boundAdmission.get();
+            if (bound.state().terminal()) {
+                // This exact coordinate already COMPLETED (or was CANCELLED for) a DIFFERENT
+                // admission-bound build. A rebuilt site at the same coordinate needs its own
+                // explicit generation/rebind story, never a silent claimant-only fallback that
+                // could disturb an already-delivered beneficiary handoff.
+                return;
+            }
+            // MINECRAFT-454 [coordinator review 51356/51358]: a bound admission whose own
+            // beneficiary IS the current claimant/Builder must never be advanced - the distinct
+            // beneficiary/Builder contract (see resolveCapacityAdmissionForSite's own identical
+            // guard at bind time) applies equally to an admission already bound before this fix
+            // existed. No mutation, debit, or POI/ownership change happens here; the durable
+            // admission itself is left completely untouched for a later, eligible Builder.
+            if (bound.beneficiaryId().equals(claimant.getUUID())) {
+                return;
+            }
+            // MINECRAFT-454 [coordinator review 51271/51274, matched against NeoForge's own
+            // BlockEntity/CampfireBlock/LevelChunk source]: builderId/boundPlanSignature alone were
+            // NOT sufficient (round 51270's reported gap) - a same-coordinate/same-Builder/same-plan
+            // RECREATED anchor would pass both unchanged. liveAnchorGenerationTokenMatches closes
+            // that gap: CampfireBlock#onRemove (removal when replaced by a different block) plus
+            // LevelChunk#setBlockState (a fresh BlockEntity via CampfireBlock#newBlockEntity whenever
+            // no still-valid one exists) together guarantee ordinary block removal/recreation always
+            // yields a BRAND-NEW CampfireBlockEntity with EMPTY BlockEntity#getPersistentData() - the
+            // token written at bind time (see resolveCapacityAdmissionForSite) can never survive
+            // that. A missing/mismatched token fails closed; it is NEVER retagged/repaired here.
+            if (!bound.builderId().equals(claimant.getUUID()) || !bound.boundPlanSignature().equals(planSignature)
+                    || !liveAnchorGenerationTokenMatches(level, campfire, bound.anchorGenerationToken())) {
+                return;
+            }
+        } else {
+            // [coordinator review 51276] NoMatch and Denied are deliberately NOT the same outcome:
+            // NoMatch (boundAdmission stays empty) preserves the exact original claimant-only
+            // path; Denied means a real demand matched this site but the bind itself was refused
+            // (quarantine/everBound/no-live-anchor) - that must stop ALL effects here too, exactly
+            // like the checks above, never silently fall through to ordinary construction.
+            CapacityBindResolution resolution = resolveCapacityAdmissionForSite(level, storage, campfire, region, siteOwner,
+                    kind, finalProfession, planSignature, claimant.getUUID());
+            if (resolution instanceof CapacityBindResolution.Bound(ResidentCapacityAdmission admission)) {
+                boundAdmission = Optional.of(admission);
+            } else if (resolution instanceof CapacityBindResolution.Denied) {
+                return;
+            }
+        }
 
         // [Review round 2, finding #2 / round 5 follow-up] The floor is the tree-excluded ESTIMATED
         // ground height, not the campfire's own (possibly arbitrary - a trunk, a ledge, a tall
@@ -364,26 +478,10 @@ public final class TownConstructionService {
             storage.setDirty();
         }
 
-        // [Review round 4, finding #8] The workstation (and, on completion, the claimant's own
-        // final job) for a commercial/industrial site is the ZONE's own deterministically-assigned
-        // final profession - a pure function of this site's own seed/position - never the
-        // claimant's current (always, in production, the temporary Builder) profession. "Another
-        // campfire" was never a real workstation.
-        Optional<VillagerProfession> finalProfession =
-                TownProfessionWorkstations.finalProfessionFor(kind, level.getSeed(), campfire.getX(), campfire.getZ());
         List<TownBuildingTemplates.Placement> template = new ArrayList<>(TownBuildingTemplates.generate(
                 kind, campfire.getX(), floorY, campfire.getZ(), plan.storehouseVariant(),
                 finalProfession.orElse(null)));
         int radius = footprintRadius(kind);
-
-        // [Review round 7, finding #1] A pure identifier for THIS exact plan (kind, storehouse
-        // variant, and final profession all deterministically decide what generate() produces) -
-        // combined per-cell with that cell's own expected block/cost in cellSignature below, so a
-        // persisted "already placed" record is only ever honored when it was paid for under THIS
-        // precise plan, never merely at this owner's position under some other (recreated/upgraded/
-        // differently-seeded) plan.
-        String planSignature = kind.name() + ":" + plan.storehouseVariant() + ":"
-                + finalProfession.map(net.minecraft.core.registries.BuiltInRegistries.VILLAGER_PROFESSION::getKey).map(Object::toString).orElse("none");
 
         Map<String, TownBuildingTemplates.Placement> byPosition = new HashMap<>();
         for (TownBuildingTemplates.Placement placement : template) {
@@ -603,6 +701,7 @@ public final class TownConstructionService {
             // this tick - the campfire (and the claim) stay fully intact - so the very next tick
             // naturally retries, with no separate pending-handoff bookkeeping needed at all.
             Optional<ReservedHandoff> reservedHandoff = Optional.empty();
+            Villager handoffRecipient = claimant;
             if (pos.equals(campfire)) {
                 // [Review round 25, P2] Only THIS plan's own paid fixture cell, still holding the
                 // fixture the plan placed there, may be handed to the claimant.
@@ -612,8 +711,25 @@ public final class TownConstructionService {
                             && storage.isCellPlaced(level.dimension(), fixturePos, siteOwner, cellSignature(planSignature, planned))
                             && TownStorage.isSameFixture(planned.state(), level.getBlockState(fixturePos));
                 };
-                reservedHandoff = tryReserveHandoffDestinations(level, storage, claimant, campfire, floorY, kind, finalProfession,
-                        isOwnPlannedFixture);
+                // MINECRAFT-454: a beneficiary is NOT automatically the temporary Builder that
+                // claims and finishes a site. `boundAdmission` was already resolved (and, the
+                // first time, bound) above, before any construction effect - never re-resolved
+                // here. When present, its beneficiary - never the Builder - is who the handoff
+                // below reserves and hands off to. A site nobody requested capacity for keeps the
+                // existing claimant-only path unchanged.
+                if (boundAdmission.isPresent()) {
+                    Optional<Villager> beneficiary = findLoadedBeneficiary(level, region, boundAdmission.get().beneficiaryId());
+                    if (beneficiary.isEmpty()) {
+                        // The beneficiary this site is bound to is not safely available to receive
+                        // the handoff right now; never substitute the Builder instead - the binding
+                        // itself (already persisted above) survives, so a later tick retries this
+                        // same cell against the same beneficiary.
+                        continue;
+                    }
+                    handoffRecipient = beneficiary.get();
+                }
+                reservedHandoff = tryReserveHandoffDestinations(level, storage, handoffRecipient, campfire, floorY, kind,
+                        finalProfession, boundAdmission, isOwnPlannedFixture);
                 if (reservedHandoff.isEmpty()) {
                     continue;
                 }
@@ -649,9 +765,15 @@ public final class TownConstructionService {
             if (reservedHandoff.isPresent()) {
                 // The campfire closure just landed with every destination already secured - the
                 // site is now genuinely, completely finished.
-                commitClaimantLifecycle(level, storage, claimant, finalProfession, reservedHandoff.get());
+                commitClaimantLifecycle(level, storage, claimant, handoffRecipient, finalProfession, reservedHandoff.get());
                 // The persisted floor commitment has served its purpose once the site is actually done.
                 storage.clearFloor(siteOwner);
+                if (boundAdmission.isPresent()) {
+                    // A positive beneficiary-specific handoff just actually happened above - only
+                    // now does this admission reach COMPLETED, never merely on blocks-finished or
+                    // Builder-assigned fixtures.
+                    storage.completeCapacityAdmission(boundAdmission.get());
+                }
             }
         }
         if (placedThisTick > 0) {
@@ -662,7 +784,7 @@ public final class TownConstructionService {
     /** The destinations a claimant's handoff needs, once every one of them has actually been
      *  reserved (a real POI ticket held) - see {@link #tryReserveHandoffDestinations}. Either field
      *  may be {@code null} when this kind/profession combination does not need it. */
-    private record ReservedHandoff(BlockPos workstationPos, BlockPos bedPos) {}
+    record ReservedHandoff(BlockPos workstationPos, BlockPos bedPos) {}
 
     /**
      * MINECRAFT-388 review round 14, finding #1: every destination a claimant's handoff needs must
@@ -690,20 +812,28 @@ public final class TownConstructionService {
      *         one is contested - in which case nothing was committed, nothing stays reserved, and
      *         the caller must leave the campfire itself unclosed so a later tick naturally retries.
      */
-    private static Optional<ReservedHandoff> tryReserveHandoffDestinations(ServerLevel level, TownStorage storage,
-            Villager claimant, BlockPos campfire, int floorY, TownBuildingTemplates.Kind kind,
-            Optional<VillagerProfession> finalProfession, java.util.function.Predicate<BlockPos> isOwnPlannedFixture) {
-        boolean needsWorkstation = finalProfession.isPresent();
-        boolean needsBed = kind == TownBuildingTemplates.Kind.RESIDENTIAL || kind == TownBuildingTemplates.Kind.COMMERCIAL
-                || kind == TownBuildingTemplates.Kind.INDUSTRIAL;
+    static Optional<ReservedHandoff> tryReserveHandoffDestinations(ServerLevel level, TownStorage storage,
+            Villager recipient, BlockPos campfire, int floorY, TownBuildingTemplates.Kind kind,
+            Optional<VillagerProfession> finalProfession, Optional<ResidentCapacityAdmission> boundAdmission,
+            java.util.function.Predicate<BlockPos> isOwnPlannedFixture) {
+        // MINECRAFT-454 [coordinator review, comment 51266]: a bound admission reserves ONLY what
+        // it actually requested - a home-only beneficiary must never have a workstation ticket
+        // taken (and later left dangling) on its behalf just because this site's own kind/zone
+        // happens to offer one, and vice versa. The unmodified claimant-only path (boundAdmission
+        // empty) keeps the exact original "whatever this site offers" behavior.
+        boolean needsWorkstation = finalProfession.isPresent()
+                && boundAdmission.map(admission -> admission.requestedWorkplaces().containsKey(finalProfession.get())).orElse(true);
+        boolean needsBed = (kind == TownBuildingTemplates.Kind.RESIDENTIAL || kind == TownBuildingTemplates.Kind.COMMERCIAL
+                || kind == TownBuildingTemplates.Kind.INDUSTRIAL)
+                && boundAdmission.map(admission -> admission.requestedHomes() > 0).orElse(true);
         BlockPos workstationPos = needsWorkstation
                 ? TownBuildingTemplates.workstationPosition(campfire.getX(), floorY, campfire.getZ()) : null;
         BlockPos bedPos = needsBed ? TownBuildingTemplates.bedPosition(campfire.getX(), floorY, campfire.getZ()) : null;
 
         boolean workstationReserved = !needsWorkstation
-                || (isOwnPlannedFixture.test(workstationPos) && acquirePoiTicket(level, storage, claimant, workstationPos));
+                || (isOwnPlannedFixture.test(workstationPos) && acquirePoiTicket(level, storage, recipient, workstationPos));
         boolean bedReserved = !needsBed
-                || (isOwnPlannedFixture.test(bedPos) && acquirePoiTicket(level, storage, claimant, bedPos));
+                || (isOwnPlannedFixture.test(bedPos) && acquirePoiTicket(level, storage, recipient, bedPos));
         if (!workstationReserved || !bedReserved) {
             if (workstationReserved && needsWorkstation) {
                 releasePoiTicket(level, storage, workstationPos);
@@ -736,9 +866,18 @@ public final class TownConstructionService {
      * <p>Bounded to this one known claimant per site, exactly as the round-3/4 precedent this
      * extends already was: town-wide allocation of beds/workplaces across OTHER residents (not the
      * site's own claimant) remains a separate, larger, explicitly out-of-scope item.
+     *
+     * <p>MINECRAFT-454: {@code handoffRecipient} is the claimant itself for the original,
+     * unmodified claimant-only path (every effect below behaves exactly as before). When this site
+     * is instead bound to a {@link ResidentCapacityAdmission}, {@code handoffRecipient} is that
+     * admission's own beneficiary villager - a DIFFERENT entity from {@code claimant} - and the
+     * temporary Builder is unconditionally released to {@code NONE} without ever inheriting the
+     * final profession or home itself; only the beneficiary's own actually-requested capacity (home
+     * and/or the one profession it asked for) is granted, never a profession it never asked for.
      */
-    private static void commitClaimantLifecycle(ServerLevel level, TownStorage storage, Villager claimant,
-            Optional<VillagerProfession> finalProfession, ReservedHandoff reserved) {
+    static void commitClaimantLifecycle(ServerLevel level, TownStorage storage, Villager claimant,
+            Villager handoffRecipient, Optional<VillagerProfession> finalProfession, ReservedHandoff reserved) {
+        boolean beneficiaryHandoff = handoffRecipient != claimant;
         claimant.getBrain().eraseMemory(MemoryModuleType.JOB_SITE);
         // Reset XP/level on EVERY path, not only a real handoff - stale Builder XP/level must never
         // carry over into a new profession's own trade tier. Offers themselves need no explicit
@@ -750,25 +889,56 @@ public final class TownConstructionService {
         claimant.setVillagerXp(0);
         claimant.setVillagerData(claimant.getVillagerData().setLevel(1));
 
-        if (finalProfession.isPresent()) {
-            claimant.setVillagerData(claimant.getVillagerData().setProfession(finalProfession.get()));
-            claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), reserved.workstationPos()));
-        } else {
+        if (beneficiaryHandoff) {
+            // The Builder finished someone ELSE's requested capacity: it is always fully released,
+            // never inheriting the final profession or home itself, regardless of what this site's
+            // own kind/profession resolved to.
             claimant.setVillagerData(claimant.getVillagerData().setProfession(VillagerProfession.NONE));
+            // Gated on the ACTUAL reservation (reserved.workstationPos() != null), never merely on
+            // finalProfession.isPresent() - tryReserveHandoffDestinations only reserved a
+            // workstation at all when this admission actually requested that profession, so a
+            // home-only beneficiary's own existing profession is left completely untouched here.
+            if (reserved.workstationPos() != null) {
+                // [coordinator review, comment 51266] Release any OLD workplace the beneficiary
+                // already held before overwriting JOB_SITE, mirroring the HOME release below
+                // exactly - this handoff must never silently leak a pre-existing M455-allocated
+                // reservation just because this site is granting a different one.
+                handoffRecipient.getBrain().getMemory(MemoryModuleType.JOB_SITE).ifPresent(old -> {
+                    ServerLevel oldLevel = old.dimension().equals(level.dimension())
+                            ? level : level.getServer().getLevel(old.dimension());
+                    boolean sameAsNewReservation = old.dimension().equals(level.dimension()) && old.pos().equals(reserved.workstationPos());
+                    boolean provenOwner = oldLevel != null
+                            && storage.isReservedBySelf(old.dimension(), old.pos(), handoffRecipient.getUUID());
+                    boolean liveOwnedByAnother = oldLevel != null
+                            && TownResidentAllocationHandler.isCurrentlyClaimedByAnotherVillager(oldLevel, old.pos(), handoffRecipient);
+                    if (oldLevel != null && !sameAsNewReservation && provenOwner && !liveOwnedByAnother) {
+                        releasePoiTicket(oldLevel, storage, old.pos());
+                    } else if (!sameAsNewReservation && provenOwner && liveOwnedByAnother) {
+                        storage.clearReservationOwner(old.dimension(), old.pos());
+                    }
+                });
+                handoffRecipient.setVillagerData(handoffRecipient.getVillagerData().setProfession(finalProfession.get()));
+                handoffRecipient.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), reserved.workstationPos()));
+            }
+        } else if (finalProfession.isPresent()) {
+            handoffRecipient.setVillagerData(handoffRecipient.getVillagerData().setProfession(finalProfession.get()));
+            handoffRecipient.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), reserved.workstationPos()));
+        } else {
+            handoffRecipient.setVillagerData(handoffRecipient.getVillagerData().setProfession(VillagerProfession.NONE));
         }
 
         if (reserved.bedPos() != null) {
             // The new home is already secured (reserved above) - release whatever old one the
-            // claimant had, resolved against ITS OWN actual level, never assumed to be this one.
-            claimant.getBrain().getMemory(MemoryModuleType.HOME).ifPresent(old -> {
+            // RECIPIENT had, resolved against ITS OWN actual level, never assumed to be this one.
+            handoffRecipient.getBrain().getMemory(MemoryModuleType.HOME).ifPresent(old -> {
                 ServerLevel oldLevel = old.dimension().equals(level.dimension())
                         ? level : level.getServer().getLevel(old.dimension());
                 boolean sameAsNewReservation = old.dimension().equals(level.dimension()) && old.pos().equals(reserved.bedPos());
                 // [Review round 24: requires POSITIVE proof, mirroring TownResidentAllocationHandler's
                 // own identical fix] Only release when this mod's own registry POSITIVELY records
-                // this claimant as the current owner - "not known to be someone else's" (registry
-                // silent) is not proof it is this claimant's own: an untracked, currently-unloaded
-                // real owner would pass that check too, and a stale claimant memory could then steal
+                // this recipient as the current owner - "not known to be someone else's" (registry
+                // silent) is not proof it is this recipient's own: an untracked, currently-unloaded
+                // real owner would pass that check too, and a stale recipient memory could then steal
                 // its reservation. Preferring to PRESERVE an unresolved old home (never releasing it
                 // without positive proof) over risking that theft is the deliberate trade-off.
                 // [Review round 25] That registry "self" record is HISTORICAL, not live - it can go
@@ -777,13 +947,13 @@ public final class TownConstructionService {
                 // additional veto: even a "self"-recorded reservation is never released if some OTHER
                 // currently-loaded villager's own live memory also claims it right now.
                 boolean provenOwner = oldLevel != null
-                        && storage.isReservedBySelf(old.dimension(), old.pos(), claimant.getUUID());
+                        && storage.isReservedBySelf(old.dimension(), old.pos(), handoffRecipient.getUUID());
                 boolean liveOwnedByAnother = oldLevel != null
-                        && TownResidentAllocationHandler.isCurrentlyClaimedByAnotherVillager(oldLevel, old.pos(), claimant);
+                        && TownResidentAllocationHandler.isCurrentlyClaimedByAnotherVillager(oldLevel, old.pos(), handoffRecipient);
                 if (oldLevel != null && !sameAsNewReservation && provenOwner && !liveOwnedByAnother) {
                     releasePoiTicket(oldLevel, storage, old.pos());
                 } else if (!sameAsNewReservation && provenOwner && liveOwnedByAnother) {
-                    // The claimant's record is contradicted by another villager's live claim - drop
+                    // The recipient's record is contradicted by another villager's live claim - drop
                     // it, mirroring TownResidentAllocationHandler#releaseOldReservation, so it cannot
                     // authorize a release later once that villager unloads.
                     storage.clearReservationOwner(old.dimension(), old.pos());
@@ -793,10 +963,173 @@ public final class TownConstructionService {
                 // sameAsNewReservation: the exact same reservation just re-secured above - releasing
                 // it here would immediately free the ticket this handoff just took.
             });
-            claimant.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), reserved.bedPos()));
+            handoffRecipient.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), reserved.bedPos()));
         }
         // A kind with no bed of its own (storehouse) touches HOME at all: the claimant keeps
         // whatever home (if any) it already had.
+    }
+
+    /**
+     * MINECRAFT-454 [coordinator review, comment 51266]: the single still-unbound {@link
+     * ResidentCapacityAdmission} this specific site's resolved {@code kind}/{@code finalProfession}
+     * actually satisfies in FULL, binding it here (with {@code planSignature}, for later identity
+     * validation) with reverse site exclusivity - never two different admissions to the same site,
+     * never the same admission to two different sites. Called only when the caller has already
+     * confirmed this exact site has no existing binding at all.
+     *
+     * <p>EVERY capacity the candidate actually requested must be satisfied here, not merely one of
+     * several: a home+workplace admission can never bind to a bed-only or wrong-profession site
+     * (which would otherwise complete with the workplace silently never delivered), and a home-only
+     * admission can never bind to a site whose own kind happens to also offer an unrelated
+     * profession (which would otherwise overwrite an existing, unrelated workplace the beneficiary
+     * never asked to change).
+     *
+     * <p>[coordinator review 51276] Returns a {@link CapacityBindResolution}, never a bare {@code
+     * Optional}: {@link CapacityBindResolution.NoMatch} (no candidate's capacity needs this site's
+     * kind/profession at all - a site nobody requested capacity for, safe to preserve the exact
+     * original claimant-only path) is a materially DIFFERENT outcome from {@link
+     * CapacityBindResolution.Denied} (a candidate's needs WOULD be satisfied, but the bind itself
+     * was refused - quarantine, the permanent reverse fence, a stale candidate reference, or no
+     * live anchor at all to carry a token). The caller must never collapse Denied into NoMatch: a
+     * real demand this site matched must never silently fall through to ordinary construction,
+     * which would let the site be permanently consumed without ever honoring that demand.
+     */
+    static CapacityBindResolution resolveCapacityAdmissionForSite(ServerLevel level, TownStorage storage,
+            BlockPos campfire, RegionCoord region, String siteOwner, TownBuildingTemplates.Kind kind,
+            Optional<VillagerProfession> finalProfession, String planSignature, UUID builderId) {
+        boolean offersBed = kind == TownBuildingTemplates.Kind.RESIDENTIAL || kind == TownBuildingTemplates.Kind.COMMERCIAL
+                || kind == TownBuildingTemplates.Kind.INDUSTRIAL;
+        boolean matchedOnlySelfClaim = false;
+        for (ResidentCapacityAdmission candidate : storage.awaitingCapacityAdmissionsFor(level.dimension(), region)) {
+            boolean needsHome = candidate.requestedHomes() > 0;
+            boolean needsWorkplace = !candidate.requestedWorkplaces().isEmpty();
+            boolean homeSatisfied = !needsHome || offersBed;
+            boolean workplaceSatisfied = !needsWorkplace
+                    || (finalProfession.isPresent() && candidate.requestedWorkplaces().containsKey(finalProfession.get()));
+            if ((needsHome || needsWorkplace) && homeSatisfied && workplaceSatisfied) {
+                // MINECRAFT-454 [coordinator review 51356/51358]: the current claimant/Builder can
+                // never bind ITS OWN awaiting admission here - requestResidentCapacity only
+                // rejects a CURRENT Builder as beneficiary (a villager can legitimately request
+                // capacity while unemployed, then later become a Builder claimant elsewhere). A
+                // real demand match on the self-claim identity is never silently skipped as "no
+                // match" (which would let ordinary claimant-only construction fall through) nor
+                // bound - it is CANDIDATE-specific, so scanning continues for a DIFFERENT, eligible
+                // candidate's own admission; the self-claiming candidate's own durable intent is
+                // left completely untouched, preserved for a later, distinct Builder.
+                if (candidate.beneficiaryId().equals(builderId)) {
+                    matchedOnlySelfClaim = true;
+                    continue;
+                }
+                // [coordinator review 51276] The anchor-token supplier is passed through, NOT
+                // invoked here: bindCapacityAdmissionToSite itself only calls it once every OTHER
+                // eligibility condition (quarantine/everBound/stale-reference) is already
+                // confirmed, as the LAST step before commit - a denied bind (for any of those
+                // other reasons) must never write to, and so never overwrite, a live anchor's own
+                // pre-existing marker for a binding that was never actually going to commit.
+                Optional<ResidentCapacityAdmission> bound = storage.bindCapacityAdmissionToSite(candidate, siteOwner, builderId,
+                        planSignature, () -> writeFreshAnchorGenerationToken(level, campfire));
+                if (bound.isPresent()) {
+                    return CapacityBindResolution.bound(bound.get());
+                }
+                // A real match was denied - never keep scanning other candidates for THIS site (a
+                // site-level denial such as quarantine/everBound/no-live-anchor applies regardless
+                // of which candidate is tried), and never treat this as "no match."
+                return CapacityBindResolution.denied();
+            }
+        }
+        // MINECRAFT-454 [coordinator review 51356/51358]: a real demand matched this site through
+        // the self-claim identity ALONE (every other candidate, if any, genuinely did not match) -
+        // this must still fail closed exactly like any other denial, never fall through to
+        // ordinary claimant-only construction, which would let the site be permanently consumed
+        // without ever honoring the (still-durable, still-unbound) self-claiming admission.
+        return matchedOnlySelfClaim ? CapacityBindResolution.denied() : CapacityBindResolution.noMatch();
+    }
+
+    /** [coordinator review 51276] See {@link #resolveCapacityAdmissionForSite}'s own doc for why
+     *  {@code NoMatch} and {@code Denied} must never be collapsed into each other. */
+    sealed interface CapacityBindResolution {
+        record Bound(ResidentCapacityAdmission admission) implements CapacityBindResolution {}
+        record NoMatch() implements CapacityBindResolution {}
+        record Denied() implements CapacityBindResolution {}
+
+        static CapacityBindResolution bound(ResidentCapacityAdmission admission) {
+            return new Bound(admission);
+        }
+
+        static CapacityBindResolution noMatch() {
+            return new NoMatch();
+        }
+
+        static CapacityBindResolution denied() {
+            return new Denied();
+        }
+    }
+
+    /**
+     * MINECRAFT-454 [coordinator review 51271/51274, matched against the project's own NeoForge
+     * sources (build/moddev/artifacts/neoforge-21.1.250-sources.jar): BlockEntity.java:262-265
+     * ({@code getPersistentData}), :191-200 ({@code setChanged})]. Writes a fresh, namespaced
+     * generation UUID into the live campfire's own {@code CampfireBlockEntity} persistent data
+     * ("NeoForgeData", via BlockEntity.java:94-97's own {@code saveAdditional} - ordinary chunk
+     * persistence, not anything bespoke here). Returns empty (writing nothing) when there is no
+     * live {@code CampfireBlockEntity} at {@code campfire} at all - the caller must then refuse to
+     * bind, never recording a token that was never actually written anywhere.
+     */
+    private static Optional<UUID> writeFreshAnchorGenerationToken(ServerLevel level, BlockPos campfire) {
+        if (!(level.getBlockEntity(campfire) instanceof net.minecraft.world.level.block.entity.CampfireBlockEntity campfireEntity)) {
+            return Optional.empty();
+        }
+        // [coordinator review 51278] A live marker already present under this exact key - valid
+        // UUID or malformed, it makes no difference - is unexplained PRIOR identity, never
+        // permission to retag: it could be independently persisted BE/ledger state this exact
+        // ledger binding attempt knows nothing about. contains() (not hasUUID()) deliberately
+        // catches a malformed value too, since hasUUID() alone would silently let this fall
+        // through and overwrite it.
+        if (campfireEntity.getPersistentData().contains(ANCHOR_GENERATION_KEY)) {
+            return Optional.empty();
+        }
+        UUID token = UUID.randomUUID();
+        campfireEntity.getPersistentData().putUUID(ANCHOR_GENERATION_KEY, token);
+        campfireEntity.setChanged();
+        return Optional.of(token);
+    }
+
+    /**
+     * MINECRAFT-454 [coordinator review 51271/51274, matched against NeoForge's own CampfireBlock
+     * source: CampfireBlock.java:120-127 ({@code onRemove}, delegating removal whenever replaced by
+     * a different block) and :338-339 ({@code newBlockEntity}, always a BRAND-NEW
+     * CampfireBlockEntity); and LevelChunk.java:286-296 ({@code setBlockState}, creating that fresh
+     * BlockEntity whenever no still-valid one exists at the position)]. {@code true} only when a
+     * live {@code CampfireBlockEntity} exists at {@code campfire} right now AND its own persistent-
+     * data token exactly equals {@code expected} - never retagged, never repaired; a missing or
+     * mismatched token (including {@code expected == null}, the legacy-record case) simply fails
+     * this check. Ordinary block removal/recreation at this exact coordinate always yields a fresh
+     * BlockEntity with EMPTY persistent data (per the matched source above), so this is what
+     * discriminates a same-coordinate/same-Builder/same-plan RECREATED anchor from the SAME
+     * continuously-existing one.
+     */
+    private static boolean liveAnchorGenerationTokenMatches(ServerLevel level, BlockPos campfire, UUID expected) {
+        if (expected == null) {
+            return false;
+        }
+        if (!(level.getBlockEntity(campfire) instanceof net.minecraft.world.level.block.entity.CampfireBlockEntity campfireEntity)) {
+            return false;
+        }
+        CompoundTag data = campfireEntity.getPersistentData();
+        return data.hasUUID(ANCHOR_GENERATION_KEY) && expected.equals(data.getUUID(ANCHOR_GENERATION_KEY));
+    }
+
+    /** The admission's beneficiary villager, only if it is actually loaded, alive, and still inside
+     *  the admission's own region right now - a beneficiary that wandered off, unloaded, or died
+     *  must never be substituted with the Builder instead; the caller retries this exact cell later. */
+    private static Optional<Villager> findLoadedBeneficiary(ServerLevel level, RegionCoord region, UUID beneficiaryId) {
+        for (Entity entity : level.getEntities().getAll()) {
+            if (entity instanceof Villager villager && villager.getUUID().equals(beneficiaryId) && villager.isAlive()
+                    && TownRegion.fromBlockCoords(villager.blockPosition().getX(), villager.blockPosition().getZ()).equals(region)) {
+                return Optional.of(villager);
+            }
+        }
+        return Optional.empty();
     }
 
     /**

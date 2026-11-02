@@ -17,9 +17,12 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.saveddata.SavedData;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -90,6 +93,27 @@ public final class TownStorage extends SavedData {
     /** Durable, beneficiary-keyed capacity admissions.  They are intents only; no POI ticket or
      * resource debit is represented here. */
     private final Map<String, ResidentCapacityAdmission> capacityAdmissions = new HashMap<>();
+    /** [coordinator review, comment 51266] Dimension-qualified construction sites whose own
+     *  persisted admission-binding state is ambiguous or unrecoverable - a malformed BUILDING/
+     *  COMPLETED record that lost its bound-site/builder fence while the world/progress survived, or
+     *  two different admissions both claiming the same site. Never guessed at; every effect at a
+     *  quarantined site is blocked until this is resolved out of band. Best-effort: this can only
+     *  fence a site whose own {@code Dimension}/{@code BoundSiteOwner} fields are themselves still
+     *  readable (see {@link #load}'s own quarantine-on-catch); a record so corrupted that even those
+     *  are lost is simply dropped, with no site identity left to quarantine - callers must never read
+     *  an EMPTY quarantine set as proof every malformed record was safely fenced. */
+    private final Set<String> quarantinedAdmissionSites = new HashSet<>();
+    /** [coordinator review 51268, P1] Every dimension-qualified site EVER bound (BUILDING or
+     *  COMPLETED) to ANY admission - permanent, and deliberately independent of the beneficiary-
+     *  keyed {@link ResidentCapacityAdmission} record itself. {@link #createOrReuseCapacityAdmission}
+     *  legitimately replaces a TERMINAL admission at the SAME beneficiary identity with a fresh,
+     *  unbound one for a later, unrelated request - which would otherwise erase the old record's own
+     *  {@code boundSiteOwner} fence and let a since-overwritten site be silently rebound to a
+     *  completely different admission. Once a site is ever bound, it is bound forever: it can never
+     *  again satisfy {@link #bindCapacityAdmissionToSite}, regardless of what happens to the
+     *  beneficiary record that originally bound it. This does not block ordinary claimant-only
+     *  construction at the same coordinate - only a NEW admission ever binding there again. */
+    private final Set<String> everBoundAdmissionSites = new HashSet<>();
     /** Narrow, server-owned identity for donation boxes.  This is deliberately not a general
      * container ownership system: it records only the box placed at this exact world cell. */
     private final Map<String, DonationBoxBinding> donationBoxes = new HashMap<>();
@@ -396,6 +420,121 @@ public final class TownStorage extends SavedData {
         return capacityAdmissions.size();
     }
 
+    /** Every still-{@link ResidentCapacityAdmission.State#AWAITING_CLAIM} admission for a
+     *  dimension/region - a small, town-scale set, safe for a construction site to scan when
+     *  weighing whether an unbound admission's actual need matches what this exact site offers. */
+    List<ResidentCapacityAdmission> awaitingCapacityAdmissionsFor(ResourceKey<Level> dimension, RegionCoord region) {
+        List<ResidentCapacityAdmission> result = new ArrayList<>();
+        for (ResidentCapacityAdmission admission : capacityAdmissions.values()) {
+            if (admission.dimension().equals(dimension) && admission.region().equals(region)
+                    && admission.state() == ResidentCapacityAdmission.State.AWAITING_CLAIM) {
+                result.add(admission);
+            }
+        }
+        return result;
+    }
+
+    /** The admission (if any) already bound - {@link ResidentCapacityAdmission.State#BUILDING} or
+     *  {@link ResidentCapacityAdmission.State#COMPLETED} - to exactly this construction site.
+     *  Reverse site exclusivity: a site can never be bound to two different admissions. Never
+     *  matches a {@link #isAdmissionSiteQuarantined} site - its own binding is unresolvable and a
+     *  caller must never read it as either validly bound or safely unbound. */
+    Optional<ResidentCapacityAdmission> capacityAdmissionBoundToSite(ResourceKey<Level> dimension, String siteOwner) {
+        if (isAdmissionSiteQuarantined(dimension, siteOwner)) {
+            return Optional.empty();
+        }
+        for (ResidentCapacityAdmission admission : capacityAdmissions.values()) {
+            if (admission.dimension().equals(dimension) && siteOwner.equals(admission.boundSiteOwner())) {
+                return Optional.of(admission);
+            }
+        }
+        return Optional.empty();
+    }
+
+    /** [coordinator review, comment 51266] {@code true} when this exact dimension-qualified site's
+     *  own admission-binding state is ambiguous or unrecoverable - see {@link
+     *  #quarantinedAdmissionSites}. A caller must block every construction effect here rather than
+     *  guess which (if any) persisted record is the real one. */
+    boolean isAdmissionSiteQuarantined(ResourceKey<Level> dimension, String siteOwner) {
+        return quarantinedAdmissionSites.contains(quarantinedSiteKey(dimension, siteOwner));
+    }
+
+    /** [coordinator review 51268, P1] {@code true} once {@code siteOwner} has EVER been bound to an
+     *  admission - see {@link #everBoundAdmissionSites}. Permanent: survives the original binding's
+     *  own beneficiary record later being replaced by an unrelated request. */
+    boolean hasSiteEverBeenBoundToAnAdmission(ResourceKey<Level> dimension, String siteOwner) {
+        return everBoundAdmissionSites.contains(quarantinedSiteKey(dimension, siteOwner));
+    }
+
+    private static String quarantinedSiteKey(ResourceKey<Level> dimension, String siteOwner) {
+        return dimension.location() + "@" + siteOwner;
+    }
+
+    /**
+     * Binds exactly one still-unbound admission to {@code siteOwner} under the EXACT concrete
+     * construction plan identity {@code concretePlanSignature} in effect right now, atomically:
+     * fails (returns empty, changing nothing) if the admission has since left {@code
+     * AWAITING_CLAIM} (e.g. a concurrent bind to a different site, or a stale caller reference), if
+     * some OTHER admission is already bound to this exact site, if the site is quarantined, or if
+     * this site has EVER been bound before (see {@link #everBoundAdmissionSites} - permanent,
+     * independent of whether that original binding's own beneficiary record still exists).
+     *
+     * <p>[coordinator review 51276] {@code anchorTokenSupplier} is called ONLY once every one of
+     * those other eligibility conditions has already been confirmed, as the LAST step before
+     * commit - never earlier. A denied bind (quarantine, everBound, a stale candidate reference)
+     * must never write to - and so never overwrite - a live anchor's own pre-existing marker for a
+     * binding that was never actually going to commit anyway. The supplier itself returning empty
+     * (no live anchor to carry a token at all) is likewise treated as a plain denial: nothing is
+     * recorded without a live anchor to actually carry its token. This is the sole CAS-guarded
+     * entry point into {@link ResidentCapacityAdmission#boundTo}, so reverse site exclusivity can
+     * never be bypassed, including by a later unrelated request overwriting a terminal admission at
+     * the same beneficiary identity.
+     */
+    Optional<ResidentCapacityAdmission> bindCapacityAdmissionToSite(ResidentCapacityAdmission awaiting, String siteOwner,
+            UUID builderId, String concretePlanSignature, java.util.function.Supplier<Optional<UUID>> anchorTokenSupplier) {
+        if (isAdmissionSiteQuarantined(awaiting.dimension(), siteOwner)
+                || hasSiteEverBeenBoundToAnAdmission(awaiting.dimension(), siteOwner)) {
+            return Optional.empty();
+        }
+        String key = capacityAdmissionKey(awaiting.dimension(), awaiting.region(), awaiting.beneficiaryId());
+        ResidentCapacityAdmission existing = capacityAdmissions.get(key);
+        if (existing == null || existing.state() != ResidentCapacityAdmission.State.AWAITING_CLAIM
+                || capacityAdmissionBoundToSite(awaiting.dimension(), siteOwner).isPresent()) {
+            return Optional.empty();
+        }
+        Optional<UUID> anchorToken = anchorTokenSupplier.get();
+        if (anchorToken.isEmpty()) {
+            return Optional.empty();
+        }
+        ResidentCapacityAdmission bound = existing.boundTo(siteOwner, builderId, concretePlanSignature, anchorToken.get());
+        capacityAdmissions.put(key, bound);
+        everBoundAdmissionSites.add(quarantinedSiteKey(awaiting.dimension(), siteOwner));
+        setDirty();
+        return Optional.of(bound);
+    }
+
+    /**
+     * Marks a {@code BUILDING} admission {@code COMPLETED} once its beneficiary has actually,
+     * positively received the final handoff - never on blocks-finished or Builder-assigned fixtures
+     * alone. Only succeeds against the EXACT site/builder/concrete-plan/anchor-token that bound it; a
+     * stale, already-resolved, or mismatched admission is left untouched rather than silently
+     * rebound or double-completed.
+     */
+    Optional<ResidentCapacityAdmission> completeCapacityAdmission(ResidentCapacityAdmission bound) {
+        String key = capacityAdmissionKey(bound.dimension(), bound.region(), bound.beneficiaryId());
+        ResidentCapacityAdmission existing = capacityAdmissions.get(key);
+        if (existing == null || existing.state() != ResidentCapacityAdmission.State.BUILDING
+                || !existing.boundSiteOwner().equals(bound.boundSiteOwner()) || !existing.builderId().equals(bound.builderId())
+                || !existing.boundPlanSignature().equals(bound.boundPlanSignature())
+                || !Objects.equals(existing.anchorGenerationToken(), bound.anchorGenerationToken())) {
+            return Optional.empty();
+        }
+        ResidentCapacityAdmission completed = existing.completedHandoff();
+        capacityAdmissions.put(key, completed);
+        setDirty();
+        return Optional.of(completed);
+    }
+
     /**
      * [Review round 25] Reconciles {@code pos}'s ownership record against a LIVE observation that
      * {@code claimantId}'s own memory currently points at it. A record naming a DIFFERENT villager
@@ -652,6 +791,18 @@ public final class TownStorage extends SavedData {
             entry.putString("SiteOwner", admission.siteOwner());
             entry.putString("PlanSignature", admission.planSignature());
             entry.putString("State", admission.state().name());
+            if (admission.boundSiteOwner() != null) {
+                entry.putString("BoundSiteOwner", admission.boundSiteOwner());
+            }
+            if (admission.builderId() != null) {
+                entry.putUUID("Builder", admission.builderId());
+            }
+            if (admission.boundPlanSignature() != null) {
+                entry.putString("BoundPlanSignature", admission.boundPlanSignature());
+            }
+            if (admission.anchorGenerationToken() != null) {
+                entry.putUUID("AnchorGenerationToken", admission.anchorGenerationToken());
+            }
             ListTag workplaces = new ListTag();
             for (Map.Entry<VillagerProfession, Integer> workplace : admission.requestedWorkplaces().entrySet()) {
                 CompoundTag requested = new CompoundTag();
@@ -663,6 +814,22 @@ public final class TownStorage extends SavedData {
             admissions.add(entry);
         }
         tag.put("ResidentCapacityAdmissions", admissions);
+
+        ListTag quarantinedSiteList = new ListTag();
+        for (String key : quarantinedAdmissionSites) {
+            CompoundTag entryTag = new CompoundTag();
+            entryTag.putString("Key", key);
+            quarantinedSiteList.add(entryTag);
+        }
+        tag.put("QuarantinedAdmissionSites", quarantinedSiteList);
+
+        ListTag everBoundSiteList = new ListTag();
+        for (String key : everBoundAdmissionSites) {
+            CompoundTag entryTag = new CompoundTag();
+            entryTag.putString("Key", key);
+            everBoundSiteList.add(entryTag);
+        }
+        tag.put("EverBoundAdmissionSites", everBoundSiteList);
         return tag;
     }
 
@@ -755,8 +922,15 @@ public final class TownStorage extends SavedData {
         }
         ListTag admissions = tag.getList("ResidentCapacityAdmissions", Tag.TAG_COMPOUND);
         for (int i = 0; i < admissions.size(); i++) {
+            CompoundTag entry = admissions.getCompound(i);
+            // [coordinator review, comment 51266] Parsed OUTSIDE the validation try below: even a
+            // malformed/incomplete record (e.g. a BUILDING entry that lost its Builder or
+            // BoundPlanSignature) must still quarantine the site it names, so a construction site
+            // whose own progress/POI state survives in the world is never silently read as unbound
+            // and re-bound to something else.
+            ResourceLocation dimensionIdForQuarantine = ResourceLocation.tryParse(entry.getString("Dimension"));
+            String boundSiteOwnerForQuarantine = entry.contains("BoundSiteOwner") ? entry.getString("BoundSiteOwner") : "";
             try {
-                CompoundTag entry = admissions.getCompound(i);
                 Map<VillagerProfession, Integer> workplaces = new HashMap<>();
                 ListTag requestedWorkplaces = entry.getList("Workplaces", Tag.TAG_COMPOUND);
                 for (int j = 0; j < requestedWorkplaces.size(); j++) {
@@ -769,20 +943,86 @@ public final class TownStorage extends SavedData {
                     }
                     workplaces.put(profession, requested.getInt("Count"));
                 }
-                ResourceLocation dimensionId = ResourceLocation.tryParse(entry.getString("Dimension"));
-                if (dimensionId == null) {
+                if (dimensionIdForQuarantine == null) {
                     throw new IllegalArgumentException("invalid persisted capacity dimension");
                 }
-                ResourceKey<Level> dimension = ResourceKey.create(Registries.DIMENSION, dimensionId);
+                ResourceKey<Level> dimension = ResourceKey.create(Registries.DIMENSION, dimensionIdForQuarantine);
+                String boundSiteOwner = entry.contains("BoundSiteOwner") ? entry.getString("BoundSiteOwner") : null;
+                UUID builderId = entry.hasUUID("Builder") ? entry.getUUID("Builder") : null;
+                String boundPlanSignature = entry.contains("BoundPlanSignature") ? entry.getString("BoundPlanSignature") : null;
+                // [coordinator review 51271/51274] Deliberately nullable even for a bound state -
+                // see ResidentCapacityAdmission#anchorGenerationToken's own doc. A null here on a
+                // BUILDING/COMPLETED record means "saved before this field existed"; handled as an
+                // explicit legacy-quarantine case below, never as permission to trust an unverifiable
+                // binding.
+                UUID anchorGenerationToken = entry.hasUUID("AnchorGenerationToken") ? entry.getUUID("AnchorGenerationToken") : null;
                 ResidentCapacityAdmission admission = new ResidentCapacityAdmission(dimension, entry.getString("TownKey"),
                         new RegionCoord(entry.getInt("RegionX"), entry.getInt("RegionZ")), entry.getUUID("Beneficiary"),
                         entry.getInt("Homes"), workplaces, entry.getString("SiteOwner"), entry.getString("PlanSignature"),
-                        ResidentCapacityAdmission.State.valueOf(entry.getString("State")));
+                        ResidentCapacityAdmission.State.valueOf(entry.getString("State")), boundSiteOwner, builderId,
+                        boundPlanSignature, anchorGenerationToken);
                 storage.capacityAdmissions.put(capacityAdmissionKey(dimension, admission.region(), admission.beneficiaryId()), admission);
+                if (admission.state().bound() && admission.anchorGenerationToken() == null) {
+                    // [coordinator review 51271/51274] Legacy BUILDING/COMPLETED record predating
+                    // the generation token: there is no live anchor marker to verify it against at
+                    // all, so it fails closed - quarantined, exactly like an ambiguous/malformed
+                    // record - while the record ITSELF (history) and its reverse-site fence (via the
+                    // defensive reconstruction pass below) both stay intact, never dropped.
+                    storage.quarantinedAdmissionSites.add(quarantinedSiteKey(dimension, admission.boundSiteOwner()));
+                }
             } catch (IllegalArgumentException ignored) {
                 // A malformed or obsolete optional admission must fail closed: it is never treated
-                // as permission to create a new anchor, debit, or POI reservation during load.
+                // as permission to create a new anchor, debit, or POI reservation during load. If it
+                // named a real site, that site is quarantined too - preserving world/progress state
+                // while blocking the construction fence this record was supposed to establish.
+                if (dimensionIdForQuarantine != null && !boundSiteOwnerForQuarantine.isEmpty()) {
+                    ResourceKey<Level> dimension = ResourceKey.create(Registries.DIMENSION, dimensionIdForQuarantine);
+                    storage.quarantinedAdmissionSites.add(quarantinedSiteKey(dimension, boundSiteOwnerForQuarantine));
+                } else if ("BUILDING".equals(entry.getString("State")) || "COMPLETED".equals(entry.getString("State"))) {
+                    // [coordinator review 51268, P1] This record's own State says it WAS bound, but
+                    // either its Dimension or its BoundSiteOwner is itself unreadable - there is no
+                    // site identity left to quarantine at all. Best-effort fencing, documented on
+                    // quarantinedAdmissionSites above, stops here: logged loudly (never silent) so
+                    // this is never mistaken for "every malformed record was safely fenced."
+                    io.github.brooswitminecraft.dynamicvehicles.DynamicVehiclesMod.LOGGER.error(
+                            "Dynamic Towns dropped a {} capacity admission with an unreadable Dimension/BoundSiteOwner during "
+                                    + "load - its own construction site could NOT be quarantined and remains unfenced",
+                            entry.getString("State"));
+                }
             }
+        }
+        // [coordinator review, comment 51266] Two different admissions both claiming the SAME
+        // bound site cannot both be real - this is ambiguous ownership a plain HashMap lookup would
+        // otherwise silently resolve to whichever happens to iterate first. Detected only after
+        // every individually-valid entry above is loaded, so a sound single entry is never
+        // penalized for an unrelated malformed one.
+        Map<String, Integer> boundSiteCounts = new HashMap<>();
+        for (ResidentCapacityAdmission admission : storage.capacityAdmissions.values()) {
+            if (admission.boundSiteOwner() != null) {
+                boundSiteCounts.merge(quarantinedSiteKey(admission.dimension(), admission.boundSiteOwner()), 1, Integer::sum);
+            }
+        }
+        for (Map.Entry<String, Integer> count : boundSiteCounts.entrySet()) {
+            if (count.getValue() > 1) {
+                storage.quarantinedAdmissionSites.add(count.getKey());
+            }
+        }
+        ListTag quarantinedSiteList = tag.getList("QuarantinedAdmissionSites", Tag.TAG_COMPOUND);
+        for (int i = 0; i < quarantinedSiteList.size(); i++) {
+            storage.quarantinedAdmissionSites.add(quarantinedSiteList.getCompound(i).getString("Key"));
+        }
+        // [coordinator review 51268, P1] Every currently-loaded BUILDING/COMPLETED admission's own
+        // bound site was, by definition, bound at least once - reconstructed defensively here in
+        // addition to the persisted list below, so an older save written before this set existed
+        // still starts with every site its OWN still-loaded admissions already prove was bound.
+        for (ResidentCapacityAdmission admission : storage.capacityAdmissions.values()) {
+            if (admission.boundSiteOwner() != null) {
+                storage.everBoundAdmissionSites.add(quarantinedSiteKey(admission.dimension(), admission.boundSiteOwner()));
+            }
+        }
+        ListTag everBoundSiteList = tag.getList("EverBoundAdmissionSites", Tag.TAG_COMPOUND);
+        for (int i = 0; i < everBoundSiteList.size(); i++) {
+            storage.everBoundAdmissionSites.add(everBoundSiteList.getCompound(i).getString("Key"));
         }
         return storage;
     }

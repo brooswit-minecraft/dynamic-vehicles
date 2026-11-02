@@ -1,5 +1,6 @@
 package io.github.brooswitminecraft.dynamicvehicles.town;
 
+import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderProfession;
 import io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.GlobalPos;
@@ -411,6 +412,70 @@ public final class TownTerrainTransactionGameTests {
                     "a reload retry must preserve the explicit hold without charging or fabricating paid progress");
         } finally {
             TownConstructionService.testForcePlacementInterruptionAt = null;
+        }
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-454 acceptance: the explicit quarantine above interrupts an ORDINARY (non-closing)
+     * cell. This proves the SAME quarantine at the campfire's own FINAL, closing placement - the one
+     * moment a real Builder/bed/workstation reservation can already be held (see
+     * {@link TownConstructionService#buildAt}'s round-14 handoff-before-close ordering) - releases
+     * every reservation it took rather than stranding it held forever with no later tick ever able to
+     * retry (a closed campfire is the site's sole discoverable anchor; once gone, nothing calls
+     * {@code buildAt} for this site again).
+     */
+    @GameTest(template = "settlement_test")
+    public static void finalAnchorInterruptionReleasesAnyHeldReservationWithoutStealingItForever(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        helper.setBlock(ANCHOR, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(ANCHOR);
+
+        Villager claimant = EntityType.VILLAGER.create(helper.getLevel(), null, absoluteCampfire, MobSpawnType.EVENT, false, false);
+        helper.getLevel().addFreshEntity(claimant);
+        claimant.setVillagerData(claimant.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
+        claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteCampfire));
+
+        TownStorage storage = new TownStorage();
+        fundStore(helper, storage, absoluteCampfire, 100000);
+        TownConstructionService.testForcePlacementInterruptionAt = absoluteCampfire;
+        try {
+            for (int i = 0; i < 500 && !storage.isCellBlocked(helper.getLevel().dimension(), absoluteCampfire); i++) {
+                TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
+            }
+        } finally {
+            TownConstructionService.testForcePlacementInterruptionAt = null;
+        }
+
+        helper.assertTrue(storage.isCellBlocked(helper.getLevel().dimension(), absoluteCampfire),
+                "test setup: the closing campfire placement must actually have been reached and interrupted");
+        helper.assertTrue(claimant.getVillagerData().getProfession() == BuilderProfession.BUILDER.get(),
+                "an interrupted closing placement must never complete the handoff");
+        helper.assertTrue(claimant.getBrain().getMemory(MemoryModuleType.HOME).isEmpty()
+                        && claimant.getBrain().getMemory(MemoryModuleType.JOB_SITE)
+                                .filter(site -> site.pos().equals(absoluteCampfire)).isPresent(),
+                "an interrupted closing placement must leave the claimant exactly as it was before closing - still claiming, still homeless");
+
+        int floorY = TownTerrain.estimateGroundHeightBelow(helper.getLevel(), absoluteCampfire);
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
+        TownPlan plan = TownPlanner.generate(region, helper.getLevel().getSeed());
+        boolean isStorehouseSite = Math.abs(absoluteCampfire.getX() - plan.townCenterX()) <= TownConstants.STOREHOUSE_FOOTPRINT_WIDTH
+                && Math.abs(absoluteCampfire.getZ() - plan.townCenterZ()) <= TownConstants.STOREHOUSE_FOOTPRINT_WIDTH;
+        TownBuildingTemplates.Kind kind = isStorehouseSite ? TownBuildingTemplates.Kind.STOREHOUSE
+                : TownBuildingTemplates.kindFor(plan.zoneAt(absoluteCampfire.getX(), absoluteCampfire.getZ()));
+        if (kind != TownBuildingTemplates.Kind.STOREHOUSE) {
+            BlockPos expectedBed = TownBuildingTemplates.bedPosition(absoluteCampfire.getX(), floorY, absoluteCampfire.getZ());
+            helper.assertTrue(!helper.getLevel().getPoiManager().exists(expectedBed, type -> true)
+                            || helper.getLevel().getPoiManager().getFreeTickets(expectedBed) > 0,
+                    "an interrupted closing placement must release any bed ticket it reserved, not strand it held forever");
+        }
+        java.util.Optional<VillagerProfession> finalProfession = TownProfessionWorkstations.finalProfessionFor(
+                kind, helper.getLevel().getSeed(), absoluteCampfire.getX(), absoluteCampfire.getZ());
+        if (finalProfession.isPresent()) {
+            BlockPos expectedWorkstation = TownBuildingTemplates.workstationPosition(absoluteCampfire.getX(), floorY, absoluteCampfire.getZ());
+            helper.assertTrue(!helper.getLevel().getPoiManager().exists(expectedWorkstation, type -> true)
+                            || helper.getLevel().getPoiManager().getFreeTickets(expectedWorkstation) > 0,
+                    "an interrupted closing placement must release any workstation ticket it reserved, not strand it held forever");
         }
         helper.succeed();
     }

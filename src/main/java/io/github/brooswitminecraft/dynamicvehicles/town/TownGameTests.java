@@ -33,7 +33,9 @@ import net.minecraft.world.phys.AABB;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * MINECRAFT-388: GameTests for the Minecraft-facing halves of Dynamic Towns, following
@@ -703,6 +705,127 @@ public final class TownGameTests {
 
         helper.assertTrue(!TownCampfireClaims.isClaimed(helper.getLevel(), absoluteCampfire),
                 "a JOB_SITE memory in a different dimension must never claim this level's own campfire, even at the identical position");
+        helper.succeed();
+    }
+
+    /** [coordinator review, comment 51266/51268 P2] A multi-cell, multi-Y snapshot of the real
+     *  footprint around {@code anchor} (relative coordinates, read via {@code helper}) - not just
+     *  the anchor's own cell - so a "nothing happened at all" claim is backed by more than one block
+     *  and two balances. Y range is ABSOLUTE 0-12, matching {@link #prepareFlatGround}'s own prepared
+     *  range exactly (anchor's own Y is 2): this deliberately includes BELOW-anchor cells, since
+     *  terrain preparation can fill a below-floor gap with dirt even where it never clears anything
+     *  above - a snapshot confined to anchor.offset(x, 0..6, z) would silently miss exactly that. */
+    private static Map<BlockPos, BlockState> snapshotFootprint(GameTestHelper helper, BlockPos anchor, int radius) {
+        Map<BlockPos, BlockState> snapshot = new HashMap<>();
+        for (int x = -radius; x <= radius; x++) {
+            for (int z = -radius; z <= radius; z++) {
+                for (int y = 0; y <= 12; y++) {
+                    BlockPos pos = new BlockPos(anchor.getX() + x, y, anchor.getZ() + z);
+                    snapshot.put(pos, helper.getBlockState(pos));
+                }
+            }
+        }
+        return snapshot;
+    }
+
+    /**
+     * MINECRAFT-454 acceptance: the wrong-dimension claim-query regression above proves
+     * {@code isClaimed}, but never exercises the real, FUNDED production transaction at all. This
+     * drives the actual {@link TownConstructionService#buildAt} path with a store funded well above
+     * any real cost, across a save/load reload, and proves it still never mutates or debits -
+     * snapshotting the WHOLE footprint and the site's own accounting records, not only the anchor
+     * cell and two resource balances.
+     */
+    @GameTest(template = "settlement_test")
+    public static void fundedWrongDimensionClaimNeverMutatesOrDebitsAcrossSaveAndReload(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        helper.setBlock(ANCHOR, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(ANCHOR);
+        String siteOwner = TownStorage.siteOwner(absoluteCampfire);
+
+        Villager villager = EntityType.VILLAGER.create(helper.getLevel(), null, absoluteCampfire, MobSpawnType.EVENT, false, false);
+        helper.getLevel().addFreshEntity(villager);
+        villager.setVillagerData(villager.getVillagerData().setProfession(VillagerProfession.FARMER));
+        ResourceKey<Level> wrongDimension = helper.getLevel().dimension().equals(Level.NETHER) ? Level.END : Level.NETHER;
+        villager.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(wrongDimension, absoluteCampfire));
+
+        TownStorage storage = new TownStorage();
+        TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 500);
+        int stoneBefore = store.balance(TownResourceCategory.STONE);
+        int woodBefore = store.balance(TownResourceCategory.WOOD);
+        Map<BlockPos, BlockState> footprintBefore = snapshotFootprint(helper, ANCHOR, 4);
+
+        TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
+        helper.assertTrue(footprintBefore.equals(snapshotFootprint(helper, ANCHOR, 4))
+                        && store.balance(TownResourceCategory.STONE) == stoneBefore
+                        && store.balance(TownResourceCategory.WOOD) == woodBefore
+                        && storage.floorFor(siteOwner).isEmpty()
+                        && storage.capacityAdmissionCount() == 0,
+                "a funded wrong-dimension JOB_SITE must never mutate the footprint, debit, or create any accounting record");
+
+        CompoundTag saved = storage.save(new CompoundTag(), helper.getLevel().registryAccess());
+        TownStorage reloaded = TownStorage.load(saved, helper.getLevel().registryAccess());
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
+        TownResourceStore reloadedStore = reloaded.storeFor(TownKeys.keyFor(helper.getLevel().dimension(), region));
+        TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, reloaded);
+        helper.assertTrue(footprintBefore.equals(snapshotFootprint(helper, ANCHOR, 4))
+                        && reloadedStore.balance(TownResourceCategory.STONE) == stoneBefore
+                        && reloadedStore.balance(TownResourceCategory.WOOD) == woodBefore
+                        && reloaded.floorFor(siteOwner).isEmpty(),
+                "a reload retry of the same funded wrong-dimension claim must still never mutate the footprint, debit, or leave a floor record");
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-454 acceptance: an unclaimed (no-authority) campfire costs nothing, and once a real
+     * claim is actually established, the FIRST successful attempt charges exactly once - the earlier
+     * rejected attempt must never have left behind a partial charge or a changed owner record for
+     * the later valid claim to double up on. Snapshots the whole footprint for the rejected attempt,
+     * not only the anchor cell.
+     */
+    @GameTest(template = "settlement_test")
+    public static void rejectedClaimCostsNothingAndASubsequentValidClaimChargesExactlyOnce(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        helper.setBlock(ANCHOR, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(ANCHOR);
+        String siteOwner = TownStorage.siteOwner(absoluteCampfire);
+
+        Villager unemployed = EntityType.VILLAGER.create(helper.getLevel(), null, absoluteCampfire, MobSpawnType.EVENT, false, false);
+        helper.getLevel().addFreshEntity(unemployed);
+        // No profession and no JOB_SITE at all: this villager has no authority over the campfire.
+
+        TownStorage storage = new TownStorage();
+        TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 1000);
+        int stoneBefore = store.balance(TownResourceCategory.STONE);
+        int woodBefore = store.balance(TownResourceCategory.WOOD);
+        Map<BlockPos, BlockState> footprintBefore = snapshotFootprint(helper, ANCHOR, 4);
+
+        TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
+        helper.assertTrue(footprintBefore.equals(snapshotFootprint(helper, ANCHOR, 4))
+                        && store.balance(TownResourceCategory.STONE) == stoneBefore
+                        && store.balance(TownResourceCategory.WOOD) == woodBefore
+                        && storage.floorFor(siteOwner).isEmpty()
+                        && storage.capacityAdmissionCount() == 0,
+                "an unclaimed campfire (no authority) must never mutate the footprint, debit, or create any accounting record");
+
+        unemployed.setVillagerData(unemployed.getVillagerData().setProfession(VillagerProfession.FARMER));
+        unemployed.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteCampfire));
+
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
+        TownPlan plan = TownPlanner.generate(region, helper.getLevel().getSeed());
+        boolean isStorehouseSite = Math.abs(absoluteCampfire.getX() - plan.townCenterX()) <= TownConstants.STOREHOUSE_FOOTPRINT_WIDTH
+                && Math.abs(absoluteCampfire.getZ() - plan.townCenterZ()) <= TownConstants.STOREHOUSE_FOOTPRINT_WIDTH;
+        TownBuildingTemplates.Kind kind = isStorehouseSite ? TownBuildingTemplates.Kind.STOREHOUSE
+                : TownBuildingTemplates.kindFor(plan.zoneAt(absoluteCampfire.getX(), absoluteCampfire.getZ()));
+        TownResourceCategory cost = TownBuildingTemplates.costFor(kind);
+
+        TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
+        int expectedStone = stoneBefore - (cost == TownResourceCategory.STONE ? TownConstants.CONSTRUCTION_BLOCKS_PER_TICK : 0);
+        int expectedWood = woodBefore - (cost == TownResourceCategory.WOOD ? TownConstants.CONSTRUCTION_BLOCKS_PER_TICK : 0);
+        helper.assertTrue(store.balance(TownResourceCategory.STONE) == expectedStone
+                        && store.balance(TownResourceCategory.WOOD) == expectedWood,
+                "the first successful tick after a rejected attempt must debit exactly once for its own placements, never doubled up: "
+                        + "stone=" + store.balance(TownResourceCategory.STONE) + " wood=" + store.balance(TownResourceCategory.WOOD));
         helper.succeed();
     }
 

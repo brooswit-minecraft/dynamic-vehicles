@@ -421,7 +421,8 @@ public final class TownStorage extends SavedData {
         }
         capacityAdmissions.put(key, new ResidentCapacityAdmission(existing.dimension(), existing.townKey(),
                 existing.region(), existing.beneficiaryId(), existing.requestedHomes(), existing.requestedWorkplaces(),
-                existing.siteOwner(), existing.planSignature(), ResidentCapacityAdmission.State.CANCELLED));
+                existing.siteOwner(), existing.planSignature(), ResidentCapacityAdmission.State.CANCELLED,
+                null, null, null, null));
         setDirty();
         return true;
     }

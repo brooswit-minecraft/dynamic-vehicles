@@ -13,7 +13,7 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 import java.util.Map;
 import java.util.UUID;
 
-/** Tests the shipped nine-field admission API, without unshipped binding/generation APIs. */
+/** Cancellation preserves the published binding/generation API and refuses every bound state. */
 @GameTestHolder(io.github.brooswitminecraft.dynamicvehicles.DynamicVehiclesMod.MODID)
 @PrefixGameTestTemplate(false)
 public final class TownCapacityAdmissionCancellationGameTests {
@@ -22,7 +22,11 @@ public final class TownCapacityAdmissionCancellationGameTests {
     private static ResidentCapacityAdmission admission(ResourceKey<Level> dimension, RegionCoord region,
             UUID beneficiary, ResidentCapacityAdmission.State state) {
         return new ResidentCapacityAdmission(dimension, TownKeys.keyFor(dimension, region), region, beneficiary,
-                1, Map.of(VillagerProfession.ARMORER, 1), "capacity:test-owner", "profile:test", state);
+                1, Map.of(VillagerProfession.ARMORER, 1), "capacity:test-owner", "profile:test", state,
+                state.bound() ? "site:test" : null,
+                state.bound() ? new UUID(0L, 1L) : null,
+                state.bound() ? "bound-plan:test" : null,
+                state.bound() ? new UUID(0L, 2L) : null);
     }
 
     @GameTest(template = "settlement_test")

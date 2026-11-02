@@ -412,6 +412,20 @@ public final class TownStorage extends SavedData {
         return Optional.of(admission);
     }
 
+    /** Cancels only the exact beneficiary's unstarted capacity intent. */
+    boolean cancelAwaitingCapacityAdmission(ResourceKey<Level> dimension, RegionCoord region, UUID beneficiaryId) {
+        String key = capacityAdmissionKey(dimension, region, beneficiaryId);
+        ResidentCapacityAdmission existing = capacityAdmissions.get(key);
+        if (existing == null || existing.state() != ResidentCapacityAdmission.State.AWAITING_CLAIM) {
+            return false;
+        }
+        capacityAdmissions.put(key, new ResidentCapacityAdmission(existing.dimension(), existing.townKey(),
+                existing.region(), existing.beneficiaryId(), existing.requestedHomes(), existing.requestedWorkplaces(),
+                existing.siteOwner(), existing.planSignature(), ResidentCapacityAdmission.State.CANCELLED));
+        setDirty();
+        return true;
+    }
+
     static String capacityAdmissionKey(ResourceKey<Level> dimension, RegionCoord region, UUID beneficiaryId) {
         return dimension.location() + "@" + region.x() + "," + region.z() + ":" + beneficiaryId;
     }

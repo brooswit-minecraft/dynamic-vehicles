@@ -362,7 +362,11 @@ public final class TownPassiveProductionHandlerGameTests {
         helper.testInfo.addListener(cleanup);
         boolean forcedByThisTest = level.setChunkForced(workerChunkX, workerChunkZ, true);
         cleanup.add(() -> { if (forcedByThisTest) level.setChunkForced(workerChunkX, workerChunkZ, false); });
-        BlockPos unavailableSite = workerPos.offset(987_654_321, 0, 0);
+        // MINECRAFT-454 [coordinator review 51362/51365]: 1,000,000 is intentionally WELL INSIDE
+        // BlockPos's own 26-bit packing range (unlike the prior 987_654_321 value) - unrelated to
+        // this test's actual guard (the real fix is the hasChunkAt check in findClaimedCampfireSites
+        // below), kept only as a safe, ordinary large offset.
+        BlockPos unavailableSite = workerPos.offset(1_000_000, 0, 0);
         GlobalPos rememberedSite = GlobalPos.of(level.dimension(), unavailableSite);
         Villager villager = EntityType.VILLAGER.create(level, null, workerPos, MobSpawnType.EVENT, false, false);
         helper.assertTrue(villager != null, "test setup: unavailable-site Farmer must be constructible");
@@ -385,6 +389,16 @@ public final class TownPassiveProductionHandlerGameTests {
             villager.getBrain().setMemory(MemoryModuleType.JOB_SITE, rememberedSite);
             storage.setReservationOwner(level.dimension(), unavailableSite, villager.getUUID());
             balanceBefore[0] = store.balance(TownResourceCategory.FOOD);
+        }).thenExecute(() -> {
+            // MINECRAFT-454 [coordinator review 51318/51321/51362]: deterministic, direct proof -
+            // invoked BEFORE the lifecycle idle below, not only through the passive-production
+            // handler built on top of it - that the scanner itself never selects this unavailable
+            // job site, and never loads its chunk merely to check it.
+            java.util.Map<BlockPos, Villager> claimedBeforeLifecycle = TownConstructionService.findClaimedCampfireSites(level);
+            helper.assertTrue(!claimedBeforeLifecycle.containsKey(unavailableSite),
+                    "the unloaded job site must never be selected by findClaimedCampfireSites - found " + claimedBeforeLifecycle);
+            helper.assertTrue(!level.hasChunkAt(unavailableSite),
+                    "invoking findClaimedCampfireSites directly must never load the unavailable chunk as a side effect");
         }).thenIdle(20).thenExecute(() -> {
             try {
                 helper.assertTrue(appearsInProductionIterable(level, villager),

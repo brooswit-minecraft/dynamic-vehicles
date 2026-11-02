@@ -11,6 +11,8 @@ import net.minecraft.gametest.framework.GameTestInfo;
 import net.minecraft.gametest.framework.GameTestListener;
 import net.minecraft.gametest.framework.GameTestRunner;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.Tag;
 import net.minecraft.server.level.TicketType;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
@@ -30,6 +32,7 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * MINECRAFT-388/455: {@link TownResidentAllocationHandler} must give EVERY villager in a founded
@@ -1656,5 +1659,176 @@ public final class TownResidentAllocationHandlerGameTests {
                         && level.getPoiManager().getFreeTickets(absoluteBedHead) > 0,
                 "a legacy record without fixture identity must not make its cell reservable");
         helper.succeed();
+    }
+
+    /** The consumer asks construction only for the resident still missing capacity after normal
+     * fixture allocation. In particular, it must not pass the two-resident aggregate shortage to
+     * both residents and manufacture duplicate admissions across a retry/reload. */
+    @GameTest(template = "settlement_test", batch = "residentAllocationConsumerIsolated")
+    public static void allocationConsumerAdmitsOnlyTheStillUnhousedResidentAndReusesItAfterReload(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos bedHead = anchor(helper).offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        placeValidBed(helper, bedHead);
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        markTownOwned(helper, storage, helper.absolutePos(bedHead));
+        Villager first = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        Villager second = spawnVillager(helper, anchor(helper).offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+
+        // EntityType#create + addFreshEntity is synchronous for block access but a freshly spawned
+        // GameTest villager does not always appear in the exact production iterable
+        // level.getEntities().getAll() until normal ticks have progressed.
+        helper.startSequence()
+                .thenIdle(2)
+                .thenExecute(() -> {
+                    helper.assertTrue(helper.getLevel().getEntity(first.getUUID()) == first
+                                    && helper.getLevel().getEntity(second.getUUID()) == second
+                                    && first.isAlive() && second.isAlive(),
+                            "test setup: both named residents must be alive and UUID-resolvable in the level before whole-level allocation");
+                    helper.assertTrue(TownRegion.fromBlockCoords(first.blockPosition().getX(), first.blockPosition().getZ()).equals(region)
+                                    && TownRegion.fromBlockCoords(second.blockPosition().getX(), second.blockPosition().getZ()).equals(region)
+                                    && first.getBrain().getMemory(MemoryModuleType.HOME).isEmpty()
+                                    && second.getBrain().getMemory(MemoryModuleType.HOME).isEmpty()
+                                    && helper.getLevel().getPoiManager().getFreeTickets(helper.absolutePos(bedHead)) == 1,
+                            "test setup: both named residents must be unhoused in this region and the one town-owned bed must be free");
+                    TownResidentAllocationHandler.runResidentAllocationTick(helper.getLevel(), storage);
+                    boolean firstHoused = first.getBrain().getMemory(MemoryModuleType.HOME).isPresent();
+                    Villager waiting = firstHoused ? second : first;
+                    Villager housed = firstHoused ? first : second;
+                    Optional<ResidentCapacityAdmission> firstAdmission = storage.capacityAdmissionFor(helper.getLevel().dimension(), region, first.getUUID());
+                    Optional<ResidentCapacityAdmission> secondAdmission = storage.capacityAdmissionFor(helper.getLevel().dimension(), region, second.getUUID());
+                    Optional<ResidentCapacityAdmission> admission = firstHoused ? secondAdmission : firstAdmission;
+                    helper.assertTrue(firstHoused ^ second.getBrain().getMemory(MemoryModuleType.HOME).isPresent(),
+                            "exactly one named resident must receive the single town-owned bed");
+                    helper.assertTrue(housed.getBrain().getMemory(MemoryModuleType.HOME).isPresent()
+                                    && waiting.getBrain().getMemory(MemoryModuleType.HOME).isEmpty()
+                                    && helper.getLevel().getPoiManager().getFreeTickets(helper.absolutePos(bedHead)) == 0,
+                            "the single bed's real POI ticket must belong to the named housed resident, leaving the other named resident waiting");
+                    helper.assertTrue(firstAdmission.isPresent() ^ secondAdmission.isPresent()
+                                    && admission.isPresent()
+                                    && admission.get().beneficiaryId().equals(waiting.getUUID())
+                                    && admission.get().requestedHomes() == 1
+                                    && admission.get().requestedWorkplaces().isEmpty(),
+                            "only the named resident still without the one town-owned bed may receive one resident-sized admission");
+
+                    CompoundTag saved = storage.save(new CompoundTag(), helper.getLevel().registryAccess());
+                    ListTag savedAdmissions = saved.getList("ResidentCapacityAdmissions", Tag.TAG_COMPOUND);
+                    helper.assertTrue(savedAdmissions.size() == 1,
+                            "test setup: exactly one resident admission must be serialized before reload");
+                    TownStorage reloaded = TownStorage.load(saved, helper.getLevel().registryAccess());
+                    // Prove persistence BEFORE the retry can call the admission boundary. If load
+                    // dropped the record, runResidentAllocationTick could otherwise recreate an
+                    // indistinguishable admission and make this look like a successful round trip.
+                    Optional<ResidentCapacityAdmission> loadedAdmission = reloaded.capacityAdmissionFor(
+                            helper.getLevel().dimension(), region, waiting.getUUID());
+                    ListTag loadedAdmissions = reloaded.save(new CompoundTag(), helper.getLevel().registryAccess())
+                            .getList("ResidentCapacityAdmissions", Tag.TAG_COMPOUND);
+                    helper.assertTrue(loadedAdmissions.size() == 1,
+                            "reload must retain exactly one admission before any retry can recreate it");
+                    helper.assertTrue(loadedAdmission.isPresent(),
+                            "reload must retain an admission under the waiting resident's durable identity before retry");
+                    helper.assertTrue(loadedAdmission.get().equals(admission.get())
+                                    && loadedAdmission.get().beneficiaryId().equals(waiting.getUUID())
+                                    && loadedAdmission.get().dimension().equals(helper.getLevel().dimension())
+                                    && loadedAdmission.get().region().equals(region)
+                                    && loadedAdmission.get().requestedHomes() == 1
+                                    && loadedAdmission.get().requestedWorkplaces().isEmpty()
+                                    && loadedAdmission.get().state() == ResidentCapacityAdmission.State.AWAITING_CLAIM,
+                            "reload must retain the waiting resident's exact one-home admission profile before any retry can recreate it");
+                    TownResidentAllocationHandler.runResidentAllocationTick(helper.getLevel(), reloaded);
+                    helper.assertTrue(reloaded.capacityAdmissionFor(helper.getLevel().dimension(), region, waiting.getUUID())
+                                    .filter(loadedAdmission.get()::equals).isPresent()
+                                    && reloaded.capacityAdmissionFor(helper.getLevel().dimension(), region, housed.getUUID()).isEmpty()
+                                    && helper.getLevel().getPoiManager().getFreeTickets(helper.absolutePos(bedHead)) == 0,
+                            "a retry after reload must reuse the one waiting resident admission and never add a second bed owner or admission");
+                })
+                .thenSucceed();
+    }
+
+    @GameTest(template = "settlement_test", batch = "residentAdmissionZeroNeedIsolated")
+    public static void allocationCancelsOnlyAnAwaitingAdmissionWhenExistingFixturesResolveNeed(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos anchor = anchor(helper);
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        Villager resident = spawnVillager(helper, anchor.offset(FIRST_VILLAGER_OFFSET.getX(),
+                FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        BlockPos bed = anchor.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        BlockPos workstation = anchor.offset(WORKSTATION_OFFSET.getX(), WORKSTATION_OFFSET.getY(), WORKSTATION_OFFSET.getZ());
+
+        helper.startSequence()
+                .thenIdle(2)
+                .thenExecute(() -> {
+                    resident.setVillagerData(resident.getVillagerData().setProfession(VillagerProfession.ARMORER));
+                    boolean inProductionIterable = false;
+                    for (Entity entity : helper.getLevel().getEntities().getAll()) {
+                        if (entity == resident) {
+                            inProductionIterable = true;
+                            break;
+                        }
+                    }
+                    RegionCoord actualRegion = TownRegion.fromBlockCoords(resident.blockPosition().getX(), resident.blockPosition().getZ());
+                    boolean hasHome = resident.getBrain().getMemory(MemoryModuleType.HOME).isPresent();
+                    boolean hasJobSite = resident.getBrain().getMemory(MemoryModuleType.JOB_SITE).isPresent();
+                    TownResidentDemand aggregateDemand = TownResidentAllocationHandler.unmetDemand(helper.getLevel(), region, storage);
+                    helper.assertTrue(helper.getLevel().getEntity(resident.getUUID()) == resident && resident.isAlive()
+                                    && inProductionIterable
+                                    && resident.getVillagerData().getProfession() == VillagerProfession.ARMORER
+                                    && actualRegion.equals(region)
+                                    && !hasHome
+                                    && !hasJobSite
+                                    && aggregateDemand.missingHomes() >= 1
+                                    && aggregateDemand.missingWorkplaces().getOrDefault(VillagerProfession.ARMORER, 0) >= 1,
+                            "test setup: live beneficiary must be iterable, retained ARMORER, unhoused, unassigned, and in the founded region "
+                                    + "with aggregate capacity for its shortage; profession=" + resident.getVillagerData().getProfession()
+                                    + ", actualRegion=" + actualRegion + ", expectedRegion=" + region
+                                    + ", hasHome=" + hasHome + ", hasJobSite=" + hasJobSite
+                                    + ", aggregateDemand=" + aggregateDemand);
+                    TownResidentAllocationHandler.runResidentAllocationTick(helper.getLevel(), storage);
+                    Optional<ResidentCapacityAdmission> awaiting = storage.capacityAdmissionFor(
+                            helper.getLevel().dimension(), region, resident.getUUID());
+                    helper.assertTrue(awaiting.filter(value -> value.state() == ResidentCapacityAdmission.State.AWAITING_CLAIM
+                                    && value.requestedHomes() == 1
+                                    && value.requestedWorkplaces().equals(Map.of(VillagerProfession.ARMORER, 1))).isPresent(),
+                            "a live resident missing both fixtures must first receive one resident-sized unbound admission; profession="
+                                    + resident.getVillagerData().getProfession() + ", region=" + actualRegion
+                                    + ", aggregateDemand=" + aggregateDemand
+                                    + ", returnedAdmission=" + awaiting.map(Object::toString).orElse("absent"));
+
+                    placeValidBed(helper, bed);
+                    placeWorkstation(helper, workstation, Blocks.BLAST_FURNACE);
+                    BlockPos absoluteBed = helper.absolutePos(bed);
+                    BlockPos absoluteWorkstation = helper.absolutePos(workstation);
+                    markTownOwned(helper, storage, absoluteBed);
+                    markTownOwned(helper, storage, absoluteWorkstation);
+                    TownResidentAllocationHandler.runResidentAllocationTick(helper.getLevel(), storage);
+
+                    Optional<ResidentCapacityAdmission> cancelled = storage.capacityAdmissionFor(
+                            helper.getLevel().dimension(), region, resident.getUUID());
+                    helper.assertTrue(resident.getBrain().getMemory(MemoryModuleType.HOME)
+                                    .map(home -> home.pos().equals(absoluteBed)).orElse(false)
+                                    && resident.getBrain().getMemory(MemoryModuleType.JOB_SITE)
+                                            .map(site -> site.pos().equals(absoluteWorkstation)).orElse(false)
+                                    && helper.getLevel().getPoiManager().getFreeTickets(absoluteBed) == 0
+                                    && helper.getLevel().getPoiManager().getFreeTickets(absoluteWorkstation) == 0
+                                    && TownResidentAllocationHandler.unmetDemand(helper.getLevel(), region, storage)
+                                            == TownResidentDemand.NONE
+                                    && cancelled.filter(value -> value.state() == ResidentCapacityAdmission.State.CANCELLED
+                                            && value.beneficiaryId().equals(resident.getUUID())
+                                            && value.requestedHomes() == 1
+                                            && value.requestedWorkplaces().equals(Map.of(VillagerProfession.ARMORER, 1))).isPresent(),
+                            "real town-owned HOME and matching JOB_SITE must resolve need and retire only the stale unbound intent");
+
+                    TownStorage reloaded = TownStorage.load(storage.save(new CompoundTag(), helper.getLevel().registryAccess()),
+                            helper.getLevel().registryAccess());
+                    helper.assertTrue(reloaded.capacityAdmissionFor(helper.getLevel().dimension(), region, resident.getUUID())
+                                    .filter(cancelled.get()::equals).isPresent(),
+                            "the terminal disposition of the resolved resident admission must survive reload before any later allocation pass");
+                    TownResidentAllocationHandler.runResidentAllocationTick(helper.getLevel(), reloaded);
+                    helper.assertTrue(reloaded.capacityAdmissionFor(helper.getLevel().dimension(), region, resident.getUUID())
+                                    .filter(cancelled.get()::equals).isPresent(),
+                            "the terminal disposition of the resolved resident admission must survive reload and a later allocation pass");
+                })
+                .thenSucceed();
     }
 }

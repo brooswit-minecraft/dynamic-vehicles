@@ -71,8 +71,20 @@ public final class TownResidentCapacityAdmissionGameTests {
      *  such companion exists for this anchor, so the caller tries the next candidate anchor
      *  instead of hardcoding an offset that might itself straddle a region boundary. */
     private static Optional<BlockPos> findSameRegionNonBlockingCompanion(GameTestHelper helper, BlockPos anchor, RegionCoord anchorRegion) {
-        for (int x = 1; x <= 22; x++) {
-            for (int z = 1; z <= 22; z++) {
+        java.util.List<BlockPos> found = findSameRegionNonBlockingCompanions(helper, anchor, anchorRegion, 1);
+        return found.isEmpty() ? Optional.empty() : Optional.of(found.get(0));
+    }
+
+    /** [MINECRAFT-455 postmerge CI 41443560723] Same deterministic in-template, same-region,
+     *  non-blocking search {@link #findSameRegionNonBlockingCompanion} already performs, generalized
+     *  to collect up to {@code count} DISTINCT candidates in one scan - needed by fixtures that place
+     *  more than one beneficiary (e.g. two competing admissions) and must never reuse the exact same
+     *  cell for both. Returns fewer than {@code count} entries, never throws, if the template does
+     *  not have that many qualifying cells. */
+    private static java.util.List<BlockPos> findSameRegionNonBlockingCompanions(GameTestHelper helper, BlockPos anchor, RegionCoord anchorRegion, int count) {
+        java.util.List<BlockPos> found = new java.util.ArrayList<>();
+        for (int x = 1; x <= 22 && found.size() < count; x++) {
+            for (int z = 1; z <= 22 && found.size() < count; z++) {
                 int dx = Math.abs(x - anchor.getX());
                 int dz = Math.abs(z - anchor.getZ());
                 if (dx < 4 && dz < 4) {
@@ -81,11 +93,11 @@ public final class TownResidentCapacityAdmissionGameTests {
                 BlockPos candidate = new BlockPos(x, anchor.getY(), z);
                 BlockPos candidateAbsolute = helper.absolutePos(candidate);
                 if (TownRegion.fromBlockCoords(candidateAbsolute.getX(), candidateAbsolute.getZ()).equals(anchorRegion)) {
-                    return Optional.of(candidate);
+                    found.add(candidate);
                 }
             }
         }
-        return Optional.empty();
+        return found;
     }
 
     /** [coordinator review 51383] Safe single-column footing at a companion position outside the
@@ -1316,16 +1328,32 @@ public final class TownResidentCapacityAdmissionGameTests {
         claimant.setVillagerData(claimant.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
         claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteCampfire));
 
-        Villager beneficiaryA = EntityType.VILLAGER.create(helper.getLevel(), null, helper.absolutePos(new BlockPos(9, 2, 1)),
+        // [MINECRAFT-455 postmerge CI 41443560723] The old fixed (9,2,1)/(1,2,9) offsets straddled
+        // the 384-block region boundary under this run's template translation (anchor x=-2787839,
+        // beneficiaryB x=-2787843 vs boundary -2787840): production correctly rejected the
+        // foreign-region request, which this test's own setup assertion then reported as "both
+        // competing admissions must be created." Reusing the same deterministic same-region,
+        // non-blocking search boundAdmissionHandsOffToItsBeneficiaryNotTheBuilderClaimant already
+        // relies on - never a hardcoded offset that might itself straddle a region boundary.
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
+        java.util.List<BlockPos> beneficiarySpots = findSameRegionNonBlockingCompanions(helper, ANCHOR, region, 2);
+        helper.assertTrue(beneficiarySpots.size() == 2,
+                "test setup: two distinct same-region, non-blocking companion positions must exist for the two competing beneficiaries");
+        prepareSafeFooting(helper, beneficiarySpots.get(0));
+        prepareSafeFooting(helper, beneficiarySpots.get(1));
+
+        Villager beneficiaryA = EntityType.VILLAGER.create(helper.getLevel(), null, helper.absolutePos(beneficiarySpots.get(0)),
                 MobSpawnType.EVENT, false, false);
         helper.getLevel().addFreshEntity(beneficiaryA);
-        Villager beneficiaryB = EntityType.VILLAGER.create(helper.getLevel(), null, helper.absolutePos(new BlockPos(1, 2, 9)),
+        Villager beneficiaryB = EntityType.VILLAGER.create(helper.getLevel(), null, helper.absolutePos(beneficiarySpots.get(1)),
                 MobSpawnType.EVENT, false, false);
         helper.getLevel().addFreshEntity(beneficiaryB);
+        helper.assertTrue(TownRegion.fromBlockCoords(beneficiaryA.blockPosition().getX(), beneficiaryA.blockPosition().getZ()).equals(region)
+                        && TownRegion.fromBlockCoords(beneficiaryB.blockPosition().getX(), beneficiaryB.blockPosition().getZ()).equals(region),
+                "test setup: both beneficiaries must resolve to the exact same region as the anchor");
 
         TownStorage storage = new TownStorage();
         TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
-        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
         storage.markTownFounded(TownKeys.keyFor(helper.getLevel().dimension(), region));
         TownResidentDemand demand = new TownResidentDemand(1, Map.of());
         Optional<ResidentCapacityAdmission> admissionA = TownConstructionService.requestResidentCapacity(

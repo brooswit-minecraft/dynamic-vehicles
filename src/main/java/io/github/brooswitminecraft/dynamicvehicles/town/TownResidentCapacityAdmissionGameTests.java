@@ -1312,23 +1312,38 @@ public final class TownResidentCapacityAdmissionGameTests {
         Villager claimant = EntityType.VILLAGER.create(helper.getLevel(), null, absoluteCampfire, MobSpawnType.EVENT, false, false);
         helper.getLevel().addFreshEntity(claimant);
 
-        BlockPos beneficiarySpot = helper.absolutePos(new BlockPos(9, 2, 1));
+        // [coordinator review 51511, ported from M455 PR207 commit 809dc0d] Hardcoded (9,2,1)/
+        // (0,2,9) offsets from ANCHOR can straddle a TownConstants.REGION_SIZE_BLOCKS region
+        // boundary depending on where this run's template happens to land - use the same
+        // deterministic same-region companion search for both the beneficiary's spawn AND its
+        // preexisting workplace instead.
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
+        java.util.List<BlockPos> companions = findSameRegionNonBlockingCompanions(helper, ANCHOR, region, 2);
+        helper.assertTrue(companions.size() == 2,
+                "test setup: two distinct same-region, non-blocking companion positions (beneficiary spawn + its preexisting workplace) must exist");
+        prepareSafeFooting(helper, companions.get(0));
+        prepareSafeFooting(helper, companions.get(1));
+        BlockPos beneficiarySpot = helper.absolutePos(companions.get(0));
         Villager beneficiary = EntityType.VILLAGER.create(helper.getLevel(), null, beneficiarySpot, MobSpawnType.EVENT, false, false);
         helper.getLevel().addFreshEntity(beneficiary);
-        BlockPos oldWorkplace = helper.absolutePos(new BlockPos(0, 2, 9));
+        helper.assertTrue(beneficiary.isAlive() && appearsInProductionIterable(helper.getLevel(), beneficiary)
+                        && TownRegion.fromBlockCoords(beneficiarySpot.getX(), beneficiarySpot.getZ()).equals(region),
+                "test setup: the beneficiary must be alive, visible to production's own iterable, and resolve to the SAME region as the campfire - beneficiaryPos="
+                        + beneficiarySpot + " campfireRegion=" + region);
+        BlockPos oldWorkplace = helper.absolutePos(companions.get(1));
         takeWorkplace(helper, oldWorkplace, poiKeyFor(preexistingProfession));
         beneficiary.setVillagerData(beneficiary.getVillagerData().setProfession(preexistingProfession));
         beneficiary.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), oldWorkplace));
 
         TownStorage storage = new TownStorage();
-        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
         storage.markTownFounded(TownKeys.keyFor(helper.getLevel().dimension(), region));
         // Home-only request - never mentions a workplace, regardless of what this EXPLICIT kind
         // offers.
         TownResidentDemand demand = new TownResidentDemand(1, Map.of());
         Optional<ResidentCapacityAdmission> awaiting = TownConstructionService.requestResidentCapacity(
                 helper.getLevel(), region, beneficiary.getUUID(), demand, storage);
-        helper.assertTrue(awaiting.isPresent(), "test setup: the home-only admission must be created");
+        helper.assertTrue(awaiting.isPresent(), "test setup: the home-only admission must be created - beneficiaryPos="
+                + beneficiarySpot + " region=" + region + " founded=" + storage.hasFoundedTown(TownKeys.keyFor(helper.getLevel().dimension(), region)));
         ResidentCapacityAdmission boundAdmission = awaiting.get().boundTo("site:direct-call-test", UUID.randomUUID(),
                 "plan-direct-call-test", UUID.randomUUID());
 

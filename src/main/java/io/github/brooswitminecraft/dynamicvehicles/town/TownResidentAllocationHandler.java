@@ -222,11 +222,23 @@ public final class TownResidentAllocationHandler {
      *
      *  <p>[MINECRAFT-455 active-Builder containment] Package-private (was {@code private}) solely so
      *  {@code TownConstructionService}'s capacity-admission matching/closing can reuse this exact
-     *  predicate rather than duplicating it - no behavior change. */
+     *  predicate rather than duplicating it - no behavior change.
+     *
+     *  <p>[51506: no-load gap] A same-dimension JOB_SITE memory whose chunk is not currently loaded
+     *  is treated as an ACTIVE claim, never as absent - checked with {@link ServerLevel#hasChunkAt}
+     *  BEFORE any block read, so an unavailable remote chunk is never synchronously loaded/generated
+     *  just to answer this liveness check. Every caller of this predicate treats {@code true} as
+     *  "protect/skip/exclude" and {@code false} as "proceed/reconcile/count" (capacity-admission
+     *  bind/closing defer; orphan reconciliation never releases; the pure demand observation never
+     *  double-counts) - so "unresolved" must read as "active" everywhere this is used, not as
+     *  "absent", or an unverified live claim could be matched against, overwritten, or reconciled
+     *  away purely because its own chunk happened not to be loaded this tick. Once the chunk is
+     *  genuinely loaded, behavior is completely unchanged: a real campfire still reads true, and a
+     *  genuinely absent/replaced one still reads false and reconciles/retries normally. */
     static boolean hasActiveBuilderClaim(ServerLevel level, Villager villager) {
         return villager.getBrain().getMemory(MemoryModuleType.JOB_SITE)
                 .filter(site -> site.dimension().equals(level.dimension()))
-                .map(site -> level.getBlockState(site.pos()).is(Blocks.CAMPFIRE))
+                .map(site -> !level.hasChunkAt(site.pos()) || level.getBlockState(site.pos()).is(Blocks.CAMPFIRE))
                 .orElse(false);
     }
 

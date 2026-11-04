@@ -1026,18 +1026,30 @@ public final class TownResidentCapacityAdmissionGameTests {
         claimant.setVillagerData(claimant.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
         claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteCampfire));
 
-        BlockPos beneficiarySpot = helper.absolutePos(new BlockPos(9, 2, 1));
+        // [51506] A hardcoded (9,2,1) offset from ANCHOR can straddle a TownConstants.REGION_SIZE_BLOCKS
+        // region boundary depending on where this run's template happens to land (the exact class of
+        // bug PR204 already fixed for onlyOneOfTwoCompetingAdmissionsBindsToTheOneAvailableSite) -
+        // use the same deterministic same-region companion search instead.
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
+        Optional<BlockPos> companion = findSameRegionNonBlockingCompanion(helper, ANCHOR, region);
+        helper.assertTrue(companion.isPresent(), "test setup: a same-region, non-blocking companion position for the beneficiary must exist");
+        prepareSafeFooting(helper, companion.get());
+        BlockPos beneficiarySpot = helper.absolutePos(companion.get());
         Villager beneficiary = EntityType.VILLAGER.create(helper.getLevel(), null, beneficiarySpot, MobSpawnType.EVENT, false, false);
         helper.getLevel().addFreshEntity(beneficiary);
+        helper.assertTrue(beneficiary.isAlive() && appearsInProductionIterable(helper.getLevel(), beneficiary)
+                        && TownRegion.fromBlockCoords(beneficiarySpot.getX(), beneficiarySpot.getZ()).equals(region),
+                "test setup: the beneficiary must be alive, visible to production's own iterable, and resolve to the SAME region as the campfire - beneficiaryPos="
+                        + beneficiarySpot + " campfireRegion=" + region);
 
         TownStorage storage = new TownStorage();
         TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
-        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
         storage.markTownFounded(TownKeys.keyFor(helper.getLevel().dimension(), region));
         TownResidentDemand demand = new TownResidentDemand(1, Map.of());
         Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
                 helper.getLevel(), region, beneficiary.getUUID(), demand, storage);
-        helper.assertTrue(admission.isPresent(), "test setup: the home-only admission must be created");
+        helper.assertTrue(admission.isPresent(), "test setup: the home-only admission must be created - beneficiaryPos="
+                + beneficiarySpot + " region=" + region + " founded=" + storage.hasFoundedTown(TownKeys.keyFor(helper.getLevel().dimension(), region)));
 
         for (int i = 0; i < 3; i++) {
             TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
@@ -1270,23 +1282,39 @@ public final class TownResidentCapacityAdmissionGameTests {
         Villager claimant = EntityType.VILLAGER.create(helper.getLevel(), null, absoluteCampfire, MobSpawnType.EVENT, false, false);
         helper.getLevel().addFreshEntity(claimant);
 
-        BlockPos beneficiarySpot = helper.absolutePos(new BlockPos(9, 2, 1));
+        // [51506] Hardcoded (9,2,1)/(0,2,9) offsets from ANCHOR can straddle a
+        // TownConstants.REGION_SIZE_BLOCKS region boundary depending on where this run's template
+        // happens to land (the exact class of bug PR204 already fixed for
+        // onlyOneOfTwoCompetingAdmissionsBindsToTheOneAvailableSite) - use the same deterministic
+        // same-region companion search for both the beneficiary's spawn AND its preexisting
+        // workplace instead.
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
+        java.util.List<BlockPos> companions = findSameRegionNonBlockingCompanions(helper, ANCHOR, region, 2);
+        helper.assertTrue(companions.size() == 2,
+                "test setup: two distinct same-region, non-blocking companion positions (beneficiary spawn + its preexisting workplace) must exist");
+        prepareSafeFooting(helper, companions.get(0));
+        prepareSafeFooting(helper, companions.get(1));
+        BlockPos beneficiarySpot = helper.absolutePos(companions.get(0));
         Villager beneficiary = EntityType.VILLAGER.create(helper.getLevel(), null, beneficiarySpot, MobSpawnType.EVENT, false, false);
         helper.getLevel().addFreshEntity(beneficiary);
-        BlockPos oldWorkplace = helper.absolutePos(new BlockPos(0, 2, 9));
+        helper.assertTrue(beneficiary.isAlive() && appearsInProductionIterable(helper.getLevel(), beneficiary)
+                        && TownRegion.fromBlockCoords(beneficiarySpot.getX(), beneficiarySpot.getZ()).equals(region),
+                "test setup: the beneficiary must be alive, visible to production's own iterable, and resolve to the SAME region as the campfire - beneficiaryPos="
+                        + beneficiarySpot + " campfireRegion=" + region);
+        BlockPos oldWorkplace = helper.absolutePos(companions.get(1));
         takeWorkplace(helper, oldWorkplace, poiKeyFor(preexistingProfession));
         beneficiary.setVillagerData(beneficiary.getVillagerData().setProfession(preexistingProfession));
         beneficiary.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), oldWorkplace));
 
         TownStorage storage = new TownStorage();
-        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
         storage.markTownFounded(TownKeys.keyFor(helper.getLevel().dimension(), region));
         // Home-only request - never mentions a workplace, regardless of what this EXPLICIT kind
         // offers.
         TownResidentDemand demand = new TownResidentDemand(1, Map.of());
         Optional<ResidentCapacityAdmission> awaiting = TownConstructionService.requestResidentCapacity(
                 helper.getLevel(), region, beneficiary.getUUID(), demand, storage);
-        helper.assertTrue(awaiting.isPresent(), "test setup: the home-only admission must be created");
+        helper.assertTrue(awaiting.isPresent(), "test setup: the home-only admission must be created - beneficiaryPos="
+                + beneficiarySpot + " region=" + region + " founded=" + storage.hasFoundedTown(TownKeys.keyFor(helper.getLevel().dimension(), region)));
         ResidentCapacityAdmission boundAdmission = awaiting.get().boundTo("site:direct-call-test", UUID.randomUUID(),
                 "plan-direct-call-test", UUID.randomUUID());
 
@@ -2414,6 +2442,143 @@ public final class TownResidentCapacityAdmissionGameTests {
                 "A's admission must remain exactly the same BUILDING record, bound to B, after the deferral");
         helper.assertTrue(claimantB.getVillagerData().getProfession() == BuilderProfession.BUILDER.get(),
                 "B must remain the unreleased claimant - its own site never closed");
+        helper.succeed();
+    }
+
+    /** [51506 no-load gap] Companion to the deferral test above: A's active-Builder claim is
+     *  UNRESOLVED, not confirmed either way - its JOB_SITE memory points at a real, same-dimension
+     *  position this GameTest server genuinely never loads. hasActiveBuilderClaim must defer
+     *  exactly as if the claim were confirmed active - never synchronously load that chunk to
+     *  decide, and never let the unresolved state fall through to a completed handoff. */
+    @GameTest(template = "settlement_test", templateNamespace = "dynamicvehicles_active_builder_containment",
+            batch = "activeBuilderContainment", skyAccess = true)
+    public static void aBeneficiaryWithAnUnresolvedRemoteBuilderClaimDefersClosingWithoutLoadingItsChunk(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        prepareFlatGround(helper);
+        helper.setBlock(ANCHOR, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(ANCHOR);
+        ResolvedSite site = resolveSite(helper, absoluteCampfire);
+        assertNonStorehouseFixture(helper, site);
+
+        Villager claimantB = EntityType.VILLAGER.create(level, null, absoluteCampfire, MobSpawnType.EVENT, false, false);
+        level.addFreshEntity(claimantB);
+        claimantB.setVillagerData(claimantB.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
+        claimantB.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), absoluteCampfire));
+
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
+        Optional<BlockPos> companion = findSameRegionNonBlockingCompanion(helper, ANCHOR, region);
+        helper.assertTrue(companion.isPresent(), "test setup: a same-region, non-blocking companion position for A must exist");
+        prepareSafeFooting(helper, companion.get());
+        BlockPos beneficiarySpot = helper.absolutePos(companion.get());
+        Villager villagerA = EntityType.VILLAGER.create(level, null, beneficiarySpot, MobSpawnType.EVENT, false, false);
+        level.addFreshEntity(villagerA);
+
+        TownStorage storage = new TownStorage();
+        TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
+        storage.markTownFounded(TownKeys.keyFor(level.dimension(), region));
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of());
+        Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
+                level, region, villagerA.getUUID(), demand, storage);
+        helper.assertTrue(admission.isPresent(), "test setup: A's home-only admission must be created while genuinely NONE");
+
+        TownConstructionService.buildAt(level, absoluteCampfire, storage);
+        Optional<ResidentCapacityAdmission> bound = storage.capacityAdmissionFor(level.dimension(), region, villagerA.getUUID());
+        helper.assertTrue(bound.filter(v -> v.state() == ResidentCapacityAdmission.State.BUILDING
+                        && v.builderId().equals(claimantB.getUUID())).isPresent(),
+                "test setup: A's admission must already be BUILDING, bound to B");
+
+        // A, already bound as B's beneficiary, becomes a Builder with a claim this test
+        // deliberately never loads/generates - the UNRESOLVED case, not the confirmed-elsewhere
+        // case the sibling test above already covers.
+        BlockPos remoteClaimPos = absoluteCampfire.offset(10_000, 0, 10_000);
+        helper.assertTrue(!level.hasChunkAt(remoteClaimPos),
+                "test setup: the remote claim position must genuinely be unloaded before this test begins");
+        villagerA.setVillagerData(villagerA.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
+        villagerA.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), remoteClaimPos));
+
+        // As the sibling deferral test's own established lesson: ordinary intermediate cells keep
+        // paying normally even while the FINAL closing reservation defers, so this deliberately
+        // does not assert zero debit overall - only that the closing cell itself never mutates.
+        for (int i = 0; i < 300 && helper.getBlockState(ANCHOR).is(Blocks.CAMPFIRE); i++) {
+            TownConstructionService.buildAt(level, absoluteCampfire, storage);
+        }
+
+        helper.assertTrue(!level.hasChunkAt(remoteClaimPos),
+                "the beneficiary's unresolved remote claim chunk must never be synchronously loaded/generated by the closing check");
+        helper.assertTrue(helper.getBlockState(ANCHOR).is(Blocks.CAMPFIRE),
+                "B's site must defer closing - never complete - while its bound beneficiary A's own active-Builder claim is unresolved");
+        helper.assertTrue(villagerA.getVillagerData().getProfession() == BuilderProfession.BUILDER.get()
+                        && villagerA.getBrain().getMemory(MemoryModuleType.JOB_SITE).filter(gp -> gp.pos().equals(remoteClaimPos)).isPresent(),
+                "A's own profession/JOB_SITE must be completely untouched by the deferred handoff");
+        Optional<ResidentCapacityAdmission> stillBuilding = storage.capacityAdmissionFor(level.dimension(), region, villagerA.getUUID());
+        helper.assertTrue(stillBuilding.filter(v -> v.state() == ResidentCapacityAdmission.State.BUILDING
+                        && v.builderId().equals(claimantB.getUUID())).isPresent(),
+                "A's admission must remain exactly the same BUILDING record, bound to B, after the deferral");
+        helper.assertTrue(claimantB.getVillagerData().getProfession() == BuilderProfession.BUILDER.get(),
+                "B must remain the unreleased claimant - its own site never closed");
+        helper.succeed();
+    }
+
+    /** [51506 no-load gap] The bind-time twin of the test above: a DIFFERENT, genuinely eligible
+     *  candidate's admission must fail closed (Denied, never NoMatch/claimant-only fallthrough,
+     *  never Bound) when the ONLY matching awaiting admission's own beneficiary carries an
+     *  unresolved - not confirmed either way - active-Builder claim, exactly like the
+     *  confirmed-active case distinctBuilderCannotBindAnAdmissionWhoseBeneficiaryIsAnActiveBuilderElsewhere
+     *  already proves, and without ever loading the claim's own chunk to decide. */
+    @GameTest(template = "settlement_test", templateNamespace = "dynamicvehicles_active_builder_containment",
+            batch = "activeBuilderContainment", skyAccess = true)
+    public static void aCandidateWithAnUnresolvedRemoteBuilderClaimIsNeverBoundAtBindTime(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        prepareFlatGround(helper);
+        helper.setBlock(ANCHOR, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(ANCHOR);
+        ResolvedSite site = resolveSite(helper, absoluteCampfire);
+        assertNonStorehouseFixture(helper, site);
+
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
+        Optional<BlockPos> companion = findSameRegionNonBlockingCompanion(helper, ANCHOR, region);
+        helper.assertTrue(companion.isPresent(), "test setup: a same-region, non-blocking companion position for the candidate beneficiary must exist");
+        BlockPos candidateSpot = helper.absolutePos(companion.get());
+        Villager candidateBeneficiary = EntityType.VILLAGER.create(level, null, candidateSpot, MobSpawnType.EVENT, false, false);
+        helper.assertTrue(candidateBeneficiary != null, "test setup: the candidate beneficiary must be constructible");
+        level.addFreshEntity(candidateBeneficiary);
+
+        TownStorage storage = new TownStorage();
+        TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
+        storage.markTownFounded(TownKeys.keyFor(level.dimension(), region));
+        // Requested while still genuinely NONE - requestResidentCapacity itself refuses a current
+        // Builder as beneficiary, and unmetDemand excludes an active-Builder-claimed villager from
+        // its own count, so the admission must exist BEFORE the candidate becomes a Builder, exactly
+        // mirroring the real sequence (unemployed resident requests capacity, then later becomes an
+        // active Builder claimant elsewhere before this site's own bind attempt).
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of());
+        Optional<ResidentCapacityAdmission> awaiting = TownConstructionService.requestResidentCapacity(
+                level, region, candidateBeneficiary.getUUID(), demand, storage);
+        helper.assertTrue(awaiting.isPresent(), "test setup: the candidate's home-only admission must be created while genuinely NONE");
+
+        candidateBeneficiary.setVillagerData(candidateBeneficiary.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
+        // A real, same-dimension JOB_SITE memory pointing far enough away that this GameTest
+        // server never naturally loads that chunk - the unresolved claim itself, never
+        // force-loaded or otherwise touched.
+        BlockPos remoteClaimPos = absoluteCampfire.offset(10_000, 0, 10_000);
+        helper.assertTrue(!level.hasChunkAt(remoteClaimPos),
+                "test setup: the remote claim position must genuinely be unloaded before this test begins");
+        candidateBeneficiary.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), remoteClaimPos));
+
+        UUID distinctBuilderId = UUID.randomUUID();
+        int stoneBefore = store.balance(TownResourceCategory.STONE);
+        TownConstructionService.CapacityBindResolution resolution = TownConstructionService.resolveCapacityAdmissionForSite(
+                level, storage, absoluteCampfire, region, TownStorage.siteOwner(absoluteCampfire), site.kind(),
+                site.finalProfession(), "plan-no-load-bind-test", distinctBuilderId);
+
+        helper.assertTrue(!level.hasChunkAt(remoteClaimPos),
+                "the candidate's unresolved remote claim chunk must never be synchronously loaded/generated just to answer this liveness check");
+        helper.assertTrue(resolution instanceof TownConstructionService.CapacityBindResolution.Denied,
+                "an unresolved (unloaded) active-Builder claim must defer exactly like a confirmed one - found " + resolution);
+        Optional<ResidentCapacityAdmission> afterward = storage.capacityAdmissionFor(level.dimension(), region, candidateBeneficiary.getUUID());
+        helper.assertTrue(afterward.filter(v -> v.state() == ResidentCapacityAdmission.State.AWAITING_CLAIM).isPresent(),
+                "the candidate's own admission must remain exactly AWAITING_CLAIM - never bound while its claim's liveness is unresolved");
+        helper.assertTrue(store.balance(TownResourceCategory.STONE) == stoneBefore, "an unresolved claim must never cause any debit");
         helper.succeed();
     }
 

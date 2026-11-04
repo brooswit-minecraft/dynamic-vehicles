@@ -3,6 +3,9 @@ package io.github.brooswitminecraft.dynamicvehicles;
 import java.lang.reflect.Field;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.gametest.framework.GameTestInfo;
+import net.minecraft.gametest.framework.GameTestListener;
+import net.minecraft.gametest.framework.GameTestRunner;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
@@ -366,8 +369,33 @@ public final class ClutchContactLossGameTests {
     @GameTest(template = "settlement_test", batch = "clutchReverseOne", timeoutTicks = 400)
     public static void reverseEnergyAtOneSubstep(GameTestHelper helper) {
         VehicleLanes.restoreSubStepsOnEveryOutcome(helper);
+        enableDiagnosticSummaryOnEveryOutcome(helper);
         CarConfig.WHEEL_SUB_STEPS.set(1);
         CarDrivetrainGameTests.theRealizedClutchExchangeBalancesSignedThroughOpposedRollingAndTheReverseGovernor(helper);
+    }
+
+    /** [MINECRAFT-455 51520] Scopes CarDrivetrainGameTests' diagnostic phase/tick/wall-time summary
+     *  (for the unexplained reverseEnergyAtOneSubstep timeout) to exactly this one test method,
+     *  using the SAME restore-on-every-outcome GameTestListener pattern
+     *  {@link VehicleLanes#restoreSubStepsOnEveryOutcome} already establishes, so the flag is
+     *  guaranteed to be false again before any other test runs regardless of how this one ends. */
+    private static void enableDiagnosticSummaryOnEveryOutcome(GameTestHelper helper) {
+        CarDrivetrainGameTests.diagnosticSummaryEnabled = true;
+        helper.testInfo.addListener(new GameTestListener() {
+            private boolean restored;
+
+            private void restore() {
+                if (!restored) {
+                    CarDrivetrainGameTests.diagnosticSummaryEnabled = false;
+                    restored = true;
+                }
+            }
+
+            @Override public void testStructureLoaded(GameTestInfo info) {}
+            @Override public void testPassed(GameTestInfo info, GameTestRunner runner) { restore(); }
+            @Override public void testFailed(GameTestInfo info, GameTestRunner runner) { restore(); }
+            @Override public void testAddedForRerun(GameTestInfo info, GameTestInfo retry, GameTestRunner runner) { restore(); }
+        });
     }
 
     @GameTest(template = "settlement_test", batch = "clutchReverseFour", timeoutTicks = 400)

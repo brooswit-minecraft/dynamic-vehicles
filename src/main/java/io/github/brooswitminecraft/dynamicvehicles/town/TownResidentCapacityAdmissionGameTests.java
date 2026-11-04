@@ -10,6 +10,9 @@ import net.minecraft.core.HolderLookup;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.gametest.framework.GameTestInfo;
+import net.minecraft.gametest.framework.GameTestListener;
+import net.minecraft.gametest.framework.GameTestRunner;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
@@ -23,6 +26,7 @@ import net.minecraft.world.entity.npc.VillagerProfession;
 import net.minecraft.world.entity.ai.village.poi.PoiTypes;
 import net.minecraft.world.entity.ai.village.poi.PoiType;
 import net.minecraft.world.level.block.BedBlock;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.CampfireBlockEntity;
@@ -2220,5 +2224,990 @@ public final class TownResidentCapacityAdmissionGameTests {
         helper.assertTrue(afterTamperedTicks.filter(value -> value.state() == ResidentCapacityAdmission.State.BUILDING).isPresent(),
                 "the tampered admission must remain exactly BUILDING, never silently advanced to COMPLETED");
         helper.succeed();
+    }
+
+    // ===================================================================================
+    // [MINECRAFT-455 active-Builder containment, coordinator chain 51462-51471] Isolated via
+    // templateNamespace from the default suite. This is bounded safety containment only - never
+    // unassigned-workplace/natural-self-build acceptance, which stays separate and unresolved.
+    // Every claimant state below is constructed directly (profession + JOB_SITE + a real CAMPFIRE
+    // block), exactly like every OTHER claimant fixture already in this file - none of them drive
+    // BuilderCampfireHandler or vanilla's own, timing-unspecified POI-acquisition AI either. This
+    // represents the RESULT such a transition (natural self-build, or any other means) would reach,
+    // not the moment-by-moment vanilla mechanism - the containment logic itself reacts only to that
+    // result (profession == BUILDER with a live JOB_SITE campfire), never to how it was reached.
+    // ===================================================================================
+
+    /** A real demand match (A's home-only admission) whose beneficiary is, right now, an active
+     *  Builder claimant at a DIFFERENT, distinct site must never bind or fall through to ordinary
+     *  claimant-only construction at B's site - unlike the EXISTING self-match guard's own test,
+     *  A and B are two different villagers/sites here. Once a genuinely different, eligible
+     *  beneficiary C exists, B's site must still bind and complete normally for C. */
+    @GameTest(template = "settlement_test", templateNamespace = "dynamicvehicles_active_builder_containment",
+            batch = "activeBuilderContainment", skyAccess = true)
+    public static void distinctBuilderCannotBindAnAdmissionWhoseBeneficiaryIsAnActiveBuilderElsewhere(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        java.util.List<BlockPos> nonStorehouse = new java.util.ArrayList<>();
+        for (BlockPos candidate : HANDOFF_CANDIDATE_ANCHORS) {
+            if (resolveSite(helper, helper.absolutePos(candidate)).kind() != TownBuildingTemplates.Kind.STOREHOUSE) {
+                nonStorehouse.add(candidate);
+            }
+        }
+        helper.assertTrue(nonStorehouse.size() >= 2,
+                "test setup: at least two of the four interior corners must resolve non-STOREHOUSE");
+        BlockPos anchorA = nonStorehouse.get(0);
+        BlockPos anchorB = nonStorehouse.get(1);
+        BlockPos absoluteA = helper.absolutePos(anchorA);
+        BlockPos absoluteB = helper.absolutePos(anchorB);
+        prepareFlatGroundAround(helper, anchorA);
+        prepareFlatGroundAround(helper, anchorB);
+        helper.setBlock(anchorA, Blocks.CAMPFIRE);
+        helper.setBlock(anchorB, Blocks.CAMPFIRE);
+        // [coordinator review 51394, reused here] The one in-template standing exit buildAt's own
+        // relocation step tries FIRST - prepareFlatGroundAround alone (radius 2) is one short of it.
+        // B's site must actually be able to close for this test to mean anything.
+        prepareSafeRelocationExit(helper, anchorB.offset(0, 0, 3));
+
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteA.getX(), absoluteA.getZ());
+        helper.assertTrue(TownRegion.fromBlockCoords(absoluteB.getX(), absoluteB.getZ()).equals(region),
+                "test setup: both anchors must resolve to the same region");
+
+        TownStorage storage = new TownStorage();
+        TownResourceStore store = fundStore(helper, storage, absoluteA, 100000);
+        storage.markTownFounded(TownKeys.keyFor(level.dimension(), region));
+
+        Villager villagerA = EntityType.VILLAGER.create(level, null, absoluteA, MobSpawnType.EVENT, false, false);
+        level.addFreshEntity(villagerA);
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of());
+        Optional<ResidentCapacityAdmission> admissionA = TownConstructionService.requestResidentCapacity(
+                level, region, villagerA.getUUID(), demand, storage);
+        helper.assertTrue(admissionA.isPresent() && admissionA.get().state() == ResidentCapacityAdmission.State.AWAITING_CLAIM,
+                "test setup: A's home-only admission must be created while genuinely unemployed");
+        // A's own real active Builder claim at its OWN distinct site - not the site under test.
+        villagerA.setVillagerData(villagerA.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
+        villagerA.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), absoluteA));
+
+        Villager villagerB = EntityType.VILLAGER.create(level, null, absoluteB, MobSpawnType.EVENT, false, false);
+        level.addFreshEntity(villagerB);
+        villagerB.setVillagerData(villagerB.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
+        villagerB.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), absoluteB));
+
+        for (int i = 0; i < 10; i++) {
+            TownConstructionService.buildAt(level, absoluteB, storage);
+        }
+
+        helper.assertTrue(helper.getBlockState(anchorB).is(Blocks.CAMPFIRE),
+                "B's site must never complete while the only matching admission's beneficiary (A) is an active Builder elsewhere");
+        Optional<ResidentCapacityAdmission> afterDenied = storage.capacityAdmissionFor(level.dimension(), region, villagerA.getUUID());
+        helper.assertTrue(afterDenied.filter(v -> v.state() == ResidentCapacityAdmission.State.AWAITING_CLAIM).isPresent(),
+                "A's own admission must remain untouched, AWAITING_CLAIM - never bound while A is an active Builder elsewhere");
+        helper.assertTrue(villagerB.getVillagerData().getProfession() == BuilderProfession.BUILDER.get(),
+                "B must remain the unreleased Builder claimant - the site never completed");
+
+        java.util.List<BlockPos> companions = findSameRegionNonBlockingCompanions(helper, anchorB, region, 1);
+        helper.assertTrue(companions.size() == 1, "test setup: a same-region, non-blocking companion position for C must exist");
+        prepareSafeFooting(helper, companions.get(0));
+        Villager villagerC = EntityType.VILLAGER.create(level, null, helper.absolutePos(companions.get(0)), MobSpawnType.EVENT, false, false);
+        level.addFreshEntity(villagerC);
+        Optional<ResidentCapacityAdmission> admissionC = TownConstructionService.requestResidentCapacity(
+                level, region, villagerC.getUUID(), demand, storage);
+        helper.assertTrue(admissionC.isPresent() && admissionC.get().state() == ResidentCapacityAdmission.State.AWAITING_CLAIM,
+                "test setup: C's home-only admission must be created while genuinely unemployed");
+
+        TownConstructionService.buildAt(level, absoluteB, storage);
+        Optional<ResidentCapacityAdmission> afterOneTick = storage.capacityAdmissionFor(level.dimension(), region, villagerC.getUUID());
+        helper.assertTrue(afterOneTick.filter(v -> v.state() == ResidentCapacityAdmission.State.BUILDING
+                        && v.builderId().equals(villagerB.getUUID())).isPresent(),
+                "C's admission must bind to B within one tick once C is eligible - found " + afterOneTick);
+
+        for (int i = 1; i < 500 && villagerB.getVillagerData().getProfession() == BuilderProfession.BUILDER.get(); i++) {
+            TownConstructionService.buildAt(level, absoluteB, storage);
+        }
+
+        helper.assertTrue(!helper.getBlockState(anchorB).is(Blocks.CAMPFIRE),
+                "B's site must complete normally once a genuinely eligible alternative candidate (C) exists");
+        Optional<ResidentCapacityAdmission> finalC = storage.capacityAdmissionFor(level.dimension(), region, villagerC.getUUID());
+        helper.assertTrue(finalC.filter(v -> v.state() == ResidentCapacityAdmission.State.COMPLETED).isPresent(),
+                "C's admission must COMPLETE through B's site - the genuinely eligible alternative");
+        Optional<ResidentCapacityAdmission> stillUntouchedA = storage.capacityAdmissionFor(level.dimension(), region, villagerA.getUUID());
+        helper.assertTrue(stillUntouchedA.filter(v -> v.state() == ResidentCapacityAdmission.State.AWAITING_CLAIM).isPresent(),
+                "A's own admission must remain exactly as it was - untouched by C's unrelated completion");
+        helper.succeed();
+    }
+
+    /** B's site legitimately binds A's admission while A is still genuinely NONE. Before B's site
+     *  closes, A independently becomes an active Builder claimant at a DIFFERENT site. Closing must
+     *  defer - never overwrite A's new claim/profession/POI, never touch B's own anchor/debits,
+     *  never advance the admission - exactly like the existing "beneficiary not safely available"
+     *  deferral this same method already performs, just reached through a different condition. */
+    @GameTest(template = "settlement_test", templateNamespace = "dynamicvehicles_active_builder_containment",
+            batch = "activeBuilderContainment", skyAccess = true)
+    public static void aBeneficiaryBecomingAnActiveBuilderElsewhereBeforeClosingDefersTheBoundHandoffWithoutMutation(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        prepareFlatGround(helper);
+        helper.setBlock(ANCHOR, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(ANCHOR);
+        ResolvedSite site = resolveSite(helper, absoluteCampfire);
+        assertNonStorehouseFixture(helper, site);
+
+        Villager claimantB = EntityType.VILLAGER.create(level, null, absoluteCampfire, MobSpawnType.EVENT, false, false);
+        level.addFreshEntity(claimantB);
+        claimantB.setVillagerData(claimantB.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
+        claimantB.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), absoluteCampfire));
+
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
+        // [MINECRAFT-455 postmerge CI 41443560723 lesson] Same-region, non-blocking companions -
+        // never a hardcoded offset that might itself straddle a region boundary - for A's initial
+        // spot AND A's own later claim position.
+        java.util.List<BlockPos> companions = findSameRegionNonBlockingCompanions(helper, ANCHOR, region, 2);
+        helper.assertTrue(companions.size() == 2,
+                "test setup: two distinct same-region, non-blocking companion positions must exist for A");
+        prepareSafeFooting(helper, companions.get(0));
+        prepareSafeFooting(helper, companions.get(1));
+        BlockPos beneficiarySpot = helper.absolutePos(companions.get(0));
+        Villager villagerA = EntityType.VILLAGER.create(level, null, beneficiarySpot, MobSpawnType.EVENT, false, false);
+        level.addFreshEntity(villagerA);
+        helper.assertTrue(TownRegion.fromBlockCoords(villagerA.blockPosition().getX(), villagerA.blockPosition().getZ()).equals(region),
+                "test setup: A must resolve to the campfire's exact region");
+
+        TownStorage storage = new TownStorage();
+        TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
+        storage.markTownFounded(TownKeys.keyFor(level.dimension(), region));
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of());
+        Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
+                level, region, villagerA.getUUID(), demand, storage);
+        helper.assertTrue(admission.isPresent(), "test setup: A's home-only admission must be created while genuinely NONE");
+
+        // Drive ONE tick: bind A's admission to B's site, never finish.
+        TownConstructionService.buildAt(level, absoluteCampfire, storage);
+        Optional<ResidentCapacityAdmission> bound = storage.capacityAdmissionFor(level.dimension(), region, villagerA.getUUID());
+        helper.assertTrue(bound.filter(v -> v.state() == ResidentCapacityAdmission.State.BUILDING
+                        && v.builderId().equals(claimantB.getUUID())).isPresent(),
+                "test setup: A's admission must already be BUILDING, bound to B, recorded while A was still genuinely NONE");
+        helper.assertTrue(helper.getBlockState(ANCHOR).is(Blocks.CAMPFIRE), "test setup: B's site must not have finished yet");
+
+        // A, already bound as B's beneficiary, independently acquires a real Builder claim at a
+        // DIFFERENT site before B's site ever closes.
+        BlockPos ownSpotRelative = companions.get(1);
+        BlockPos ownSpot = helper.absolutePos(ownSpotRelative);
+        helper.setBlock(ownSpotRelative, Blocks.CAMPFIRE);
+        villagerA.setVillagerData(villagerA.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
+        villagerA.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), ownSpot));
+
+        // The site's own intermediate, ordinary paid cells are unrelated to the closing beneficiary
+        // handoff and keep progressing normally - only the FINAL closing reservation is gated on the
+        // beneficiary's eligibility, so this deliberately does NOT assert zero debit overall.
+        for (int i = 0; i < 300 && !helper.getBlockState(ANCHOR).isAir() && helper.getBlockState(ANCHOR).is(Blocks.CAMPFIRE); i++) {
+            TownConstructionService.buildAt(level, absoluteCampfire, storage);
+        }
+
+        helper.assertTrue(helper.getBlockState(ANCHOR).is(Blocks.CAMPFIRE),
+                "B's site must defer closing - never complete - while its bound beneficiary A is now an active Builder elsewhere");
+        helper.assertTrue(villagerA.getVillagerData().getProfession() == BuilderProfession.BUILDER.get()
+                        && villagerA.getBrain().getMemory(MemoryModuleType.JOB_SITE).filter(gp -> gp.pos().equals(ownSpot)).isPresent(),
+                "A's own new profession/JOB_SITE must be completely untouched by the deferred handoff");
+        helper.assertTrue(helper.getBlockState(ownSpotRelative).is(Blocks.CAMPFIRE),
+                "A's own new campfire/POI must remain exactly as it was - never consumed by the deferred handoff");
+        Optional<ResidentCapacityAdmission> stillBuilding = storage.capacityAdmissionFor(level.dimension(), region, villagerA.getUUID());
+        helper.assertTrue(stillBuilding.filter(v -> v.state() == ResidentCapacityAdmission.State.BUILDING
+                        && v.builderId().equals(claimantB.getUUID())).isPresent(),
+                "A's admission must remain exactly the same BUILDING record, bound to B, after the deferral");
+        helper.assertTrue(claimantB.getVillagerData().getProfession() == BuilderProfession.BUILDER.get(),
+                "B must remain the unreleased claimant - its own site never closed");
+        helper.succeed();
+    }
+
+    /** As the deferral above, but A's own active-Builder claim then genuinely LAPSES through a real
+     *  production path - its own campfire is removed, and the EXISTING orphaned-Builder
+     *  reconciliation (TownResidentAllocationHandler#runResidentAllocationTick) releases it to NONE,
+     *  exactly as it already does for any other villager. Only then does B's deferred handoff retry
+     *  and actually proceed - never before, and never through a manually-erased claim or an invented
+     *  ownership record. */
+    @GameTest(template = "settlement_test", templateNamespace = "dynamicvehicles_active_builder_containment",
+            batch = "activeBuilderContainment", skyAccess = true)
+    public static void anOrphanedSelfBuiltClaimReconciledThroughProductionAllowsTheDeferredHandoffToProceed(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        prepareFlatGround(helper);
+        helper.setBlock(ANCHOR, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(ANCHOR);
+        ResolvedSite site = resolveSite(helper, absoluteCampfire);
+        assertNonStorehouseFixture(helper, site);
+
+        Villager claimantB = EntityType.VILLAGER.create(level, null, absoluteCampfire, MobSpawnType.EVENT, false, false);
+        level.addFreshEntity(claimantB);
+        claimantB.setVillagerData(claimantB.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
+        claimantB.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), absoluteCampfire));
+
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
+        java.util.List<BlockPos> companions = findSameRegionNonBlockingCompanions(helper, ANCHOR, region, 2);
+        helper.assertTrue(companions.size() == 2,
+                "test setup: two distinct same-region, non-blocking companion positions must exist for A");
+        prepareSafeFooting(helper, companions.get(0));
+        prepareSafeFooting(helper, companions.get(1));
+        BlockPos beneficiarySpot = helper.absolutePos(companions.get(0));
+        Villager villagerA = EntityType.VILLAGER.create(level, null, beneficiarySpot, MobSpawnType.EVENT, false, false);
+        level.addFreshEntity(villagerA);
+        helper.assertTrue(TownRegion.fromBlockCoords(villagerA.blockPosition().getX(), villagerA.blockPosition().getZ()).equals(region),
+                "test setup: A must resolve to the campfire's exact region");
+
+        TownStorage storage = new TownStorage();
+        TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
+        storage.markTownFounded(TownKeys.keyFor(level.dimension(), region));
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of());
+        Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
+                level, region, villagerA.getUUID(), demand, storage);
+        helper.assertTrue(admission.isPresent(), "test setup: A's home-only admission must be created while genuinely NONE");
+
+        TownConstructionService.buildAt(level, absoluteCampfire, storage);
+        Optional<ResidentCapacityAdmission> bound = storage.capacityAdmissionFor(level.dimension(), region, villagerA.getUUID());
+        helper.assertTrue(bound.filter(v -> v.state() == ResidentCapacityAdmission.State.BUILDING
+                        && v.builderId().equals(claimantB.getUUID())).isPresent(),
+                "test setup: A's admission must already be BUILDING, bound to B");
+
+        BlockPos ownSpotRelative = companions.get(1);
+        BlockPos ownSpot = helper.absolutePos(ownSpotRelative);
+        helper.setBlock(ownSpotRelative, Blocks.CAMPFIRE);
+        villagerA.setVillagerData(villagerA.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
+        villagerA.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), ownSpot));
+
+        for (int i = 0; i < 30 && helper.getBlockState(ANCHOR).is(Blocks.CAMPFIRE); i++) {
+            TownConstructionService.buildAt(level, absoluteCampfire, storage);
+        }
+        helper.assertTrue(helper.getBlockState(ANCHOR).is(Blocks.CAMPFIRE), "test setup: B's site must have deferred, not completed");
+
+        // A's own claim genuinely LAPSES - its campfire is removed, exactly the condition
+        // TownResidentAllocationHandler's own existing orphaned-Builder reconciliation (not a new
+        // path, not a manual claim clear) is documented to release.
+        helper.setBlock(ownSpotRelative, Blocks.AIR);
+        TownResidentAllocationHandler.runResidentAllocationTick(level, storage);
+        // The real reconciliation pass does not stop at releasing an orphaned Builder to NONE - in
+        // the SAME pass it falls straight through into ordinary allocation for any now-unemployed
+        // villager (by design, per its own doc: "falls straight through into the SAME normal
+        // reconciliation as any other unemployed villager"). The condition this containment
+        // actually cares about is narrower and still proven here: A is no longer an active Builder
+        // claimant - never that A stays NONE forever, which the real reconciliation never promised.
+        helper.assertTrue(!(villagerA.getVillagerData().getProfession() == BuilderProfession.BUILDER.get()
+                        && TownResidentAllocationHandler.hasActiveBuilderClaim(level, villagerA)),
+                "reconciliation must release A from its active Builder claim once its own campfire is actually gone - found profession="
+                        + villagerA.getVillagerData().getProfession());
+
+        // [51479/51480] Confirmed production reproduction: the orphan reconciliation's own ordinary
+        // allocation (falling through exactly as documented) genuinely, properly reserves A's own
+        // planned bed - real ticket, real storage.isReservedBySelf record - before B's closing
+        // handoff ever retries. The retry must now REUSE that exact ticket (never a second take,
+        // never released merely because it was found already held) rather than failing closed.
+        int floorY = storage.floorFor(TownStorage.siteOwner(absoluteCampfire)).orElse(
+                TownTerrain.estimateGroundHeightBelow(level, absoluteCampfire));
+        BlockPos plannedBed = TownBuildingTemplates.bedPosition(absoluteCampfire.getX(), floorY, absoluteCampfire.getZ());
+        helper.assertTrue(villagerA.getBrain().getMemory(MemoryModuleType.HOME).filter(gp -> gp.pos().equals(plannedBed)).isPresent()
+                        && storage.isReservedBySelf(level.dimension(), plannedBed, villagerA.getUUID())
+                        && level.getPoiManager().getFreeTickets(plannedBed) == 0,
+                "test setup: the orphan reconciliation's ordinary allocation must have genuinely, properly reserved A's own planned bed before the retry - this is the exact production interaction 51479 confirmed");
+
+        for (int i = 1; i < 500 && claimantB.getVillagerData().getProfession() == BuilderProfession.BUILDER.get(); i++) {
+            TownConstructionService.buildAt(level, absoluteCampfire, storage);
+        }
+
+        helper.assertTrue(!helper.getBlockState(ANCHOR).is(Blocks.CAMPFIRE),
+                "B's site must now complete: the retry must reuse A's own already-held bed ticket rather than failing closed against it");
+        helper.assertTrue(claimantB.getVillagerData().getProfession() == VillagerProfession.NONE,
+                "B must be released to NONE once its site actually completes");
+        Optional<ResidentCapacityAdmission> completed = storage.capacityAdmissionFor(level.dimension(), region, villagerA.getUUID());
+        helper.assertTrue(completed.filter(v -> v.state() == ResidentCapacityAdmission.State.COMPLETED).isPresent(),
+                "A's admission - the SAME record, still bound to B - must now reach COMPLETED");
+        helper.assertTrue(villagerA.getBrain().getMemory(MemoryModuleType.HOME).map(gp -> gp.pos().equals(plannedBed)).orElse(false)
+                        && storage.isReservedBySelf(level.dimension(), plannedBed, villagerA.getUUID())
+                        && level.getPoiManager().getFreeTickets(plannedBed) == 0,
+                "A must end up with exactly the SAME real bed - reused in place, never a second take, never released and re-taken");
+        helper.succeed();
+    }
+
+    /** [MINECRAFT-455 own-ticket reuse, 51480] hasOwnReusableTicket requires ALL applicable proof
+     *  together - an occupied POI plus matching memory is never enough without this mod's own
+     *  POSITIVE storage.isReservedBySelf record. A foreign/untracked occupant (a vanilla-origin
+     *  ticket this mod never recorded, even if A's own stale memory happens to also name it) must
+     *  never be reused: it falls through to the ordinary acquisition path, which then correctly,
+     *  safely fails (genuinely occupied) - deferring exactly as the empty-beneficiary/active-Builder
+     *  cases already do, never releasing or mutating anything, admission left retryable. */
+    @GameTest(template = "settlement_test", templateNamespace = "dynamicvehicles_active_builder_containment",
+            batch = "activeBuilderContainment", skyAccess = true)
+    public static void aForeignUntrackedOccupiedPoiIsNeverTreatedAsReusableAndTheHandoffSafelyDefers(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        prepareFlatGround(helper);
+        helper.setBlock(ANCHOR, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(ANCHOR);
+        ResolvedSite site = resolveSite(helper, absoluteCampfire);
+        assertNonStorehouseFixture(helper, site);
+
+        Villager claimantB = EntityType.VILLAGER.create(level, null, absoluteCampfire, MobSpawnType.EVENT, false, false);
+        level.addFreshEntity(claimantB);
+        claimantB.setVillagerData(claimantB.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
+        claimantB.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), absoluteCampfire));
+
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
+        java.util.List<BlockPos> companions = findSameRegionNonBlockingCompanions(helper, ANCHOR, region, 2);
+        helper.assertTrue(companions.size() == 2, "test setup: two distinct same-region, non-blocking companion positions must exist");
+        prepareSafeFooting(helper, companions.get(0));
+        prepareSafeFooting(helper, companions.get(1));
+        Villager villagerA = EntityType.VILLAGER.create(level, null, helper.absolutePos(companions.get(0)), MobSpawnType.EVENT, false, false);
+        level.addFreshEntity(villagerA);
+
+        TownStorage storage = new TownStorage();
+        TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
+        storage.markTownFounded(TownKeys.keyFor(level.dimension(), region));
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of());
+        Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
+                level, region, villagerA.getUUID(), demand, storage);
+        helper.assertTrue(admission.isPresent(), "test setup: A's home-only admission must be created while genuinely NONE");
+
+        TownConstructionService.buildAt(level, absoluteCampfire, storage);
+        Optional<ResidentCapacityAdmission> bound = storage.capacityAdmissionFor(level.dimension(), region, villagerA.getUUID());
+        helper.assertTrue(bound.filter(v -> v.state() == ResidentCapacityAdmission.State.BUILDING
+                        && v.builderId().equals(claimantB.getUUID())).isPresent(),
+                "test setup: A's admission must already be BUILDING, bound to B");
+
+        // A becomes an active Builder claimant at a second, distinct site - purely to defer B's
+        // closing (proven safe elsewhere) long enough for ordinary intermediate construction to
+        // physically place the real bed without the closing step ever reaching it first.
+        BlockPos ownSpotRelative = companions.get(1);
+        BlockPos ownSpot = helper.absolutePos(ownSpotRelative);
+        helper.setBlock(ownSpotRelative, Blocks.CAMPFIRE);
+        villagerA.setVillagerData(villagerA.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
+        villagerA.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), ownSpot));
+
+        for (int i = 0; i < 30 && helper.getBlockState(ANCHOR).is(Blocks.CAMPFIRE); i++) {
+            TownConstructionService.buildAt(level, absoluteCampfire, storage);
+        }
+        helper.assertTrue(helper.getBlockState(ANCHOR).is(Blocks.CAMPFIRE), "test setup: B's site must have deferred, not completed");
+
+        // Release A directly back to NONE (a plain state transition, not the subject of this test -
+        // the real production reconciliation path is exercised separately) before the foreign
+        // occupant below ever takes the ticket, so A's own memory can be deliberately set stale.
+        helper.setBlock(ownSpotRelative, Blocks.AIR);
+        villagerA.getBrain().eraseMemory(MemoryModuleType.JOB_SITE);
+        villagerA.setVillagerData(villagerA.getVillagerData().setProfession(VillagerProfession.NONE));
+
+        int floorY = storage.floorFor(TownStorage.siteOwner(absoluteCampfire)).orElse(
+                TownTerrain.estimateGroundHeightBelow(level, absoluteCampfire));
+        BlockPos plannedBed = TownBuildingTemplates.bedPosition(absoluteCampfire.getX(), floorY, absoluteCampfire.getZ());
+        // A foreign/vanilla occupant now takes the real bed's POI ticket WITHOUT ever going through
+        // this mod's own storage.setReservationOwner bookkeeping (a genuinely untracked ticket,
+        // exactly as a real vanilla-only claim would be), and A's own (here deliberately
+        // stale/incorrect) memory is set to also name it - the specific "matching memory but no
+        // positive storage record" case this must still refuse.
+        helper.assertTrue(level.getPoiManager().exists(plannedBed, t -> true), "test setup: the real bed POI must already be registered");
+        boolean foreignTicketTaken = level.getPoiManager().take(t -> true, (t, p) -> p.equals(plannedBed), plannedBed, 1).isPresent();
+        helper.assertTrue(foreignTicketTaken, "test setup: the foreign/untracked occupant must actually hold the real ticket");
+        helper.assertTrue(!storage.isReservedBySelf(level.dimension(), plannedBed, villagerA.getUUID())
+                        && !storage.isReservedByADifferentVillager(level.dimension(), plannedBed, villagerA.getUUID()),
+                "test setup: this mod's own storage must have no record at all for this foreign/untracked ticket");
+        villagerA.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), plannedBed));
+
+        int stoneBefore = store.balance(TownResourceCategory.STONE);
+        int woodBefore = store.balance(TownResourceCategory.WOOD);
+        for (int i = 0; i < 10; i++) {
+            TownConstructionService.buildAt(level, absoluteCampfire, storage);
+        }
+
+        helper.assertTrue(helper.getBlockState(ANCHOR).is(Blocks.CAMPFIRE),
+                "the closing handoff must defer - never complete - when the only destination it needs is genuinely occupied with no positive storage record for A");
+        helper.assertTrue(store.balance(TownResourceCategory.STONE) == stoneBefore && store.balance(TownResourceCategory.WOOD) == woodBefore,
+                "deferring must cause zero further debit");
+        helper.assertTrue(level.getPoiManager().getFreeTickets(plannedBed) == 0
+                        && !storage.isReservedBySelf(level.dimension(), plannedBed, villagerA.getUUID()),
+                "the foreign/untracked ticket must remain exactly as it was - never released, never reassigned to A");
+        helper.assertTrue(villagerA.getBrain().getMemory(MemoryModuleType.HOME).filter(gp -> gp.pos().equals(plannedBed)).isPresent(),
+                "A's own stale memory is left untouched too - this containment only ever defers, never edits a villager's memory to resolve a mismatch");
+        Optional<ResidentCapacityAdmission> stillBuilding = storage.capacityAdmissionFor(level.dimension(), region, villagerA.getUUID());
+        helper.assertTrue(stillBuilding.filter(v -> v.state() == ResidentCapacityAdmission.State.BUILDING
+                        && v.builderId().equals(claimantB.getUUID())).isPresent(),
+                "A's admission must remain exactly the same BUILDING record, bound to B, retryable later");
+        helper.succeed();
+    }
+
+    /** [MINECRAFT-455 own-ticket reuse, 51485] hasOwnReusableTicket must validate the SPECIFIC
+     *  memory category for the destination role being checked - JOB_SITE for a workstation, HOME
+     *  for a bed - never accept the wrong category's memory merely because it happens to also name
+     *  the coordinate. Here A's own storage record IS positively self-reserved and the real ticket
+     *  IS genuinely held (every OTHER proof holds), but A's memory naming this exact bed coordinate
+     *  is JOB_SITE, not HOME - reuse for the bed role must still be refused, falling through to the
+     *  ordinary acquisition path, which then correctly fails against the already-genuinely-held
+     *  ticket (never a silent double-take) and defers exactly as the other containment cases do. */
+    @GameTest(template = "settlement_test", templateNamespace = "dynamicvehicles_active_builder_containment",
+            batch = "activeBuilderContainment", skyAccess = true)
+    public static void aMatchingCoordinateInTheWrongMemoryCategoryIsNeverTreatedAsReusable(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        prepareFlatGround(helper);
+        helper.setBlock(ANCHOR, Blocks.CAMPFIRE);
+        BlockPos absoluteCampfire = helper.absolutePos(ANCHOR);
+        ResolvedSite site = resolveSite(helper, absoluteCampfire);
+        assertNonStorehouseFixture(helper, site);
+
+        Villager claimantB = EntityType.VILLAGER.create(level, null, absoluteCampfire, MobSpawnType.EVENT, false, false);
+        level.addFreshEntity(claimantB);
+        claimantB.setVillagerData(claimantB.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
+        claimantB.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), absoluteCampfire));
+
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
+        java.util.List<BlockPos> companions = findSameRegionNonBlockingCompanions(helper, ANCHOR, region, 2);
+        helper.assertTrue(companions.size() == 2, "test setup: two distinct same-region, non-blocking companion positions must exist");
+        prepareSafeFooting(helper, companions.get(0));
+        prepareSafeFooting(helper, companions.get(1));
+        Villager villagerA = EntityType.VILLAGER.create(level, null, helper.absolutePos(companions.get(0)), MobSpawnType.EVENT, false, false);
+        level.addFreshEntity(villagerA);
+
+        TownStorage storage = new TownStorage();
+        TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
+        storage.markTownFounded(TownKeys.keyFor(level.dimension(), region));
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of());
+        Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
+                level, region, villagerA.getUUID(), demand, storage);
+        helper.assertTrue(admission.isPresent(), "test setup: A's home-only admission must be created while genuinely NONE");
+
+        TownConstructionService.buildAt(level, absoluteCampfire, storage);
+        Optional<ResidentCapacityAdmission> bound = storage.capacityAdmissionFor(level.dimension(), region, villagerA.getUUID());
+        helper.assertTrue(bound.filter(v -> v.state() == ResidentCapacityAdmission.State.BUILDING
+                        && v.builderId().equals(claimantB.getUUID())).isPresent(),
+                "test setup: A's admission must already be BUILDING, bound to B");
+
+        // Defer closing (proven safe elsewhere) purely to let ordinary intermediate construction
+        // physically place the real bed before closing ever reaches it.
+        BlockPos ownSpotRelative = companions.get(1);
+        BlockPos ownSpot = helper.absolutePos(ownSpotRelative);
+        helper.setBlock(ownSpotRelative, Blocks.CAMPFIRE);
+        villagerA.setVillagerData(villagerA.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
+        villagerA.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), ownSpot));
+        for (int i = 0; i < 30 && helper.getBlockState(ANCHOR).is(Blocks.CAMPFIRE); i++) {
+            TownConstructionService.buildAt(level, absoluteCampfire, storage);
+        }
+        helper.assertTrue(helper.getBlockState(ANCHOR).is(Blocks.CAMPFIRE), "test setup: B's site must have deferred, not completed");
+        helper.setBlock(ownSpotRelative, Blocks.AIR);
+
+        int floorY = storage.floorFor(TownStorage.siteOwner(absoluteCampfire)).orElse(
+                TownTerrain.estimateGroundHeightBelow(level, absoluteCampfire));
+        BlockPos plannedBed = TownBuildingTemplates.bedPosition(absoluteCampfire.getX(), floorY, absoluteCampfire.getZ());
+        helper.assertTrue(level.getPoiManager().getType(plannedBed).filter(t -> t.is(PoiTypes.HOME)).isPresent(),
+                "test setup: the real bed POI must already be registered as HOME");
+        // EVERY OTHER proof holds - genuinely held ticket, positively self-reserved - except the
+        // memory category: A's own JOB_SITE (wrong role for a bed), never HOME, names this exact
+        // coordinate.
+        boolean ticketTaken = level.getPoiManager().take(t -> t.is(PoiTypes.HOME), (t, p) -> p.equals(plannedBed), plannedBed, 1).isPresent();
+        helper.assertTrue(ticketTaken, "test setup: the real bed ticket must actually be taken");
+        storage.setReservationOwner(level.dimension(), plannedBed, villagerA.getUUID());
+        helper.assertTrue(storage.isReservedBySelf(level.dimension(), plannedBed, villagerA.getUUID()),
+                "test setup: storage must positively record A as this ticket's owner");
+        villagerA.getBrain().eraseMemory(MemoryModuleType.JOB_SITE);
+        villagerA.setVillagerData(villagerA.getVillagerData().setProfession(VillagerProfession.NONE));
+        villagerA.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), plannedBed));
+        helper.assertTrue(villagerA.getBrain().getMemory(MemoryModuleType.HOME).isEmpty(),
+                "test setup: A must have no HOME memory at all - only the wrong-category JOB_SITE names this coordinate");
+
+        for (int i = 0; i < 10; i++) {
+            TownConstructionService.buildAt(level, absoluteCampfire, storage);
+        }
+
+        helper.assertTrue(helper.getBlockState(ANCHOR).is(Blocks.CAMPFIRE),
+                "the closing handoff must defer: a JOB_SITE match is never sufficient to reuse a BED destination, and the ordinary acquisition path must then correctly fail against the already-genuinely-held ticket rather than double-take it");
+        helper.assertTrue(level.getPoiManager().getFreeTickets(plannedBed) == 0
+                        && storage.isReservedBySelf(level.dimension(), plannedBed, villagerA.getUUID()),
+                "the real ticket and its storage ownership record must remain exactly as they were - never released, never double-taken");
+        Optional<ResidentCapacityAdmission> stillBuilding = storage.capacityAdmissionFor(level.dimension(), region, villagerA.getUUID());
+        helper.assertTrue(stillBuilding.filter(v -> v.state() == ResidentCapacityAdmission.State.BUILDING
+                        && v.builderId().equals(claimantB.getUUID())).isPresent(),
+                "A's admission must remain exactly the same BUILDING record, bound to B, retryable later");
+        helper.succeed();
+    }
+
+    /** [MINECRAFT-455 own-ticket reuse, 51480/51485] Focused direct call on tryReserveHandoffDestinations
+     *  itself (John's own suggested pairing with the real production lifecycle tests above) -
+     *  reservation provenance and rollback for BOTH destination roles together, including the mixed
+     *  reused/newly-acquired case cleanup must tell apart. Covers: combined bed+workplace reuse with
+     *  zero new tickets; a mixed partial failure (bed genuinely reusable, workstation genuinely
+     *  foreign-occupied) that preserves the reused bed ticket/owner/memory untouched and takes no
+     *  new ticket for the contested workstation; then a successful retry once the foreign occupant
+     *  is gone, reusing the SAME bed ticket again (never a second take) while newly acquiring the
+     *  now-free workstation. */
+    @GameTest(template = "settlement_test", templateNamespace = "dynamicvehicles_active_builder_containment",
+            batch = "activeBuilderContainment", skyAccess = true)
+    public static void combinedBedAndWorkplaceReuseAndMixedPartialFailureRollback(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        prepareFlatGround(helper);
+        BlockPos absoluteCampfire = helper.absolutePos(ANCHOR);
+        int floorY = TownTerrain.estimateGroundHeightBelow(level, absoluteCampfire);
+        BlockPos bedPos = TownBuildingTemplates.bedPosition(absoluteCampfire.getX(), floorY, absoluteCampfire.getZ());
+        BlockPos workstationPos = TownBuildingTemplates.workstationPosition(absoluteCampfire.getX(), floorY, absoluteCampfire.getZ());
+        helper.assertTrue(!bedPos.equals(workstationPos), "test setup: bed and workstation must be distinct cells");
+
+        Villager villagerA = resident(helper, new BlockPos(1, 2, 1), VillagerProfession.ARMORER);
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
+        TownStorage storage = new TownStorage();
+        storage.markTownFounded(TownKeys.keyFor(level.dimension(), region));
+        String siteOwner = TownStorage.siteOwner(absoluteCampfire);
+        ResidentCapacityAdmission boundAdmission = new ResidentCapacityAdmission(level.dimension(),
+                TownKeys.keyFor(level.dimension(), region), region, villagerA.getUUID(), 1,
+                Map.of(VillagerProfession.ARMORER, 1), siteOwner, "capacity-v1:test", ResidentCapacityAdmission.State.BUILDING,
+                siteOwner, villagerA.getUUID(), "test-plan-signature", java.util.UUID.randomUUID());
+        java.util.function.Predicate<BlockPos> isOwnPlannedFixture = p -> true;
+
+        // A already, genuinely holds BOTH its own real bed and real workstation tickets.
+        takeHome(helper, bedPos);
+        storage.setReservationOwner(level.dimension(), bedPos, villagerA.getUUID());
+        villagerA.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), bedPos));
+        takeArmorerWorkplace(helper, workstationPos);
+        storage.setReservationOwner(level.dimension(), workstationPos, villagerA.getUUID());
+        villagerA.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), workstationPos));
+
+        Optional<TownConstructionService.ReservedHandoff> combined = TownConstructionService.tryReserveHandoffDestinations(
+                level, storage, villagerA, absoluteCampfire, floorY, TownBuildingTemplates.Kind.COMMERCIAL,
+                Optional.of(VillagerProfession.ARMORER), Optional.of(boundAdmission), isOwnPlannedFixture);
+        helper.assertTrue(combined.isPresent() && combined.get().bedReused() && combined.get().workstationReused(),
+                "combined bed+workplace reuse must succeed, both flagged reused, found " + combined);
+        helper.assertTrue(level.getPoiManager().getFreeTickets(bedPos) == 0 && level.getPoiManager().getFreeTickets(workstationPos) == 0,
+                "both tickets must remain exactly as held - no double-take");
+
+        // Mixed partial failure: bed is still A's own genuine reuse, but a DIFFERENT villager now
+        // genuinely, foreign-ly holds the workstation (A's own storage/memory for it are gone).
+        storage.clearReservationOwner(level.dimension(), workstationPos);
+        villagerA.getBrain().eraseMemory(MemoryModuleType.JOB_SITE);
+        Villager stranger = resident(helper, new BlockPos(3, 2, 1), VillagerProfession.ARMORER);
+        stranger.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), workstationPos));
+        // workstationPos's real ticket is already held (taken above) and never released - it is
+        // now genuinely the stranger's, not A's; A's bed ticket/owner/memory are untouched.
+
+        Optional<TownConstructionService.ReservedHandoff> partial = TownConstructionService.tryReserveHandoffDestinations(
+                level, storage, villagerA, absoluteCampfire, floorY, TownBuildingTemplates.Kind.COMMERCIAL,
+                Optional.of(VillagerProfession.ARMORER), Optional.of(boundAdmission), isOwnPlannedFixture);
+        helper.assertTrue(partial.isEmpty(), "the mixed attempt must fail closed while the workstation is genuinely someone else's");
+        helper.assertTrue(level.getPoiManager().getFreeTickets(bedPos) == 0
+                        && storage.isReservedBySelf(level.dimension(), bedPos, villagerA.getUUID())
+                        && villagerA.getBrain().getMemory(MemoryModuleType.HOME).filter(gp -> gp.pos().equals(bedPos)).isPresent(),
+                "A's own reused bed ticket/owner/memory must survive the OTHER destination's failure completely untouched");
+        helper.assertTrue(level.getPoiManager().getFreeTickets(workstationPos) == 0
+                        && !storage.isReservedBySelf(level.dimension(), workstationPos, villagerA.getUUID()),
+                "the stranger's genuine workstation ticket must remain exactly as it was - never released, never stolen for A");
+
+        // The stranger gives it up for real; retry now succeeds - bed reused again (same ticket,
+        // never re-taken), workstation newly acquired for A this time. acquirePoiTicket derives its
+        // type from the LIVE block, never merely a pre-registered POI record, so the real ARMORER
+        // workstation block must actually be placed here for a genuine fresh acquisition.
+        net.minecraft.world.entity.ai.village.poi.PoiManager poiManager = level.getPoiManager();
+        poiManager.release(workstationPos);
+        storage.clearReservationOwner(level.dimension(), workstationPos);
+        stranger.getBrain().eraseMemory(MemoryModuleType.JOB_SITE);
+        level.setBlock(workstationPos, TownProfessionWorkstations.blockFor(VillagerProfession.ARMORER).orElseThrow().defaultBlockState(),
+                net.minecraft.world.level.block.Block.UPDATE_ALL);
+        helper.assertTrue(poiManager.getFreeTickets(workstationPos) > 0, "test setup: the workstation ticket must actually be free again");
+
+        Optional<TownConstructionService.ReservedHandoff> retried = TownConstructionService.tryReserveHandoffDestinations(
+                level, storage, villagerA, absoluteCampfire, floorY, TownBuildingTemplates.Kind.COMMERCIAL,
+                Optional.of(VillagerProfession.ARMORER), Optional.of(boundAdmission), isOwnPlannedFixture);
+        helper.assertTrue(retried.isPresent() && retried.get().bedReused() && !retried.get().workstationReused(),
+                "the retry must succeed - bed reused again (same ticket), workstation newly acquired this time, found " + retried);
+        helper.assertTrue(level.getPoiManager().getFreeTickets(bedPos) == 0 && level.getPoiManager().getFreeTickets(workstationPos) == 0
+                        && storage.isReservedBySelf(level.dimension(), workstationPos, villagerA.getUUID()),
+                "both destinations must end up genuinely held by A, the new workstation ticket now also properly recorded");
+
+        // [51487] The complementary mixed case: THIS attempt newly acquires the workstation (A has
+        // no prior claim on it at all this round), then the bed fails (now genuinely foreign-held).
+        // Only this proves cleanup actually releases a ticket THIS attempt itself took - the earlier
+        // "bed reused, workstation foreign" case above never acquired anything new to release.
+        villagerA.getBrain().eraseMemory(MemoryModuleType.JOB_SITE);
+        storage.clearReservationOwner(level.dimension(), workstationPos);
+        poiManager.release(workstationPos);
+        helper.assertTrue(poiManager.getFreeTickets(workstationPos) > 0, "test setup: the workstation ticket must actually be free before this attempt");
+
+        villagerA.getBrain().eraseMemory(MemoryModuleType.HOME);
+        storage.clearReservationOwner(level.dimension(), bedPos);
+        Villager bedStranger = resident(helper, new BlockPos(5, 2, 1), VillagerProfession.NONE);
+        bedStranger.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), bedPos));
+        // bedPos's real ticket is still held from the very first takeHome call above and was never
+        // released - it is now genuinely the bed stranger's, not A's.
+        helper.assertTrue(poiManager.getFreeTickets(bedPos) == 0 && !storage.isReservedBySelf(level.dimension(), bedPos, villagerA.getUUID()),
+                "test setup: the bed must now be genuinely someone else's, with no record at all for A");
+
+        Optional<TownConstructionService.ReservedHandoff> workstationAcquiredBedFailed = TownConstructionService.tryReserveHandoffDestinations(
+                level, storage, villagerA, absoluteCampfire, floorY, TownBuildingTemplates.Kind.COMMERCIAL,
+                Optional.of(VillagerProfession.ARMORER), Optional.of(boundAdmission), isOwnPlannedFixture);
+        helper.assertTrue(workstationAcquiredBedFailed.isEmpty(),
+                "the attempt must fail closed while the bed is genuinely someone else's, even though the workstation was newly, successfully acquired this same attempt");
+        helper.assertTrue(poiManager.getFreeTickets(workstationPos) > 0 && !storage.isReservedBySelf(level.dimension(), workstationPos, villagerA.getUUID()),
+                "the workstation ticket THIS ATTEMPT newly acquired must be released exactly once - rolled all the way back to free, owner record cleared");
+        helper.assertTrue(poiManager.getFreeTickets(bedPos) == 0 && !storage.isReservedBySelf(level.dimension(), bedPos, villagerA.getUUID())
+                        && bedStranger.getBrain().getMemory(MemoryModuleType.HOME).filter(gp -> gp.pos().equals(bedPos)).isPresent(),
+                "the bed stranger's genuine, pre-existing ticket must remain exactly as it was - never touched by the workstation's own rollback");
+
+        // A legitimate retry succeeds once the bed stranger genuinely gives it up too - both newly
+        // acquired this time, neither previously reused. acquirePoiTicket derives its type from the
+        // LIVE block (never merely a pre-registered POI record), so a real bed head block must
+        // actually be placed here too for a genuine fresh acquisition.
+        poiManager.release(bedPos);
+        storage.clearReservationOwner(level.dimension(), bedPos);
+        bedStranger.getBrain().eraseMemory(MemoryModuleType.HOME);
+        level.setBlock(bedPos, Blocks.RED_BED.defaultBlockState().setValue(BedBlock.FACING, Direction.SOUTH).setValue(BedBlock.PART, BedPart.HEAD),
+                net.minecraft.world.level.block.Block.UPDATE_ALL);
+        helper.assertTrue(poiManager.getFreeTickets(bedPos) > 0, "test setup: the bed ticket must actually be free again");
+
+        Optional<TownConstructionService.ReservedHandoff> bothNewlyAcquired = TownConstructionService.tryReserveHandoffDestinations(
+                level, storage, villagerA, absoluteCampfire, floorY, TownBuildingTemplates.Kind.COMMERCIAL,
+                Optional.of(VillagerProfession.ARMORER), Optional.of(boundAdmission), isOwnPlannedFixture);
+        helper.assertTrue(bothNewlyAcquired.isPresent() && !bothNewlyAcquired.get().bedReused() && !bothNewlyAcquired.get().workstationReused(),
+                "the legitimate retry must succeed with both destinations newly acquired this time, found " + bothNewlyAcquired);
+        helper.assertTrue(poiManager.getFreeTickets(bedPos) == 0 && poiManager.getFreeTickets(workstationPos) == 0
+                        && storage.isReservedBySelf(level.dimension(), bedPos, villagerA.getUUID())
+                        && storage.isReservedBySelf(level.dimension(), workstationPos, villagerA.getUUID()),
+                "both destinations must end up genuinely, newly held by A");
+        helper.succeed();
+    }
+
+    /** [MINECRAFT-455 own-ticket reuse, 51485] The fourth, last-remaining hasOwnReusableTicket
+     *  refusal condition: EVERY other proof holds for A (matching HOME memory, positively
+     *  self-reserved, a genuinely held ticket) except that some OTHER currently-loaded villager's
+     *  own live HOME memory ALSO names this exact coordinate right now - a contradictory live
+     *  claimant. Reuse must still be refused; the ordinary acquisition path then correctly fails
+     *  too (the real ticket is already held), deferring rather than stealing it for A. */
+    @GameTest(template = "settlement_test", templateNamespace = "dynamicvehicles_active_builder_containment",
+            batch = "activeBuilderContainment", skyAccess = true)
+    public static void aContradictoryLiveClaimantIsNeverOverriddenByAnOtherwiseValidOwnReservation(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        prepareFlatGround(helper);
+        BlockPos absoluteCampfire = helper.absolutePos(ANCHOR);
+        int floorY = TownTerrain.estimateGroundHeightBelow(level, absoluteCampfire);
+        BlockPos bedPos = TownBuildingTemplates.bedPosition(absoluteCampfire.getX(), floorY, absoluteCampfire.getZ());
+
+        Villager villagerA = resident(helper, new BlockPos(1, 2, 1), VillagerProfession.NONE);
+        Villager contradictingClaimant = resident(helper, new BlockPos(3, 2, 1), VillagerProfession.NONE);
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
+        TownStorage storage = new TownStorage();
+        storage.markTownFounded(TownKeys.keyFor(level.dimension(), region));
+        String siteOwner = TownStorage.siteOwner(absoluteCampfire);
+        ResidentCapacityAdmission boundAdmission = new ResidentCapacityAdmission(level.dimension(),
+                TownKeys.keyFor(level.dimension(), region), region, villagerA.getUUID(), 1, Map.of(), siteOwner,
+                "capacity-v1:test", ResidentCapacityAdmission.State.BUILDING, siteOwner, villagerA.getUUID(),
+                "test-plan-signature", java.util.UUID.randomUUID());
+        java.util.function.Predicate<BlockPos> isOwnPlannedFixture = p -> true;
+
+        // A's own storage record and memory are otherwise entirely valid for reuse...
+        takeHome(helper, bedPos);
+        storage.setReservationOwner(level.dimension(), bedPos, villagerA.getUUID());
+        villagerA.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), bedPos));
+        // ...but a DIFFERENT, currently-loaded villager's own live HOME memory ALSO names this
+        // exact coordinate right now - the live-scan veto this mod's own existing ownership checks
+        // already apply elsewhere.
+        contradictingClaimant.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), bedPos));
+        helper.assertTrue(TownResidentAllocationHandler.isCurrentlyClaimedByAnotherVillager(level, bedPos, villagerA),
+                "test setup: the contradicting claimant's own live memory must actually be visible to the live scan");
+
+        Optional<TownConstructionService.ReservedHandoff> result = TownConstructionService.tryReserveHandoffDestinations(
+                level, storage, villagerA, absoluteCampfire, floorY, TownBuildingTemplates.Kind.RESIDENTIAL,
+                Optional.empty(), Optional.of(boundAdmission), isOwnPlannedFixture);
+        helper.assertTrue(result.isEmpty(),
+                "reuse must be refused while a contradictory live claimant exists, and the ordinary acquisition path must then also fail against the already-held ticket - found " + result);
+        helper.assertTrue(level.getPoiManager().getFreeTickets(bedPos) == 0
+                        && storage.isReservedBySelf(level.dimension(), bedPos, villagerA.getUUID()),
+                "A's own ticket/owner record must remain exactly as it was - never released merely because a contradiction was found");
+        helper.succeed();
+    }
+
+    /** [MINECRAFT-455 own-ticket reuse, 51487/51496/51498/51500] The REAL buildAt closing-failure
+     *  cleanup - not only tryReserveHandoffDestinations' own separate partial-failure path above -
+     *  with ONE destination genuinely BORROWED (reused from a standing prior reservation) and the
+     *  OTHER newly acquired this exact attempt, driven through the SAME established test-only
+     *  interruption hook TownTerrainTransactionGameTests' own
+     *  finalAnchorInterruptionReleasesAnyHeldReservationWithoutStealingItForever already relies on.
+     *
+     *  Runs in its OWN dedicated single-test namespace/run (gradle task
+     *  runM455RealInterruptedClosingGameTestServer, a fresh disposable game directory) rather than
+     *  sharing the activeBuilderContainment batch above. 51498 verified against this exact
+     *  candidate's own resolved runtime that {@code --spawnPos} cannot steer GameTestServer's own
+     *  structure-grid origin (StructureGridSpawner's origin is {@code
+     *  serverLevel.random.nextIntBetweenInclusive(...)}, unseeded and never reads it), so the
+     *  in-template interior this file's other fixtures use cannot be relied on to ever resolve a
+     *  real COMMERCIAL/INDUSTRIAL site (the whole ~24-block template can land entirely inside one
+     *  ~80-block RESIDENTIAL zone band, as it did here). Per 51500's authorization, the site is
+     *  instead chosen analytically - a bounded, pure (no world I/O) scan of {@link TownPlanner}/
+     *  {@link TownPlan#zoneAt} around THIS run's own town centre, never crossing into a
+     *  neighbouring region (bounded well inside {@code TownPlanner}'s own centre margin) - then
+     *  materialized at that real remote position via exactly the bounded existing building
+     *  footprint (radius-2, matching {@code TownConstructionService}'s own private {@code
+     *  footprintRadius(Kind)} for every non-storehouse kind), one companion footing cell,
+     *  and one relocation-exit cell, chunk-forced only across that bounded area, cleaned up via the
+     *  SAME {@code OwnedFixtureCleanup} listener pattern {@code TownDonationHandlerGameTests}'
+     *  own remote-fixture test already established, registered before the first mutation so it
+     *  fires on success, failure, and timeout alike.
+     *
+     *  The world write at the closing cell genuinely lands (the interruption hook fires strictly
+     *  AFTER a successful mutation) and the cell is genuinely, durably quarantined - never
+     *  force-cleared, never pretended away - while the reservation cleanup underneath it is what
+     *  this proves: the borrowed ticket survives completely untouched and the newly-acquired one is
+     *  rolled all the way back to free, with no lifecycle completion and no unintended
+     *  profession/memory assignment to either villager. */
+    @GameTest(template = "settlement_test", templateNamespace = "dynamicvehicles_m455_real_interruption",
+            batch = "m455RealInterruptedClosing", skyAccess = true)
+    public static void realInterruptedClosingPlacementReleasesOnlyTheNewlyAcquiredTicket(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        long seed = level.getSeed();
+
+        TownPassiveProductionHandlerGameTests.OwnedFixtureCleanup cleanup = new TownPassiveProductionHandlerGameTests.OwnedFixtureCleanup();
+        helper.testInfo.addListener(cleanup);
+
+        // --- Analytical site selection: pure TownPlanner/TownPlan#zoneAt calls, no world I/O. ---
+        // [51504] The template's own origin is RANDOM (serverLevel.random, unbounded within
+        // +/-14999992 - see 51498) - offsetting it by a further fixed displacement can push the
+        // chosen region's absolute coordinates past the real world border (net.minecraft.world.
+        // level.Level.MAX_LEVEL_SIZE, +/-30000000) in an unlucky run. This fixture does not need
+        // any relationship to the template's own placement at all (it never touches the
+        // template's interior), so the region is instead a small, FIXED, deterministic constant,
+        // comfortably inside the real border/build limits regardless of where the template
+        // happens to land, and far enough from world origin to stay clear of the server's own
+        // default-spawn-area chunk preparation.
+        RegionCoord region = new RegionCoord(500, 500);
+        TownPlan plan = TownPlanner.generate(region, seed);
+
+        // Bounded well inside TownPlanner's own CENTER_MARGIN_BLOCKS (REGION_SIZE_BLOCKS / 4 = 96)
+        // so this scan can never cross into a neighbouring region's own, different plan - a
+        // candidate here is only ever evaluated against the SAME plan buildAt itself will later
+        // recompute for this exact region.
+        final int SEARCH_RADIUS = 90;
+        final int SEARCH_STEP = 3;
+        int foundX = Integer.MIN_VALUE;
+        int foundZ = Integer.MIN_VALUE;
+        Optional<VillagerProfession> foundProfession = Optional.empty();
+        search:
+        for (int dx = -SEARCH_RADIUS; dx <= SEARCH_RADIUS; dx += SEARCH_STEP) {
+            for (int dz = -SEARCH_RADIUS; dz <= SEARCH_RADIUS; dz += SEARCH_STEP) {
+                int x = plan.townCenterX() + dx;
+                int z = plan.townCenterZ() + dz;
+                boolean isStorehouseSite = Math.abs(x - plan.townCenterX()) <= TownConstants.STOREHOUSE_FOOTPRINT_WIDTH
+                        && Math.abs(z - plan.townCenterZ()) <= TownConstants.STOREHOUSE_FOOTPRINT_WIDTH;
+                if (isStorehouseSite) {
+                    continue;
+                }
+                TownBuildingTemplates.Kind candidateKind = TownBuildingTemplates.kindFor(plan.zoneAt(x, z));
+                Optional<VillagerProfession> candidateProfession =
+                        TownProfessionWorkstations.finalProfessionFor(candidateKind, seed, x, z);
+                if (candidateProfession.isPresent()) {
+                    foundX = x;
+                    foundZ = z;
+                    foundProfession = candidateProfession;
+                    break search;
+                }
+            }
+        }
+        helper.assertTrue(foundX != Integer.MIN_VALUE,
+                "test setup: a bounded, in-region analytical scan must find a real non-storehouse profession site - found none within +/-"
+                        + SEARCH_RADIUS + " of region " + region + "'s own town centre (" + plan.townCenterX() + "," + plan.townCenterZ() + ")");
+        BlockPos absoluteCampfire = new BlockPos(foundX, 0, foundZ);
+        VillagerProfession profFinalProfession = foundProfession.get();
+        helper.assertTrue(TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ()).equals(region),
+                "test setup: the analytically-chosen site must resolve to the SAME region its plan was generated for - never a neighbour's");
+
+        // --- Materialize ONLY the bounded existing building footprint (radius 2, same as
+        // prepareFlatGroundAround), one companion footing cell, and one relocation-exit cell - no
+        // region flattening, no unbounded terrain scan. ---
+        BlockPos companionPos = new BlockPos(absoluteCampfire.getX() + 5, 0, absoluteCampfire.getZ());
+        BlockPos exitPos = absoluteCampfire.offset(0, 0, 3);
+        int minChunkX = Math.min(absoluteCampfire.getX() - 2, Math.min(companionPos.getX(), exitPos.getX())) >> 4;
+        int maxChunkX = Math.max(absoluteCampfire.getX() + 2, Math.max(companionPos.getX(), exitPos.getX())) >> 4;
+        int minChunkZ = Math.min(absoluteCampfire.getZ() - 2, Math.min(companionPos.getZ(), exitPos.getZ())) >> 4;
+        int maxChunkZ = Math.max(absoluteCampfire.getZ() + 2, Math.max(companionPos.getZ(), exitPos.getZ())) >> 4;
+
+        // [51504] Verified, not merely assumed from the fixed region choice above - the entire
+        // footprint, including its forced-chunk range, must actually lie inside the real world
+        // border/build limits before any forcing or loading happens.
+        helper.assertTrue(
+                minChunkX * 16 >= -net.minecraft.world.level.Level.MAX_LEVEL_SIZE
+                        && (maxChunkX * 16 + 15) < net.minecraft.world.level.Level.MAX_LEVEL_SIZE
+                        && minChunkZ * 16 >= -net.minecraft.world.level.Level.MAX_LEVEL_SIZE
+                        && (maxChunkZ * 16 + 15) < net.minecraft.world.level.Level.MAX_LEVEL_SIZE,
+                "test setup: the whole fixture footprint and its forced-chunk range must lie inside the real world border (+/-"
+                        + net.minecraft.world.level.Level.MAX_LEVEL_SIZE + ") - campfire=" + absoluteCampfire
+                        + " companion=" + companionPos + " exit=" + exitPos
+                        + " chunks=[" + minChunkX + "," + maxChunkX + "]x[" + minChunkZ + "," + maxChunkZ + "]");
+
+        // Registered BEFORE the forcing loop below (not after): a partial-forcing failure mid-loop
+        // must never strand an earlier chunk's forced state unrestored.
+        java.util.List<int[]> forcedChunks = new java.util.ArrayList<>();
+        cleanup.add(() -> {
+            for (int[] chunk : forcedChunks) {
+                level.setChunkForced(chunk[0], chunk[1], false);
+            }
+        });
+        for (int cx = minChunkX; cx <= maxChunkX; cx++) {
+            for (int cz = minChunkZ; cz <= maxChunkZ; cz++) {
+                boolean newlyForced = level.setChunkForced(cx, cz, true);
+                if (newlyForced) {
+                    forcedChunks.add(new int[] {cx, cz});
+                }
+            }
+        }
+
+        int groundY = TownTerrain.estimateGroundHeight(level, absoluteCampfire.getX(), absoluteCampfire.getZ());
+        int baseY = groundY - 2;
+        java.util.List<BlockPos> writtenBlocks = new java.util.ArrayList<>();
+        java.util.Map<BlockPos, BlockState> originalStates = new java.util.HashMap<>();
+        // [51504] The attempted restoration is recorded BEFORE the write that might throw, so a
+        // write that fails partway still leaves its position queued for cleanup (restoring to the
+        // original state already captured just above - a harmless no-op for a write that never
+        // actually landed, and the only way earlier successful writes stay covered too).
+        java.util.function.BiConsumer<BlockPos, BlockState> write = (pos, state) -> {
+            originalStates.putIfAbsent(pos, level.getBlockState(pos));
+            writtenBlocks.add(pos);
+            level.setBlock(pos, state, Block.UPDATE_ALL);
+        };
+        cleanup.add(() -> {
+            for (int i = writtenBlocks.size() - 1; i >= 0; i--) {
+                BlockPos pos = writtenBlocks.get(i);
+                level.setBlock(pos, originalStates.get(pos), Block.UPDATE_ALL);
+            }
+        });
+
+        for (int dx = -2; dx <= 2; dx++) {
+            for (int dz = -2; dz <= 2; dz++) {
+                for (int rely = 0; rely <= 7; rely++) {
+                    BlockPos pos = new BlockPos(absoluteCampfire.getX() + dx, baseY + rely, absoluteCampfire.getZ() + dz);
+                    write.accept(pos, (rely < 2 ? Blocks.DIRT : Blocks.AIR).defaultBlockState());
+                }
+            }
+        }
+        for (int y = 0; y <= 7; y++) {
+            BlockPos pos = new BlockPos(companionPos.getX(), baseY + y, companionPos.getZ());
+            write.accept(pos, (y < 2 ? Blocks.DIRT : Blocks.AIR).defaultBlockState());
+        }
+        write.accept(exitPos.below(), Blocks.DIRT.defaultBlockState());
+        write.accept(exitPos, Blocks.AIR.defaultBlockState());
+        write.accept(exitPos.above(), Blocks.AIR.defaultBlockState());
+        write.accept(absoluteCampfire, Blocks.CAMPFIRE.defaultBlockState());
+
+        // Created with NO profession yet - deliberately. A villager carrying BuilderProfession.BUILDER
+        // with no corresponding active claim recorded anywhere is exactly what this mod's own
+        // orphaned-Builder reconciliation (TownResidentAllocationHandler's regular tick) looks for
+        // and releases back to NONE; in real play the profession assignment and the claim's
+        // registration happen together, so that window never naturally exists. Confirmed directly:
+        // assigning BUILDER here, before the multi-tick visibility wait below, let that
+        // reconciliation sweep reap it before buildAt ever ran - profession observed as NONE
+        // immediately before the first buildAt call. The assignment is deferred into the
+        // thenExecute block below, immediately before buildAt itself, matching production's own
+        // same-tick timing.
+        Villager claimantB = EntityType.VILLAGER.create(level, null, absoluteCampfire, MobSpawnType.EVENT, false, false);
+        helper.assertTrue(claimantB != null, "test setup: the remote claimant Builder must be constructible");
+        level.addFreshEntity(claimantB);
+        cleanup.add(claimantB::discard);
+
+        BlockPos companionStandingPos = new BlockPos(companionPos.getX(), groundY, companionPos.getZ());
+        Villager villagerA = EntityType.VILLAGER.create(level, null, companionStandingPos, MobSpawnType.EVENT, false, false);
+        helper.assertTrue(villagerA != null, "test setup: the remote beneficiary A must be constructible");
+        level.addFreshEntity(villagerA);
+        cleanup.add(villagerA::discard);
+
+        // [coordinator review 51370, same requirement here] Freshly-added entities are not
+        // immediately visible to production's own level.getEntities() iteration within the same
+        // tick - resolveCapacityAdmissionForSite's findLoadedBeneficiary (and buildAt's own
+        // claimant lookup) scan exactly that iterable, so binding cannot succeed until a later
+        // tick actually makes both villagers visible to it. Owned cleanup stays alive via the
+        // testInfo listener already registered above until this whole sequence - the wait
+        // included - completes or fails; deliberately not wrapped in an outer try/finally here,
+        // which would run cleanup.cleanup() the instant startSequence() returns (registration, not
+        // completion), long before the wait or the work below ever actually ran.
+        helper.startSequence().thenWaitUntil(() -> helper.assertTrue(
+                appearsInProductionIterable(level, claimantB) && appearsInProductionIterable(level, villagerA),
+                "both the remote claimant and the remote beneficiary must become visible to the production iterable"))
+        .thenExecute(() -> {
+        try {
+            // Deferred from fixture setup (see the comment above claimantB's creation): assigned
+            // here, immediately before buildAt itself, so no tick of normal server ticking ever
+            // observes a BUILDER-professioned villager with no backing claim.
+            claimantB.setVillagerData(claimantB.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
+            claimantB.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), absoluteCampfire));
+
+            TownStorage storage = new TownStorage();
+            TownResourceStore store = storage.storeFor(TownKeys.keyFor(level.dimension(), region));
+            store.credit(TownResourceCategory.STONE, 100000);
+            store.credit(TownResourceCategory.WOOD, 100000);
+            storage.markTownFounded(TownKeys.keyFor(level.dimension(), region));
+
+            // A already, genuinely holds its own real bed ticket from an earlier, unrelated
+            // legitimate acquisition - the SAME kind of standing (borrowed) reservation
+            // 51479/51480's real production reproduction established, set up directly here since
+            // that sequence is proven elsewhere.
+            int floorY = TownTerrain.estimateGroundHeightBelow(level, absoluteCampfire);
+            BlockPos bedPos = TownBuildingTemplates.bedPosition(absoluteCampfire.getX(), floorY, absoluteCampfire.getZ());
+            BlockPos workstationPos = TownBuildingTemplates.workstationPosition(absoluteCampfire.getX(), floorY, absoluteCampfire.getZ());
+            helper.assertTrue(!bedPos.equals(workstationPos), "test setup: bed and workstation must be distinct cells");
+            level.getPoiManager().add(bedPos, poiType(helper, PoiTypes.HOME));
+            boolean[] bedTicketOwnedByTest = {level.getPoiManager()
+                    .take(type -> type.is(PoiTypes.HOME), (type, candidate) -> candidate.equals(bedPos), bedPos, 1).isPresent()};
+            helper.assertTrue(bedTicketOwnedByTest[0], "test setup: A's own borrowed bed ticket must be acquirable");
+            cleanup.add(() -> { if (bedTicketOwnedByTest[0]) level.getPoiManager().release(bedPos); });
+            storage.setReservationOwner(level.dimension(), bedPos, villagerA.getUUID());
+            villagerA.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(level.dimension(), bedPos));
+            helper.assertTrue(villagerA.getBrain().getMemory(MemoryModuleType.JOB_SITE).isEmpty(),
+                    "test setup: A must have no prior workstation claim at all - it must be newly acquired this attempt");
+
+            villagerA.setVillagerData(villagerA.getVillagerData().setProfession(profFinalProfession));
+            // requestResidentCapacity's own request-time redundancy guard would zero out
+            // requestedHomes here (A already, genuinely has a valid home) - irrelevant to what THIS
+            // test isolates, the real bind+closing+interruption path, not request-time validation.
+            // createOrReuseCapacityAdmission is the same legitimate storage entry point
+            // requestResidentCapacity itself ultimately uses; everything AFTER this - matching,
+            // binding, reservation, closing, interruption - is the real, unmodified production path.
+            String townKey = TownKeys.keyFor(level.dimension(), region);
+            String placeholderSiteOwner = "capacity:" + townKey + ":" + villagerA.getUUID();
+            ResidentCapacityAdmission admission = storage.createOrReuseCapacityAdmission(new ResidentCapacityAdmission(
+                    level.dimension(), townKey, region, villagerA.getUUID(), 1, Map.of(profFinalProfession, 1),
+                    placeholderSiteOwner, "capacity-v1:test", ResidentCapacityAdmission.State.AWAITING_CLAIM,
+                    null, null, null, null));
+            helper.assertTrue(admission.state() == ResidentCapacityAdmission.State.AWAITING_CLAIM,
+                    "test setup: A's combined home+workplace admission must be created, AWAITING_CLAIM");
+
+            TownConstructionService.buildAt(level, absoluteCampfire, storage);
+            Optional<ResidentCapacityAdmission> bound = storage.capacityAdmissionFor(level.dimension(), region, villagerA.getUUID());
+            helper.assertTrue(bound.filter(v -> v.state() == ResidentCapacityAdmission.State.BUILDING
+                            && v.builderId().equals(claimantB.getUUID())).isPresent(),
+                    "test setup: A's admission must already be BUILDING, bound to B: "
+                            + handoffDiagnostics(level, claimantB, villagerA, storage, region)
+                            + " boundState=" + bound.map(ResidentCapacityAdmission::state).orElse(null)
+                            + " boundBuilderId=" + bound.map(ResidentCapacityAdmission::builderId).orElse(null)
+                            + " campfireBlock=" + level.getBlockState(absoluteCampfire)
+                            + " campfireChunkLoaded=" + level.hasChunkAt(absoluteCampfire));
+
+            TownConstructionService.testForcePlacementInterruptionAt = absoluteCampfire;
+            try {
+                for (int i = 1; i < 500 && !storage.isCellBlocked(level.dimension(), absoluteCampfire); i++) {
+                    TownConstructionService.buildAt(level, absoluteCampfire, storage);
+                }
+            } finally {
+                TownConstructionService.testForcePlacementInterruptionAt = null;
+            }
+
+            helper.assertTrue(storage.isCellBlocked(level.dimension(), absoluteCampfire),
+                    "test setup: the closing campfire placement must actually have been reached and interrupted - the write landed, the cell is now genuinely, durably quarantined");
+            helper.assertTrue(claimantB.getVillagerData().getProfession() == BuilderProfession.BUILDER.get(),
+                    "an interrupted closing placement must never complete the handoff - B must remain the unreleased claimant");
+            Optional<ResidentCapacityAdmission> afterInterruption = storage.capacityAdmissionFor(level.dimension(), region, villagerA.getUUID());
+            helper.assertTrue(afterInterruption.filter(v -> v.state() == ResidentCapacityAdmission.State.BUILDING).isPresent(),
+                    "the admission must remain exactly BUILDING, never COMPLETED, after an interrupted closing placement");
+            // The borrowed bed ticket must survive untouched - assert this BEFORE this test's own
+            // explicit fixture cleanup runs, per 51500: preserve the borrowed state long enough to
+            // prove production retained it, then let cleanup release what THIS test itself owns.
+            helper.assertTrue(level.getPoiManager().getFreeTickets(bedPos) == 0
+                            && storage.isReservedBySelf(level.dimension(), bedPos, villagerA.getUUID())
+                            && villagerA.getBrain().getMemory(MemoryModuleType.HOME).filter(gp -> gp.pos().equals(bedPos)).isPresent(),
+                    "A's own borrowed bed ticket/owner/memory must survive the interrupted closing completely untouched");
+            helper.assertTrue(level.getPoiManager().getFreeTickets(workstationPos) > 0
+                            && !storage.isReservedBySelf(level.dimension(), workstationPos, villagerA.getUUID()),
+                    "the workstation ticket newly acquired THIS attempt must be released exactly once - rolled all the way back to free");
+            helper.assertTrue(villagerA.getBrain().getMemory(MemoryModuleType.JOB_SITE).isEmpty(),
+                    "no unintended final profession/JOB_SITE memory must ever be assigned to A - commitClaimantLifecycle never ran");
+
+            // The bed ticket is STILL held by production's own storage/POI records at this point
+            // (just proven above) - this test's own cleanup.add(...) above releases it as ITS OWN
+            // owned fixture teardown, not a claim that production released it.
+        } catch (RuntimeException primary) {
+            cleanup.cleanupPreserving(primary);
+            throw primary;
+        } finally {
+            cleanup.cleanup();
+        }
+        }).thenSucceed();
     }
 }

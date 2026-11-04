@@ -218,8 +218,12 @@ public final class TownResidentAllocationHandler {
     /** {@code true} when {@code villager} is a Builder whose {@code JOB_SITE} memory still points at
      *  a real, physically-present {@code CAMPFIRE} block in THIS dimension - i.e. the same liveness
      *  check {@link TownCampfireClaims} itself relies on, checked directly against this villager's
-     *  own memory rather than one specific known campfire position. */
-    private static boolean hasActiveBuilderClaim(ServerLevel level, Villager villager) {
+     *  own memory rather than one specific known campfire position.
+     *
+     *  <p>[MINECRAFT-455 active-Builder containment] Package-private (was {@code private}) solely so
+     *  {@code TownConstructionService}'s capacity-admission matching/closing can reuse this exact
+     *  predicate rather than duplicating it - no behavior change. */
+    static boolean hasActiveBuilderClaim(ServerLevel level, Villager villager) {
         return villager.getBrain().getMemory(MemoryModuleType.JOB_SITE)
                 .filter(site -> site.dimension().equals(level.dimension()))
                 .map(site -> level.getBlockState(site.pos()).is(Blocks.CAMPFIRE))

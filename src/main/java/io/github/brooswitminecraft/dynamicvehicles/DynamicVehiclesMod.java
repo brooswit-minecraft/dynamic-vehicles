@@ -174,6 +174,11 @@ public class DynamicVehiclesMod {
         PathfinderPoiTypes.POI_TYPES.register(modEventBus);
         PathfinderProfession.PROFESSIONS.register(modEventBus);
         DispatcherOfferMenus.MENUS.register(modEventBus);
+        // MINECRAFT-454 [stage 2 port]: the construction-operation ledger's chunk-checkpoint
+        // witness attachment type must be registered, or any access to it (even indirectly, via
+        // TownStorageChunkCheckpoint#checkpointLoadedChunk/checkpointLoadedChunkForOperation)
+        // throws "Trying to access unbound value" at runtime.
+        io.github.brooswitminecraft.dynamicvehicles.town.TownStorageChunkCheckpoint.register(modEventBus);
         modEventBus.addListener(this::commonSetup);
         modEventBus.addListener(this::addCreative);
         modEventBus.addListener(this::registerPayloads);

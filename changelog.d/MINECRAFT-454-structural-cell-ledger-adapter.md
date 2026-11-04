@@ -1,0 +1,4 @@
+bump: minor
+
+### Added
+- Dynamic Towns now routes the four structural wall/floor/roof materials (stone bricks, oak planks, bricks, cobblestone) placed during house construction through the same durable reservation ledger already used elsewhere, instead of placing them directly. Each structural placement is now reserved, acknowledged, and settled durably before and after the block is set, so a server crash or restart mid-build can no longer leave payment and placement out of sync for those cells. If a building site is abandoned or its claim changes mid-construction, previously reserved-but-unresolved structural placements for that site are now recovered automatically (settled or refunded) the next time construction runs there, rather than staying stuck. This is a bounded first step: beds, doors, workstations, the closing cell that hands a finished house off to its owner, and terrain/road work are not yet covered by this durability guarantee.

@@ -27,7 +27,8 @@ public final class BuilderCampfireHandler {
         BlockPos pos = villager.blockPosition();
         boolean unemployed = villager.getVillagerData().getProfession() == VillagerProfession.NONE;
         boolean bedless = !villager.getBrain().hasMemoryValue(MemoryModuleType.HOME);
-        boolean darkNight = level.isNight() && level.getBrightness(LightLayer.SKY, pos) <= 7;
+        boolean darkNight = level.isNight()
+                && BuilderSettlementPlan.hasDarkTimeAdjustedSky(level.getBrightness(LightLayer.SKY, pos), level.getSkyDarken());
         boolean skyVisible = level.canSeeSky(pos.above());
         boolean alreadyRecorded = villager.getPersistentData().contains(BuilderSettlementService.CAMPFIRE_POS_TAG);
         if (!BuilderSettlementPlan.shouldCreateCampfire(unemployed, bedless, darkNight, skyVisible, alreadyRecorded)

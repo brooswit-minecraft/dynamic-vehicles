@@ -67,6 +67,30 @@ class BuilderSettlementPlanTest {
     }
 
     @Test
+    void openSkyUsesTimeAdjustedSkyRatherThanRawPropagationLight() {
+        // Open sky retains raw sky light 15 in both day and night; only the level's current sky
+        // darkening (0 by day, up to 11 at full night in vanilla) distinguishes them.
+        assertFalse(BuilderSettlementPlan.hasDarkTimeAdjustedSky(15, 0),
+                "daylight must not pass merely because the position is open to sky");
+        assertTrue(BuilderSettlementPlan.hasDarkTimeAdjustedSky(15, 11),
+                "open-sky night must apply the level's current sky darkening to raw sky 15");
+        // A covered position (raw sky light already fully blocked) reads as dark regardless of
+        // time of day - this gate alone does not require night; shouldCreateCampfire's separate
+        // skyVisible gate is what excludes an indoor/covered position from actually qualifying.
+        assertTrue(BuilderSettlementPlan.hasDarkTimeAdjustedSky(0, 0),
+                "a fully covered position must read as dark even at midday");
+        // Boundary: adjusted sky light exactly 7 passes, exactly 8 does not.
+        assertTrue(BuilderSettlementPlan.hasDarkTimeAdjustedSky(15, 8), "adjusted sky light of exactly 7 must pass");
+        assertFalse(BuilderSettlementPlan.hasDarkTimeAdjustedSky(15, 7), "adjusted sky light of exactly 8 must not pass");
+        // The existing explicit night and visible-sky gates remain required after this brightness
+        // correction - a dark-enough reading alone must never bypass either.
+        assertFalse(BuilderSettlementPlan.shouldCreateCampfire(true, true, false, true, false),
+                "the existing explicit night gate remains required after brightness correction");
+        assertFalse(BuilderSettlementPlan.shouldCreateCampfire(true, true, true, false, false),
+                "the existing visible-sky gate remains required after brightness correction");
+    }
+
+    @Test
     void unsafeOrFailedSettlementKeepsTheCampfire() {
         assertTrue(BuilderSettlementPlan.shouldReplaceCampfire(true, true));
         assertFalse(BuilderSettlementPlan.shouldReplaceCampfire(false, true));

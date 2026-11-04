@@ -270,13 +270,21 @@ public final class TownConstructionOperationLedgerGameTests {
         UUID appliedId = UUID.randomUUID();
         UUID settledId = UUID.randomUUID();
         UUID cancelledId = UUID.randomUUID();
-        reserve(storage, dimension, townKey, "site:H1", reservedId, Map.of(TownResourceCategory.STONE, 10), new BlockPos(9, 0, 0));
-        reserve(storage, dimension, townKey, "site:H2", appliedId, Map.of(TownResourceCategory.STONE, 10), new BlockPos(9, 0, 1));
+        // Each site's effect must sit in its OWN chunk: reserveConstructionOperation fences on chunk
+        // overlap independent of siteOwner (see its own doc comment), so four sites sharing one chunk
+        // would make every reservation after the first fail outright - this test's whole point is the
+        // terminal-phase filter, not the chunk fence, so the fixture must not trip the fence at all.
+        helper.assertTrue(reserve(storage, dimension, townKey, "site:H1", reservedId, Map.of(TownResourceCategory.STONE, 10),
+                new BlockPos(9, 0, 0)).isPresent(), "test setup: site:H1 must actually reserve");
+        helper.assertTrue(reserve(storage, dimension, townKey, "site:H2", appliedId, Map.of(TownResourceCategory.STONE, 10),
+                new BlockPos(25, 0, 0)).isPresent(), "test setup: site:H2 must actually reserve");
         storage.markWorldApplied(appliedId);
-        reserve(storage, dimension, townKey, "site:H3", settledId, Map.of(TownResourceCategory.STONE, 10), new BlockPos(9, 0, 2));
+        helper.assertTrue(reserve(storage, dimension, townKey, "site:H3", settledId, Map.of(TownResourceCategory.STONE, 10),
+                new BlockPos(41, 0, 0)).isPresent(), "test setup: site:H3 must actually reserve");
         storage.markWorldApplied(settledId);
         storage.settleConstructionOperation(settledId);
-        reserve(storage, dimension, townKey, "site:H4", cancelledId, Map.of(TownResourceCategory.STONE, 10), new BlockPos(9, 0, 3));
+        helper.assertTrue(reserve(storage, dimension, townKey, "site:H4", cancelledId, Map.of(TownResourceCategory.STONE, 10),
+                new BlockPos(57, 0, 0)).isPresent(), "test setup: site:H4 must actually reserve");
         storage.cancelConstructionOperation(cancelledId);
 
         List<TownConstructionOperation> pending = storage.pendingConstructionOperations(dimension);

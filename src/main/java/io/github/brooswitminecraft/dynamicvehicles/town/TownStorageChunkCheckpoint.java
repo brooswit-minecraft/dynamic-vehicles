@@ -110,10 +110,24 @@ public final class TownStorageChunkCheckpoint {
      *  separate server sessions or dimensions sharing the same chunk coordinates). Chunk scoping
      *  itself is structural: this value only ever exists attached to the one specific {@code
      *  ChunkAccess} object it was set on. */
-    public record Witness(ResourceKey<Level> dimension, UUID checkpointId) {
+    public record Witness(ResourceKey<Level> dimension, UUID checkpointId, UUID attemptId) {
+        /** [coordinator review 51499, finding (e)] Legacy two-argument shape, kept so every
+         *  existing caller/test that never needed to distinguish repeat attempts under the SAME
+         *  checkpointId keeps compiling and comparing correctly unchanged - {@code attemptId}
+         *  simply defaults to {@code checkpointId} itself here, which is already a fresh random
+         *  value on every ordinary (non-operation-linked) call, so this remains exactly as unique
+         *  as before. Only {@link #checkpointLoadedChunk(ServerLevel, ChunkPos, UUID,
+         *  ChunkCheckpointSeam)} - the operation-linked path, which deliberately REUSES
+         *  checkpointId==operationId across repeat attempts - mints attemptId independently, via
+         *  the three-argument canonical constructor below. */
+        public Witness(ResourceKey<Level> dimension, UUID checkpointId) {
+            this(dimension, checkpointId, checkpointId);
+        }
+
         public static final Codec<Witness> CODEC = RecordCodecBuilder.create(instance -> instance.group(
                 ResourceKey.codec(Registries.DIMENSION).fieldOf("dimension").forGetter(Witness::dimension),
-                UUIDUtil.CODEC.fieldOf("checkpoint_id").forGetter(Witness::checkpointId)
+                UUIDUtil.CODEC.fieldOf("checkpoint_id").forGetter(Witness::checkpointId),
+                UUIDUtil.CODEC.fieldOf("attempt_id").forGetter(Witness::attemptId)
         ).apply(instance, Witness::new));
     }
 
@@ -302,7 +316,13 @@ public final class TownStorageChunkCheckpoint {
                 return new CheckpointResult.RejectedNoLoadedChunk();
             }
 
-            Witness witness = new Witness(level.dimension(), checkpointId);
+            // [coordinator review 51499, finding (e)] attemptId is ALWAYS freshly minted here,
+            // independent of checkpointId - for the ordinary path checkpointId is already fresh
+            // per call (so this is redundant but harmless), but for the operation-linked path
+            // (checkpointId == a stable operationId, reused across repeat attempts) this is what
+            // lets the readback below distinguish THIS exact attempt's own snapshot from an
+            // older/different-state one that happens to carry the SAME operation witness.
+            Witness witness = new Witness(level.dimension(), checkpointId, UUID.randomUUID());
             // ChunkAccess#setData marks the chunk unsaved itself - the NORMAL engine dirty
             // mechanism, not a side channel - so this witness also rides along on any ordinary
             // later autosave.

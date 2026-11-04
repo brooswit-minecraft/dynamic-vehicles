@@ -376,7 +376,25 @@ public final class TownTerrainTransactionGameTests {
                 template.stream()
                         .map(TownBuildingTemplates.Placement::toPlan).toList(),
                 absoluteCampfire.getX(), absoluteCampfire.getY(), absoluteCampfire.getZ());
-        ConstructionSitePlan.PlannedBlock first = ordered.get(0);
+        // [coordinator review 51497] testForcePlacementInterruptionAt is the LEGACY per-cell hook -
+        // since MINECRAFT-454's structural-cell ledger adapter, the 4 allowlisted structural
+        // materials (walls/floor/roof) no longer reach it at all, they route through the ledger's
+        // own reserve/acknowledge/settle path instead. ordered.get(0) (bottom-up) is reliably a
+        // structural floor cell, so this must deliberately pick the first NON-structural, non-
+        // closing-cell placement (a bed/door/workstation fixture) to keep exercising the genuine
+        // legacy quarantine/no-debit/no-fabricated-record behavior this test is actually about. The
+        // ANALOGOUS ledger-side safety property has its own dedicated coverage in
+        // TownStructuralCellAdapterGameTests instead - these two contracts are intentionally
+        // different and are not collapsed into one assertion here.
+        ConstructionSitePlan.PlannedBlock first = ordered.stream()
+                .filter(block -> !(block.x() == absoluteCampfire.getX() && block.y() == absoluteCampfire.getY()
+                        && block.z() == absoluteCampfire.getZ()))
+                .filter(block -> template.stream().anyMatch(placement -> placement.x() == block.x() && placement.y() == block.y()
+                        && placement.z() == block.z() && !TownConstructionService.isAllowlistedStructuralBlock(placement.state().getBlock())))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException(
+                        "test setup: this building kind must have at least one non-structural, non-closing fixture cell "
+                                + "(bed/door/workstation) for the legacy interruption hook to target"));
         BlockPos interrupted = new BlockPos(first.x(), first.y(), first.z());
         BlockState expectedState = template.stream().filter(placement -> placement.x() == first.x()
                 && placement.y() == first.y() && placement.z() == first.z()).findFirst().orElseThrow().state();

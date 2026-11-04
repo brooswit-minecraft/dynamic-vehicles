@@ -256,12 +256,15 @@ public final class TownStructuralCellAdapterGameTests {
         TownStorage storage = new TownStorage();
         fundStore(helper, storage, campfire, 1_000_000);
 
-        UUID anchorToken = establishRealAssociation(helper, level, storage, campfire, siteOwner, "test-plan-sig-3", claimant.getUUID());
-
-        BlockPos syntheticPos = helper.absolutePos(new BlockPos(16, 2, 16));
-        String signature = "synthetic-sig-3";
-        helper.setBlock(new BlockPos(16, 2, 16), Blocks.STONE_BRICKS); // matches effect.after() -> classifies AFTER
-        TownConstructionOperation.CellEffect effect = syntheticEffect(syntheticPos, signature);
+        // [coordinator review 51494, finding (c)] REAL plan signature and a REAL template
+        // position/signature are required now - see fullyAcknowledgedMatchingRecordBackfillsCorrectlyEvenAfterAReload.
+        String realPlanSignature = planSignatureFor(helper, campfire, resolveSite(helper, campfire));
+        UUID anchorToken = establishRealAssociation(helper, level, storage, campfire, siteOwner, realPlanSignature, claimant.getUUID());
+        PendingTarget target = findNextPendingStructuralCell(helper, storage, campfire, siteOwner);
+        BlockPos syntheticPos = target.absolutePos();
+        String signature = target.signature();
+        level.setBlock(syntheticPos, target.placement().state(), 3); // matches effect.after() -> classifies AFTER
+        TownConstructionOperation.CellEffect effect = target.effect();
         UUID operationId = reserveWorldApplyAndSettle(helper, storage, level.dimension(), townKey, siteOwner, anchorToken,
                 claimant.getUUID(), effect);
         storage.markPendingTerminalAcknowledgment(operationId);
@@ -348,13 +351,18 @@ public final class TownStructuralCellAdapterGameTests {
         TownStorage storage = new TownStorage();
         fundStore(helper, storage, campfire, 1_000_000);
 
-        UUID anchorToken = establishRealAssociation(helper, level, storage, campfire, siteOwner, "test-plan-sig-5", claimant.getUUID());
-
-        BlockPos pos = helper.absolutePos(new BlockPos(16, 2, 16));
-        String signature = "synthetic-sig-5";
-        helper.setBlock(new BlockPos(16, 2, 16), Blocks.STONE_BRICKS);
-        TownConstructionOperation.CellEffect effect = syntheticEffect(pos, signature);
-        reserveWorldApplyAndSettle(helper, storage, level.dimension(), townKey, siteOwner, anchorToken, claimant.getUUID(), effect);
+        // [coordinator review 51494, finding (c)] The REAL plan signature (not an arbitrary string)
+        // and a REAL template position/signature are required now - backfill validates each
+        // effect against the CURRENT exact planned position/state/signature, so a synthetic
+        // position/signature with no real template membership could never backfill regardless of
+        // authority, defeating the point of this test.
+        String realPlanSignature = planSignatureFor(helper, campfire, resolveSite(helper, campfire));
+        UUID anchorToken = establishRealAssociation(helper, level, storage, campfire, siteOwner, realPlanSignature, claimant.getUUID());
+        PendingTarget target = findNextPendingStructuralCell(helper, storage, campfire, siteOwner);
+        BlockPos pos = target.absolutePos();
+        String signature = target.signature();
+        level.setBlock(pos, target.placement().state(), 3); // matches effect.after() -> classifies AFTER
+        reserveWorldApplyAndSettle(helper, storage, level.dimension(), townKey, siteOwner, anchorToken, claimant.getUUID(), target.effect());
 
         helper.assertTrue(!storage.isCellPlaced(level.dimension(), pos, siteOwner, signature),
                 "test setup: markCellPlaced must never have run yet - only backfill may create this record");
@@ -543,6 +551,17 @@ public final class TownStructuralCellAdapterGameTests {
      *  EXACTLY that position before letting a real buildAt tick reach it fresh. */
     private static PendingTarget findNextPendingStructuralCell(GameTestHelper helper, TownStorage storage,
             BlockPos absoluteCampfire, String siteOwner) {
+        TownStorage.AnchorAssociation authorized = storage.anchorAssociationFor(siteOwner);
+        helper.assertTrue(authorized != null, "test setup: a real anchor association must already be established");
+        return findNextPendingStructuralCell(helper, storage, absoluteCampfire, siteOwner, authorized.anchorGenerationToken());
+    }
+
+    /** [coordinator review 51494, finding (c)] Same exact derivation, with the anchor token
+     *  supplied directly - a bound-admission site never populates {@code anchorAssociationFor} at
+     *  all (the admission's own {@code anchorGenerationToken()} is the only source there), so the
+     *  no-argument overload above cannot be used for one. */
+    private static PendingTarget findNextPendingStructuralCell(GameTestHelper helper, TownStorage storage,
+            BlockPos absoluteCampfire, String siteOwner, UUID anchorGenerationToken) {
         ServerLevel level = helper.getLevel();
         ResolvedSite site = resolveSite(helper, absoluteCampfire);
         String planSignature = planSignatureFor(helper, absoluteCampfire, site);
@@ -573,9 +592,6 @@ public final class TownStructuralCellAdapterGameTests {
             if (storage.isCellPlaced(level.dimension(), pos, siteOwner, signature)) {
                 continue; // already settled by the earlier real buildAt tick
             }
-            TownStorage.AnchorAssociation authorized = storage.anchorAssociationFor(siteOwner);
-            helper.assertTrue(authorized != null, "test setup: a real anchor association must already be established");
-            UUID anchorGenerationToken = authorized.anchorGenerationToken();
             UUID operationId = TownConstructionService.structuralCellOperationId(siteOwner, planSignature, anchorGenerationToken, pos, signature);
             TownConstructionOperation.CellEffect effect = new TownConstructionOperation.CellEffect(pos, level.getBlockState(pos),
                     placement.state(), new TownConstructionOperation.BlockEntitySnapshot.None(),
@@ -932,12 +948,17 @@ public final class TownStructuralCellAdapterGameTests {
         ResidentCapacityAdmission bound = establishBoundAdmissionSite(helper, storage, relativeAnchor, campfire, siteOwner, claimant);
         String townKey = TownKeys.keyFor(level.dimension(), TownRegion.fromBlockCoords(campfire.getX(), campfire.getZ()));
 
-        BlockPos pos = helper.absolutePos(new BlockPos(16, 2, 16));
-        String signature = "bound-backfill-sig-1";
-        helper.setBlock(new BlockPos(16, 2, 16), Blocks.STONE_BRICKS);
-        TownConstructionOperation.CellEffect effect = syntheticEffect(pos, signature);
+        // [coordinator review 51494, finding (c)] A REAL template position/signature is required
+        // now - see fullyAcknowledgedMatchingRecordBackfillsCorrectlyEvenAfterAReload. The bound
+        // admission's own planSignature is already the real one (establishBoundAdmissionSite ran a
+        // genuine buildAt tick above), so only the position/signature need to come from the real
+        // template, via the SAME helper the non-bound-site backfill tests use.
+        PendingTarget target = findNextPendingStructuralCell(helper, storage, campfire, siteOwner, bound.anchorGenerationToken());
+        BlockPos pos = target.absolutePos();
+        String signature = target.signature();
+        level.setBlock(pos, target.placement().state(), 3);
         reserveWorldApplyAndSettle(helper, storage, level.dimension(), townKey, siteOwner, bound.anchorGenerationToken(),
-                bound.builderId(), effect);
+                bound.builderId(), target.effect());
 
         helper.assertTrue(!storage.isCellPlaced(level.dimension(), pos, siteOwner, signature),
                 "test setup: markCellPlaced must never have run yet - only backfill may create this record");
@@ -1078,6 +1099,581 @@ public final class TownStructuralCellAdapterGameTests {
         helper.assertTrue(balanceAfterHookTick == balanceBeforeHookTick,
                 "authority loss must halt the WHOLE remaining tick's spending too - balanceBefore=" + balanceBeforeHookTick
                         + " balanceAfter=" + balanceAfterHookTick);
+        helper.succeed();
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // (16) [coordinator review 51497, CI failure diagnosis] The pre-existing legacy-path test
+    // postPlacementInterruptionBlocksRetryWithoutDebitOrPaidRecord (TownTerrainTransactionGameTests)
+    // no longer reaches a structural cell at all via testForcePlacementInterruptionAt, since the
+    // ledger branch returns before that legacy hook check - that test was fixed to target a genuine
+    // legacy (fixture) cell instead. This is the ANALOGOUS safety property for the LEDGER's own
+    // post-write/pre-settlement boundary: a process interruption that lands level.setBlock but never
+    // runs checkpointAndSettle/markCellPlaced must leave the operation durably RESERVED, debit
+    // escrow exactly once (at the original reservation, never again), survive a reload with its
+    // identity intact, and a later retry must recover it to SETTLED/placed exactly once - via the
+    // SAME existing recovery pass + step-2b reconciliation this adapter already relies on - with no
+    // fabricated paid-progress record ever existing in between.
+    // ------------------------------------------------------------------------------------------
+    @GameTest(template = "settlement_test", skyAccess = true)
+    public static void postWriteInterruptionBeforeSettlementRecoversExactlyOnceWithNoDoubleDebitOrFabricatedRecord(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        prepareFlatGround(helper);
+        BlockPos relativeAnchor = pickNonStorehouseAnchor(helper);
+        helper.setBlock(relativeAnchor, Blocks.CAMPFIRE);
+        BlockPos campfire = helper.absolutePos(relativeAnchor);
+        String siteOwner = TownStorage.siteOwner(campfire);
+        createClaimant(helper, campfire);
+        TownStorage storage = new TownStorage();
+        TownResourceStore store = fundStore(helper, storage, campfire, 1_000_000);
+
+        TownConstructionService.buildAt(level, campfire, storage); // establishes the real anchor association + settles a few cells
+        TownResourceCategory costCategory = TownBuildingTemplates.costFor(resolveSite(helper, campfire).kind());
+
+        PendingTarget target = findNextPendingStructuralCell(helper, storage, campfire, siteOwner);
+        BlockPos absoluteTarget = target.absolutePos();
+        // Drain to EXACTLY one block's cost, leaving nothing for any OTHER cell this same tick OR
+        // the later retry tick - isolates the balance checks below to this one target's own
+        // reservation, regardless of how many other cells this site's template still has left (the
+        // same established pattern as targetBeforeStateChangeDuringAcknowledgmentWindowIsNeverOverwrittenAndStaysFenced).
+        store.tryDebit(costCategory, store.balance(costCategory) - TownConstants.CONSTRUCTION_COST_PER_BLOCK);
+        int balanceBeforeReservation = store.balance(costCategory);
+        TownConstructionService.testForceStructuralPostWriteInterruptionAt = absoluteTarget;
+
+        TownConstructionService.buildAt(level, campfire, storage); // reserves, writes the block, then the hook interrupts before settlement
+
+        helper.assertTrue(level.getBlockState(absoluteTarget).is(target.placement().block()),
+                "test setup: the write itself must have genuinely landed before the simulated interruption");
+        Optional<TownConstructionOperation> afterWrite = storage.constructionOperation(target.operationId());
+        helper.assertTrue(afterWrite.isPresent() && afterWrite.get().phase() == TownConstructionOperation.Phase.RESERVED,
+                "an operation interrupted after its write but before settlement must stay durably RESERVED, never SETTLED by "
+                        + "a bookkeeping call that never ran and never CANCELLED without verified rollback - found " + afterWrite);
+        helper.assertTrue(!storage.isCellPlaced(level.dimension(), absoluteTarget, siteOwner, target.signature()),
+                "no paid-progress record may exist until settlement genuinely completes");
+        int balanceAfterWrite = store.balance(costCategory);
+        helper.assertTrue(balanceAfterWrite == balanceBeforeReservation - TownConstants.CONSTRUCTION_COST_PER_BLOCK,
+                "escrow must be debited exactly once, at the original reservation - balanceBefore=" + balanceBeforeReservation
+                        + " balanceAfter=" + balanceAfterWrite);
+
+        CompoundTag saved = storage.save(new CompoundTag(), level.registryAccess());
+        TownStorage reloaded = TownStorage.load(saved, level.registryAccess());
+        TownResourceStore reloadedStore = reloaded.storeFor(TownKeys.keyFor(level.dimension(), TownRegion.fromBlockCoords(campfire.getX(), campfire.getZ())));
+        Optional<TownConstructionOperation> afterReload = reloaded.constructionOperation(target.operationId());
+        helper.assertTrue(afterReload.isPresent() && afterReload.get().phase() == TownConstructionOperation.Phase.RESERVED,
+                "the interrupted operation's durable identity and RESERVED phase must survive a reload unchanged - found " + afterReload);
+
+        TownConstructionService.buildAt(level, campfire, reloaded); // retry: the existing recovery pass + step-2b reconciliation must settle and mark it placed
+
+        Optional<TownConstructionOperation> afterRetry = reloaded.constructionOperation(target.operationId());
+        helper.assertTrue(afterRetry.isPresent() && afterRetry.get().phase() == TownConstructionOperation.Phase.SETTLED,
+                "a single retry must recover the interrupted operation all the way to SETTLED via the existing recovery/2b "
+                        + "machinery, with no new reservation and no re-write - found " + afterRetry);
+        helper.assertTrue(reloaded.isCellPlaced(level.dimension(), absoluteTarget, siteOwner, target.signature()),
+                "once genuinely settled, the paid-progress record must now exist exactly once");
+        helper.assertTrue(level.getBlockState(absoluteTarget).is(target.placement().block()),
+                "the retry must never re-write a block that was already correctly placed");
+        int balanceAfterRetry = reloadedStore.balance(costCategory);
+        helper.assertTrue(balanceAfterRetry == balanceAfterWrite,
+                "recovering an already-applied write to settlement must never debit again - balanceAfterWrite=" + balanceAfterWrite
+                        + " balanceAfterRetry=" + balanceAfterRetry);
+        helper.succeed();
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // (17) [coordinator review 51494, finding (a)] buildAt's own claimant-independent recovery pass
+    // is only ever reached by buildAt itself, which the production driver (runConstructionAndRoadsTick
+    // -> findClaimedCampfireSites) only calls for sites with a LIVE claimant - a site whose claimant
+    // has since died/unloaded, or whose anchor is simply gone, could never reach it. This drives the
+    // REAL production tick entry point directly with NO claimant/campfire/buildAt call anywhere in
+    // this test, proving recoverOrphanedPendingOperations (wired into the driver itself) reconciles
+    // such sites on its own: a recorded-Before operation is cancelled with a genuine refund, a
+    // recorded-After operation is settled, and an operation at a chunk that is simply never loaded is
+    // left untouched (deferred) without force-loading that chunk.
+    // ------------------------------------------------------------------------------------------
+    @GameTest(template = "settlement_test")
+    public static void productionDriverReconcilesOrphanedPendingOperationsWithNoLiveClaimantAtAll(GameTestHelper helper) throws IOException {
+        ServerLevel level = helper.getLevel();
+        ResourceKey<Level> dimension = level.dimension();
+        RegionCoord region = new RegionCoord(777, 777);
+        String townKey = TownKeys.keyFor(dimension, region);
+        TownStorage storage = new TownStorage();
+        TownResourceStore store = storage.storeFor(townKey);
+        store.credit(TownResourceCategory.STONE, 1000);
+        TownConstructionService.RoadWork noOpRoadWork = (workLevel, selectedRegion, selectedStorage, selectedStore) -> false;
+
+        // -- Before: explicitly forced to AIR (the template's own raw content at this relative
+        // position is not guaranteed to already be air) so live state genuinely, deterministically
+        // matches the recorded Before, never merely assumed --
+        BlockPos beforePos = helper.absolutePos(new BlockPos(3, 2, 3));
+        level.setBlock(beforePos, Blocks.AIR.defaultBlockState(), 3);
+        UUID beforeOpId = UUID.randomUUID();
+        Optional<TownConstructionOperation> beforeReservation = storage.reserveConstructionOperation(beforeOpId, dimension, townKey,
+                "site:orphan-before", UUID.randomUUID(), UUID.randomUUID(), Optional.empty(),
+                List.of(syntheticEffect(beforePos, "sig:orphan-before")), Map.of(TownResourceCategory.STONE, TownConstants.CONSTRUCTION_COST_PER_BLOCK));
+        helper.assertTrue(beforeReservation.isPresent(), "test setup: the Before-case synthetic operation must reserve cleanly");
+        int balanceAfterBeforeReservation = store.balance(TownResourceCategory.STONE);
+
+        // -- After: genuinely written to match the recorded after-state, but never settled --
+        BlockPos afterPos = helper.absolutePos(new BlockPos(20, 2, 3));
+        UUID afterOpId = UUID.randomUUID();
+        Optional<TownConstructionOperation> afterReservation = storage.reserveConstructionOperation(afterOpId, dimension, townKey,
+                "site:orphan-after", UUID.randomUUID(), UUID.randomUUID(), Optional.empty(),
+                List.of(syntheticEffect(afterPos, "sig:orphan-after")), Map.of());
+        helper.assertTrue(afterReservation.isPresent(), "test setup: the After-case synthetic operation must reserve cleanly");
+        level.setBlock(afterPos, Blocks.STONE_BRICKS.defaultBlockState(), 3);
+
+        // -- Unavailable chunk: never loaded by this test at all --
+        BlockPos unavailablePos = new BlockPos(1_000_000, 64, 1_000_000); // never loaded by this test
+        helper.assertTrue(!level.hasChunkAt(unavailablePos), "test setup: this position must genuinely be in an unloaded chunk");
+        UUID unavailableOpId = UUID.randomUUID();
+        Optional<TownConstructionOperation> unavailableReservation = storage.reserveConstructionOperation(unavailableOpId, dimension,
+                townKey, "site:orphan-unavailable", UUID.randomUUID(), UUID.randomUUID(), Optional.empty(),
+                List.of(syntheticEffect(unavailablePos, "sig:orphan-unavailable")), Map.of());
+        helper.assertTrue(unavailableReservation.isPresent(), "test setup: the unavailable-chunk synthetic operation must reserve cleanly");
+
+        // No villager, no campfire, no buildAt call anywhere above - this is the REAL production
+        // entry point, driven with genuinely NO live claimant for any of these three sites.
+        TownConstructionService.runConstructionAndRoadsTick(level, storage, noOpRoadWork);
+
+        Optional<TownConstructionOperation> beforeAfterTick = storage.constructionOperation(beforeOpId);
+        helper.assertTrue(beforeAfterTick.isPresent() && beforeAfterTick.get().phase() == TownConstructionOperation.Phase.CANCELLED,
+                "a recorded-Before operation with no live claimant anywhere must be cancelled by the production driver itself - found "
+                        + beforeAfterTick);
+        helper.assertTrue(store.balance(TownResourceCategory.STONE) == balanceAfterBeforeReservation + TownConstants.CONSTRUCTION_COST_PER_BLOCK,
+                "cancellation must genuinely refund the escrow it reserved");
+
+        Optional<TownConstructionOperation> afterAfterTick = storage.constructionOperation(afterOpId);
+        helper.assertTrue(afterAfterTick.isPresent() && afterAfterTick.get().phase() == TownConstructionOperation.Phase.SETTLED,
+                "a recorded-After operation with no live claimant anywhere must be settled by the production driver itself - found "
+                        + afterAfterTick);
+
+        Optional<TownConstructionOperation> unavailableAfterTick = storage.constructionOperation(unavailableOpId);
+        helper.assertTrue(unavailableAfterTick.isPresent() && unavailableAfterTick.get().phase() == TownConstructionOperation.Phase.RESERVED,
+                "an operation at a chunk that is never loaded must be left exactly as it was (deferred), never settled or cancelled - found "
+                        + unavailableAfterTick);
+        helper.assertTrue(!level.hasChunkAt(unavailablePos),
+                "reconciling an unavailable-chunk operation must never force-load that chunk just to classify it");
+        helper.succeed();
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // (18) [coordinator review 51494, finding (b)] Recovery resolves what it genuinely can, but
+    // deliberately leaves an ambiguous (Quarantined) operation exactly as it was - PREVIOUSLY,
+    // nothing stopped the SAME site's terrain preparation or legacy placement from mutating it
+    // anyway on a LATER tick while that ambiguity remained unresolved. This proves the opposite:
+    // once an operation is left genuinely fenced after recovery, a later buildAt call makes
+    // ABSOLUTELY NO further progress at this site at all - no new settlement, no new reservation,
+    // no spending - until the fence genuinely clears.
+    // ------------------------------------------------------------------------------------------
+    @GameTest(template = "settlement_test", skyAccess = true)
+    public static void unresolvedRecoveryStopsTheWholeSitesMutationPathUntilItGenuinelyClears(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        prepareFlatGround(helper);
+        BlockPos relativeAnchor = pickNonStorehouseAnchor(helper);
+        helper.setBlock(relativeAnchor, Blocks.CAMPFIRE);
+        BlockPos campfire = helper.absolutePos(relativeAnchor);
+        String siteOwner = TownStorage.siteOwner(campfire);
+        createClaimant(helper, campfire);
+        TownStorage storage = new TownStorage();
+        // Deliberately ample funding - this is what makes "nothing progresses" meaningful: if the
+        // site were not genuinely fenced, several other cells could otherwise legitimately settle.
+        fundStore(helper, storage, campfire, 1_000_000);
+
+        TownConstructionService.buildAt(level, campfire, storage); // establishes the real anchor association + settles a few cells
+
+        PendingTarget target = findNextPendingStructuralCell(helper, storage, campfire, siteOwner);
+        BlockPos absoluteTarget = target.absolutePos();
+        TownConstructionService.testInjectDuringAcknowledgmentAt = absoluteTarget;
+        TownConstructionService.testInjectDuringAcknowledgmentAction =
+                () -> level.setBlock(absoluteTarget, Blocks.DIRT.defaultBlockState(), 3); // neither the recorded Before (air) nor After
+
+        TownConstructionService.buildAt(level, campfire, storage); // reserves this cell, the hook fires, revalidation leaves it ambiguously fenced (ties to the established pattern above)
+
+        helper.assertTrue(storage.isSiteFencedByUnsettledOperation(level.dimension(), siteOwner),
+                "test setup: the site must genuinely be fenced by the ambiguous operation left over from the tick above");
+        int settledBefore = storage.settledOperationsForSite(level.dimension(), siteOwner).size();
+        int pendingCountBefore = storage.pendingConstructionOperations(level.dimension()).size();
+        java.util.Map<TownResourceCategory, Integer> balancesBefore = new java.util.EnumMap<>(TownResourceCategory.class);
+        for (TownResourceCategory category : TownResourceCategory.values()) {
+            balancesBefore.put(category, storage.storeFor(TownKeys.keyFor(level.dimension(),
+                    TownRegion.fromBlockCoords(campfire.getX(), campfire.getZ()))).balance(category));
+        }
+
+        TownConstructionService.buildAt(level, campfire, storage); // a LATER tick - the fence is still set, nothing else may happen
+
+        helper.assertTrue(level.getBlockState(absoluteTarget).is(Blocks.DIRT),
+                "the stuck cell's own live state must remain exactly as it was - still untouched");
+        int settledAfter = storage.settledOperationsForSite(level.dimension(), siteOwner).size();
+        helper.assertTrue(settledAfter == settledBefore,
+                "no OTHER cell may settle while this site remains fenced by an unresolved operation - settledBefore="
+                        + settledBefore + " settledAfter=" + settledAfter);
+        int pendingCountAfter = storage.pendingConstructionOperations(level.dimension()).size();
+        helper.assertTrue(pendingCountAfter == pendingCountBefore,
+                "no NEW reservation may be created at this site while it remains fenced - pendingBefore=" + pendingCountBefore
+                        + " pendingAfter=" + pendingCountAfter);
+        for (TownResourceCategory category : TownResourceCategory.values()) {
+            int after = storage.storeFor(TownKeys.keyFor(level.dimension(), TownRegion.fromBlockCoords(campfire.getX(), campfire.getZ())))
+                    .balance(category);
+            helper.assertTrue(after == balancesBefore.get(category),
+                    "no spending of any kind may happen at a fenced site - category=" + category + " before="
+                            + balancesBefore.get(category) + " after=" + after);
+        }
+        helper.succeed();
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // (19) [coordinator review 51494, finding (b)] Companion to (18): once the exact same fence is
+    // genuinely cleared by recovery - here, by restoring the stuck cell's live state back to its
+    // OWN recorded Before, letting recovery cancel-and-refund it on its own evidence - normal
+    // progress at this site resumes on the very same tick that clears it.
+    // ------------------------------------------------------------------------------------------
+    @GameTest(template = "settlement_test", skyAccess = true)
+    public static void siteMutationResumesOnTheSameTickRecoveryGenuinelyClearsTheFence(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        prepareFlatGround(helper);
+        BlockPos relativeAnchor = pickNonStorehouseAnchor(helper);
+        helper.setBlock(relativeAnchor, Blocks.CAMPFIRE);
+        BlockPos campfire = helper.absolutePos(relativeAnchor);
+        String siteOwner = TownStorage.siteOwner(campfire);
+        createClaimant(helper, campfire);
+        TownStorage storage = new TownStorage();
+        fundStore(helper, storage, campfire, 1_000_000);
+
+        TownConstructionService.buildAt(level, campfire, storage);
+
+        PendingTarget target = findNextPendingStructuralCell(helper, storage, campfire, siteOwner);
+        BlockPos absoluteTarget = target.absolutePos();
+        TownConstructionService.testInjectDuringAcknowledgmentAt = absoluteTarget;
+        TownConstructionService.testInjectDuringAcknowledgmentAction =
+                () -> level.setBlock(absoluteTarget, Blocks.DIRT.defaultBlockState(), 3);
+
+        TownConstructionService.buildAt(level, campfire, storage);
+        helper.assertTrue(storage.isSiteFencedByUnsettledOperation(level.dimension(), siteOwner),
+                "test setup: the site must genuinely be fenced by the ambiguous operation");
+        int settledBeforeClear = storage.settledOperationsForSite(level.dimension(), siteOwner).size();
+
+        // Genuinely clear the fence: restore the stuck cell's live state back to its own recorded
+        // Before - recovery's own classification is the authority, not any shortcut.
+        level.setBlock(absoluteTarget, target.effect().before(), 3);
+        TownConstructionService.buildAt(level, campfire, storage); // the SAME tick this clears: recovery cancels it, the fence lifts, and progress resumes
+
+        Optional<TownConstructionOperation> stuckAfterClear = storage.constructionOperation(target.operationId());
+        helper.assertTrue(stuckAfterClear.isPresent() && stuckAfterClear.get().phase() == TownConstructionOperation.Phase.CANCELLED,
+                "the previously-stuck operation must now be genuinely cancelled by recovery once its live state matched its own recorded Before - found "
+                        + stuckAfterClear);
+        helper.assertTrue(!storage.isSiteFencedByUnsettledOperation(level.dimension(), siteOwner),
+                "the site must no longer be fenced once recovery genuinely resolved the stuck operation");
+        int settledAfterClear = storage.settledOperationsForSite(level.dimension(), siteOwner).size();
+        helper.assertTrue(settledAfterClear > settledBeforeClear,
+                "once the fence genuinely clears, normal progress must resume on that SAME tick - some other cell must now settle - "
+                        + "settledBeforeClear=" + settledBeforeClear + " settledAfterClear=" + settledAfterClear);
+        helper.succeed();
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // (20) [coordinator review 51499, finding (f)] isEntityBlocking is checked once, before
+    // reservation/acknowledgment - but a foreign entity can move into the target cell DURING the
+    // acknowledgment window, same as any other local-state condition, and nothing previously
+    // re-checked entity occupancy at the actual post-ack mutation boundary. This is a confirmed
+    // missing revalidation (reachable via the existing acknowledgment-window hook), not a claimed
+    // reproduced production concurrency incident.
+    // ------------------------------------------------------------------------------------------
+    @GameTest(template = "settlement_test", skyAccess = true)
+    public static void foreignEntityOccupyingTheTargetCellDuringAcknowledgmentWindowBlocksPlacementAndThenRetrySucceeds(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        prepareFlatGround(helper);
+        BlockPos relativeAnchor = pickNonStorehouseAnchor(helper);
+        helper.setBlock(relativeAnchor, Blocks.CAMPFIRE);
+        BlockPos campfire = helper.absolutePos(relativeAnchor);
+        String siteOwner = TownStorage.siteOwner(campfire);
+        createClaimant(helper, campfire);
+        TownStorage storage = new TownStorage();
+        fundStore(helper, storage, campfire, 1_000_000);
+
+        TownConstructionService.buildAt(level, campfire, storage);
+        // Deliberately ample funding (not drained) - this test's refund proof is the operation's
+        // own CANCELLED phase, not the aggregate balance, so there is no need to isolate it; ample
+        // funding also guarantees the later retry below has enough left regardless of how many
+        // other cells this same tick's loop happens to also advance.
+
+        PendingTarget target = findNextPendingStructuralCell(helper, storage, campfire, siteOwner);
+        BlockPos absoluteTarget = target.absolutePos();
+        Villager foreignOccupant = EntityType.VILLAGER.create(level, null, absoluteTarget, MobSpawnType.EVENT, false, false);
+        TownConstructionService.testInjectDuringAcknowledgmentAt = absoluteTarget;
+        TownConstructionService.testInjectDuringAcknowledgmentAction = () -> level.addFreshEntity(foreignOccupant); // a foreign entity moves in exactly during the ack window
+
+        TownConstructionService.buildAt(level, campfire, storage);
+
+        helper.assertTrue(!level.getBlockState(absoluteTarget).is(target.placement().block()),
+                "no placement may happen while a foreign entity occupies the target cell");
+        helper.assertTrue(!storage.isCellPlaced(level.dimension(), absoluteTarget, siteOwner, target.signature()),
+                "no paid-progress record may be created while a foreign entity occupies the target cell");
+        Optional<TownConstructionOperation> afterInjection = storage.constructionOperation(target.operationId());
+        helper.assertTrue(afterInjection.isPresent() && afterInjection.get().phase() == TownConstructionOperation.Phase.CANCELLED,
+                "an operation whose target cell became occupied by a foreign entity during the acknowledgment window must be "
+                        + "cleanly cancelled via verified rollback (the block's own state is still genuinely Before) - found " + afterInjection);
+        // cancelConstructionOperation's own code has exactly one path to CANCELLED, and that path
+        // unconditionally credits reservedCost first - so phase==CANCELLED above is already
+        // conclusive proof the refund happened. The aggregate store balance is NOT asserted
+        // further: this was a `continue`, not a `break`, so the SAME tick's per-cell loop may
+        // legitimately spend that freed headroom on another cell before the tick ends.
+
+        foreignOccupant.discard(); // the occupant leaves
+        TownConstructionService.buildAt(level, campfire, storage); // a later retry must make normal progress again
+
+        helper.assertTrue(level.getBlockState(absoluteTarget).is(target.placement().block()),
+                "once the foreign occupant is gone, a later retry must place this cell normally");
+        helper.assertTrue(storage.isCellPlaced(level.dimension(), absoluteTarget, siteOwner, target.signature()),
+                "once the foreign occupant is gone, a later retry must record genuine paid progress");
+        helper.succeed();
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // (21) [coordinator review 51499, finding (d)] The CAMPFIRE neighbor-safety exception is for
+    // the live BLOCK identity only; production discovery accepts whatever CAMPFIRE state is
+    // physically there, so a WATERLOGGED one (which schedules a fluid tick in every direction) is
+    // not proven inert and must be rejected, while the ordinary dry anchor remains SAFE exactly as
+    // before - using the REAL anchor position a real site's own CampfireBlockEntity occupies,
+    // mirroring the existing direct-primitive convention this file already uses for every other
+    // neighbor-safety variation (reactiveNeighborRejectionForInteriorAndPerimeterCellsAndUnloadedChunkDeferral).
+    // ------------------------------------------------------------------------------------------
+    @GameTest(template = "settlement_test")
+    public static void waterloggedAnchorRejectsAnAdjacentStructuralCellButTheOrdinaryDryAnchorRemainsSafe(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        prepareFlatGround(helper);
+        BlockPos relativeAnchor = pickNonStorehouseAnchor(helper);
+        helper.setBlock(relativeAnchor, Blocks.CAMPFIRE);
+        BlockPos campfire = helper.absolutePos(relativeAnchor);
+        createClaimant(helper, campfire);
+        BlockPos adjacentCell = campfire.north();
+        Set<BlockPos> noExemptPositions = Set.of();
+
+        TownConstructionService.NeighborSafety safeWhileDry =
+                TownConstructionService.checkNeighborSafetyForStructuralCell(level, adjacentCell, noExemptPositions);
+        helper.assertTrue(safeWhileDry == TownConstructionService.NeighborSafety.SAFE,
+                "test setup: the ordinary dry anchor must be SAFE for an adjacent structural cell, exactly as before - found " + safeWhileDry);
+
+        level.setBlock(campfire, level.getBlockState(campfire).setValue(net.minecraft.world.level.block.CampfireBlock.WATERLOGGED, true), 3);
+        TownConstructionService.NeighborSafety rejectedWhileWet =
+                TownConstructionService.checkNeighborSafetyForStructuralCell(level, adjacentCell, noExemptPositions);
+        helper.assertTrue(rejectedWhileWet == TownConstructionService.NeighborSafety.REJECT,
+                "a WATERLOGGED anchor must REJECT an adjacent structural cell - its fluid tick in every direction is not proven inert - found "
+                        + rejectedWhileWet);
+
+        level.setBlock(campfire, level.getBlockState(campfire).setValue(net.minecraft.world.level.block.CampfireBlock.WATERLOGGED, false), 3);
+        TownConstructionService.NeighborSafety safeOnceDriedAgain =
+                TownConstructionService.checkNeighborSafetyForStructuralCell(level, adjacentCell, noExemptPositions);
+        helper.assertTrue(safeOnceDriedAgain == TownConstructionService.NeighborSafety.SAFE,
+                "once the anchor is dry again, the adjacent structural cell must be SAFE again - liveness is not permanently lost - found "
+                        + safeOnceDriedAgain);
+        helper.succeed();
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // (22) [coordinator review 51494, finding (c)] Settled backfill previously verified only
+    // claimant/token identity and live After - never that the recorded effect's own signature
+    // still matches the CURRENT exact planned position/state at all. A SAME-builder/SAME-token
+    // settled record whose signature belongs to a WRONG (stale/historical) plan must never be
+    // backfilled, on the NON-bound (anchor-association) authority path.
+    // ------------------------------------------------------------------------------------------
+    @GameTest(template = "settlement_test", skyAccess = true)
+    public static void sameBuilderSameTokenButWrongPlanHistoryIsNeverBackfilledOnTheNonBoundPath(GameTestHelper helper) throws IOException {
+        ServerLevel level = helper.getLevel();
+        prepareFlatGround(helper);
+        BlockPos relativeAnchor = pickNonStorehouseAnchor(helper);
+        helper.setBlock(relativeAnchor, Blocks.CAMPFIRE);
+        BlockPos campfire = helper.absolutePos(relativeAnchor);
+        String siteOwner = TownStorage.siteOwner(campfire);
+        String townKey = TownKeys.keyFor(level.dimension(), TownRegion.fromBlockCoords(campfire.getX(), campfire.getZ()));
+        Villager claimant = createClaimant(helper, campfire);
+        TownStorage storage = new TownStorage();
+        fundStore(helper, storage, campfire, 1_000_000);
+
+        String realPlanSignature = planSignatureFor(helper, campfire, resolveSite(helper, campfire));
+        UUID anchorToken = establishRealAssociation(helper, level, storage, campfire, siteOwner, realPlanSignature, claimant.getUUID());
+        PendingTarget target = findNextPendingStructuralCell(helper, storage, campfire, siteOwner);
+        BlockPos pos = target.absolutePos();
+        level.setBlock(pos, target.placement().state(), 3); // matches effect.after() -> classifies AFTER
+
+        // Same exact position/material, same builder/token - but a signature from a WRONG,
+        // historical plan (e.g. this cell's kind/profession resolution differed at an earlier
+        // point) rather than the CURRENT real one.
+        String wrongPlanSignature = TownConstructionService.cellSignature("WRONG-PLAN-HISTORY", target.placement());
+        TownConstructionOperation.CellEffect wrongPlanEffect = new TownConstructionOperation.CellEffect(pos, target.effect().before(),
+                target.placement().state(), new TownConstructionOperation.BlockEntitySnapshot.None(),
+                new TownConstructionOperation.BlockEntitySnapshot.None(), wrongPlanSignature);
+        reserveWorldApplyAndSettle(helper, storage, level.dimension(), townKey, siteOwner, anchorToken, claimant.getUUID(), wrongPlanEffect);
+
+        TownConstructionService.buildAt(level, campfire, storage);
+
+        helper.assertTrue(!storage.isCellPlaced(level.dimension(), pos, siteOwner, wrongPlanSignature),
+                "a same-builder/same-token settled record whose signature belongs to a WRONG plan must never be backfilled");
+        helper.assertTrue(!storage.isCellPlaced(level.dimension(), pos, siteOwner, target.signature()),
+                "the CURRENT real signature was never actually settled either, so it must not be marked placed");
+        helper.succeed();
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // (23) [coordinator review 51494, finding (c)] Same exact property, on the BOUND-admission
+    // authority path - a same-builder/same-token settled record under a WRONG plan signature must
+    // never be backfilled there either.
+    // ------------------------------------------------------------------------------------------
+    @GameTest(template = "settlement_test", skyAccess = true)
+    public static void sameBuilderSameTokenButWrongPlanHistoryIsNeverBackfilledOnTheBoundAdmissionPath(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        prepareFlatGround(helper);
+        BlockPos relativeAnchor = pickNonStorehouseAnchor(helper);
+        helper.setBlock(relativeAnchor, Blocks.CAMPFIRE);
+        BlockPos campfire = helper.absolutePos(relativeAnchor);
+        String siteOwner = TownStorage.siteOwner(campfire);
+        Villager claimant = createClaimant(helper, campfire);
+        TownStorage storage = new TownStorage();
+        fundStore(helper, storage, campfire, 1_000_000);
+
+        ResidentCapacityAdmission bound = establishBoundAdmissionSite(helper, storage, relativeAnchor, campfire, siteOwner, claimant);
+        String townKey = TownKeys.keyFor(level.dimension(), TownRegion.fromBlockCoords(campfire.getX(), campfire.getZ()));
+
+        PendingTarget target = findNextPendingStructuralCell(helper, storage, campfire, siteOwner, bound.anchorGenerationToken());
+        BlockPos pos = target.absolutePos();
+        level.setBlock(pos, target.placement().state(), 3);
+
+        String wrongPlanSignature = TownConstructionService.cellSignature("WRONG-PLAN-HISTORY", target.placement());
+        TownConstructionOperation.CellEffect wrongPlanEffect = new TownConstructionOperation.CellEffect(pos, target.effect().before(),
+                target.placement().state(), new TownConstructionOperation.BlockEntitySnapshot.None(),
+                new TownConstructionOperation.BlockEntitySnapshot.None(), wrongPlanSignature);
+        reserveWorldApplyAndSettle(helper, storage, level.dimension(), townKey, siteOwner, bound.anchorGenerationToken(),
+                bound.builderId(), wrongPlanEffect);
+
+        TownConstructionService.buildAt(level, campfire, storage);
+
+        helper.assertTrue(!storage.isCellPlaced(level.dimension(), pos, siteOwner, wrongPlanSignature),
+                "a same-builder/same-token settled record whose signature belongs to a WRONG plan must never be backfilled "
+                        + "on the bound-admission path either");
+        helper.assertTrue(!storage.isCellPlaced(level.dimension(), pos, siteOwner, target.signature()),
+                "the CURRENT real signature was never actually settled either, so it must not be marked placed");
+        helper.succeed();
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // (24) [coordinator review 51494, finding (c)] A focused mutation-at-ack test that keeps the
+    // operation's own recorded plan/token completely unchanged, but invalidates authority a
+    // DIFFERENT way: the bound admission itself transitions BUILDING -> COMPLETED during the
+    // acknowledgment window (completeCapacityAdmission preserves boundSiteOwner/builderId/
+    // boundPlanSignature/anchorGenerationToken exactly). capacityAdmissionBoundToSite's own doc
+    // comment says it still matches a COMPLETED admission - readiness (BUILDING specifically) must
+    // be independently required, not just presence. Must stop safely with verified rollback only,
+    // never a forced refund.
+    // ------------------------------------------------------------------------------------------
+    @GameTest(template = "settlement_test", skyAccess = true)
+    public static void admissionCompletingDuringAcknowledgmentWindowWithPlanAndTokenUnchangedIsCaughtAsAuthorityLost(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        prepareFlatGround(helper);
+        BlockPos relativeAnchor = pickNonStorehouseAnchor(helper);
+        helper.setBlock(relativeAnchor, Blocks.CAMPFIRE);
+        BlockPos campfire = helper.absolutePos(relativeAnchor);
+        String siteOwner = TownStorage.siteOwner(campfire);
+        Villager claimant = createClaimant(helper, campfire);
+        TownStorage storage = new TownStorage();
+        fundStore(helper, storage, campfire, 1_000_000);
+
+        ResidentCapacityAdmission bound = establishBoundAdmissionSite(helper, storage, relativeAnchor, campfire, siteOwner, claimant);
+        int settledBeforeHookTick = storage.settledOperationsForSite(level.dimension(), siteOwner).size();
+
+        PendingTarget target = findNextPendingStructuralCell(helper, storage, campfire, siteOwner, bound.anchorGenerationToken());
+        BlockPos absoluteTarget = target.absolutePos();
+        TownConstructionService.testInjectDuringAcknowledgmentAt = absoluteTarget;
+        TownConstructionService.testInjectDuringAcknowledgmentAction = () -> storage.completeCapacityAdmission(bound);
+
+        TownConstructionService.buildAt(level, campfire, storage);
+
+        Optional<ResidentCapacityAdmission> afterCompletion = storage.capacityAdmissionBoundToSite(level.dimension(), siteOwner);
+        helper.assertTrue(afterCompletion.isPresent() && afterCompletion.get().state() == ResidentCapacityAdmission.State.COMPLETED
+                        && bound.boundPlanSignature().equals(afterCompletion.get().boundPlanSignature())
+                        && bound.anchorGenerationToken().equals(afterCompletion.get().anchorGenerationToken()),
+                "test setup: the admission must have genuinely completed, with its own plan signature and anchor token "
+                        + "completely unchanged - found " + afterCompletion);
+
+        Optional<TownConstructionOperation> afterInjection = storage.constructionOperation(target.operationId());
+        helper.assertTrue(afterInjection.isPresent() && afterInjection.get().phase() == TownConstructionOperation.Phase.CANCELLED,
+                "an admission that completes (plan/token unchanged) during the acknowledgment window must be caught as "
+                        + "authority lost and cleanly cancelled via verified rollback - found " + afterInjection);
+        helper.assertTrue(!level.getBlockState(absoluteTarget).is(target.placement().block()),
+                "the target position must never have been mutated once authority was lost");
+        helper.assertTrue(!storage.isCellPlaced(level.dimension(), absoluteTarget, siteOwner, target.signature()),
+                "a cancelled operation must never be recorded as placed progress");
+        int settledAfterHookTick = storage.settledOperationsForSite(level.dimension(), siteOwner).size();
+        helper.assertTrue(settledAfterHookTick == settledBeforeHookTick,
+                "authority loss must halt the WHOLE remaining tick, exactly like every other authority-loss case - "
+                        + "settledBefore=" + settledBeforeHookTick + " settledAfter=" + settledAfterHookTick);
+        helper.succeed();
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // (25) [coordinator review 51499, finding (e)] TownStorageChunkCheckpoint's operation-linked
+    // checkpoint reuses operationId as checkpointId on EVERY attempt; previously the readback only
+    // verified operation MEMBERSHIP (coordinates/status/witness-by-checkpointId), never that THIS
+    // attempt's own snapshot - not an older one sharing the same operationId - is what actually
+    // came back. Using the existing deterministic seam: a genuine Before-state checkpoint attempt
+    // is captured first, the cell is then changed to After, and the NEXT checkpoint attempt for the
+    // SAME operationId is forced to read back that EARLIER (stale) snapshot while write/flush
+    // genuinely succeed. This must now be REJECTED - confirmed by this fix's new per-attempt
+    // identity, not merely operation membership. NOT a claim of a reproduced production
+    // IOWorker-coalescing/crash sequence - only that the source cannot otherwise distinguish them.
+    // ------------------------------------------------------------------------------------------
+    @GameTest(template = "settlement_test")
+    public static void staleSameOperationReadbackIsRejectedByAttemptFreshnessNotJustOperationMembership(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        BlockPos pos = helper.absolutePos(new BlockPos(5, 2, 5));
+        level.setBlock(pos, Blocks.AIR.defaultBlockState(), 3);
+        net.minecraft.world.level.ChunkPos chunkPos = new net.minecraft.world.level.ChunkPos(pos);
+        UUID operationId = UUID.randomUUID();
+        net.minecraft.server.level.ChunkMap chunkMap = level.getChunkSource().chunkMap;
+
+        // First genuine attempt, while the cell is still Before (air) - capture its real on-disk
+        // bytes independently, to be replayed as a stale readback on the NEXT attempt below.
+        TownStorageChunkCheckpoint.CheckpointResult firstAttempt =
+                TownStorageChunkCheckpoint.checkpointLoadedChunkForOperation(level, chunkPos, operationId);
+        helper.assertTrue(firstAttempt instanceof TownStorageChunkCheckpoint.CheckpointResult.Checkpointed,
+                "test setup: the first (Before-state) checkpoint attempt must genuinely succeed - found " + firstAttempt);
+        CompoundTag staleBeforeSnapshot;
+        try {
+            staleBeforeSnapshot = TownStorageChunkCheckpoint.ChunkCheckpointSeam.real().read(chunkMap, chunkPos).get().orElseThrow();
+        } catch (Exception captureFailure) {
+            throw new IllegalStateException("test setup: capturing the real Before-state readback must succeed", captureFailure);
+        }
+
+        // Now the cell genuinely becomes After - a second, later attempt for the SAME operationId
+        // is forced to read back the EARLIER, stale Before snapshot, while write/flush themselves
+        // report success (this seam only overrides read()).
+        level.setBlock(pos, Blocks.STONE_BRICKS.defaultBlockState(), 3);
+        TownStorageChunkCheckpoint.ChunkCheckpointSeam staleReadSeam = new TownStorageChunkCheckpoint.ChunkCheckpointSeam() {
+            @Override
+            public net.minecraft.world.level.chunk.LevelChunk currentChunk(ServerLevel l, net.minecraft.world.level.ChunkPos p) {
+                return TownStorageChunkCheckpoint.ChunkCheckpointSeam.real().currentChunk(l, p);
+            }
+
+            @Override
+            public java.util.concurrent.CompletableFuture<Void> write(net.minecraft.server.level.ChunkMap cm, net.minecraft.world.level.ChunkPos p, CompoundTag data) {
+                return TownStorageChunkCheckpoint.ChunkCheckpointSeam.real().write(cm, p, data);
+            }
+
+            @Override
+            public void flush(net.minecraft.server.level.ChunkMap cm) {
+                TownStorageChunkCheckpoint.ChunkCheckpointSeam.real().flush(cm);
+            }
+
+            @Override
+            public java.util.concurrent.CompletableFuture<Optional<CompoundTag>> read(net.minecraft.server.level.ChunkMap cm, net.minecraft.world.level.ChunkPos p) {
+                return java.util.concurrent.CompletableFuture.completedFuture(Optional.of(staleBeforeSnapshot));
+            }
+        };
+        TownStorageChunkCheckpoint.CheckpointResult secondAttempt =
+                TownStorageChunkCheckpoint.checkpointLoadedChunk(level, chunkPos, operationId, staleReadSeam);
+
+        helper.assertTrue(secondAttempt instanceof TownStorageChunkCheckpoint.CheckpointResult.RejectedReadbackMismatch,
+                "a stale same-operationId readback (an earlier attempt's own snapshot, write/flush otherwise successful) must be "
+                        + "REJECTED by attempt freshness, not accepted merely because it shares this operation's own identity - found "
+                        + secondAttempt);
         helper.succeed();
     }
 }

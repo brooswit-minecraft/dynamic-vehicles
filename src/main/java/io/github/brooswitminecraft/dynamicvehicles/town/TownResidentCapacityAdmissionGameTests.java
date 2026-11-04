@@ -787,13 +787,22 @@ public final class TownResidentCapacityAdmissionGameTests {
         claimant.setVillagerData(claimant.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
         claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteCampfire));
 
-        BlockPos beneficiarySpot = helper.absolutePos(new BlockPos(9, 2, 1));
+        // [coordinator review 51497, same companion correction M454's own candidate already
+        // applied to this exact sibling - coordinated, not independently redesigned] A fixed small
+        // relative offset for the beneficiary is NOT guaranteed to land in the SAME 384-block
+        // region as the anchor - the template's absolute placement shifts with this namespace's
+        // batch position, so a relative delta that happened to stay in-region before can straddle
+        // a region boundary later. Use the same deterministic same-region, non-blocking search
+        // every other admission fixture in this file already uses.
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
+        Optional<BlockPos> companion = findSameRegionNonBlockingCompanion(helper, ANCHOR, region);
+        helper.assertTrue(companion.isPresent(), "test setup: the fixed anchor must have a same-region, non-blocking companion position");
+        BlockPos beneficiarySpot = helper.absolutePos(companion.get());
         Villager beneficiary = EntityType.VILLAGER.create(helper.getLevel(), null, beneficiarySpot, MobSpawnType.EVENT, false, false);
         helper.getLevel().addFreshEntity(beneficiary);
 
         TownStorage storage = new TownStorage();
         TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
-        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
         storage.markTownFounded(TownKeys.keyFor(helper.getLevel().dimension(), region));
         TownResidentDemand demand = new TownResidentDemand(1, Map.of());
         Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
@@ -1114,13 +1123,22 @@ public final class TownResidentCapacityAdmissionGameTests {
         claimant.setVillagerData(claimant.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
         claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteCampfire));
 
-        BlockPos beneficiarySpot = helper.absolutePos(new BlockPos(9, 2, 1));
+        // [coordinator 51510 lesson, same companion correction already applied to the other
+        // admission fixtures in this file] A fixed small relative offset for the beneficiary is
+        // NOT guaranteed to land in the SAME 384-block region as the anchor - demonstrated here
+        // directly (this exact sibling failed "the home-only admission must be created" under a
+        // template placement that straddled a region boundary). Use the same deterministic
+        // same-region, non-blocking search every other admission fixture in this file already
+        // uses.
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
+        Optional<BlockPos> companion = findSameRegionNonBlockingCompanion(helper, ANCHOR, region);
+        helper.assertTrue(companion.isPresent(), "test setup: the fixed anchor must have a same-region, non-blocking companion position");
+        BlockPos beneficiarySpot = helper.absolutePos(companion.get());
         Villager beneficiary = EntityType.VILLAGER.create(helper.getLevel(), null, beneficiarySpot, MobSpawnType.EVENT, false, false);
         helper.getLevel().addFreshEntity(beneficiary);
 
         TownStorage storage = new TownStorage();
         TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
-        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
         storage.markTownFounded(TownKeys.keyFor(helper.getLevel().dimension(), region));
         TownResidentDemand demand = new TownResidentDemand(1, Map.of());
         Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(

@@ -67,11 +67,23 @@ public final class TownRoadProductionBindingGameTests {
                     "released sole site must no longer remain in the production claim scan");
 
             TownPlan plan = TownPlanner.generate(region, level.getSeed());
+            // [coordinator 51510] ServerLevel#setChunkForced(x, z, true) returns the underlying
+            // Set#add result - false means this exact chunk was ALREADY in the forced set (held
+            // by something else: the shared runner, or another fixture), never a failed
+            // acquisition. Asserting on that return value was wrong; only a chunk THIS fixture
+            // itself newly forces may later be released by this fixture's own cleanup - a
+            // pre-owned force must never be touched, let alone unforced out from under its real
+            // owner. The chunk still ends up genuinely loaded either way (this fixture's own
+            // level.getChunk call forces that synchronously, on top of whatever already loaded
+            // it), which is what the fixture actually needs and now explicitly verifies.
             for (ChunkPos chunk : requiredPlanningChunks(level, plan)) {
-                helper.assertTrue(level.setChunkForced(chunk.x, chunk.z, true),
-                        "fixture must acquire each generated-road planning chunk itself: " + chunk);
-                ownedForces.add(chunk);
+                boolean newlyForced = level.setChunkForced(chunk.x, chunk.z, true);
+                if (newlyForced) {
+                    ownedForces.add(chunk);
+                }
                 level.getChunk(chunk.x, chunk.z);
+                helper.assertTrue(level.hasChunkAt(new BlockPos(chunk.getMinBlockX(), 0, chunk.getMinBlockZ())),
+                        "fixture requires every generated-road planning chunk to actually be loaded, whether newly forced by this fixture or already held by something else: " + chunk);
             }
             helper.assertTrue(TownRoadPlanner.hasLoadedBoundaryTerrain(level, plan),
                     "all real shared-edge terrain premises must be loaded before the production tick");

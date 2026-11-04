@@ -269,7 +269,14 @@ public final class TownStorageChunkCheckpoint {
      *  class's own doc for exactly what that does and does not prove. Never touches construction,
      *  debit, settlement, or recovery state; this is bounded to the checkpoint operation alone. */
     public static CheckpointResult checkpointLoadedChunk(ServerLevel level, ChunkPos chunkPos) {
-        return checkpointLoadedChunk(level, chunkPos, UUID.randomUUID(), ChunkCheckpointSeam.real());
+        UUID id = UUID.randomUUID();
+        // [coordinator review 51499, finding (e), correction] The ordinary path's checkpointId is
+        // already fresh per call, so attemptId is the SAME value here - exactly the pre-finding-(e)
+        // behavior every existing ordinary-path caller/test (which compares against a Witness built
+        // via the legacy 2-arg constructor, defaulting attemptId to checkpointId) already depends
+        // on. Only the operation-linked overload below - which deliberately REUSES checkpointId
+        // across repeat attempts - needs attemptId to be independently minted.
+        return checkpointLoadedChunk(level, chunkPos, id, id, ChunkCheckpointSeam.real());
     }
 
     /** [stage 2, coordinator design 51327] Same operation, using {@code operationId} - already
@@ -281,7 +288,10 @@ public final class TownStorageChunkCheckpoint {
      *  completely unaffected - this is strictly an additional entry point, sharing the exact same
      *  validated sequence below. */
     public static CheckpointResult checkpointLoadedChunkForOperation(ServerLevel level, ChunkPos chunkPos, UUID operationId) {
-        return checkpointLoadedChunk(level, chunkPos, operationId, ChunkCheckpointSeam.real());
+        // [coordinator review 51499, finding (e)] checkpointId is reused (== operationId) across
+        // repeat attempts for the same operation - attemptId must be independently fresh every
+        // call so a stale same-operation readback can be told apart from this attempt's own.
+        return checkpointLoadedChunk(level, chunkPos, operationId, UUID.randomUUID(), ChunkCheckpointSeam.real());
     }
 
     /** [coordinator review 51308, test seam] Same operation, with the actual write/flush/read
@@ -290,7 +300,10 @@ public final class TownStorageChunkCheckpoint {
      *  caller uses one of the public overloads above, which always pass {@link
      *  ChunkCheckpointSeam#real()}. */
     static CheckpointResult checkpointLoadedChunk(ServerLevel level, ChunkPos chunkPos, ChunkCheckpointSeam seam) {
-        return checkpointLoadedChunk(level, chunkPos, UUID.randomUUID(), seam);
+        UUID id = UUID.randomUUID();
+        // Ordinary (non-operation-linked) seam path - same attemptId==checkpointId rule as the
+        // no-seam ordinary overload above, for exactly the same reason.
+        return checkpointLoadedChunk(level, chunkPos, id, id, seam);
     }
 
     /** [stage 2, test seam] Same operation-linked checkpoint as {@link
@@ -299,6 +312,19 @@ public final class TownStorageChunkCheckpoint {
      *  the same way {@link #checkpointLoadedChunk(ServerLevel, ChunkPos, ChunkCheckpointSeam)}
      *  already lets tests exercise the ordinary path. */
     static CheckpointResult checkpointLoadedChunk(ServerLevel level, ChunkPos chunkPos, UUID checkpointId, ChunkCheckpointSeam seam) {
+        // Operation-linked seam path (checkpointId deliberately reused by the caller across
+        // repeat attempts, e.g. TownStructuralCellAdapterGameTests' stale-readback regression) -
+        // same independent-attemptId rule as the real operation-linked overload above.
+        return checkpointLoadedChunk(level, chunkPos, checkpointId, UUID.randomUUID(), seam);
+    }
+
+    /** [coordinator review 51499, finding (e), correction] The actual core, now taking BOTH ids
+     *  explicitly: {@code checkpointId} (the operation-linkage identity, possibly reused across
+     *  attempts) and {@code attemptId} (always unique to THIS specific attempt - equal to {@code
+     *  checkpointId} for the ordinary path, where that is already true anyway; independently fresh
+     *  for the operation-linked path, where it is what actually lets the readback below reject a
+     *  stale earlier attempt's snapshot sharing the same {@code checkpointId}). */
+    private static CheckpointResult checkpointLoadedChunk(ServerLevel level, ChunkPos chunkPos, UUID checkpointId, UUID attemptId, ChunkCheckpointSeam seam) {
         InProgressKey key = new InProgressKey(level, chunkPos);
         if (!IN_PROGRESS.add(key)) {
             // [coordinator review 51306] A nested checkpoint for the exact same chunk is already
@@ -316,13 +342,11 @@ public final class TownStorageChunkCheckpoint {
                 return new CheckpointResult.RejectedNoLoadedChunk();
             }
 
-            // [coordinator review 51499, finding (e)] attemptId is ALWAYS freshly minted here,
-            // independent of checkpointId - for the ordinary path checkpointId is already fresh
-            // per call (so this is redundant but harmless), but for the operation-linked path
-            // (checkpointId == a stable operationId, reused across repeat attempts) this is what
-            // lets the readback below distinguish THIS exact attempt's own snapshot from an
-            // older/different-state one that happens to carry the SAME operation witness.
-            Witness witness = new Witness(level.dimension(), checkpointId, UUID.randomUUID());
+            // [coordinator review 51499, finding (e)] attemptId (passed in by the caller above -
+            // == checkpointId for the ordinary path, independently fresh for the operation-linked
+            // path) is what lets the readback below distinguish THIS exact attempt's own snapshot
+            // from an older/different-state one that happens to carry the SAME operation witness.
+            Witness witness = new Witness(level.dimension(), checkpointId, attemptId);
             // ChunkAccess#setData marks the chunk unsaved itself - the NORMAL engine dirty
             // mechanism, not a side channel - so this witness also rides along on any ordinary
             // later autosave.

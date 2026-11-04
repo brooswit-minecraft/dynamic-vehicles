@@ -398,6 +398,34 @@ public final class TownTerrainTransactionGameTests {
         BlockPos interrupted = new BlockPos(first.x(), first.y(), first.z());
         BlockState expectedState = template.stream().filter(placement -> placement.x() == first.x()
                 && placement.y() == first.y() && placement.z() == first.z()).findFirst().orElseThrow().state();
+
+        // [coordinator review 51497, correction] The structural-before-fixture ordering constraint
+        // (anyStructuralCellStillUnplaced) means `interrupted` - a fixture cell - can never even be
+        // ATTEMPTED until every allowlisted structural cell at this site is already placed-and-paid.
+        // Drive real buildAt ticks (same generous-budget idiom as
+        // ordinaryConstructionWithNoReactiveNeighborsStillCompletesNormally) until that is true,
+        // BEFORE ever arming the interruption hook - otherwise the hook's target position is simply
+        // never reached and never fires. planSignature is computed identically to buildAt's own
+        // internal derivation (kind/variant/finalProfession) so this check means the same thing
+        // buildAt itself would mean by it.
+        String siteOwner = TownStorage.siteOwner(absoluteCampfire);
+        String planSignature = kind.name() + ":" + plan.storehouseVariant() + ":"
+                + profession.map(net.minecraft.core.registries.BuiltInRegistries.VILLAGER_PROFESSION::getKey).map(Object::toString).orElse("none");
+        Map<String, TownBuildingTemplates.Placement> byPosition = new HashMap<>();
+        for (int i = 0; i < template.size(); i++) {
+            byPosition.put(String.valueOf(i), template.get(i));
+        }
+        for (int i = 0; i < 500 && TownConstructionService.anyStructuralCellStillUnplaced(
+                storage, helper.getLevel().dimension(), siteOwner, planSignature, byPosition, absoluteCampfire); i++) {
+            TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
+        }
+        helper.assertTrue(!TownConstructionService.anyStructuralCellStillUnplaced(
+                        storage, helper.getLevel().dimension(), siteOwner, planSignature, byPosition, absoluteCampfire),
+                "test setup: every structural cell must be placed-and-paid within a generous tick budget "
+                        + "before the fixture-cell interruption below can ever be attempted");
+        helper.assertTrue(!storage.isCellBlocked(helper.getLevel().dimension(), interrupted),
+                "test setup: the target fixture cell must still be genuinely untouched once structural completes");
+
         int stoneBefore = store.balance(TownResourceCategory.STONE);
         int woodBefore = store.balance(TownResourceCategory.WOOD);
 

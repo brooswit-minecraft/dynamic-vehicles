@@ -97,4 +97,13 @@ public final class BuilderSettlementPlan {
             boolean skyVisible, boolean campfireAlreadyRecorded) {
         return unemployed && bedless && darkNight && skyVisible && !campfireAlreadyRecorded;
     }
+
+    /**
+     * Sky-layer light is raw propagation light; the level's current sky darkening is applied
+     * separately for time-of-day brightness.  Keep this independent from block light so torches
+     * neither qualify nor disqualify the existing open-sky campfire policy.
+     */
+    public static boolean hasDarkTimeAdjustedSky(int rawSkyLight, int skyDarken) {
+        return Math.max(0, rawSkyLight - skyDarken) <= 7;
+    }
 }

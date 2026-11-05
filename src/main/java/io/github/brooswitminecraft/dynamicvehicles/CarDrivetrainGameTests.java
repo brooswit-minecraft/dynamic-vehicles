@@ -33,6 +33,17 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 @GameTestHolder(DynamicVehiclesMod.MODID)
 @PrefixGameTestTemplate(false)
 public final class CarDrivetrainGameTests {
+    /** [MINECRAFT-455 51516/51520] Test-only diagnostic switch for the unexplained
+     *  reverseEnergyAtOneSubstep timeout: when true,
+     *  {@link #theRealizedClutchExchangeBalancesSignedThroughOpposedRollingAndTheReverseGovernor}
+     *  records phase/tick/wall-time milestones and emits ONE concise summary via a GameTestListener
+     *  on whichever outcome actually happens - never per-tick. Set true only by
+     *  {@code ClutchContactLossGameTests#reverseEnergyAtOneSubstep}, restored to false on every
+     *  outcome there; false (the default) for every other caller, including this method's own
+     *  standalone {@code @GameTest} and {@code reverseEnergyAtFourSubsteps}, which this adds no
+     *  behavior or logging to at all. */
+    static boolean diagnosticSummaryEnabled = false;
+
     /** One server tick, seconds -- the same dt {@code CarEntity} hands {@code SableCarBody.tick} (its own
      * private {@code DT}), named here so these tests' torque/inertia bounds read as "per tick" rather than
      * repeating the literal. */
@@ -1797,12 +1808,66 @@ public final class CarDrivetrainGameTests {
         int[] opposedTicks = {0};
         int[] governedTicks = {0};
         boolean[] reversed = {false};
+
+        // [MINECRAFT-455 51520] Diagnostic-only milestones for the unexplained reverseEnergyAtOneSubstep
+        // timeout - a complete no-op unless diagnosticSummaryEnabled (set only by that one caller).
+        // Milestones only, never per-tick logging; exactly one concise summary is emitted, via the
+        // established GameTestListener restore-on-every-outcome pattern (VehicleLanes#restoreSubStepsOnEveryOutcome),
+        // on whichever outcome (pass/fail/timeout) actually happens.
+        long diagStartNanos = System.nanoTime();
+        long[] diagSetupTick = {helper.getTick()};
+        long[] diagSettledHelperTick = {-1};
+        long[] diagSettledCarTick = {-1};
+        long[] diagDriveStartTick = {-1};
+        String[] diagPhase = {"SETUP"};
+        long[] diagPhaseTick = {helper.getTick()};
+        if (diagnosticSummaryEnabled) {
+            helper.testInfo.addListener(new GameTestListener() {
+                private boolean printed;
+
+                private void summarize(String outcome) {
+                    if (printed) return;
+                    printed = true;
+                    long elapsedMs = (System.nanoTime() - diagStartNanos) / 1_000_000;
+                    System.out.println("[M455-DIAG reverseEnergyAtOneSubstep] outcome=" + outcome
+                            + " setupTick=" + diagSetupTick[0]
+                            + " settledHelperTick=" + diagSettledHelperTick[0]
+                            + " settledCarTick=" + diagSettledCarTick[0]
+                            + " driveStartTick=" + diagDriveStartTick[0]
+                            + " lastPhase=" + diagPhase[0] + "@tick" + diagPhaseTick[0]
+                            + " finalHelperTick=" + helper.getTick()
+                            + " elapsedWallMs=" + elapsedMs);
+                }
+
+                @Override public void testStructureLoaded(GameTestInfo info) {}
+                @Override public void testPassed(GameTestInfo info, GameTestRunner runner) { summarize("PASSED"); }
+                @Override public void testFailed(GameTestInfo info, GameTestRunner runner) {
+                    Throwable error = info.getError();
+                    summarize("FAILED/" + (error != null ? error.getClass().getSimpleName() : "?"));
+                }
+                @Override public void testAddedForRerun(GameTestInfo info, GameTestInfo retry, GameTestRunner runner) {}
+            });
+        }
+
         lane.startWhenSettled(() -> {
                     car[0] = lane.spawnCar("D1-then-REVERSE car", 0.0, 30.0, 0.0f, CarPhysics.Gear.D1);
                     lane.board(car[0]);
                     books[0] = new ExchangeBooks(car[0], "D1-then-REVERSE car");
                 })
-                .thenExecute(() -> car[0].forceDrive(1.0, 0.0, 45))
+                .thenExecute(() -> {
+                    if (diagnosticSummaryEnabled) {
+                        diagSettledHelperTick[0] = helper.getTick();
+                        diagSettledCarTick[0] = car[0].tickCount;
+                        diagPhase[0] = "SETTLED";
+                        diagPhaseTick[0] = helper.getTick();
+                    }
+                    car[0].forceDrive(1.0, 0.0, 45);
+                    if (diagnosticSummaryEnabled) {
+                        diagDriveStartTick[0] = helper.getTick();
+                        diagPhase[0] = "D1_ACCEL";
+                        diagPhaseTick[0] = helper.getTick();
+                    }
+                })
                 .thenIdle(1)
                 .thenExecuteFor(175, () -> {
                     books[0].sample();
@@ -1823,9 +1888,17 @@ public final class CarDrivetrainGameTests {
                                 "test setup invalid -- the car was not rolling forward when REVERSE was selected: " + velocity);
                         car[0].selectGear(CarPhysics.Gear.REVERSE);
                         car[0].forceDrive(1.0, 0.0, 130);
+                        if (diagnosticSummaryEnabled) {
+                            diagPhase[0] = "REVERSE_ACTIVE";
+                            diagPhaseTick[0] = helper.getTick();
+                        }
                     }
                 })
                 .thenExecute(() -> {
+                    if (diagnosticSummaryEnabled) {
+                        diagPhase[0] = "FINAL_ASSERTIONS";
+                        diagPhaseTick[0] = helper.getTick();
+                    }
                     lane.assertOnLane(car[0], "D1-then-REVERSE car");
                     books[0].assertBalanced(helper);
                     helper.assertTrue(opposedTicks[0] > 0 && reversed[0] && governedTicks[0] >= 5,
@@ -1943,6 +2016,56 @@ public final class CarDrivetrainGameTests {
         int[] landedAt = {-1};
         boolean[] recovered = {false};
         double[] velocityAtRecovery = {Double.NaN};
+
+        // [MINECRAFT-455 51550] Outcome diagnostics only - bounded, local to this test, never
+        // altering the fixture/gear/configuration/assertions/thresholds/window/timeout above or
+        // below. A 40-sample ring (pose/position, throttle, each wheel's contact count/spin/
+        // contact speed/recovery error) plus separately-captured first-airborne and first-contact
+        // (landedAt) snapshots. Emitted exactly once via the SAME established GameTestListener
+        // restore-on-every-outcome pattern VehicleLanes#restoreSubStepsOnEveryOutcome and the
+        // reverseEnergyAtOneSubstep diagnostic already use, registered BEFORE the tick loop so a
+        // timeout (which never reaches the final thenExecute below) still emits the trace.
+        java.util.ArrayDeque<String> diagRing = new java.util.ArrayDeque<>();
+        int diagRingCap = 40;
+        String[] diagFirstAirborneSample = {null};
+        String[] diagFirstContactSample = {null};
+        long diagStartNanos = System.nanoTime();
+        helper.testInfo.addListener(new GameTestListener() {
+            private boolean printed;
+
+            private void dump(String outcome) {
+                if (printed) return;
+                printed = true;
+                long elapsedMs = (System.nanoTime() - diagStartNanos) / 1_000_000;
+                CarEntity c = car[0];
+                System.out.println("[M455-DIAG airborne] outcome=" + outcome
+                        + " carUUID=" + (c != null ? c.getUUID() : "null")
+                        + " WHEEL_SUB_STEPS=" + CarConfig.WHEEL_SUB_STEPS.get()
+                        + " helperTick=" + helper.getTick() + " entityTick=" + (c != null ? c.tickCount : -1)
+                        + " loopTick=" + tick[0] + " airborneTicks=" + airborneTicks[0]
+                        + " drivenAirborneTicks=" + drivenAirborneTicks[0] + " throttleShutAt=" + throttleShutAt[0]
+                        + " landedAt=" + landedAt[0] + " recovered=" + recovered[0]
+                        + " velocityAtRecovery=" + velocityAtRecovery[0]
+                        + " worstAirborneWheelBooks=" + worstAirborneWheelBooks[0] + " worstStaleLoad=" + worstStaleLoad[0]
+                        + " elapsedWallMs=" + elapsedMs);
+                System.out.println("[M455-DIAG airborne] firstAirborneSample: " + diagFirstAirborneSample[0]);
+                System.out.println("[M455-DIAG airborne] firstContactAfterLandingSample: " + diagFirstContactSample[0]);
+                System.out.println("[M455-DIAG airborne] last " + diagRing.size() + " samples (oldest first):");
+                int i = 0;
+                for (String s : diagRing) {
+                    System.out.println("[M455-DIAG airborne]   [" + (i++) + "] " + s);
+                }
+            }
+
+            @Override public void testStructureLoaded(GameTestInfo info) {}
+            @Override public void testPassed(GameTestInfo info, GameTestRunner runner) { dump("PASSED"); }
+            @Override public void testFailed(GameTestInfo info, GameTestRunner runner) {
+                Throwable error = info.getError();
+                dump("FAILED/" + (error != null ? error.getClass().getSimpleName() : "?"));
+            }
+            @Override public void testAddedForRerun(GameTestInfo info, GameTestInfo retry, GameTestRunner runner) {}
+        });
+
         lane.startWhenSettled(() -> {
                     car[0] = lane.spawnCar("car driven off the drop", 0.0, 2.0, 0.0f, CarPhysics.Gear.D2);
                     lane.board(car[0]);
@@ -1961,6 +2084,25 @@ public final class CarDrivetrainGameTests {
                     }
                     double[] spins = c.debugWheelSpins();
                     double[] taken = c.debugWheelRealizedDriveImpulses();
+
+                    // DIAGNOSTIC: bounded ring-buffer sample, never printed per-tick.
+                    double[] diagContactSpeeds = c.debugWheelContactSpeeds();
+                    StringBuilder diagRecoveryErr = new StringBuilder();
+                    for (int wheel = 0; wheel < spins.length; wheel++) {
+                        diagRecoveryErr.append(String.format(" w%d(contact=%d spin=%.2f contactSpeed=%.2f recoveryErr=%.3f)",
+                                wheel, contact[wheel], spins[wheel], diagContactSpeeds[wheel],
+                                Math.abs(spins[wheel] * c.debugWheelRadius() - diagContactSpeeds[wheel])));
+                    }
+                    String diagSample = "helperTick=" + helper.getTick() + " loopTick=" + t + " entityTick=" + c.tickCount
+                            + " airborne=" + airborne + " throttle=" + c.debugLastThrottle() + " gear=" + c.debugLastGear()
+                            + " pos=(" + String.format("%.3f,%.3f,%.3f", c.getX(), c.getY(), c.getZ()) + ")"
+                            + " forwardVelocity=" + forwardVelocity(c) + diagRecoveryErr
+                            + " pose=[" + ((SableCarBody) c.sableBody()).describe(c.debugLastGear(), c.debugLastThrottle()) + "]";
+                    diagRing.addLast(diagSample);
+                    if (diagRing.size() > diagRingCap) diagRing.removeFirst();
+                    if (airborne && diagFirstAirborneSample[0] == null) diagFirstAirborneSample[0] = diagSample;
+                    if (!airborne && airborneTicks[0] > 0 && diagFirstContactSample[0] == null) diagFirstContactSample[0] = diagSample;
+
                     if (airborne) {
                         airborneTicks[0]++;
                         if (previousSpins[0] != null) {

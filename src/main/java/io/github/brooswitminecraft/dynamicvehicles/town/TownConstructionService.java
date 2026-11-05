@@ -1293,6 +1293,19 @@ public final class TownConstructionService {
                         // same cell against the same beneficiary.
                         continue;
                     }
+                    // [MINECRAFT-455 active-Builder containment] The beneficiary was proven NOT an
+                    // active Builder claimant at bind time (resolveCapacityAdmissionForSite's own
+                    // check), but time has passed since - it may have become one (e.g. a natural
+                    // self-build) before this exact closing tick. There is no production path that
+                    // safely disposes of a beneficiary's own live claim/POI as part of this handoff,
+                    // so defer exactly like the empty-beneficiary case just above: no mutation to
+                    // the beneficiary's own profession/JOB_SITE/POI, no new reservation/debit for
+                    // this cell, and this site's own existing bound admission/anchor are left
+                    // completely untouched for a later tick to retry.
+                    if (beneficiary.get().getVillagerData().getProfession() == BuilderProfession.BUILDER.get()
+                            && TownResidentAllocationHandler.hasActiveBuilderClaim(level, beneficiary.get())) {
+                        continue;
+                    }
                     handoffRecipient = beneficiary.get();
                 }
                 reservedHandoff = tryReserveHandoffDestinations(level, storage, handoffRecipient, campfire, floorY, kind,
@@ -1349,9 +1362,15 @@ public final class TownConstructionService {
     }
 
     /** The destinations a claimant's handoff needs, once every one of them has actually been
-     *  reserved (a real POI ticket held) - see {@link #tryReserveHandoffDestinations}. Either field
-     *  may be {@code null} when this kind/profession combination does not need it. */
-    record ReservedHandoff(BlockPos workstationPos, BlockPos bedPos) {}
+     *  reserved (a real POI ticket held) - see {@link #tryReserveHandoffDestinations}. Either
+     *  BlockPos may be {@code null} when this kind/profession combination does not need it.
+     *
+     *  <p>[MINECRAFT-455 own-ticket reuse, 51480] {@code workstationReused}/{@code bedReused} record
+     *  whether that destination's ticket was the intended beneficiary's OWN, already-genuinely-held
+     *  reservation (reused in place, no new {@code PoiManager#take}) rather than newly acquired by
+     *  THIS attempt - cleanup must only ever release a ticket this attempt itself took. {@code false}
+     *  whenever the corresponding BlockPos is {@code null}. */
+    record ReservedHandoff(BlockPos workstationPos, boolean workstationReused, BlockPos bedPos, boolean bedReused) {}
 
     /**
      * MINECRAFT-388 review round 14, finding #1: every destination a claimant's handoff needs must
@@ -1397,20 +1416,81 @@ public final class TownConstructionService {
                 ? TownBuildingTemplates.workstationPosition(campfire.getX(), floorY, campfire.getZ()) : null;
         BlockPos bedPos = needsBed ? TownBuildingTemplates.bedPosition(campfire.getX(), floorY, campfire.getZ()) : null;
 
-        boolean workstationReserved = !needsWorkstation
+        // [MINECRAFT-455 own-ticket reuse, 51480/51485] The intended recipient may already,
+        // genuinely hold this exact destination's own ticket (e.g. an in-flight closing handoff
+        // retrying after a different claim elsewhere was deferred then resolved) - reuse it in
+        // place rather than calling PoiManager#take a second time, which would otherwise spuriously
+        // fail against a ticket this same recipient already legitimately holds. hasOwnReusableTicket
+        // requires every applicable proof together, INCLUDING the SAME isOwnPlannedFixture check
+        // the acquisition path below requires - reuse is never authorized merely because a memory
+        // happens to name this coordinate; it must also still be this exact plan's own paid fixture
+        // cell. The expected memory category and POI type are destination-specific: JOB_SITE +
+        // this exact finalProfession for the workstation, HOME + PoiTypes.HOME for the bed - never
+        // accepting the wrong category's memory merely because it happens to name the coordinate.
+        boolean workstationIsReuse = needsWorkstation && isOwnPlannedFixture.test(workstationPos)
+                && hasOwnReusableTicket(level, storage, recipient, workstationPos, MemoryModuleType.JOB_SITE,
+                        type -> finalProfession.isPresent() && TownProfessionWorkstations.professionForType(type)
+                                .filter(finalProfession.get()::equals).isPresent());
+        boolean bedIsReuse = needsBed && isOwnPlannedFixture.test(bedPos)
+                && hasOwnReusableTicket(level, storage, recipient, bedPos, MemoryModuleType.HOME, type -> type.is(PoiTypes.HOME));
+
+        boolean workstationReserved = !needsWorkstation || workstationIsReuse
                 || (isOwnPlannedFixture.test(workstationPos) && acquirePoiTicket(level, storage, recipient, workstationPos));
-        boolean bedReserved = !needsBed
+        boolean bedReserved = !needsBed || bedIsReuse
                 || (isOwnPlannedFixture.test(bedPos) && acquirePoiTicket(level, storage, recipient, bedPos));
         if (!workstationReserved || !bedReserved) {
-            if (workstationReserved && needsWorkstation) {
+            // Only ever release a ticket THIS attempt newly acquired - a reused, pre-existing own
+            // ticket is never released merely because the OTHER destination failed this attempt.
+            if (workstationReserved && needsWorkstation && !workstationIsReuse) {
                 releasePoiTicket(level, storage, workstationPos);
             }
-            if (bedReserved && needsBed) {
+            if (bedReserved && needsBed && !bedIsReuse) {
                 releasePoiTicket(level, storage, bedPos);
             }
             return Optional.empty();
         }
-        return Optional.of(new ReservedHandoff(workstationPos, bedPos));
+        return Optional.of(new ReservedHandoff(workstationPos, workstationIsReuse, bedPos, bedIsReuse));
+    }
+
+    /**
+     * [MINECRAFT-455 own-ticket reuse, 51480/51485] {@code true} only when EVERY applicable proof
+     * holds together that {@code pos} is {@code recipient}'s OWN, already-genuinely-held
+     * reservation for THIS SPECIFIC destination role, safe to reuse in place rather than
+     * re-acquired:
+     * <ul>
+     *   <li>{@code recipient}'s own {@code expectedMemory} - never the OTHER memory category, even
+     *       if it happens to also name this coordinate - is exactly {@code pos} (correct dimension
+     *       and position).</li>
+     *   <li>{@code storage.isReservedBySelf} positively records recipient (not merely "not known to
+     *       be anyone else's") - a vanilla/untracked ticket is never promoted into an ownership
+     *       record just to authorize reuse.</li>
+     *   <li>A real POI exists at {@code pos} whose type satisfies {@code expectedType} - HOME for a
+     *       bed, this exact requested profession's own workstation type for a workplace, never
+     *       merely "some POI type or other" - with a genuinely held ticket (not a free one); an
+     *       occupied POI alone, without the positive storage record above, is still never
+     *       sufficient on its own.</li>
+     *   <li>No contradictory live claimant: no OTHER currently-loaded villager's own live HOME/
+     *       JOB_SITE memory also names {@code pos} right now.</li>
+     * </ul>
+     * Callers must additionally require {@code isOwnPlannedFixture.test(pos)} themselves (as
+     * {@link #tryReserveHandoffDestinations} now does for both this reuse path and the ordinary
+     * acquisition path identically) - reuse is never authorized for a coordinate that is not this
+     * exact plan's own paid fixture cell, memory/ticket proof notwithstanding.
+     * If any one of these does not hold, this returns {@code false} and the ordinary
+     * acquisition/refusal path in {@link #tryReserveHandoffDestinations} applies unchanged.
+     */
+    private static boolean hasOwnReusableTicket(ServerLevel level, TownStorage storage, Villager recipient, BlockPos pos,
+            MemoryModuleType<GlobalPos> expectedMemory,
+            java.util.function.Predicate<net.minecraft.core.Holder<net.minecraft.world.entity.ai.village.poi.PoiType>> expectedType) {
+        boolean memoryMatches = recipient.getBrain().getMemory(expectedMemory)
+                .map(gp -> gp.dimension().equals(level.dimension()) && gp.pos().equals(pos)).orElse(false);
+        if (!memoryMatches || !storage.isReservedBySelf(level.dimension(), pos, recipient.getUUID())) {
+            return false;
+        }
+        net.minecraft.world.entity.ai.village.poi.PoiManager poiManager = level.getPoiManager();
+        boolean poiGenuinelyHeld = poiManager.getType(pos).filter(expectedType).isPresent()
+                && poiManager.getFreeTickets(pos) == 0;
+        return poiGenuinelyHeld && !TownResidentAllocationHandler.isCurrentlyClaimedByAnotherVillager(level, pos, recipient);
     }
 
     /**
@@ -1566,7 +1646,7 @@ public final class TownConstructionService {
             Optional<VillagerProfession> finalProfession, String planSignature, UUID builderId) {
         boolean offersBed = kind == TownBuildingTemplates.Kind.RESIDENTIAL || kind == TownBuildingTemplates.Kind.COMMERCIAL
                 || kind == TownBuildingTemplates.Kind.INDUSTRIAL;
-        boolean matchedOnlySelfClaim = false;
+        boolean matchedButIneligible = false;
         for (ResidentCapacityAdmission candidate : storage.awaitingCapacityAdmissionsFor(level.dimension(), region)) {
             boolean needsHome = candidate.requestedHomes() > 0;
             boolean needsWorkplace = !candidate.requestedWorkplaces().isEmpty();
@@ -1584,7 +1664,25 @@ public final class TownConstructionService {
                 // candidate's own admission; the self-claiming candidate's own durable intent is
                 // left completely untouched, preserved for a later, distinct Builder.
                 if (candidate.beneficiaryId().equals(builderId)) {
-                    matchedOnlySelfClaim = true;
+                    matchedButIneligible = true;
+                    continue;
+                }
+                // [MINECRAFT-455 active-Builder containment] A real match whose beneficiary is, right
+                // now, THIS MOD's own temporary construction claimant somewhere else - never an
+                // ordinary retained profession, which requestResidentCapacity already allowed and
+                // must keep allowing - is not safely bindable: committing it here would require
+                // disposing of that beneficiary's own live claim/POI, which no production path does
+                // safely (see the companion closing-time check below). Treated exactly like the
+                // self-claim branch just above: skip, keep scanning for a genuinely different
+                // eligible candidate, and fail closed (Denied, never NoMatch/claimant-only
+                // fallthrough) if no such candidate exists. findLoadedBeneficiary intentionally
+                // returns empty for an unloaded/dead candidate - that is NOT this condition, and
+                // falls through to the ordinary bind attempt below exactly as before.
+                Optional<Villager> candidateBeneficiary = findLoadedBeneficiary(level, region, candidate.beneficiaryId());
+                if (candidateBeneficiary.isPresent()
+                        && candidateBeneficiary.get().getVillagerData().getProfession() == BuilderProfession.BUILDER.get()
+                        && TownResidentAllocationHandler.hasActiveBuilderClaim(level, candidateBeneficiary.get())) {
+                    matchedButIneligible = true;
                     continue;
                 }
                 // [coordinator review 51276] The anchor-token supplier is passed through, NOT
@@ -1609,7 +1707,10 @@ public final class TownConstructionService {
         // this must still fail closed exactly like any other denial, never fall through to
         // ordinary claimant-only construction, which would let the site be permanently consumed
         // without ever honoring the (still-durable, still-unbound) self-claiming admission.
-        return matchedOnlySelfClaim ? CapacityBindResolution.denied() : CapacityBindResolution.noMatch();
+        // [MINECRAFT-455 active-Builder containment] A real demand matched ONLY through a
+        // beneficiary that is currently an active Builder claimant elsewhere fails closed the
+        // same way - matchedButIneligible covers both cases identically.
+        return matchedButIneligible ? CapacityBindResolution.denied() : CapacityBindResolution.noMatch();
     }
 
     /** [coordinator review 51276] See {@link #resolveCapacityAdmissionForSite}'s own doc for why
@@ -1823,14 +1924,19 @@ public final class TownConstructionService {
                 || !state.getFluidState().isEmpty() && state.getFluidState().is(net.minecraft.tags.FluidTags.LAVA);
     }
 
-    /** Releases every ticket a {@link ReservedHandoff} is actually holding - used when a reservation
-     *  succeeded but the campfire's own closing placement then failed to land this same tick, so
-     *  nothing stays speculatively reserved against a handoff that never actually committed. */
+    /** Releases every ticket a {@link ReservedHandoff} actually NEWLY ACQUIRED this attempt - used
+     *  when a reservation succeeded but the campfire's own closing placement then failed to land
+     *  this same tick, so nothing stays speculatively reserved against a handoff that never
+     *  actually committed. [MINECRAFT-455 own-ticket reuse, 51480] A destination the recipient
+     *  already, genuinely held before this attempt ({@code workstationReused}/{@code bedReused})
+     *  is never released here - this attempt never took it, so it is not this attempt's to give
+     *  back; the recipient's own pre-existing reservation must survive a failed/interrupted
+     *  closing exactly as it was. */
     private static void releaseReservedHandoff(ServerLevel level, TownStorage storage, ReservedHandoff reserved) {
-        if (reserved.workstationPos() != null) {
+        if (reserved.workstationPos() != null && !reserved.workstationReused()) {
             releasePoiTicket(level, storage, reserved.workstationPos());
         }
-        if (reserved.bedPos() != null) {
+        if (reserved.bedPos() != null && !reserved.bedReused()) {
             releasePoiTicket(level, storage, reserved.bedPos());
         }
     }

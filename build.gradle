@@ -114,6 +114,28 @@ neoForge {
             }
         }
 
+        m455ActiveBuilderContainmentGameTestServer {
+            type = "gameTestServer"
+            // MINECRAFT-455 active-Builder containment [coordinator chain 51471]: a fresh,
+            // disposable game directory, isolated via its own namespace, so this focused
+            // containment slice can run without replaying the default full-suite namespace.
+            gameDirectory = layout.dir(providers.provider { file('/tmp/m455-active-builder-containment-20261104/game') })
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_active_builder_containment'
+        }
+
+        m455RealInterruptedClosingGameTestServer {
+            type = "gameTestServer"
+            // MINECRAFT-455 [coordinator 51496/51500]: a dedicated, single-test namespace/run in
+            // its own fresh disposable headless process/world - verified --spawnPos cannot steer
+            // GameTestServer's own structure-grid origin (it is randomized every start,
+            // StructureGridSpawner never consults it), so this test's real buildAt profession site
+            // is instead chosen analytically (TownPlanner.zoneAt, pure, no world I/O) and
+            // materialized at a remote, chunk-forced position far from the template's own
+            // placement - never another batch sharing this run's namespace.
+            gameDirectory = layout.dir(providers.provider { file('/tmp/m455-real-interrupted-closing-20261104/game') })
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m455_real_interruption'
+        }
+
         m454DonationGameTestServer {
             type = "gameTestServer"
             gameDirectory = layout.dir(providers.provider { file('/tmp/m454-gametest-donation-20261029/game') })

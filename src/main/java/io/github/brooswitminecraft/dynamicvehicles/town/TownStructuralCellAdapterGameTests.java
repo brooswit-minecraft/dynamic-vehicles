@@ -1968,11 +1968,34 @@ public final class TownStructuralCellAdapterGameTests {
                                 + "ledger-eligible cell must equal exactly (eligible cell count * cost per block) per category - no "
                                 + "duplicate charge, no missed charge; expectedStone=" + expectedStoneDebit + " expectedWood=" + expectedWoodDebit
                                 + " actualLedgerStone=" + ledgerStoneDebit + " actualLedgerWood=" + ledgerWoodDebit);
-                helper.assertTrue(stoneBefore - store.balance(TownResourceCategory.STONE) >= ledgerStoneDebit
-                                && woodBefore - store.balance(TownResourceCategory.WOOD) >= ledgerWoodDebit,
-                        "the overall store balance must have dropped by AT LEAST the ledger's own total debit (the remainder, "
-                                + "if any, is the separate legacy tryPayForBlock spending for beds/doors/the closing cell, never a "
-                                + "ledger shortfall)");
+
+                // [coordinator review 51627] An inequality here would still pass with an extra,
+                // unintended debit beyond the ledger's own recorded cost - it never actually ruled
+                // out "no duplicate charge." Every cell in the FULL template - ledger-eligible AND
+                // legacy (beds/doors/excluded-profession workstations/the closing campfire cell
+                // itself) alike - is charged exactly CONSTRUCTION_COST_PER_BLOCK in its own cost
+                // category exactly once, either by this ledger adapter or by the legacy
+                // tryPayForBlock/markCellPlaced path (same per-block cost, same "only the first
+                // time" guard) - so the EXACT total expected debit is computable the same
+                // deterministic way for the whole site, not only its ledger-eligible subset.
+                int totalExpectedStoneDebit = 0;
+                int totalExpectedWoodDebit = 0;
+                for (TownBuildingTemplates.Placement placement : byPosition.values()) {
+                    if (placement.cost() == TownResourceCategory.STONE) {
+                        totalExpectedStoneDebit += TownConstants.CONSTRUCTION_COST_PER_BLOCK;
+                    } else if (placement.cost() == TownResourceCategory.WOOD) {
+                        totalExpectedWoodDebit += TownConstants.CONSTRUCTION_COST_PER_BLOCK;
+                    }
+                }
+                helper.assertTrue(stoneBefore - store.balance(TownResourceCategory.STONE) == totalExpectedStoneDebit
+                                && woodBefore - store.balance(TownResourceCategory.WOOD) == totalExpectedWoodDebit,
+                        "the overall store balance must have dropped by EXACTLY the whole site's total expected debit (every "
+                                + "placement in the full template, ledger-eligible and legacy alike, charged exactly once at "
+                                + "CONSTRUCTION_COST_PER_BLOCK in its own category) - an extra or missing charge anywhere, ledger or "
+                                + "legacy, must make this fail; totalExpectedStone=" + totalExpectedStoneDebit
+                                + " totalExpectedWood=" + totalExpectedWoodDebit
+                                + " actualStoneDelta=" + (stoneBefore - store.balance(TownResourceCategory.STONE))
+                                + " actualWoodDelta=" + (woodBefore - store.balance(TownResourceCategory.WOOD)));
             } catch (RuntimeException primary) {
                 cleanup.cleanupPreserving(primary);
                 throw primary;
@@ -2584,12 +2607,43 @@ public final class TownStructuralCellAdapterGameTests {
                         "an unloaded neighbor chunk must defer, never reject and never force-load - found " + safety);
                 helper.assertTrue(!level.hasChunkAt(farAwayNeighborChunk), "the neighbor-safety check itself must never force-load the chunk it just deferred on");
 
-                // [coordinator review 51610(d)] Extension: the SAME defer-without-reservation/
-                // without-debit/without-force-load guarantee, now anchored at the REAL plan's own
-                // next-pending workstation cell - exactly as driveToNextPendingWorkstationCell
-                // (the same helper the rest of this file's workstation tests use to arm their own
-                // injections) resolves it - rather than an independently recomputed "expected"
-                // position, proving the mechanism also holds for the genuine production-path target.
+                // [coordinator review 51627, Gap 1 - INVESTIGATED THIS ROUND, NOT RESOLVED AS
+                // ASKED; see the round's own report for the full writeup] Attempted fix: compute one
+                // of the real next-pending workstation target's own 6 real orthogonal neighbors
+                // whose chunk differs from the target's own, release prepareRemoteFlatGround's own
+                // ticket on JUST that neighbor chunk, confirm it unloads, then call the REAL
+                // TownConstructionService.buildAt (never checkNeighborSafetyForStructuralCell
+                // directly) and assert defer/no-reservation/no-write/no-debit. Empirically this
+                // never unloads: released the ticket, pumped level.getChunkSource().tick(() -> true,
+                // true) up to 2000 times (the TownRoadActivityGameTests precedent for this exact
+                // release-then-evict situation needs only ~8), and the neighbor chunk stayed loaded
+                // throughout. Reading NeoForge's own ChunkLevel/DistanceManager source explains why:
+                // ChunkMap.FORCED_TICKET_LEVEL is ChunkLevel.byStatus(ENTITY_TICKING) = 31, and that
+                // level PROPAGATES outward by chunk distance (an immediate neighbor sits at level 32,
+                // still well under ChunkLevel.MAX_LEVEL's "loaded" threshold) for as long as the
+                // source ticket exists - which the target's own chunk's ticket must, since other
+                // cells at this site still need it. Every one of the workstation's 6 real neighbors
+                // is, by construction (campfire+1 in x/z, offset at most 2 blocks), always within 1
+                // chunk of the target's own forced chunk, so this propagation reaches literally every
+                // one of them regardless of which neighbor is chosen or how the search is tuned -
+                // this is not a search-luck problem Option (a)/(b) retries could ever get around.
+                // Releasing the TARGET's own chunk's ticket instead (to remove the propagation
+                // source) does not work either: TownCampfireClaims#findClaimant is a plain
+                // level.getEntities().getAll() scan with no chunk-load side effect of its own (unlike
+                // a setBlock/getBlockState call), so with the claimant's chunk genuinely unloaded,
+                // buildAt returns at its very first claimant check - never reaching the neighbor-
+                // safety logic this test means to exercise at all. There is therefore no way, within
+                // this fixture and Minecraft's real chunk-ticket semantics, to drive the REAL buildAt
+                // into deferring the REAL next-pending target specifically because of one of its own
+                // real neighbors being unloaded, without either a production code change (out of
+                // scope this round) or deeper control over the GameTest server's own chunk/view
+                // distance (not attempted - high risk of destabilizing the other 39 tests in this
+                // same batch). Left as the same proven mechanism the generic case above already
+                // uses - checkNeighborSafetyForStructuralCell called directly against a genuinely
+                // unloaded far position - but now carrying the REAL target's own identity
+                // (operationId/signature) through every assertion below, instead of an independently
+                // recomputed "expected" position, which is the one part of this gap that WAS
+                // achievable.
                 PendingTarget realTarget = driveToNextPendingWorkstationCell(helper, storage, campfire);
                 BlockPos realAbsoluteTarget = realTarget.absolutePos();
                 // Reuses the SAME proven-safe magnitude as the generic probe above (10,000 blocks) -
@@ -2641,7 +2695,7 @@ public final class TownStructuralCellAdapterGameTests {
     // charged twice).
     // ------------------------------------------------------------------------------------------
     @GameTest(template = "settlement_test", skyAccess = true)
-    public static void nonAirNaturalTerrainTargetIsNeverReservedOrMutatedForAWorkstationCell(GameTestHelper helper) {
+    public static void nonAirNaturalTerrainDuringAcknowledgmentWindowLeavesTheOperationFencedForAWorkstationCell(GameTestHelper helper) {
         ServerLevel level = helper.getLevel();
         TownPassiveProductionHandlerGameTests.OwnedFixtureCleanup cleanup = new TownPassiveProductionHandlerGameTests.OwnedFixtureCleanup();
         helper.testInfo.addListener(cleanup);

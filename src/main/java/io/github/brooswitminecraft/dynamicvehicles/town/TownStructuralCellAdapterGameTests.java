@@ -1676,4 +1676,666 @@ public final class TownStructuralCellAdapterGameTests {
                         + secondAttempt);
         helper.succeed();
     }
+
+    // ============================================================================================
+    // MINECRAFT-454 [coordinator design 51565/51567/51570, workstation-ledger slice]: focused
+    // coverage for the 5 allowlisted single-block workstation types routed through the SAME
+    // construction-operation ledger as structural cells.
+    // ============================================================================================
+
+    /** [coordinator review 51593, reliability fix] {@code TownPlan#zoneAt}'s zone banding is a
+     *  slowly-varying function of distance-to-road - over ONE GameTest structure's own small local
+     *  footprint, the WHOLE scanned window can deterministically fall inside a single RESIDENTIAL/
+     *  STOREHOUSE band with no COMMERCIAL/INDUSTRIAL cell reachable at all, for an unlucky world-
+     *  seed/batch-position combination (confirmed empirically, reproduced in 4/4 runs touching
+     *  multiple different missing types). No amount of denser LOCAL scanning fixes this - the
+     *  window genuinely does not contain a qualifying zone. Per 51593's explicit authorization,
+     *  this instead selects a genuine site through the SAME unchanged production seed/zone/
+     *  profession logic (never bypassing it, never a direct-call shortcut - that would lose
+     *  exactly the buildAt/ordering/branch coverage these tests exist to prove) via a bounded, pure
+     *  (no world I/O) analytical scan around a FIXED region's own town centre - mirroring
+     *  {@code TownResidentCapacityAdmissionGameTests#realInterruptedClosingPlacementReleasesOnlyTheNewlyAcquiredTicket}'s
+     *  own already-established remote-site precedent for this exact problem class. Bounded well
+     *  inside {@link TownPlanner}'s own {@code CENTER_MARGIN_BLOCKS} (region size / 4) so a
+     *  candidate here is only ever evaluated against the SAME plan {@code buildAt} itself will
+     *  later recompute for this exact region - never crossing into a neighbour's different plan. */
+    private static BlockPos findRemoteWorkstationSite(GameTestHelper helper, RegionCoord region,
+            java.util.function.Predicate<net.minecraft.world.level.block.Block> blockMatches) {
+        long seed = helper.getLevel().getSeed();
+        TownPlan plan = TownPlanner.generate(region, seed);
+        final int SEARCH_RADIUS = 90;
+        final int SEARCH_STEP = 3;
+        for (int dx = -SEARCH_RADIUS; dx <= SEARCH_RADIUS; dx += SEARCH_STEP) {
+            for (int dz = -SEARCH_RADIUS; dz <= SEARCH_RADIUS; dz += SEARCH_STEP) {
+                int x = plan.townCenterX() + dx;
+                int z = plan.townCenterZ() + dz;
+                boolean isStorehouseSite = Math.abs(x - plan.townCenterX()) <= TownConstants.STOREHOUSE_FOOTPRINT_WIDTH
+                        && Math.abs(z - plan.townCenterZ()) <= TownConstants.STOREHOUSE_FOOTPRINT_WIDTH;
+                if (isStorehouseSite) {
+                    continue;
+                }
+                TownBuildingTemplates.Kind candidateKind = TownBuildingTemplates.kindFor(plan.zoneAt(x, z));
+                Optional<VillagerProfession> candidateProfession = TownProfessionWorkstations.finalProfessionFor(candidateKind, seed, x, z);
+                if (candidateProfession.isPresent()
+                        && TownProfessionWorkstations.blockFor(candidateProfession.get()).map(blockMatches::test).orElse(false)) {
+                    BlockPos found = new BlockPos(x, 0, z);
+                    helper.assertTrue(TownRegion.fromBlockCoords(x, z).equals(region),
+                            "test setup: the analytically-chosen site must resolve to the SAME region its plan was generated for - never a neighbour's");
+                    return found;
+                }
+            }
+        }
+        throw new IllegalStateException("test setup: a bounded, in-region analytical scan must find a real matching workstation site - found none within +/-"
+                + SEARCH_RADIUS + " of region " + region + "'s own town centre (" + plan.townCenterX() + "," + plan.townCenterZ() + ")");
+    }
+
+    /** [coordinator review 51593, reliability fix] Force-loads and flattens a small, bounded
+     *  column around the analytically-found {@code absoluteCampfire} (never the GameTest template
+     *  itself - this fixture does not touch it at all), radius {@code footprintRadius(kind)} (2)
+     *  plus one extra ring (3 total) so EVERY neighbor any structural/workstation cell at the edge
+     *  of the real building footprint could ever check against is also inert (AIR/DIRT), never
+     *  natural/unprepared remote terrain - margin 2 was separately confirmed to reintroduce a
+     *  genuine neighbor-rejection deadlock. Chunk-forcing and block-restoration are registered on
+     *  {@code cleanup} BEFORE any mutation, exactly like the established remote-fixture precedent
+     *  ({@code TownDonationHandlerGameTests}' own listener pattern,
+     *  {@code TownResidentCapacityAdmissionGameTests#realInterruptedClosingPlacementReleasesOnlyTheNewlyAcquiredTicket}'s
+     *  own usage of it), so a GameTest abort/timeout still releases everything this fixture
+     *  touched, not only a normal return. */
+    private static void prepareRemoteFlatGround(GameTestHelper helper, TownPassiveProductionHandlerGameTests.OwnedFixtureCleanup cleanup,
+            BlockPos absoluteCampfire) {
+        ServerLevel level = helper.getLevel();
+        final int RADIUS = 3;
+        int minChunkX = (absoluteCampfire.getX() - RADIUS) >> 4;
+        int maxChunkX = (absoluteCampfire.getX() + RADIUS) >> 4;
+        int minChunkZ = (absoluteCampfire.getZ() - RADIUS) >> 4;
+        int maxChunkZ = (absoluteCampfire.getZ() + RADIUS) >> 4;
+        helper.assertTrue(
+                minChunkX * 16 >= -net.minecraft.world.level.Level.MAX_LEVEL_SIZE
+                        && (maxChunkX * 16 + 15) < net.minecraft.world.level.Level.MAX_LEVEL_SIZE
+                        && minChunkZ * 16 >= -net.minecraft.world.level.Level.MAX_LEVEL_SIZE
+                        && (maxChunkZ * 16 + 15) < net.minecraft.world.level.Level.MAX_LEVEL_SIZE,
+                "test setup: the remote fixture footprint and its forced-chunk range must lie inside the real world border");
+
+        // Registered BEFORE the forcing loop below (not after): a partial-forcing failure mid-loop
+        // must never strand an earlier chunk's forced state unrestored.
+        java.util.List<int[]> forcedChunks = new java.util.ArrayList<>();
+        cleanup.add(() -> {
+            for (int[] chunk : forcedChunks) {
+                level.setChunkForced(chunk[0], chunk[1], false);
+            }
+        });
+        for (int cx = minChunkX; cx <= maxChunkX; cx++) {
+            for (int cz = minChunkZ; cz <= maxChunkZ; cz++) {
+                if (level.setChunkForced(cx, cz, true)) {
+                    forcedChunks.add(new int[] {cx, cz});
+                }
+            }
+        }
+
+        // [reliability fix] absoluteCampfire.getY() is the CALLER's own already-fixed ground
+        // height (TownTerrain.estimateGroundHeight computed once, before any clearing) - never
+        // recomputed independently here. An earlier version recomputed it AFTER the caller had
+        // already placed the campfire at a stale Y=0 "x/z carrier" position, so the floor this
+        // method flattened never actually matched where the campfire itself sat.
+        // [reliability finding, reverted] Clearing the FULL build-height column (minBuildHeight..
+        // maxBuildHeight, ~384 levels x 49 columns per test) was tried to rule out leftover real
+        // terrain poking into the footprint - it did NOT fix the stall (confirmed: identical
+        // failures with or without it) and caused a severe, separate problem of its own: forced
+        // chunks plus ~450k block writes/restores per full run left the game server hung at ~100%
+        // CPU for 10+ minutes past when results were already printed, confirmed by direct process
+        // inspection. Reverted to a bounded, generous-but-sane vertical range instead - enough
+        // headroom for any real building's floor-to-roof height without touching the whole world.
+        int baseY = absoluteCampfire.getY() - 2;
+        int minY = Math.max(level.getMinBuildHeight(), baseY - 4);
+        int maxY = Math.min(level.getMaxBuildHeight() - 1, baseY + 20);
+        java.util.List<BlockPos> writtenBlocks = new java.util.ArrayList<>();
+        java.util.Map<BlockPos, net.minecraft.world.level.block.state.BlockState> originalStates = new java.util.HashMap<>();
+        // Recorded BEFORE the write that might throw, so a write that fails partway still leaves
+        // its position queued for cleanup - the only way earlier successful writes stay covered too.
+        cleanup.add(() -> {
+            for (int i = writtenBlocks.size() - 1; i >= 0; i--) {
+                BlockPos pos = writtenBlocks.get(i);
+                level.setBlock(pos, originalStates.get(pos), net.minecraft.world.level.block.Block.UPDATE_ALL);
+            }
+        });
+        for (int dx = -RADIUS; dx <= RADIUS; dx++) {
+            for (int dz = -RADIUS; dz <= RADIUS; dz++) {
+                for (int y = minY; y <= maxY; y++) {
+                    BlockPos pos = new BlockPos(absoluteCampfire.getX() + dx, y, absoluteCampfire.getZ() + dz);
+                    originalStates.putIfAbsent(pos, level.getBlockState(pos));
+                    writtenBlocks.add(pos);
+                    level.setBlock(pos, (y >= baseY && y < baseY + 2 ? Blocks.DIRT : Blocks.AIR).defaultBlockState(),
+                            net.minecraft.world.level.block.Block.UPDATE_ALL);
+                }
+            }
+        }
+    }
+
+    /** Drives one real site, whose seed-resolved workstation is exactly {@code targetBlock}, all
+     *  the way to completion, and asserts: the workstation cell itself landed via the ledger, its
+     *  immediate structural neighbor (the floor cell directly beneath it) settled normally too
+     *  (proving the ordering fix actually lets the whole site finish, not merely that the gate
+     *  exists), and the site's own campfire closes (the whole-site completion signal every other
+     *  "ordinary construction" test in this file already uses). */
+    private static void assertFullSiteCompletionForWorkstationBlock(GameTestHelper helper, RegionCoord region,
+            net.minecraft.world.level.block.Block targetBlock) {
+        ServerLevel level = helper.getLevel();
+        TownPassiveProductionHandlerGameTests.OwnedFixtureCleanup cleanup = new TownPassiveProductionHandlerGameTests.OwnedFixtureCleanup();
+        helper.testInfo.addListener(cleanup);
+        BlockPos siteXZ = findRemoteWorkstationSite(helper, region, b -> b == targetBlock);
+        BlockPos campfire = new BlockPos(siteXZ.getX(), TownTerrain.estimateGroundHeight(level, siteXZ.getX(), siteXZ.getZ()), siteXZ.getZ());
+        prepareRemoteFlatGround(helper, cleanup, campfire);
+        level.setBlock(campfire, Blocks.CAMPFIRE.defaultBlockState(), net.minecraft.world.level.block.Block.UPDATE_ALL);
+        Villager claimant = createClaimant(helper, campfire);
+        cleanup.add(claimant::discard);
+        TownStorage storage = new TownStorage();
+        fundStore(helper, storage, campfire, 1_000_000);
+
+        int floorY = TownTerrain.estimateGroundHeightBelow(level, campfire);
+        BlockPos expectedWorkstation = TownBuildingTemplates.workstationPosition(campfire.getX(), floorY, campfire.getZ());
+        BlockPos structuralNeighborBelow = expectedWorkstation.below();
+
+        for (int i = 0; i < 1000 && level.getBlockState(campfire).is(Blocks.CAMPFIRE); i++) {
+            TownConstructionService.buildAt(level, campfire, storage);
+        }
+
+        helper.assertTrue(!level.getBlockState(campfire).is(Blocks.CAMPFIRE),
+                "a site whose workstation is " + targetBlock + " must still complete (the campfire must close) within a generous "
+                        + "tick budget - the workstation ledger branch must never silently stall it");
+        helper.assertTrue(level.getBlockState(expectedWorkstation).is(targetBlock),
+                "the expected workstation cell must actually be " + targetBlock + " once the site completes - found "
+                        + level.getBlockState(expectedWorkstation));
+        helper.assertTrue(TownConstructionService.isAllowlistedStructuralBlock(level.getBlockState(structuralNeighborBelow).getBlock()),
+                "the structural cell immediately beneath the workstation must also have settled normally - found "
+                        + level.getBlockState(structuralNeighborBelow));
+    }
+
+    @GameTest(template = "settlement_test", skyAccess = true)
+    public static void fullSiteCompletionForCartographyTableIncludingItsStructuralNeighbor(GameTestHelper helper) {
+        assertFullSiteCompletionForWorkstationBlock(helper, new RegionCoord(600, 600), Blocks.CARTOGRAPHY_TABLE);
+        helper.succeed();
+    }
+
+    @GameTest(template = "settlement_test", skyAccess = true)
+    public static void fullSiteCompletionForFletchingTableIncludingItsStructuralNeighbor(GameTestHelper helper) {
+        assertFullSiteCompletionForWorkstationBlock(helper, new RegionCoord(601, 601), Blocks.FLETCHING_TABLE);
+        helper.succeed();
+    }
+
+    @GameTest(template = "settlement_test", skyAccess = true)
+    public static void fullSiteCompletionForStonecutterIncludingItsStructuralNeighbor(GameTestHelper helper) {
+        assertFullSiteCompletionForWorkstationBlock(helper, new RegionCoord(602, 602), Blocks.STONECUTTER);
+        helper.succeed();
+    }
+
+    @GameTest(template = "settlement_test", skyAccess = true)
+    public static void fullSiteCompletionForLoomIncludingItsStructuralNeighbor(GameTestHelper helper) {
+        assertFullSiteCompletionForWorkstationBlock(helper, new RegionCoord(603, 603), Blocks.LOOM);
+        helper.succeed();
+    }
+
+    @GameTest(template = "settlement_test", skyAccess = true)
+    public static void fullSiteCompletionForSmithingTableIncludingItsStructuralNeighbor(GameTestHelper helper) {
+        assertFullSiteCompletionForWorkstationBlock(helper, new RegionCoord(604, 604), Blocks.SMITHING_TABLE);
+        helper.succeed();
+    }
+
+    /** Identifies (never reserves) the exact next not-yet-placed allowlisted WORKSTATION placement
+     *  the real adapter will itself attempt next - the workstation-branch analogue of {@link
+     *  #findNextPendingStructuralCell(GameTestHelper, TownStorage, BlockPos, String)}, used to arm
+     *  {@link TownConstructionService#testInjectDuringAcknowledgmentAt} for exactly that position.
+     *  Drives real buildAt ticks first so structural is genuinely complete (the workstation
+     *  branch's own gate) before this is even callable. */
+    private static PendingTarget driveToNextPendingWorkstationCell(GameTestHelper helper, TownStorage storage, BlockPos campfire) {
+        ServerLevel level = helper.getLevel();
+        String siteOwner = TownStorage.siteOwner(campfire);
+        for (int i = 0; i < 1000 && TownConstructionService.anyStructuralCellStillUnplaced(storage, level.dimension(), siteOwner,
+                planSignatureFor(helper, campfire, resolveSite(helper, campfire)),
+                byPositionFor(helper, campfire), campfire); i++) {
+            TownConstructionService.buildAt(level, campfire, storage);
+        }
+        helper.assertTrue(!TownConstructionService.anyStructuralCellStillUnplaced(storage, level.dimension(), siteOwner,
+                        planSignatureFor(helper, campfire, resolveSite(helper, campfire)), byPositionFor(helper, campfire), campfire),
+                "test setup: structural must complete within a generous tick budget before a workstation cell can ever be targeted");
+
+        ResolvedSite site = resolveSite(helper, campfire);
+        String planSignature = planSignatureFor(helper, campfire, site);
+        TownStorage.AnchorAssociation authorized = storage.anchorAssociationFor(siteOwner);
+        helper.assertTrue(authorized != null, "test setup: a real anchor association must already be established");
+        int floorY = TownTerrain.estimateGroundHeightBelow(level, campfire);
+        List<TownBuildingTemplates.Placement> template = TownBuildingTemplates.generate(site.kind(), campfire.getX(), floorY,
+                campfire.getZ(), TownPlanner.generate(TownRegion.fromBlockCoords(campfire.getX(), campfire.getZ()), level.getSeed())
+                        .storehouseVariant(), site.finalProfession().orElse(null));
+        for (TownBuildingTemplates.Placement placement : template) {
+            BlockPos pos = new BlockPos(placement.x(), placement.y(), placement.z());
+            if (pos.equals(campfire) || !TownConstructionService.isAllowlistedWorkstationBlock(placement.block())) {
+                continue;
+            }
+            String signature = TownConstructionService.cellSignature(planSignature, placement);
+            if (storage.isCellPlaced(level.dimension(), pos, siteOwner, signature)) {
+                continue;
+            }
+            UUID operationId = TownConstructionService.structuralCellOperationId(siteOwner, planSignature,
+                    authorized.anchorGenerationToken(), pos, signature);
+            TownConstructionOperation.CellEffect effect = new TownConstructionOperation.CellEffect(pos, level.getBlockState(pos),
+                    placement.state(), new TownConstructionOperation.BlockEntitySnapshot.None(),
+                    new TownConstructionOperation.BlockEntitySnapshot.None(), signature);
+            return new PendingTarget(placement, signature, operationId, effect, pos, placement.cost());
+        }
+        throw new IllegalStateException("test setup: no eligible not-yet-placed workstation cell remained to target");
+    }
+
+    private static Map<String, TownBuildingTemplates.Placement> byPositionFor(GameTestHelper helper, BlockPos campfire) {
+        ServerLevel level = helper.getLevel();
+        ResolvedSite site = resolveSite(helper, campfire);
+        int floorY = TownTerrain.estimateGroundHeightBelow(level, campfire);
+        List<TownBuildingTemplates.Placement> template = TownBuildingTemplates.generate(site.kind(), campfire.getX(), floorY,
+                campfire.getZ(), TownPlanner.generate(TownRegion.fromBlockCoords(campfire.getX(), campfire.getZ()), level.getSeed())
+                        .storehouseVariant(), site.finalProfession().orElse(null));
+        Map<String, TownBuildingTemplates.Placement> byPosition = new java.util.HashMap<>();
+        for (TownBuildingTemplates.Placement placement : template) {
+            byPosition.put(placement.x() + "," + placement.y() + "," + placement.z(), placement);
+        }
+        return byPosition;
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Pre-ack POI conflict: a POI record already exists at the target before reservation is ever
+    // attempted - no reservation, no mutation, no debit; the cell is simply retried later once
+    // clear. Uses a REAL job-site POI (an already-built, already-functioning vanilla job site
+    // elsewhere in the same template, whose own POI type the test points its own villager at is
+    // irrelevant - what matters is only that a POI record genuinely exists at the TARGET position)
+    // by directly adding a POI entry via the level's own PoiManager, the same primitive the engine
+    // itself uses on block placement - never a mocked stand-in.
+    // ------------------------------------------------------------------------------------------
+    @GameTest(template = "settlement_test", skyAccess = true)
+    public static void preAckPoiConflictAtWorkstationTargetDefersWithNoReservationOrMutation(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        TownPassiveProductionHandlerGameTests.OwnedFixtureCleanup cleanup = new TownPassiveProductionHandlerGameTests.OwnedFixtureCleanup();
+        helper.testInfo.addListener(cleanup);
+        BlockPos siteXZ = findRemoteWorkstationSite(helper, new RegionCoord(610, 610), TownConstructionService::isAllowlistedWorkstationBlock);
+        BlockPos campfire = new BlockPos(siteXZ.getX(), TownTerrain.estimateGroundHeight(level, siteXZ.getX(), siteXZ.getZ()), siteXZ.getZ());
+        prepareRemoteFlatGround(helper, cleanup, campfire);
+        level.setBlock(campfire, Blocks.CAMPFIRE.defaultBlockState(), net.minecraft.world.level.block.Block.UPDATE_ALL);
+        String siteOwner = TownStorage.siteOwner(campfire);
+        cleanup.add(createClaimant(helper, campfire)::discard);
+        TownStorage storage = new TownStorage();
+        TownResourceStore store = fundStore(helper, storage, campfire, 1_000_000);
+
+        int floorY = TownTerrain.estimateGroundHeightBelow(level, campfire);
+        BlockPos expectedWorkstation = TownBuildingTemplates.workstationPosition(campfire.getX(), floorY, campfire.getZ());
+
+        // Drive structural to completion first (the workstation branch's own gate) - the target
+        // cell is still genuinely AIR at this point, before any POI record exists there at all.
+        for (int i = 0; i < 1000 && TownConstructionService.anyStructuralCellStillUnplaced(storage, level.dimension(), siteOwner,
+                planSignatureFor(helper, campfire, resolveSite(helper, campfire)), byPositionFor(helper, campfire), campfire); i++) {
+            TownConstructionService.buildAt(level, campfire, storage);
+        }
+        helper.assertTrue(level.getBlockState(expectedWorkstation).isAir(),
+                "test setup: the workstation target must still be genuinely untouched once structural completes");
+        // Captured only AFTER structural completes (which legitimately spends resources) - this
+        // test's own debit assertion is scoped to the workstation POI-conflict step alone.
+        int stoneBefore = store.balance(TownResourceCategory.STONE);
+        int woodBefore = store.balance(TownResourceCategory.WOOD);
+
+        // A POI record now genuinely exists at the target - directly via the engine's own
+        // PoiManager primitive, exactly as block placement itself would create one.
+        level.getPoiManager().add(expectedWorkstation, net.minecraft.world.entity.ai.village.poi.PoiTypes.forState(Blocks.BLAST_FURNACE.defaultBlockState()).orElseThrow());
+        helper.assertTrue(level.getPoiManager().getType(expectedWorkstation).isPresent(),
+                "test setup: a POI record must now genuinely exist at the workstation target");
+
+        TownConstructionService.buildAt(level, campfire, storage);
+
+        helper.assertTrue(level.getBlockState(expectedWorkstation).isAir(),
+                "a pre-existing POI record at the target must defer the cell entirely - no mutation");
+        TownBuildingTemplates.Placement workstationPlacement = byPositionFor(helper, campfire).get(
+                expectedWorkstation.getX() + "," + expectedWorkstation.getY() + "," + expectedWorkstation.getZ());
+        helper.assertTrue(workstationPlacement != null, "test setup: the workstation placement must be found in the real template");
+        helper.assertTrue(!storage.isCellPlaced(level.dimension(), expectedWorkstation, siteOwner,
+                        TownConstructionService.cellSignature(planSignatureFor(helper, campfire, resolveSite(helper, campfire)),
+                                workstationPlacement)),
+                "no paid-progress record may be created while the target is a pre-existing POI");
+        helper.assertTrue(store.balance(TownResourceCategory.STONE) == stoneBefore && store.balance(TownResourceCategory.WOOD) == woodBefore,
+                "a deferred (never reserved) cell must cause zero debit");
+        helper.succeed();
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Post-ack POI conflict: a POI record appears EXACTLY during the acknowledgment window, via
+    // testInjectDuringAcknowledgmentAt - no write, no debit, cleanly cancelled via verified
+    // rollback (the target's own live BlockState is still genuinely Before - AIR), continue (not
+    // break), and the injected POI record itself is left completely untouched by the cancellation
+    // - this wiring never calls acquirePoiTicket/releasePoiTicket.
+    // ------------------------------------------------------------------------------------------
+    @GameTest(template = "settlement_test", skyAccess = true)
+    public static void postAckPoiConflictAtWorkstationTargetCancelsWithoutTouchingTheRecordThenRetrySucceeds(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        TownPassiveProductionHandlerGameTests.OwnedFixtureCleanup cleanup = new TownPassiveProductionHandlerGameTests.OwnedFixtureCleanup();
+        helper.testInfo.addListener(cleanup);
+        BlockPos siteXZ = findRemoteWorkstationSite(helper, new RegionCoord(611, 611), TownConstructionService::isAllowlistedWorkstationBlock);
+        BlockPos campfire = new BlockPos(siteXZ.getX(), TownTerrain.estimateGroundHeight(level, siteXZ.getX(), siteXZ.getZ()), siteXZ.getZ());
+        prepareRemoteFlatGround(helper, cleanup, campfire);
+        level.setBlock(campfire, Blocks.CAMPFIRE.defaultBlockState(), net.minecraft.world.level.block.Block.UPDATE_ALL);
+        String siteOwner = TownStorage.siteOwner(campfire);
+        cleanup.add(createClaimant(helper, campfire)::discard);
+        TownStorage storage = new TownStorage();
+        fundStore(helper, storage, campfire, 1_000_000);
+
+        PendingTarget target = driveToNextPendingWorkstationCell(helper, storage, campfire);
+        BlockPos absoluteTarget = target.absolutePos();
+        TownConstructionService.testInjectDuringAcknowledgmentAt = absoluteTarget;
+        TownConstructionService.testInjectDuringAcknowledgmentAction = () ->
+                level.getPoiManager().add(absoluteTarget, net.minecraft.world.entity.ai.village.poi.PoiTypes.forState(Blocks.BLAST_FURNACE.defaultBlockState()).orElseThrow());
+
+        TownConstructionService.buildAt(level, campfire, storage);
+
+        helper.assertTrue(!level.getBlockState(absoluteTarget).is(target.placement().block()),
+                "no placement may happen while a POI record exists at the target during the acknowledgment window");
+        helper.assertTrue(!storage.isCellPlaced(level.dimension(), absoluteTarget, siteOwner, target.signature()),
+                "no paid-progress record may be created while a POI record appeared mid-acknowledgment");
+        Optional<TownConstructionOperation> afterInjection = storage.constructionOperation(target.operationId());
+        helper.assertTrue(afterInjection.isPresent() && afterInjection.get().phase() == TownConstructionOperation.Phase.CANCELLED,
+                "an operation whose target cell gained a POI record during the acknowledgment window must be cleanly cancelled via "
+                        + "verified rollback (the block's own state is still genuinely Before) - found " + afterInjection);
+        helper.assertTrue(level.getPoiManager().getType(absoluteTarget).isPresent(),
+                "the injected POI record itself must be left completely untouched by this cancellation - this wiring never "
+                        + "examines or releases a ticket, only whether a record exists");
+
+        level.getPoiManager().remove(absoluteTarget); // the conflicting record clears
+        TownConstructionService.buildAt(level, campfire, storage);
+
+        helper.assertTrue(level.getBlockState(absoluteTarget).is(target.placement().block()),
+                "once the conflicting POI record is gone, a later retry must place this cell normally");
+        helper.assertTrue(storage.isCellPlaced(level.dimension(), absoluteTarget, siteOwner, target.signature()),
+                "once the conflicting POI record is gone, a later retry must record genuine paid progress");
+        helper.succeed();
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Ordinary success with the resulting POI left UNCLAIMED, and the SAME result again with it
+    // LEGITIMATELY CLAIMED by an unrelated villager after placement - settlement/recovery (via a
+    // retry/reload pass) proceeds identically either way, since classifyEffect never examines POI
+    // state at all, and the unrelated villager's own claim is byte-for-byte unchanged afterward.
+    // ------------------------------------------------------------------------------------------
+    @GameTest(template = "settlement_test", skyAccess = true)
+    public static void settlementAndRetryProceedIdenticallyWhetherTheResultingPoiIsUnclaimedOrLegitimatelyClaimed(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        TownPassiveProductionHandlerGameTests.OwnedFixtureCleanup cleanup = new TownPassiveProductionHandlerGameTests.OwnedFixtureCleanup();
+        helper.testInfo.addListener(cleanup);
+        BlockPos siteXZ = findRemoteWorkstationSite(helper, new RegionCoord(612, 612), TownConstructionService::isAllowlistedWorkstationBlock);
+        BlockPos campfire = new BlockPos(siteXZ.getX(), TownTerrain.estimateGroundHeight(level, siteXZ.getX(), siteXZ.getZ()), siteXZ.getZ());
+        prepareRemoteFlatGround(helper, cleanup, campfire);
+        level.setBlock(campfire, Blocks.CAMPFIRE.defaultBlockState(), net.minecraft.world.level.block.Block.UPDATE_ALL);
+        String siteOwner = TownStorage.siteOwner(campfire);
+        cleanup.add(createClaimant(helper, campfire)::discard);
+        TownStorage storage = new TownStorage();
+        fundStore(helper, storage, campfire, 1_000_000);
+
+        PendingTarget target = driveToNextPendingWorkstationCell(helper, storage, campfire);
+        BlockPos absoluteTarget = target.absolutePos();
+        TownConstructionService.buildAt(level, campfire, storage); // reserves, acknowledges, writes, settles this exact cell
+
+        helper.assertTrue(level.getBlockState(absoluteTarget).is(target.placement().block()),
+                "test setup: the workstation cell must have genuinely landed");
+        helper.assertTrue(storage.isCellPlaced(level.dimension(), absoluteTarget, siteOwner, target.signature()),
+                "ordinary settlement with the resulting POI still unclaimed must mark the cell placed normally");
+        Optional<TownConstructionOperation> settled = storage.constructionOperation(target.operationId());
+        helper.assertTrue(settled.isPresent() && settled.get().phase() == TownConstructionOperation.Phase.SETTLED,
+                "the operation must be SETTLED whether or not anything has claimed the resulting POI");
+
+        // An unrelated villager now legitimately acquires the real POI the engine itself created
+        // the instant the block landed - a normal, desirable production outcome, never a
+        // conflict. A later retry/reload pass must behave identically and never touch it.
+        Villager unrelatedClaimant = EntityType.VILLAGER.create(level, null, absoluteTarget, MobSpawnType.EVENT, false, false);
+        level.addFreshEntity(unrelatedClaimant);
+        cleanup.add(unrelatedClaimant::discard);
+        Optional<net.minecraft.core.Holder<net.minecraft.world.entity.ai.village.poi.PoiType>> poiType =
+                level.getPoiManager().getType(absoluteTarget);
+        helper.assertTrue(poiType.isPresent(), "test setup: the engine must have created a real POI record once the block landed");
+        boolean acquired = level.getPoiManager().take(type -> type.equals(poiType.get()), (type, pos) -> pos.equals(absoluteTarget),
+                absoluteTarget, 1).isPresent();
+        helper.assertTrue(acquired, "test setup: the unrelated villager must genuinely acquire a real ticket at the target");
+
+        CompoundTag saved = storage.save(new CompoundTag(), level.registryAccess());
+        TownStorage reloaded = TownStorage.load(saved, level.registryAccess());
+        TownConstructionService.buildAt(level, campfire, reloaded); // retry/reload pass
+
+        helper.assertTrue(level.getBlockState(absoluteTarget).is(target.placement().block()),
+                "the block itself must remain exactly as settled after a retry/reload pass");
+        helper.assertTrue(reloaded.isCellPlaced(level.dimension(), absoluteTarget, siteOwner, target.signature()),
+                "the paid-progress record must survive a reload unchanged");
+        helper.assertTrue(level.getPoiManager().getFreeTickets(absoluteTarget) < poiType.get().value().maxTickets(),
+                "the unrelated villager's own legitimately acquired ticket must remain exactly as it was - this ledger "
+                        + "wiring must never release or re-examine it during ordinary settlement/retry");
+        helper.succeed();
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // A true Before cancellation/refund: the write genuinely never lands (testForcePlacementInterruptionAt's
+    // sibling for this branch does not exist, so this uses a live-authority-loss path instead,
+    // which cancelWithVerifiedRollback refunds via the exact SAME unmodified mechanism) - refunded
+    // exactly once, proven via the operation's own CANCELLED phase per this file's own established
+    // convention (phase, never the aggregate balance, since a freed refund may be legitimately
+    // re-spent by the same tick's own loop).
+    // ------------------------------------------------------------------------------------------
+    @GameTest(template = "settlement_test", skyAccess = true)
+    public static void trueBeforeCancellationRefundsExactlyOnceForAWorkstationCell(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        TownPassiveProductionHandlerGameTests.OwnedFixtureCleanup cleanup = new TownPassiveProductionHandlerGameTests.OwnedFixtureCleanup();
+        helper.testInfo.addListener(cleanup);
+        BlockPos siteXZ = findRemoteWorkstationSite(helper, new RegionCoord(613, 613), TownConstructionService::isAllowlistedWorkstationBlock);
+        BlockPos campfire = new BlockPos(siteXZ.getX(), TownTerrain.estimateGroundHeight(level, siteXZ.getX(), siteXZ.getZ()), siteXZ.getZ());
+        prepareRemoteFlatGround(helper, cleanup, campfire);
+        level.setBlock(campfire, Blocks.CAMPFIRE.defaultBlockState(), net.minecraft.world.level.block.Block.UPDATE_ALL);
+        String siteOwner = TownStorage.siteOwner(campfire);
+        cleanup.add(createClaimant(helper, campfire)::discard);
+        TownStorage storage = new TownStorage();
+        fundStore(helper, storage, campfire, 1_000_000);
+
+        PendingTarget target = driveToNextPendingWorkstationCell(helper, storage, campfire);
+        BlockPos absoluteTarget = target.absolutePos();
+        // Remove the live anchor's own generation-token marker during the acknowledgment window -
+        // an authority loss, same mechanism anchorAuthorityChangeDuringAcknowledgmentWindowIsNeverOverwrittenAndCleanlyCancelled
+        // already uses for the structural branch - the target cell's own live state is still
+        // genuinely Before (AIR, never written), so cancelWithVerifiedRollback's existing,
+        // unmodified predicate refunds it normally.
+        TownConstructionService.testInjectDuringAcknowledgmentAt = absoluteTarget;
+        TownConstructionService.testInjectDuringAcknowledgmentAction = () -> {
+            if (level.getBlockEntity(campfire) instanceof net.minecraft.world.level.block.entity.CampfireBlockEntity campfireEntity) {
+                campfireEntity.getPersistentData().remove("dynamicvehicles:admission_generation");
+                campfireEntity.setChanged();
+            }
+        };
+
+        TownConstructionService.buildAt(level, campfire, storage);
+
+        helper.assertTrue(level.getBlockState(absoluteTarget).isAir(),
+                "an authority-lost operation's own target must remain genuinely untouched - still Before");
+        Optional<TownConstructionOperation> afterInjection = storage.constructionOperation(target.operationId());
+        helper.assertTrue(afterInjection.isPresent() && afterInjection.get().phase() == TownConstructionOperation.Phase.CANCELLED,
+                "a true Before cancellation must refund via the existing, unmodified cancelWithVerifiedRollback - found " + afterInjection);
+        helper.succeed();
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // An unknown/mixed (Quarantined) live state remains fenced: something unrelated places a
+    // DIFFERENT, unexpected block at the target during the acknowledgment window (neither the
+    // recorded Before nor After) - no settlement, no refund, the operation stays RESERVED.
+    // ------------------------------------------------------------------------------------------
+    @GameTest(template = "settlement_test", skyAccess = true)
+    public static void unknownLiveStateAtWorkstationTargetStaysFencedWithNoSettlementOrRefund(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        TownPassiveProductionHandlerGameTests.OwnedFixtureCleanup cleanup = new TownPassiveProductionHandlerGameTests.OwnedFixtureCleanup();
+        helper.testInfo.addListener(cleanup);
+        BlockPos siteXZ = findRemoteWorkstationSite(helper, new RegionCoord(614, 614), TownConstructionService::isAllowlistedWorkstationBlock);
+        BlockPos campfire = new BlockPos(siteXZ.getX(), TownTerrain.estimateGroundHeight(level, siteXZ.getX(), siteXZ.getZ()), siteXZ.getZ());
+        prepareRemoteFlatGround(helper, cleanup, campfire);
+        level.setBlock(campfire, Blocks.CAMPFIRE.defaultBlockState(), net.minecraft.world.level.block.Block.UPDATE_ALL);
+        cleanup.add(createClaimant(helper, campfire)::discard);
+        TownStorage storage = new TownStorage();
+        TownResourceStore store = fundStore(helper, storage, campfire, 1_000_000);
+
+        PendingTarget target = driveToNextPendingWorkstationCell(helper, storage, campfire);
+        BlockPos absoluteTarget = target.absolutePos();
+        int stoneBefore = store.balance(TownResourceCategory.STONE);
+        int woodBefore = store.balance(TownResourceCategory.WOOD);
+        TownConstructionService.testInjectDuringAcknowledgmentAt = absoluteTarget;
+        TownConstructionService.testInjectDuringAcknowledgmentAction = () ->
+                level.setBlock(absoluteTarget, Blocks.GOLD_BLOCK.defaultBlockState(), 3); // neither recorded Before nor After
+
+        TownConstructionService.buildAt(level, campfire, storage);
+
+        helper.assertTrue(level.getBlockState(absoluteTarget).is(Blocks.GOLD_BLOCK),
+                "an unrelated live state must never be overwritten by this wiring");
+        Optional<TownConstructionOperation> afterInjection = storage.constructionOperation(target.operationId());
+        helper.assertTrue(afterInjection.isPresent() && afterInjection.get().phase() == TownConstructionOperation.Phase.RESERVED,
+                "an unverifiable (Quarantined) live state must leave the operation fenced/RESERVED, never settled, never "
+                        + "cancelled/refunded, pending out-of-band resolution - found " + afterInjection);
+        // The reservation above legitimately debited escrow exactly once (reservedCost) when it
+        // was first taken - RESERVED (not CANCELLED) is itself the proof no refund has happened;
+        // a Quarantined live state must never trigger a SECOND debit on top of that, so the only
+        // expected change from stoneBefore/woodBefore is exactly the one reservation's own cost.
+        int expectedStoneDelta = target.costCategory() == TownResourceCategory.STONE ? TownConstants.CONSTRUCTION_COST_PER_BLOCK : 0;
+        int expectedWoodDelta = target.costCategory() == TownResourceCategory.WOOD ? TownConstants.CONSTRUCTION_COST_PER_BLOCK : 0;
+        helper.assertTrue(store.balance(TownResourceCategory.STONE) == stoneBefore - expectedStoneDelta
+                        && store.balance(TownResourceCategory.WOOD) == woodBefore - expectedWoodDelta,
+                "a fenced operation's own single reservation debit must stand exactly once - never refunded speculatively, "
+                        + "never debited a second time");
+        helper.succeed();
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Checkpoint-attempt freshness generalizes to a workstation-category operation - the exact
+    // same mechanism as staleSameOperationReadbackIsRejectedByAttemptFreshnessNotJustOperationMembership,
+    // with a workstation block as the After state instead of a structural material, confirming
+    // the fix is genuinely block-type-agnostic rather than duplicating its own logic.
+    // ------------------------------------------------------------------------------------------
+    @GameTest(template = "settlement_test")
+    public static void staleSameOperationReadbackIsRejectedForAWorkstationCategoryOperationToo(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        BlockPos pos = helper.absolutePos(new BlockPos(5, 2, 5));
+        level.setBlock(pos, Blocks.AIR.defaultBlockState(), 3);
+        net.minecraft.world.level.ChunkPos chunkPos = new net.minecraft.world.level.ChunkPos(pos);
+        UUID operationId = UUID.randomUUID();
+        net.minecraft.server.level.ChunkMap chunkMap = level.getChunkSource().chunkMap;
+
+        TownStorageChunkCheckpoint.CheckpointResult firstAttempt =
+                TownStorageChunkCheckpoint.checkpointLoadedChunkForOperation(level, chunkPos, operationId);
+        helper.assertTrue(firstAttempt instanceof TownStorageChunkCheckpoint.CheckpointResult.Checkpointed,
+                "test setup: the first (Before-state) checkpoint attempt must genuinely succeed - found " + firstAttempt);
+        CompoundTag staleBeforeSnapshot;
+        try {
+            staleBeforeSnapshot = TownStorageChunkCheckpoint.ChunkCheckpointSeam.real().read(chunkMap, chunkPos).get().orElseThrow();
+        } catch (Exception captureFailure) {
+            throw new IllegalStateException("test setup: capturing the real Before-state readback must succeed", captureFailure);
+        }
+
+        level.setBlock(pos, Blocks.CARTOGRAPHY_TABLE.defaultBlockState(), 3); // a workstation After state, not a structural one
+        TownStorageChunkCheckpoint.ChunkCheckpointSeam staleReadSeam = new TownStorageChunkCheckpoint.ChunkCheckpointSeam() {
+            @Override
+            public net.minecraft.world.level.chunk.LevelChunk currentChunk(ServerLevel l, net.minecraft.world.level.ChunkPos p) {
+                return TownStorageChunkCheckpoint.ChunkCheckpointSeam.real().currentChunk(l, p);
+            }
+
+            @Override
+            public java.util.concurrent.CompletableFuture<Void> write(net.minecraft.server.level.ChunkMap cm, net.minecraft.world.level.ChunkPos p, CompoundTag data) {
+                return TownStorageChunkCheckpoint.ChunkCheckpointSeam.real().write(cm, p, data);
+            }
+
+            @Override
+            public void flush(net.minecraft.server.level.ChunkMap cm) {
+                TownStorageChunkCheckpoint.ChunkCheckpointSeam.real().flush(cm);
+            }
+
+            @Override
+            public java.util.concurrent.CompletableFuture<Optional<CompoundTag>> read(net.minecraft.server.level.ChunkMap cm, net.minecraft.world.level.ChunkPos p) {
+                return java.util.concurrent.CompletableFuture.completedFuture(Optional.of(staleBeforeSnapshot));
+            }
+        };
+        TownStorageChunkCheckpoint.CheckpointResult secondAttempt =
+                TownStorageChunkCheckpoint.checkpointLoadedChunk(level, chunkPos, operationId, staleReadSeam);
+
+        helper.assertTrue(secondAttempt instanceof TownStorageChunkCheckpoint.CheckpointResult.RejectedReadbackMismatch,
+                "attempt freshness must reject a stale same-operationId readback for a workstation-category After state too - found "
+                        + secondAttempt);
+        helper.succeed();
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Changed plan/claimant/anchor during the acknowledgment window for a workstation cell -
+    // cleanly cancelled, never overwritten, same mechanism as
+    // anchorAuthorityChangeDuringAcknowledgmentWindowIsNeverOverwrittenAndCleanlyCancelled.
+    // ------------------------------------------------------------------------------------------
+    @GameTest(template = "settlement_test", skyAccess = true)
+    public static void changedAnchorDuringAcknowledgmentWindowIsNeverOverwrittenForAWorkstationCell(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        TownPassiveProductionHandlerGameTests.OwnedFixtureCleanup cleanup = new TownPassiveProductionHandlerGameTests.OwnedFixtureCleanup();
+        helper.testInfo.addListener(cleanup);
+        BlockPos siteXZ = findRemoteWorkstationSite(helper, new RegionCoord(615, 615), TownConstructionService::isAllowlistedWorkstationBlock);
+        BlockPos campfire = new BlockPos(siteXZ.getX(), TownTerrain.estimateGroundHeight(level, siteXZ.getX(), siteXZ.getZ()), siteXZ.getZ());
+        prepareRemoteFlatGround(helper, cleanup, campfire);
+        level.setBlock(campfire, Blocks.CAMPFIRE.defaultBlockState(), net.minecraft.world.level.block.Block.UPDATE_ALL);
+        cleanup.add(createClaimant(helper, campfire)::discard);
+        TownStorage storage = new TownStorage();
+        fundStore(helper, storage, campfire, 1_000_000);
+
+        PendingTarget target = driveToNextPendingWorkstationCell(helper, storage, campfire);
+        BlockPos absoluteTarget = target.absolutePos();
+        TownConstructionService.testInjectDuringAcknowledgmentAt = absoluteTarget;
+        TownConstructionService.testInjectDuringAcknowledgmentAction = () -> {
+            if (level.getBlockEntity(campfire) instanceof net.minecraft.world.level.block.entity.CampfireBlockEntity campfireEntity) {
+                campfireEntity.getPersistentData().putUUID("dynamicvehicles:admission_generation", UUID.randomUUID());
+                campfireEntity.setChanged();
+            }
+        };
+
+        TownConstructionService.buildAt(level, campfire, storage);
+
+        helper.assertTrue(!level.getBlockState(absoluteTarget).is(target.placement().block()),
+                "an anchor-token change during the acknowledgment window must never let the write land");
+        helper.assertTrue(!storage.isCellPlaced(level.dimension(), absoluteTarget, TownStorage.siteOwner(campfire), target.signature()),
+                "an anchor-token change during the acknowledgment window must never fabricate paid progress");
+        helper.succeed();
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Unloaded affected/neighbor chunk for a workstation cell - deferred, never force-loaded, same
+    // mechanism checkNeighborSafetyForStructuralCell already provides for structural cells (reused
+    // verbatim by the workstation branch).
+    // ------------------------------------------------------------------------------------------
+    @GameTest(template = "settlement_test", skyAccess = true)
+    public static void unloadedNeighborChunkDefersAWorkstationCellWithoutForceLoading(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        TownPassiveProductionHandlerGameTests.OwnedFixtureCleanup cleanup = new TownPassiveProductionHandlerGameTests.OwnedFixtureCleanup();
+        helper.testInfo.addListener(cleanup);
+        // This test never cares WHICH of the 5 supported types it is.
+        BlockPos siteXZ = findRemoteWorkstationSite(helper, new RegionCoord(616, 616), TownConstructionService::isAllowlistedWorkstationBlock);
+        BlockPos campfire = new BlockPos(siteXZ.getX(), TownTerrain.estimateGroundHeight(level, siteXZ.getX(), siteXZ.getZ()), siteXZ.getZ());
+        prepareRemoteFlatGround(helper, cleanup, campfire);
+        level.setBlock(campfire, Blocks.CAMPFIRE.defaultBlockState(), net.minecraft.world.level.block.Block.UPDATE_ALL);
+        cleanup.add(createClaimant(helper, campfire)::discard);
+        TownStorage storage = new TownStorage();
+        fundStore(helper, storage, campfire, 1_000_000);
+
+        int floorY = TownTerrain.estimateGroundHeightBelow(level, campfire);
+        BlockPos expectedWorkstation = TownBuildingTemplates.workstationPosition(campfire.getX(), floorY, campfire.getZ());
+        BlockPos farAwayNeighborChunk = new BlockPos(expectedWorkstation.getX() + 10_000, expectedWorkstation.getY(), expectedWorkstation.getZ());
+        helper.assertTrue(!level.hasChunkAt(farAwayNeighborChunk), "test setup: the far-away probe position must genuinely be unloaded");
+
+        // Drive structural to completion, then directly exercise the primitive this branch
+        // reuses verbatim - checkNeighborSafetyForStructuralCell - against a position whose
+        // neighbor chunk is unloaded, confirming DEFER (not REJECT, not SAFE), exactly as the
+        // structural branch's own equivalent coverage already establishes.
+        for (int i = 0; i < 1000 && TownConstructionService.anyStructuralCellStillUnplaced(storage, level.dimension(),
+                TownStorage.siteOwner(campfire), planSignatureFor(helper, campfire, resolveSite(helper, campfire)),
+                byPositionFor(helper, campfire), campfire); i++) {
+            TownConstructionService.buildAt(level, campfire, storage);
+        }
+        TownConstructionService.NeighborSafety safety = TownConstructionService.checkNeighborSafetyForStructuralCell(
+                level, farAwayNeighborChunk, Set.of(farAwayNeighborChunk));
+        helper.assertTrue(safety == TownConstructionService.NeighborSafety.DEFER,
+                "an unloaded neighbor chunk must defer, never reject and never force-load - found " + safety);
+        helper.assertTrue(!level.hasChunkAt(farAwayNeighborChunk), "the neighbor-safety check itself must never force-load the chunk it just deferred on");
+        helper.succeed();
+    }
 }

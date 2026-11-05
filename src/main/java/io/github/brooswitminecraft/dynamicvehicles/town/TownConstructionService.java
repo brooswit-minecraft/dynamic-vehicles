@@ -103,6 +103,40 @@ public final class TownConstructionService {
         return STRUCTURAL_CELL_ADAPTER_MATERIALS.contains(block);
     }
 
+    /** MINECRAFT-454 [coordinator design 51565/51567, workstation-ledger slice]: the ONLY
+     *  single-block, non-closing workstation types this first slice covers - exactly the 5 of
+     *  {@link TownProfessionWorkstations}'s 13 mapped blocks confirmed (against matched NeoForge
+     *  source) to be block-entity-free with no {@code updateShape}/{@code neighborChanged}/
+     *  {@code randomTick}/{@code tick} reactive override at all: {@code CARTOGRAPHY_TABLE}
+     *  (CARTOGRAPHER), {@code FLETCHING_TABLE} (FLETCHER), {@code STONECUTTER} (MASON), {@code
+     *  LOOM} (SHEPHERD), {@code SMITHING_TABLE} (TOOLSMITH) - each either extends {@code Block}
+     *  directly (no properties at all) or has exactly one property (FACING) fixed ONLY at
+     *  placement time via {@code getStateForPlacement}, never mutated afterward.
+     *
+     *  <p>The other 8 ({@code BLAST_FURNACE}/{@code SMOKER}/{@code BARREL}/{@code BREWING_STAND}/
+     *  {@code LECTERN} each extend {@code BaseEntityBlock} - a real block entity whose specific
+     *  capture/replay semantics have not been separately designed/verified for this slice, not
+     *  because {@link TownConstructionOperation.BlockEntitySnapshot}'s existing {@code Captured}/
+     *  {@code Unsupported} evidence is incapable of representing one; {@code COMPOSTER}'s LEVEL
+     *  property can change passively from ambient falling-item activity, not only deliberate
+     *  interaction; {@code CAULDRON} can transform into an entirely different block,
+     *  {@code WATER_CAULDRON} or {@code POWDER_SNOW_CAULDRON}, from ambient rain/snow or
+     *  dripstone alone (confirmed in {@code CauldronBlock#handlePrecipitation}/{@code
+     *  receiveStalactiteDrip}); {@code GRINDSTONE} (via {@code
+     *  FaceAttachedHorizontalDirectionalBlock#updateShape}) self-destroys to {@code AIR} the
+     *  instant its exact attached support face stops being sturdy - a genuine neighbor reaction)
+     *  stay entirely on the existing legacy {@code tryPayForBlock}/{@code markCellPlaced} path,
+     *  completely untouched by this slice. */
+    private static final Set<net.minecraft.world.level.block.Block> WORKSTATION_LEDGER_ADAPTER_MATERIALS = Set.of(
+            Blocks.CARTOGRAPHY_TABLE, Blocks.FLETCHING_TABLE, Blocks.STONECUTTER, Blocks.LOOM, Blocks.SMITHING_TABLE);
+
+    /** {@code true} iff {@code block} is one of the 5 allowlisted workstation-ledger materials -
+     *  see {@link #WORKSTATION_LEDGER_ADAPTER_MATERIALS}. Package-private so a focused test can
+     *  assert the allowlist directly. */
+    static boolean isAllowlistedWorkstationBlock(net.minecraft.world.level.block.Block block) {
+        return WORKSTATION_LEDGER_ADAPTER_MATERIALS.contains(block);
+    }
+
     /** MINECRAFT-454 [structural-cell adapter, step 2c.1]: the small, explicit set of live
      *  {@link BlockState}s PROVEN inert to a neighbor-update notification from one of this
      *  adapter's own placements - deliberately an ALLOWLIST (never a blocklist): anything not on
@@ -1204,18 +1238,224 @@ public final class TownConstructionService {
                 // same deterministic id, or 2b's reconciliation once truly settled.
                 continue;
             }
+            // MINECRAFT-454 [coordinator design 51565/51567/51570, workstation-ledger slice]: one
+            // of the 5 allowlisted single-block workstation types, routed through the SAME
+            // construction-operation ledger as structural cells - a SEPARATE branch from the
+            // structural one above (never folded into the same condition - doing so was the
+            // confirmed ordering bug in the first design draft, see 51566), gated at entry by the
+            // EXISTING, UNCHANGED, structural-only anyStructuralCellStillUnplaced check: a
+            // workstation cell is never even attempted until every structural cell at this site
+            // is already placed-and-paid. This is what prevents the neighbor-rejection deadlock
+            // (a structural cell can never find an adjacent, already-placed workstation to fail
+            // its own neighbor check against) WITHOUT adding any workstation block to
+            // NEIGHBOR_INERT_BLOCKS - sequencing, not exemption.
+            if (!pos.equals(campfire) && isAllowlistedWorkstationBlock(placement.block())) {
+                if (anyStructuralCellStillUnplaced(storage, level.dimension(), siteOwner, planSignature, byPosition, campfire)) {
+                    continue; // structural is not yet complete - retry this cell next tick
+                }
+                NeighborSafety neighborSafety = checkNeighborSafetyForStructuralCell(level, pos, Set.of(pos));
+                if (neighborSafety != NeighborSafety.SAFE) {
+                    continue;
+                }
+                // [coordinator review 51570] Pre-reservation: the target must have no POI record
+                // at all yet - defensive, alongside the neighbor-safety check above, never a
+                // substitute for it. This is never an examination of WHO holds a ticket, only
+                // whether a POI record exists at all.
+                if (level.getPoiManager().getType(pos).isPresent()) {
+                    continue;
+                }
+                // [coordinator review 51602] isSafeToOverwrite (shared with every cell, runs
+                // earlier in this loop) permits any TownTerrain.isNaturalTerrain block, not only
+                // AIR - but this effect's own recorded `before` is unconditionally AIR with no
+                // block entity (see freshEffect below), so the live target must genuinely BE that
+                // before this cell is ever reserved, never a different-but-"safe" natural block
+                // silently adopted as if it were AIR. These 5 blocks never have a block entity
+                // themselves, so a direct null check is the exact right-sized equivalent of
+                // TownConstructionOperationService's own blockEntityMatches for this fixed-shape
+                // effect - no need to touch that shared classifier for this.
+                if (!level.getBlockState(pos).isAir() || level.getBlockEntity(pos) != null) {
+                    continue;
+                }
+
+                UUID anchorGenerationToken;
+                if (boundAdmission.isPresent()) {
+                    anchorGenerationToken = boundAdmission.get().anchorGenerationToken();
+                } else {
+                    Optional<UUID> established = storage.establishOrReadAnchorAssociation(level,
+                            TownStorage.productionSaveFile(level.getServer()), level.registryAccess(), campfire,
+                            level.dimension(), siteOwner, planSignature, claimant.getUUID());
+                    if (established.isEmpty()) {
+                        continue;
+                    }
+                    anchorGenerationToken = established.get();
+                }
+
+                TownConstructionOperation.CellEffect freshEffect = new TownConstructionOperation.CellEffect(pos,
+                        level.getBlockState(pos), placement.state(), new TownConstructionOperation.BlockEntitySnapshot.None(),
+                        new TownConstructionOperation.BlockEntitySnapshot.None(), signature);
+                UUID operationId = structuralCellOperationId(siteOwner, planSignature, anchorGenerationToken, pos, signature);
+
+                TownConstructionOperation.CellEffect effectToReserve = freshEffect;
+                Map<TownResourceCategory, Integer> costToReserve = Map.of(block.cost(), TownConstants.CONSTRUCTION_COST_PER_BLOCK);
+                UUID reserveId = operationId;
+
+                Optional<TownConstructionOperation> existingAtOperationId = storage.constructionOperation(operationId);
+                boolean chainBlocked = false;
+                if (existingAtOperationId.isPresent()) {
+                    TownConstructionOperation existingOperation = existingAtOperationId.get();
+                    if (existingOperation.phase() == TownConstructionOperation.Phase.SETTLED) {
+                        continue; // 2b's reconstruction already covers it
+                    } else if (existingOperation.phase() == TownConstructionOperation.Phase.CANCELLED) {
+                        UUID chainId = operationId;
+                        while (true) {
+                            Optional<TownConstructionOperation> atChainId = storage.constructionOperation(chainId);
+                            if (atChainId.isEmpty()) {
+                                reserveId = chainId;
+                                break;
+                            }
+                            TownConstructionOperation chainOperation = atChainId.get();
+                            if (chainOperation.phase() == TownConstructionOperation.Phase.SETTLED) {
+                                chainBlocked = true;
+                                break;
+                            }
+                            if (chainOperation.phase() == TownConstructionOperation.Phase.CANCELLED) {
+                                if (storage.isPendingTerminalAcknowledgment(chainOperation.operationId())) {
+                                    TownConstructionOperationService.retryTerminalAcknowledgment(storage,
+                                            TownStorage.productionSaveFile(level.getServer()), level.registryAccess(),
+                                            chainOperation.operationId());
+                                    chainBlocked = true;
+                                    break;
+                                }
+                                if (!(TownConstructionOperationService.classifyEffects(level, chainOperation)
+                                        instanceof TownConstructionOperationService.EffectClassification.Before)) {
+                                    chainBlocked = true;
+                                    break;
+                                }
+                                chainId = UUID.nameUUIDFromBytes((chainId + "|" + signature).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                                continue;
+                            }
+                            chainBlocked = true;
+                            break;
+                        }
+                    } else {
+                        effectToReserve = existingOperation.effects().get(0);
+                        costToReserve = existingOperation.reservedCost();
+                        reserveId = operationId;
+                    }
+                }
+                if (chainBlocked) {
+                    continue;
+                }
+
+                TownConstructionOperationService.ReservationOutcome reservation = TownConstructionOperationService.reserveAndAwaitAcknowledgment(
+                        storage, level.getServer(), reserveId, level.dimension(), townKey, siteOwner, anchorGenerationToken,
+                        claimant.getUUID(), Optional.empty(), List.of(effectToReserve), costToReserve);
+                if (!(reservation instanceof TownConstructionOperationService.ReservationOutcome.Reserved reserved)) {
+                    break;
+                }
+                UUID finalOperationId = reserved.operation().operationId();
+
+                if (pos.equals(testInjectDuringAcknowledgmentAt) && testInjectDuringAcknowledgmentAction != null) {
+                    Runnable injectedAction = testInjectDuringAcknowledgmentAction;
+                    testInjectDuringAcknowledgmentAt = null;
+                    testInjectDuringAcknowledgmentAction = null;
+                    injectedAction.run();
+                }
+
+                TownConstructionOperation.CellEffect recordedEffect = reserved.operation().effects().get(0);
+                Optional<Villager> liveClaimantOpt = TownCampfireClaims.findClaimant(level, campfire);
+                Optional<ResidentCapacityAdmission> liveBoundAdmission = storage.capacityAdmissionBoundToSite(level.dimension(), siteOwner);
+                String liveAuthorizedPlanSignature;
+                boolean currentAuthoritySourceValid;
+                if (liveBoundAdmission.isPresent()) {
+                    liveAuthorizedPlanSignature = liveBoundAdmission.get().boundPlanSignature();
+                    currentAuthoritySourceValid = liveBoundAdmission.get().state() == ResidentCapacityAdmission.State.BUILDING;
+                } else if (storage.hasSiteEverBeenBoundToAnAdmission(level.dimension(), siteOwner)) {
+                    liveAuthorizedPlanSignature = null;
+                    currentAuthoritySourceValid = false;
+                } else {
+                    TownStorage.AnchorAssociation liveAssociation = storage.anchorAssociationFor(siteOwner);
+                    liveAuthorizedPlanSignature = liveAssociation != null ? liveAssociation.planSignature() : null;
+                    currentAuthoritySourceValid = liveAssociation != null;
+                }
+                boolean authorityValid = currentAuthoritySourceValid
+                        && liveAnchorGenerationTokenMatches(level, campfire, reserved.operation().anchorGenerationToken())
+                        && liveClaimantOpt.isPresent() && reserved.operation().builderId().equals(liveClaimantOpt.get().getUUID())
+                        && liveAuthorizedPlanSignature != null
+                        && recordedEffect.signature().equals(cellSignature(liveAuthorizedPlanSignature, placement));
+                if (!authorityValid) {
+                    TownConstructionOperationService.cancelWithVerifiedRollback(storage, level,
+                            TownStorage.productionSaveFile(level.getServer()), level.registryAccess(), finalOperationId);
+                    break;
+                }
+                // [coordinator review 51570] Post-acknowledgment, immediately before the first
+                // world write: re-confirm the SAME "no POI record yet" condition as part of
+                // localStateValid, alongside the existing chunk-loaded/exact-recorded-Before/
+                // neighbor-safety conditions. A POI record appearing here during the
+                // acknowledgment window is treated exactly like any other local-state loss -
+                // cancelWithVerifiedRollback + continue, never a break, and this never calls
+                // acquirePoiTicket/releasePoiTicket or otherwise touches whatever created it.
+                // [coordinator review 51602] Re-checked here too, immediately before the first
+                // world write, for the same reason the pre-reservation check exists - this
+                // effect's recorded before is unconditionally a block-entity-free AIR cell; a
+                // block entity appearing at this exact position during the acknowledgment window
+                // (however unlikely) must never be silently overwritten either.
+                boolean localStateValid = level.hasChunkAt(recordedEffect.pos())
+                        && level.getBlockState(recordedEffect.pos()).equals(recordedEffect.before())
+                        && checkNeighborSafetyForStructuralCell(level, recordedEffect.pos(), Set.of(recordedEffect.pos())) == NeighborSafety.SAFE
+                        && !TownSitePreflight.isEntityBlocking(level, recordedEffect.pos(), campfire, claimant.getUUID())
+                        && level.getPoiManager().getType(recordedEffect.pos()).isEmpty()
+                        && level.getBlockEntity(recordedEffect.pos()) == null;
+                if (!localStateValid) {
+                    TownConstructionOperationService.cancelWithVerifiedRollback(storage, level,
+                            TownStorage.productionSaveFile(level.getServer()), level.registryAccess(), finalOperationId);
+                    continue;
+                }
+
+                boolean workstationMutated = level.setBlock(pos, placement.state(), net.minecraft.world.level.block.Block.UPDATE_ALL);
+                if (!workstationMutated || !level.getBlockState(pos).is(placement.block())) {
+                    TownConstructionOperationService.cancelWithVerifiedRollback(storage, level,
+                            TownStorage.productionSaveFile(level.getServer()), level.registryAccess(), finalOperationId);
+                    continue;
+                }
+                if (pos.equals(testForceStructuralPostWriteInterruptionAt)) {
+                    testForceStructuralPostWriteInterruptionAt = null;
+                    continue;
+                }
+                // The write has now landed, and - exactly as explained in 51567 - this is NOT an
+                // After/settlement gate for POI state: classifyEffect (checkpointAndSettle's own
+                // basis) classifies purely from BlockState + BlockEntity, never from whether the
+                // engine's own PoiManager has since (automatically, and entirely independently of
+                // this wiring) created a POI record here, or whether some unrelated villager has
+                // already legitimately claimed it. Settlement proceeds identically either way;
+                // this wiring never calls acquirePoiTicket/releasePoiTicket, so a legitimate claim
+                // is never examined, evicted, or released by it.
+                TownConstructionOperationService.SettlementOutcome settlement = TownConstructionOperationService.checkpointAndSettle(
+                        storage, level, level.getServer(), finalOperationId);
+                if (settlement instanceof TownConstructionOperationService.SettlementOutcome.Settled) {
+                    storage.markCellPlaced(level.dimension(), pos, siteOwner, signature, placement.state());
+                    placedThisTick++;
+                }
+                continue;
+            }
             // MINECRAFT-454 [structural-cell adapter, ordering fix - replaces the previous, WRONG
-            // "exempt whole plan from neighbor check" approach]: no fixture cell (not the campfire,
-            // not an allowlisted structural material - i.e. every bed/door/workstation cell) may be
-            // ATTEMPTED in a given tick until EVERY allowlisted structural cell in this site's own
-            // template is already placed-and-paid. An already-placed adjacent bed/door/workstation
-            // is not proven inert, so a structural cell's own neighbor-safety check correctly
-            // rejects it - the fix is this explicit ordering constraint, never a weakened neighbor
-            // check. This is a genuine completion check (isCellPlaced against the FULL template),
-            // never merely "comes later in iteration order" - skip this fixture cell THIS tick (it
-            // is reconsidered on a later tick once structural is done); the campfire's own closing
-            // placement keeps its EXISTING, unchanged deferral (hasUnplacedBlocksBefore above).
-            if (!pos.equals(campfire) && anyStructuralCellStillUnplaced(storage, level.dimension(), siteOwner, planSignature, byPosition, campfire)) {
+            // "exempt whole plan from neighbor check" approach; generalized per 51566/51570 for the
+            // workstation-ledger slice]: no LEGACY fixture cell (not the campfire, not an
+            // allowlisted structural material, not an allowlisted workstation material - i.e.
+            // every bed/door/excluded-workstation cell) may be ATTEMPTED in a given tick until
+            // EVERY allowlisted structural cell AND every allowlisted workstation cell in this
+            // site's own template are already placed-and-paid. An already-placed adjacent
+            // fixture/workstation is not proven inert, so a ledger cell's own neighbor-safety
+            // check correctly rejects it - the fix is this explicit ordering constraint, never a
+            // weakened neighbor check. This is a genuine completion check (isCellPlaced against
+            // the FULL template), never merely "comes later in iteration order" - skip this
+            // fixture cell THIS tick (it is reconsidered on a later tick once both ledger-eligible
+            // groups are done); the campfire's own closing placement keeps its EXISTING, unchanged
+            // deferral (hasUnplacedBlocksBefore above). Deliberately a SEPARATE helper from
+            // anyStructuralCellStillUnplaced (kept unchanged, structural-only, used ONLY to gate
+            // entry into the workstation ledger branch above) - never reusing that narrower check
+            // here, which would let a legacy fixture attempt before workstations are done.
+            if (!pos.equals(campfire) && anyLedgerEligibleCellStillUnplaced(storage, level.dimension(), siteOwner, planSignature, byPosition, campfire)) {
                 continue;
             }
             // [Review round 5, finding #1] The claimant legitimately parks AT the campfire cell
@@ -2159,6 +2399,27 @@ public final class TownConstructionService {
         for (TownBuildingTemplates.Placement placement : byPosition.values()) {
             BlockPos pos = new BlockPos(placement.x(), placement.y(), placement.z());
             if (pos.equals(campfire) || !isAllowlistedStructuralBlock(placement.block())) {
+                continue;
+            }
+            String signature = cellSignature(planSignature, placement);
+            if (!storage.isCellPlaced(dimension, pos, siteOwner, signature)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** MINECRAFT-454 [coordinator design 51565/51567/51570, workstation-ledger slice]: same exact
+     *  completion-check shape as {@link #anyStructuralCellStillUnplaced}, generalized to also
+     *  require every allowlisted WORKSTATION cell done - used ONLY to gate the legacy fixture path
+     *  (beds/doors/the 8 excluded workstation professions), never to gate entry into the
+     *  workstation ledger branch itself (that branch's own gate deliberately stays the narrower,
+     *  unchanged, structural-only {@link #anyStructuralCellStillUnplaced} - see 51566). */
+    static boolean anyLedgerEligibleCellStillUnplaced(TownStorage storage, ResourceKey<Level> dimension, String siteOwner,
+            String planSignature, Map<String, TownBuildingTemplates.Placement> byPosition, BlockPos campfire) {
+        for (TownBuildingTemplates.Placement placement : byPosition.values()) {
+            BlockPos pos = new BlockPos(placement.x(), placement.y(), placement.z());
+            if (pos.equals(campfire) || !(isAllowlistedStructuralBlock(placement.block()) || isAllowlistedWorkstationBlock(placement.block()))) {
                 continue;
             }
             String signature = cellSignature(planSignature, placement);

@@ -12,11 +12,15 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.ai.village.poi.PoiTypes;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.saveddata.SavedData;
+import net.minecraft.world.level.storage.LevelResource;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -66,7 +70,11 @@ import net.minecraft.world.entity.npc.VillagerProfession;
  * change silently survive only until the next server restart, with no error anywhere to reveal it.
  * Keeping this self-contained means a caller can never get it wrong by omission.
  */
-public final class TownStorage extends SavedData {
+// MINECRAFT-454 [stage 2 port, test seam]: not final - lets a GameTest-only subclass override
+// save(CompoundTag, Provider) to deterministically force a capture failure for
+// TownStorageCheckpointPendingStateGameTests, without adding a dedicated "simulate failure"
+// method to production API surface. Every existing method keeps its own final-ness/behavior.
+public class TownStorage extends SavedData {
     private static final String NAME = "dynamicvehicles_towns";
 
     /** An owner's claim on one persisted cell: WHO placed it (see {@link #siteOwner(BlockPos)} /
@@ -119,6 +127,48 @@ public final class TownStorage extends SavedData {
     private final Map<String, DonationBoxBinding> donationBoxes = new HashMap<>();
     private final Map<String, Long> donationBoxGenerations = new HashMap<>();
     private final Map<String, DonationOperation> donationOperations = new HashMap<>();
+    /** [stage 2, coordinator design 51327] Durable construction operation ledger - keyed by the
+     *  caller-minted {@code operationId} itself (never regenerated), the sole recovery enumeration
+     *  entry point (see {@link #pendingConstructionOperations}), never the live world. */
+    private final Map<UUID, TownConstructionOperation> constructionOperations = new HashMap<>();
+    /** [stage 2] Dimension-qualified sites whose own persisted construction operation record was
+     *  malformed, duplicate, or conflicting on load - fenced against a NEW operation forever
+     *  (within this instance's lifetime), since this mod can no longer prove the old operation's
+     *  own world effects/witness are safely finished. Parallels {@link #quarantinedAdmissionSites}. */
+    private final Set<String> quarantinedConstructionSites = new HashSet<>();
+    /** [coordinator review 51346] Operation ids whose transition to a TERMINAL phase (SETTLED/
+     *  CANCELLED) has happened in memory but has NOT yet been durably acknowledged by an
+     *  orchestration caller - see {@link #markPendingTerminalAcknowledgment}/{@link
+     *  #confirmTerminalAcknowledgment}. While an id is present here, every fencing/ownership query
+     *  below still treats that operation as occupying its own site/chunks, so a synchronous join's
+     *  own FAILURE path can never silently release a fence for a transition that might not survive
+     *  a crash. Deliberately NEVER persisted (see {@link #save}/{@link #load}): after a restart,
+     *  whatever phase was actually, durably written IS the truth - there is nothing left to track.
+     *  Mutated ONLY by the two methods below, both called ONLY from the server thread by the
+     *  orchestration layer, never from any write-completion callback. */
+    private final Set<UUID> pendingTerminalAcknowledgment = new HashSet<>();
+    /** [stage 2, structural-cell adapter] Durable association between a building site (keyed by
+     *  {@code siteOwner}) and the exact plan/claimant/anchor generation that is authorized to place
+     *  its allowlisted structural cells via the construction operation ledger - see
+     *  {@link #establishOrReadAnchorAssociation}. */
+    record AnchorAssociation(ResourceKey<Level> dimension, String siteOwner, String planSignature,
+                              UUID claimantId, UUID anchorGenerationToken) {}
+    private final Map<String, AnchorAssociation> anchorAssociations = new HashMap<>();
+    /** [stage 2, structural-cell adapter] siteOwner keys whose {@link AnchorAssociation} has been
+     *  recorded but whose chunk/ledger acknowledgment is not yet both confirmed - see
+     *  {@link #establishOrReadAnchorAssociation}. Mirrors {@link #pendingTerminalAcknowledgment}'s
+     *  own discipline: recorded BEFORE either checkpoint attempt, cleared only once both actually
+     *  succeed. */
+    private final Set<String> pendingAnchorAcknowledgment = new HashSet<>();
+    /** Test-only fault injection for {@link #finishAnchorAcknowledgment}'s chunk-acknowledgment
+     *  step - mirrors {@code TownConstructionService#testForcePlacementInterruptionAt}'s exact
+     *  convention (test-only, package-private, consumed exactly once). Instance-scoped (not
+     *  static) since each test constructs its own {@code TownStorage}, so there is no risk of
+     *  cross-test leakage the way a static field would have. */
+    boolean testForceChunkAckFailureOnce = false;
+    /** Test-only fault injection for {@link #finishAnchorAcknowledgment}'s ledger-acknowledgment
+     *  step - same convention as {@link #testForceChunkAckFailureOnce}. */
+    boolean testForceLedgerAckFailureOnce = false;
 
     public record DonationBoxBinding(ResourceKey<Level> dimension, BlockPos pos, String townKey, UUID boxId, long generation) {}
     public record DonationPayload(String itemId, int count, TownResourceCategory category, int credit) {
@@ -135,6 +185,138 @@ public final class TownStorage extends SavedData {
     public static TownStorage of(MinecraftServer server) {
         return server.overworld().getDataStorage()
                 .computeIfAbsent(new SavedData.Factory<>(TownStorage::new, TownStorage::load, null), NAME);
+    }
+
+    /** [coordinator review 51346, matched engine source] The real production save file for the live
+     *  singleton instance {@link #of} returns, for an acknowledgment call ({@link
+     *  #requestAcknowledgedCheckpoint}) against the ACTUAL live ledger rather than only a test's own
+     *  scratch file. {@link MinecraftServer#getWorldPath(LevelResource)} is the one PUBLIC API that
+     *  exposes the overworld's own root (this mod's {@link #of} always attaches to {@code
+     *  server.overworld()}), with {@code "data/" + NAME + ".dat"} appended exactly as {@code
+     *  DimensionDataStorage} itself does. */
+    static File productionSaveFile(MinecraftServer server) {
+        return server.getWorldPath(LevelResource.ROOT).resolve("data").resolve(NAME + ".dat").toFile();
+    }
+
+    /** [coordinator design 51290/51291, stage 1 part A] The single ordered, acknowledged writer
+     *  for this storage's own file - see {@link TownStorageDurableWriter}'s own class doc for why.
+     *  Not {@code static}: each {@code TownStorage} instance (there is exactly one live at a time,
+     *  via {@link #of}) owns its own revision sequence, so a fresh instance after a reload never
+     *  inherits a stale one's in-flight state. */
+    private final TownStorageDurableWriter durableWriter;
+
+    /** [coordinator review 51294, stage 1 part A] The most recently STARTED checkpoint attempt's
+     *  own result, as long as no newer mutation has happened since it was started - {@code null}
+     *  only for a genuinely untouched instance that has never captured a single snapshot. Only ever
+     *  read/written from the server thread, exactly like {@code dirty} itself. */
+    private java.util.concurrent.CompletableFuture<CheckpointResult> currentAttempt;
+
+    public TownStorage() {
+        this(new TownStorageDurableWriter(net.neoforged.neoforge.common.IOUtilities::withIOWorker, TownStorageDurableWriter.AtomicByteWriter.real()));
+    }
+
+    /** [coordinator review 51294, stage 1 part A, test seam] Lets a test inject a controllable
+     *  {@link TownStorageDurableWriter} instead of the real production one. Package-private; the
+     *  real {@link #of} factory path and every other production caller only ever uses the no-arg
+     *  constructor above. */
+    TownStorage(TownStorageDurableWriter durableWriter) {
+        this.durableWriter = durableWriter;
+    }
+
+    /** [coordinator review 51300, test seam] Read-only visibility into whether this storage's own
+     *  durable writer still owes a retry. */
+    boolean hasOutstandingDurableRetry() {
+        return durableWriter.needsRetry();
+    }
+
+    /** [coordinator design 51290/51291, stage 1 part A] The caller-visible result of one checkpoint
+     *  attempt via {@link #requestAcknowledgedCheckpoint} or (implicitly, retained but not directly
+     *  returned) the engine's own ordinary {@link #save(java.io.File, HolderLookup.Provider)} call. */
+    sealed interface CheckpointResult {
+        /** Nothing needed doing: no new mutation, and no retry owed from a previous attempt. */
+        record NothingToDo() implements CheckpointResult {}
+
+        /** The snapshot could not even be captured/serialized - thrown before ever reaching the
+         *  writer. {@code dirty} and any previously-owed retry are both left completely untouched. */
+        record CaptureFailed(Exception cause) implements CheckpointResult {}
+
+        /** The real, underlying write failed - {@code revision}'s bytes are NOT on disk, and
+         *  {@link TownStorageDurableWriter#needsRetry()} will report {@code true} until a later
+         *  success supersedes it. */
+        record WriteFailed(long revision, java.io.IOException cause) implements CheckpointResult {}
+
+        /** The synchronous submission to the writer's own ordered queue was itself rejected -
+         *  BEFORE the write was even accepted. */
+        record SubmissionRejected(RuntimeException cause) implements CheckpointResult {}
+
+        /** The real, underlying write succeeded and was acknowledged by the writer. */
+        record Persisted(long revision) implements CheckpointResult {}
+    }
+
+    /** Overrides the base {@link SavedData}'s own {@code save(File, Provider)} - the ONE method
+     *  both ordinary (engine autosave) and explicit checkpoint calls actually invoke. Deliberately
+     *  never calls {@code super.save(file, registries)}: that base implementation hands the write
+     *  off and clears {@code dirty} immediately, before the write even starts, so a failure is
+     *  silently indistinguishable from success - exactly what {@link TownStorageDurableWriter}
+     *  exists to close for this one file. */
+    private java.util.concurrent.CompletableFuture<CheckpointResult> saveAndReportOutcome(java.io.File file, HolderLookup.Provider registries) {
+        boolean hasNewMutation = isDirty();
+        boolean mustStartFreshAttempt = hasNewMutation || durableWriter.needsRetry();
+        if (!mustStartFreshAttempt) {
+            return currentAttempt != null ? currentAttempt : java.util.concurrent.CompletableFuture.completedFuture(new CheckpointResult.NothingToDo());
+        }
+        byte[] snapshot;
+        try {
+            CompoundTag wrapper = new CompoundTag();
+            wrapper.put("data", this.save(new CompoundTag(), registries));
+            net.minecraft.nbt.NbtUtils.addCurrentDataVersion(wrapper);
+            try (java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream()) {
+                net.minecraft.nbt.NbtIo.writeCompressed(wrapper, bytes);
+                snapshot = bytes.toByteArray();
+            }
+        } catch (Exception captureFailure) {
+            io.github.brooswitminecraft.dynamicvehicles.DynamicVehiclesMod.LOGGER.error(
+                    "TownStorage failed to capture a snapshot for a durable checkpoint - dirty/retry state left untouched so a later save retries",
+                    captureFailure);
+            return java.util.concurrent.CompletableFuture.completedFuture(new CheckpointResult.CaptureFailed(captureFailure));
+        }
+        java.util.concurrent.CompletableFuture<CheckpointResult> result = new java.util.concurrent.CompletableFuture<>();
+        currentAttempt = result;
+        try {
+            durableWriter.enqueue(snapshot, file.toPath(), (revision, outcome) -> {
+                if (outcome instanceof TownStorageDurableWriter.WriteOutcome.Failed failed) {
+                    io.github.brooswitminecraft.dynamicvehicles.DynamicVehiclesMod.LOGGER.error(
+                            "TownStorage durable checkpoint write failed for revision {} - this storage still owes a retry with current state",
+                            revision, failed.cause());
+                    result.complete(new CheckpointResult.WriteFailed(revision, failed.cause()));
+                } else {
+                    result.complete(new CheckpointResult.Persisted(revision));
+                }
+            });
+        } catch (RuntimeException submissionRejected) {
+            io.github.brooswitminecraft.dynamicvehicles.DynamicVehiclesMod.LOGGER.error(
+                    "TownStorage durable checkpoint submission was rejected - dirty/retry state left untouched so a later save retries",
+                    submissionRejected);
+            result.complete(new CheckpointResult.SubmissionRejected(submissionRejected));
+            return result;
+        }
+        if (hasNewMutation) {
+            setDirty(false);
+        }
+        return result;
+    }
+
+    @Override
+    public void save(java.io.File file, HolderLookup.Provider registries) {
+        saveAndReportOutcome(file, registries);
+    }
+
+    /** [coordinator design 51290/51291, stage 1 part A] The caller-visible explicit checkpoint
+     *  entry point - calls the EXACT SAME {@link #save(java.io.File, HolderLookup.Provider)}
+     *  override an ordinary engine autosave uses, and hands the caller back the real {@link
+     *  CheckpointResult} once the actual underlying write completes. */
+    java.util.concurrent.CompletableFuture<CheckpointResult> requestAcknowledgedCheckpoint(java.io.File file, HolderLookup.Provider registries) {
+        return saveAndReportOutcome(file, registries);
     }
 
     public boolean hasFoundedTown(String key) {
@@ -300,6 +482,17 @@ public final class TownStorage extends SavedData {
     public boolean isCellPlaced(ResourceKey<Level> dimension, BlockPos pos, String owner, String signature) {
         PlacedCell cell = placedCells.get(cellKey(dimension, pos));
         return cell != null && cell.owner().equals(owner) && cell.signature().equals(signature);
+    }
+
+    /** [coordinator review 51352, stage 2 port] {@code true} iff SOME record at {@code pos} in
+     *  {@code dimension} was placed-and-paid-for by the plan identified by {@code owner} -
+     *  narrower than {@link #isTownBuiltFixture} (any plan/owner) and relaxed from {@link
+     *  #isCellPlaced} (which demands an exact signature match too) - for a caller (e.g. {@link
+     *  TownConstructionOperationService#reconcileHandoff}) that already knows exactly which owner
+     *  but not necessarily the exact signature a prior tick recorded. */
+    public boolean isCellPlacedByOwner(ResourceKey<Level> dimension, BlockPos pos, String owner) {
+        PlacedCell cell = placedCells.get(cellKey(dimension, pos));
+        return cell != null && cell.owner().equals(owner);
     }
 
     /** {@code true} iff some Dynamic Towns plan (any owner, any signature) placed-and-paid-for a
@@ -691,6 +884,337 @@ public final class TownStorage extends SavedData {
         return PoiTypes.forState(state).flatMap(Holder::unwrapKey).map(key -> key.location().toString()).orElse("");
     }
 
+    /** [stage 2] The durable intent record for one construction operation, if it exists. */
+    Optional<TownConstructionOperation> constructionOperation(UUID operationId) {
+        return Optional.ofNullable(constructionOperations.get(operationId));
+    }
+
+    /**
+     * [stage 2, coordinator design 51327 / review 51330] Reserves one new construction operation,
+     * atomically, with its FULL escrow debited at this exact call - BEFORE any world effect exists.
+     *
+     * <p>Idempotent on {@code operationId}: a retry carrying the EXACT SAME content (see {@link
+     * TownConstructionOperation#sameContentAs}) returns the existing record unchanged, charging
+     * nothing a second time. A retry carrying the SAME id but DIFFERENT content is REJECTED outright.
+     *
+     * <p>Fenced on {@code siteOwner}: a DIFFERENT {@code operationId} cannot reserve against a site
+     * that already has a non-terminal operation, or a quarantined one - see {@link
+     * #isSiteFencedByUnsettledOperation}.
+     *
+     * <p>ALSO fenced on chunk overlap, independent of {@code siteOwner} - see {@link
+     * #isChunkOwnedByAnotherUnsettledOperation}.
+     *
+     * <p>All-or-nothing escrow: every requested category must independently {@link
+     * TownResourceStore#canAfford} before ANY category is debited; a failed afford check (or either
+     * fence above) debits nothing.
+     */
+    Optional<TownConstructionOperation> reserveConstructionOperation(UUID operationId, ResourceKey<Level> dimension,
+            String townKey, String siteOwner, UUID anchorGenerationToken, UUID builderId, Optional<UUID> beneficiaryId,
+            List<TownConstructionOperation.CellEffect> effects, Map<TownResourceCategory, Integer> reservedCost) {
+        TownConstructionOperation requested = new TownConstructionOperation(operationId, dimension, townKey, siteOwner,
+                anchorGenerationToken, builderId, beneficiaryId, effects, reservedCost, TownConstructionOperation.Phase.RESERVED);
+        TownConstructionOperation existing = constructionOperations.get(operationId);
+        if (existing != null) {
+            return existing.sameContentAs(requested) ? Optional.of(existing) : Optional.empty();
+        }
+        if (isSiteFencedByUnsettledOperation(dimension, siteOwner)) {
+            return Optional.empty();
+        }
+        for (ChunkPos chunkPos : requested.affectedChunks()) {
+            // A brand-new operation can never exempt itself - it does not exist in the ledger yet.
+            if (isChunkOwnedByAnotherUnsettledOperation(dimension, chunkPos, Optional.empty())) {
+                return Optional.empty();
+            }
+        }
+        TownResourceStore store = storeFor(townKey);
+        for (Map.Entry<TownResourceCategory, Integer> entry : reservedCost.entrySet()) {
+            if (!store.canAfford(entry.getKey(), entry.getValue())) {
+                return Optional.empty();
+            }
+        }
+        for (Map.Entry<TownResourceCategory, Integer> entry : reservedCost.entrySet()) {
+            if (!store.tryDebit(entry.getKey(), entry.getValue())) {
+                throw new IllegalStateException(
+                        "construction operation escrow debit failed after every category already passed canAfford - "
+                                + "impossible on a single server-thread-only caller with no concurrent mutation");
+            }
+        }
+        constructionOperations.put(operationId, requested);
+        setDirty();
+        return Optional.of(requested);
+    }
+
+    /** Transitions {@code RESERVED -> WORLD_APPLIED} once this operation's world effects have
+     *  actually been applied - idempotent ({@code WORLD_APPLIED} stays {@code WORLD_APPLIED});
+     *  rejects an unknown or terminal operation. */
+    Optional<TownConstructionOperation> markWorldApplied(UUID operationId) {
+        TownConstructionOperation existing = constructionOperations.get(operationId);
+        if (existing == null || existing.isTerminal()) {
+            return Optional.empty();
+        }
+        if (existing.phase() == TownConstructionOperation.Phase.WORLD_APPLIED) {
+            return Optional.of(existing);
+        }
+        TownConstructionOperation applied = existing.withPhase(TownConstructionOperation.Phase.WORLD_APPLIED);
+        constructionOperations.put(operationId, applied);
+        setDirty();
+        return Optional.of(applied);
+    }
+
+    /** Idempotent current-balance settlement: records that this operation's effects are durably
+     *  committed. NEVER debits again - escrow was already spent at reservation time. Requires
+     *  {@code WORLD_APPLIED} (an operation whose effects were never actually applied cannot settle);
+     *  a repeat call once already {@code SETTLED} is a safe no-op. */
+    Optional<TownConstructionOperation> settleConstructionOperation(UUID operationId) {
+        TownConstructionOperation existing = constructionOperations.get(operationId);
+        if (existing == null) {
+            return Optional.empty();
+        }
+        if (existing.phase() == TownConstructionOperation.Phase.SETTLED) {
+            return Optional.of(existing);
+        }
+        if (existing.phase() != TownConstructionOperation.Phase.WORLD_APPLIED) {
+            return Optional.empty();
+        }
+        TownConstructionOperation settled = existing.withPhase(TownConstructionOperation.Phase.SETTLED);
+        constructionOperations.put(operationId, settled);
+        setDirty();
+        return Optional.of(settled);
+    }
+
+    /** Cancels a not-yet-settled operation, refunding its FULL reserved escrow exactly once -
+     *  idempotent ({@code CANCELLED} stays {@code CANCELLED}, refunding nothing further); rejects
+     *  an operation that has already {@code SETTLED}. */
+    Optional<TownConstructionOperation> cancelConstructionOperation(UUID operationId) {
+        TownConstructionOperation existing = constructionOperations.get(operationId);
+        if (existing == null) {
+            return Optional.empty();
+        }
+        if (existing.phase() == TownConstructionOperation.Phase.CANCELLED) {
+            return Optional.of(existing);
+        }
+        if (existing.phase() == TownConstructionOperation.Phase.SETTLED) {
+            return Optional.empty();
+        }
+        TownResourceStore store = storeFor(existing.townKey());
+        for (Map.Entry<TownResourceCategory, Integer> entry : existing.reservedCost().entrySet()) {
+            store.credit(entry.getKey(), entry.getValue());
+        }
+        TownConstructionOperation cancelled = existing.withPhase(TownConstructionOperation.Phase.CANCELLED);
+        constructionOperations.put(operationId, cancelled);
+        setDirty();
+        return Optional.of(cancelled);
+    }
+
+    /** [stage 2, anchor-independent recovery] Every non-terminal, non-quarantined operation for a
+     *  dimension - the SOLE recovery enumeration entry point. A small, town-scale set. */
+    List<TownConstructionOperation> pendingConstructionOperations(ResourceKey<Level> dimension) {
+        List<TownConstructionOperation> result = new ArrayList<>();
+        for (TownConstructionOperation operation : constructionOperations.values()) {
+            if (operation.dimension().equals(dimension) && operation.isUnsettled()
+                    && !quarantinedConstructionSites.contains(quarantinedSiteKey(dimension, operation.siteOwner()))) {
+                result.add(operation);
+            }
+        }
+        return result;
+    }
+
+    /** {@code true} while ANY non-terminal operation already claims this exact site, OR the site
+     *  was quarantined on load - the overlap fence stage 2 requires. */
+    boolean isSiteFencedByUnsettledOperation(ResourceKey<Level> dimension, String siteOwner) {
+        if (quarantinedConstructionSites.contains(quarantinedSiteKey(dimension, siteOwner))) {
+            return true;
+        }
+        for (TownConstructionOperation operation : constructionOperations.values()) {
+            if (operation.dimension().equals(dimension) && operation.siteOwner().equals(siteOwner) && stillOccupiesItsSite(operation)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** [coordinator review 51346] {@code true} while {@code operation} still occupies its own
+     *  site/chunks for fencing purposes - either genuinely non-terminal, OR terminal but its own
+     *  transition has not yet been durably acknowledged. */
+    private boolean stillOccupiesItsSite(TownConstructionOperation operation) {
+        return operation.isUnsettled() || pendingTerminalAcknowledgment.contains(operation.operationId());
+    }
+
+    /** [coordinator review 51346] Marks {@code operationId}'s most recent terminal transition
+     *  (SETTLED/CANCELLED) as not yet durably acknowledged - called by the orchestration layer
+     *  BEFORE it calls {@link #settleConstructionOperation}/{@link #cancelConstructionOperation}.
+     *  Idempotent; a no-op if already marked. */
+    void markPendingTerminalAcknowledgment(UUID operationId) {
+        pendingTerminalAcknowledgment.add(operationId);
+    }
+
+    /** [coordinator review 51346] Clears {@code operationId}'s pending-acknowledgment mark - called
+     *  ONLY after a real {@link #requestAcknowledgedCheckpoint} of THIS ledger reports {@link
+     *  CheckpointResult.Persisted}. Idempotent; a no-op if already clear or never marked. */
+    void confirmTerminalAcknowledgment(UUID operationId) {
+        pendingTerminalAcknowledgment.remove(operationId);
+    }
+
+    /** [coordinator review 51348/51351] Read-only check for the orchestration layer's own retry
+     *  entry point - a terminal-but-unacknowledged operation must remain discoverable, never
+     *  stranded with no reachable retry path. */
+    boolean isPendingTerminalAcknowledgment(UUID operationId) {
+        return pendingTerminalAcknowledgment.contains(operationId);
+    }
+
+    /** [coordinator review 51348/51351] Every operation in {@code dimension} whose terminal
+     *  transition is pending acknowledgment - the enumeration half of the retry entry point above. */
+    List<TownConstructionOperation> pendingTerminalAcknowledgments(ResourceKey<Level> dimension) {
+        List<TownConstructionOperation> result = new ArrayList<>();
+        for (UUID operationId : pendingTerminalAcknowledgment) {
+            TownConstructionOperation operation = constructionOperations.get(operationId);
+            if (operation != null && operation.dimension().equals(dimension)) {
+                result.add(operation);
+            }
+        }
+        return result;
+    }
+
+    /** [coordinator review 51336/51341] The ONE authoritative chunk-ownership decision: {@code
+     *  true} iff some unsettled operation OTHER than {@code exemptOperationId} already claims
+     *  {@code chunkPos} in {@code dimension} as one of its own {@link
+     *  TownConstructionOperation#affectedChunks()} - independent of {@code siteOwner}. */
+    boolean isChunkOwnedByAnotherUnsettledOperation(ResourceKey<Level> dimension, ChunkPos chunkPos, Optional<UUID> exemptOperationId) {
+        for (TownConstructionOperation operation : constructionOperations.values()) {
+            if (operation.dimension().equals(dimension) && stillOccupiesItsSite(operation) && operation.affectedChunks().contains(chunkPos)
+                    && !operation.operationId().equals(exemptOperationId.orElse(null))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** [coordinator review 51341] The guarded, operation-linked checkpoint entry point - every
+     *  production caller checkpointing a chunk on an operation's behalf MUST go through this, never
+     *  call {@link TownStorageChunkCheckpoint#checkpointLoadedChunkForOperation} directly. */
+    Optional<TownStorageChunkCheckpoint.CheckpointResult> checkpointChunkForOperation(ServerLevel level, ChunkPos chunkPos, UUID operationId) {
+        if (isChunkOwnedByAnotherUnsettledOperation(level.dimension(), chunkPos, Optional.of(operationId))) {
+            return Optional.empty();
+        }
+        return Optional.of(TownStorageChunkCheckpoint.checkpointLoadedChunkForOperation(level, chunkPos, operationId));
+    }
+
+    /** [coordinator review 51341] The guarded, standalone checkpoint entry point - the SAME
+     *  ownership decision as {@link #checkpointChunkForOperation}, but exempting no operation. */
+    Optional<TownStorageChunkCheckpoint.CheckpointResult> checkpointChunkIfUnclaimed(ServerLevel level, ChunkPos chunkPos) {
+        if (isChunkOwnedByAnotherUnsettledOperation(level.dimension(), chunkPos, Optional.empty())) {
+            return Optional.empty();
+        }
+        return Optional.of(TownStorageChunkCheckpoint.checkpointLoadedChunk(level, chunkPos));
+    }
+
+    /** [stage 2] Every {@code SETTLED} construction operation recorded for this exact dimension and
+     *  siteOwner - used by {@code TownConstructionService#buildAt}'s pre-preflight backfill
+     *  reconstruction (never the live world diff) to restore {@link #placedCells} entries a prior
+     *  tick's own {@code markCellPlaced} call may not have survived to run. */
+    List<TownConstructionOperation> settledOperationsForSite(ResourceKey<Level> dimension, String siteOwner) {
+        List<TownConstructionOperation> result = new ArrayList<>();
+        for (TownConstructionOperation operation : constructionOperations.values()) {
+            if (operation.dimension().equals(dimension) && operation.siteOwner().equals(siteOwner)
+                    && operation.phase() == TownConstructionOperation.Phase.SETTLED) {
+                result.add(operation);
+            }
+        }
+        return result;
+    }
+
+    /** [stage 2] The currently authorized {@link AnchorAssociation} for {@code siteOwner}, or
+     *  {@code null} if none has ever been established. Plain getter - see
+     *  {@link #establishOrReadAnchorAssociation}. */
+    AnchorAssociation anchorAssociationFor(String siteOwner) {
+        return anchorAssociations.get(siteOwner);
+    }
+
+    /** [stage 2, test seam] Read-only visibility into whether {@code siteOwner}'s {@link
+     *  AnchorAssociation} is still awaiting its own chunk/ledger acknowledgment - mirrors {@link
+     *  #isPendingTerminalAcknowledgment}'s exact shape for the construction-operation ledger. */
+    boolean isPendingAnchorAcknowledgment(String siteOwner) {
+        return pendingAnchorAcknowledgment.contains(siteOwner);
+    }
+
+    /** [stage 2] {@code true} iff a {@link PlacedCell} exists at {@code pos} in {@code dimension}
+     *  whose owner/signature pair differs from the given ({@code owner}, {@code signature}) pair -
+     *  i.e. some OTHER plan's own paid record already occupies this exact cell. Used by the
+     *  backfill reconstruction to fail closed (never overwrite) rather than silently adopting a
+     *  position another plan's own record already claims. */
+    boolean hasConflictingPlacedRecord(ResourceKey<Level> dimension, BlockPos pos, String owner, String signature) {
+        PlacedCell cell = placedCells.get(cellKey(dimension, pos));
+        return cell != null && !(cell.owner().equals(owner) && cell.signature().equals(signature));
+    }
+
+    /**
+     * [stage 2, structural-cell adapter] Establishes (the first time) or re-reads (every later
+     * call) the durable association between {@code siteOwner} and the exact plan/claimant/anchor
+     * generation authorized to place its allowlisted structural cells via the construction
+     * operation ledger. Fails closed (returns {@link Optional#empty()}, never adopts/retags) on any
+     * mismatch against an existing association, a missing/mismatched live anchor marker, or either
+     * acknowledgment failing. Idempotent and safe to call every tick: a fully acknowledged existing
+     * association is simply re-read; a still-pending one retries ONLY its own acknowledgment, never
+     * minting a second live marker.
+     */
+    Optional<UUID> establishOrReadAnchorAssociation(ServerLevel level, File ledgerFile, HolderLookup.Provider registries,
+            BlockPos campfire, ResourceKey<Level> dimension, String siteOwner, String planSignature, UUID claimantId) {
+        AnchorAssociation existing = anchorAssociations.get(siteOwner);
+        if (existing != null) {
+            if (!existing.dimension().equals(dimension) || !existing.planSignature().equals(planSignature)
+                    || !existing.claimantId().equals(claimantId)) {
+                return Optional.empty();
+            }
+            if (!TownConstructionService.liveAnchorGenerationTokenMatches(level, campfire, existing.anchorGenerationToken())) {
+                return Optional.empty();
+            }
+            if (pendingAnchorAcknowledgment.contains(siteOwner)) {
+                // [structural-cell adapter correction] A retry must force a FRESH capture+write,
+                // never rely on whatever `dirty` happens to read right now - an unrelated ordinary
+                // autosave (or, as here, a fresh instance straight off a load()) can leave `dirty`
+                // false even though THIS ledger file has never actually durably recorded this
+                // pending association. Without this, requestAcknowledgedCheckpoint would report
+                // NothingToDo (never Persisted), and a genuinely pending retry could never
+                // succeed - setDirty() here is what makes the retry a REAL, not merely attempted,
+                // acknowledgment.
+                setDirty();
+                return finishAnchorAcknowledgment(level, ledgerFile, registries, campfire, siteOwner, existing.anchorGenerationToken());
+            }
+            return Optional.of(existing.anchorGenerationToken());
+        }
+        Optional<UUID> fresh = TownConstructionService.writeFreshAnchorGenerationToken(level, campfire);
+        if (fresh.isEmpty()) {
+            return Optional.empty();
+        }
+        anchorAssociations.put(siteOwner, new AnchorAssociation(dimension, siteOwner, planSignature, claimantId, fresh.get()));
+        pendingAnchorAcknowledgment.add(siteOwner);
+        setDirty();
+        return finishAnchorAcknowledgment(level, ledgerFile, registries, campfire, siteOwner, fresh.get());
+    }
+
+    private Optional<UUID> finishAnchorAcknowledgment(ServerLevel level, File ledgerFile, HolderLookup.Provider registries,
+            BlockPos campfire, String siteOwner, UUID token) {
+        if (testForceChunkAckFailureOnce) {
+            testForceChunkAckFailureOnce = false;
+            return Optional.empty();
+        }
+        Optional<TownStorageChunkCheckpoint.CheckpointResult> chunkAck = checkpointChunkIfUnclaimed(level, new ChunkPos(campfire));
+        if (chunkAck.isEmpty() || !(chunkAck.get() instanceof TownStorageChunkCheckpoint.CheckpointResult.Checkpointed)) {
+            return Optional.empty();
+        }
+        if (testForceLedgerAckFailureOnce) {
+            testForceLedgerAckFailureOnce = false;
+            return Optional.empty();
+        }
+        CheckpointResult ledgerAck = requestAcknowledgedCheckpoint(ledgerFile, registries).join();
+        if (!(ledgerAck instanceof CheckpointResult.Persisted)) {
+            return Optional.empty();
+        }
+        pendingAnchorAcknowledgment.remove(siteOwner);
+        setDirty();
+        return Optional.of(token);
+    }
+
     @Override
     public CompoundTag save(CompoundTag tag, HolderLookup.Provider registries) {
         ListTag founded = new ListTag();
@@ -845,6 +1369,93 @@ public final class TownStorage extends SavedData {
             everBoundSiteList.add(entryTag);
         }
         tag.put("EverBoundAdmissionSites", everBoundSiteList);
+
+        ListTag constructionOps = new ListTag();
+        for (TownConstructionOperation operation : constructionOperations.values()) {
+            constructionOps.add(writeConstructionOperation(operation));
+        }
+        tag.put("ConstructionOperations", constructionOps);
+
+        ListTag quarantinedConstructionSiteList = new ListTag();
+        for (String key : quarantinedConstructionSites) {
+            CompoundTag entryTag = new CompoundTag();
+            entryTag.putString("Key", key);
+            quarantinedConstructionSiteList.add(entryTag);
+        }
+        tag.put("QuarantinedConstructionSites", quarantinedConstructionSiteList);
+
+        ListTag anchorAssociationList = new ListTag();
+        for (Map.Entry<String, AnchorAssociation> entry : anchorAssociations.entrySet()) {
+            AnchorAssociation association = entry.getValue();
+            CompoundTag entryTag = new CompoundTag();
+            entryTag.putString("Key", entry.getKey());
+            entryTag.putString("Dimension", association.dimension().location().toString());
+            entryTag.putString("SiteOwner", association.siteOwner());
+            entryTag.putString("PlanSignature", association.planSignature());
+            entryTag.putUUID("ClaimantId", association.claimantId());
+            entryTag.putUUID("AnchorGenerationToken", association.anchorGenerationToken());
+            anchorAssociationList.add(entryTag);
+        }
+        tag.put("AnchorAssociations", anchorAssociationList);
+
+        ListTag pendingAnchorAckList = new ListTag();
+        for (String key : pendingAnchorAcknowledgment) {
+            CompoundTag entryTag = new CompoundTag();
+            entryTag.putString("Key", key);
+            pendingAnchorAckList.add(entryTag);
+        }
+        tag.put("PendingAnchorAcknowledgment", pendingAnchorAckList);
+        return tag;
+    }
+
+    /** [stage 2] Exact before/after effect record serialization - every field below is required
+     *  for a faithful round-trip; a load-time failure to parse ANY of them quarantines the whole
+     *  operation's site rather than silently dropping just that cell. */
+    private static CompoundTag writeConstructionOperation(TownConstructionOperation operation) {
+        CompoundTag entry = new CompoundTag();
+        entry.putUUID("OperationId", operation.operationId());
+        entry.putString("Dimension", operation.dimension().location().toString());
+        entry.putString("TownKey", operation.townKey());
+        entry.putString("SiteOwner", operation.siteOwner());
+        entry.putUUID("AnchorGenerationToken", operation.anchorGenerationToken());
+        entry.putUUID("Builder", operation.builderId());
+        operation.beneficiaryId().ifPresent(id -> entry.putUUID("Beneficiary", id));
+        ListTag effects = new ListTag();
+        for (TownConstructionOperation.CellEffect effect : operation.effects()) {
+            CompoundTag effectTag = new CompoundTag();
+            effectTag.putInt("X", effect.pos().getX());
+            effectTag.putInt("Y", effect.pos().getY());
+            effectTag.putInt("Z", effect.pos().getZ());
+            effectTag.put("Before", net.minecraft.nbt.NbtUtils.writeBlockState(effect.before()));
+            effectTag.put("After", net.minecraft.nbt.NbtUtils.writeBlockState(effect.after()));
+            effectTag.put("BeforeBE", writeBlockEntitySnapshot(effect.beforeBlockEntity()));
+            effectTag.put("AfterBE", writeBlockEntitySnapshot(effect.afterBlockEntity()));
+            effectTag.putString("Signature", effect.signature());
+            effects.add(effectTag);
+        }
+        entry.put("Effects", effects);
+        CompoundTag cost = new CompoundTag();
+        for (Map.Entry<TownResourceCategory, Integer> costEntry : operation.reservedCost().entrySet()) {
+            cost.putInt(costEntry.getKey().name(), costEntry.getValue());
+        }
+        entry.put("ReservedCost", cost);
+        entry.putString("Phase", operation.phase().name());
+        return entry;
+    }
+
+    private static CompoundTag writeBlockEntitySnapshot(TownConstructionOperation.BlockEntitySnapshot snapshot) {
+        CompoundTag tag = new CompoundTag();
+        if (snapshot instanceof TownConstructionOperation.BlockEntitySnapshot.None) {
+            tag.putString("Kind", "None");
+        } else if (snapshot instanceof TownConstructionOperation.BlockEntitySnapshot.Captured captured) {
+            tag.putString("Kind", "Captured");
+            tag.put("Nbt", captured.nbt());
+        } else if (snapshot instanceof TownConstructionOperation.BlockEntitySnapshot.Unsupported unsupported) {
+            tag.putString("Kind", "Unsupported");
+            tag.putString("Type", unsupported.blockEntityType());
+        } else {
+            throw new IllegalStateException("unknown BlockEntitySnapshot: " + snapshot);
+        }
         return tag;
     }
 
@@ -1039,6 +1650,215 @@ public final class TownStorage extends SavedData {
         for (int i = 0; i < everBoundSiteList.size(); i++) {
             storage.everBoundAdmissionSites.add(everBoundSiteList.getCompound(i).getString("Key"));
         }
+
+        // [stage 2, coordinator design 51327 / review 51330] A malformed, duplicate, or
+        // site-conflicting construction operation record must never be silently dropped without
+        // fencing the site it names - this mod can no longer prove whether that site's own world
+        // effects/witness are finished, so a NEW operation must never be allowed to reserve there.
+        Set<UUID> seenOperationIds = new HashSet<>();
+        ListTag constructionOps = tag.getList("ConstructionOperations", Tag.TAG_COMPOUND);
+        for (int i = 0; i < constructionOps.size(); i++) {
+            CompoundTag entry = constructionOps.getCompound(i);
+            ResourceLocation dimensionIdForQuarantine = ResourceLocation.tryParse(entry.getString("Dimension"));
+            String siteOwnerForQuarantine = entry.getString("SiteOwner");
+            try {
+                if (!entry.hasUUID("OperationId")) {
+                    throw new IllegalArgumentException("construction operation missing its own id");
+                }
+                UUID operationId = entry.getUUID("OperationId");
+                if (!seenOperationIds.add(operationId)) {
+                    TownConstructionOperation firstOccurrence = storage.constructionOperations.get(operationId);
+                    if (firstOccurrence != null) {
+                        storage.quarantinedConstructionSites.add(
+                                quarantinedSiteKey(firstOccurrence.dimension(), firstOccurrence.siteOwner()));
+                    }
+                    throw new IllegalArgumentException("duplicate construction operation id: " + operationId);
+                }
+                if (dimensionIdForQuarantine == null) {
+                    throw new IllegalArgumentException("invalid construction operation dimension");
+                }
+                ResourceKey<Level> dimension = ResourceKey.create(Registries.DIMENSION, dimensionIdForQuarantine);
+                String townKey = entry.getString("TownKey");
+                String siteOwner = entry.getString("SiteOwner");
+                if (townKey.isEmpty() || siteOwner.isEmpty() || !entry.hasUUID("AnchorGenerationToken") || !entry.hasUUID("Builder")) {
+                    throw new IllegalArgumentException("invalid construction operation identity");
+                }
+                UUID anchorGenerationToken = entry.getUUID("AnchorGenerationToken");
+                UUID builderId = entry.getUUID("Builder");
+                Optional<UUID> beneficiaryId;
+                if (!entry.contains("Beneficiary")) {
+                    beneficiaryId = Optional.empty();
+                } else if (entry.hasUUID("Beneficiary")) {
+                    beneficiaryId = Optional.of(entry.getUUID("Beneficiary"));
+                } else {
+                    throw new IllegalArgumentException("construction operation has a malformed Beneficiary field");
+                }
+                ListTag effectsTag = entry.getList("Effects", Tag.TAG_COMPOUND);
+                if (effectsTag.isEmpty()) {
+                    throw new IllegalArgumentException("construction operation has no recorded cell effects");
+                }
+                List<TownConstructionOperation.CellEffect> effects = new ArrayList<>();
+                net.minecraft.core.HolderGetter<net.minecraft.world.level.block.Block> blockGetter = registries.lookupOrThrow(Registries.BLOCK);
+                for (int j = 0; j < effectsTag.size(); j++) {
+                    CompoundTag effectTag = effectsTag.getCompound(j);
+                    if (!effectTag.contains("X", Tag.TAG_INT) || !effectTag.contains("Y", Tag.TAG_INT)
+                            || !effectTag.contains("Z", Tag.TAG_INT)) {
+                        throw new IllegalArgumentException("construction operation effect is missing its own position");
+                    }
+                    if (!effectTag.contains("Signature", Tag.TAG_STRING)) {
+                        throw new IllegalArgumentException("construction operation effect is missing its own signature");
+                    }
+                    BlockPos pos = new BlockPos(effectTag.getInt("X"), effectTag.getInt("Y"), effectTag.getInt("Z"));
+                    BlockState before = readValidatedBlockState(blockGetter, effectTag, "Before");
+                    BlockState after = readValidatedBlockState(blockGetter, effectTag, "After");
+                    TownConstructionOperation.BlockEntitySnapshot beforeBe = readBlockEntitySnapshot(effectTag, "BeforeBE");
+                    TownConstructionOperation.BlockEntitySnapshot afterBe = readBlockEntitySnapshot(effectTag, "AfterBE");
+                    effects.add(new TownConstructionOperation.CellEffect(pos, before, after, beforeBe, afterBe, effectTag.getString("Signature")));
+                }
+                if (!entry.contains("ReservedCost", Tag.TAG_COMPOUND)) {
+                    throw new IllegalArgumentException("construction operation is missing its own ReservedCost compound");
+                }
+                CompoundTag costTag = entry.getCompound("ReservedCost");
+                Map<TownResourceCategory, Integer> cost = new HashMap<>();
+                for (TownResourceCategory category : TownResourceCategory.values()) {
+                    if (costTag.contains(category.name())) {
+                        if (!costTag.contains(category.name(), Tag.TAG_INT)) {
+                            throw new IllegalArgumentException("construction operation reserved cost has the wrong type for " + category);
+                        }
+                        cost.put(category, costTag.getInt(category.name()));
+                    }
+                }
+                TownConstructionOperation.Phase phase = TownConstructionOperation.Phase.valueOf(entry.getString("Phase"));
+                TownConstructionOperation operation = new TownConstructionOperation(operationId, dimension, townKey, siteOwner,
+                        anchorGenerationToken, builderId, beneficiaryId, effects, cost, phase);
+                storage.constructionOperations.put(operationId, operation);
+            } catch (IllegalArgumentException ignored) {
+                if (dimensionIdForQuarantine != null && !siteOwnerForQuarantine.isEmpty()) {
+                    ResourceKey<Level> dimension = ResourceKey.create(Registries.DIMENSION, dimensionIdForQuarantine);
+                    storage.quarantinedConstructionSites.add(quarantinedSiteKey(dimension, siteOwnerForQuarantine));
+                } else {
+                    io.github.brooswitminecraft.dynamicvehicles.DynamicVehiclesMod.LOGGER.error(
+                            "Dynamic Towns dropped a construction operation with an unreadable Dimension/SiteOwner during load - "
+                                    + "its own site could NOT be quarantined and remains unfenced");
+                }
+            }
+        }
+        // Two different (non-terminal) operations both claiming the SAME site cannot both be
+        // real - detected only after every individually-valid entry above is loaded.
+        Map<String, Integer> unsettledSiteCounts = new HashMap<>();
+        for (TownConstructionOperation operation : storage.constructionOperations.values()) {
+            if (operation.isUnsettled()) {
+                unsettledSiteCounts.merge(quarantinedSiteKey(operation.dimension(), operation.siteOwner()), 1, Integer::sum);
+            }
+        }
+        for (Map.Entry<String, Integer> count : unsettledSiteCounts.entrySet()) {
+            if (count.getValue() > 1) {
+                storage.quarantinedConstructionSites.add(count.getKey());
+            }
+        }
+        // [coordinator review 51341] Distinct-SITE shared-CHUNK conflicts: two DIFFERENT siteOwners'
+        // unsettled operations overlapping on the same chunk cannot both be trusted either. Every
+        // operation sharing in such a conflict has its OWN site quarantined.
+        Map<ChunkPos, Set<UUID>> unsettledOperationIdsByChunk = new HashMap<>();
+        for (TownConstructionOperation operation : storage.constructionOperations.values()) {
+            if (operation.isUnsettled()) {
+                for (ChunkPos chunkPos : operation.affectedChunks()) {
+                    unsettledOperationIdsByChunk.computeIfAbsent(chunkPos, key -> new HashSet<>()).add(operation.operationId());
+                }
+            }
+        }
+        for (Map.Entry<ChunkPos, Set<UUID>> chunkOwners : unsettledOperationIdsByChunk.entrySet()) {
+            if (chunkOwners.getValue().size() > 1) {
+                for (UUID conflictingOperationId : chunkOwners.getValue()) {
+                    TownConstructionOperation conflicting = storage.constructionOperations.get(conflictingOperationId);
+                    storage.quarantinedConstructionSites.add(quarantinedSiteKey(conflicting.dimension(), conflicting.siteOwner()));
+                }
+            }
+        }
+        ListTag quarantinedConstructionSiteList = tag.getList("QuarantinedConstructionSites", Tag.TAG_COMPOUND);
+        for (int i = 0; i < quarantinedConstructionSiteList.size(); i++) {
+            storage.quarantinedConstructionSites.add(quarantinedConstructionSiteList.getCompound(i).getString("Key"));
+        }
+
+        // [stage 2, structural-cell adapter] AnchorAssociations/PendingAnchorAcknowledgment -
+        // deliberately best-effort/fail-closed, same shape as every other optional record above: a
+        // malformed entry is simply dropped (never a quarantine target itself - the construction
+        // operation ledger/admission-binding fences above already cover site safety), which causes
+        // establishOrReadAnchorAssociation to correctly treat that siteOwner as never-established.
+        ListTag anchorAssociationList = tag.getList("AnchorAssociations", Tag.TAG_COMPOUND);
+        for (int i = 0; i < anchorAssociationList.size(); i++) {
+            try {
+                CompoundTag entry = anchorAssociationList.getCompound(i);
+                ResourceLocation id = ResourceLocation.tryParse(entry.getString("Dimension"));
+                if (id == null) {
+                    throw new IllegalArgumentException("bad anchor association dimension");
+                }
+                ResourceKey<Level> dimension = ResourceKey.create(Registries.DIMENSION, id);
+                String key = entry.getString("Key");
+                String siteOwner = entry.getString("SiteOwner");
+                String planSignature = entry.getString("PlanSignature");
+                if (key.isEmpty() || siteOwner.isEmpty() || !entry.hasUUID("ClaimantId") || !entry.hasUUID("AnchorGenerationToken")) {
+                    throw new IllegalArgumentException("invalid anchor association");
+                }
+                storage.anchorAssociations.put(key, new AnchorAssociation(dimension, siteOwner, planSignature,
+                        entry.getUUID("ClaimantId"), entry.getUUID("AnchorGenerationToken")));
+            } catch (IllegalArgumentException ignored) { }
+        }
+        ListTag pendingAnchorAckList = tag.getList("PendingAnchorAcknowledgment", Tag.TAG_COMPOUND);
+        for (int i = 0; i < pendingAnchorAckList.size(); i++) {
+            storage.pendingAnchorAcknowledgment.add(pendingAnchorAckList.getCompound(i).getString("Key"));
+        }
         return storage;
+    }
+
+    /** [coordinator review 51336/51341] Decodes {@code parentTag.get(key)} as a {@link
+     *  BlockState}, validating the FULL serialized state via a canonical round-trip check against
+     *  the ORIGINAL stored compound - catches an unrecognized block id, and any unknown/invalid
+     *  property name or value, in one shot. */
+    private static BlockState readValidatedBlockState(net.minecraft.core.HolderGetter<net.minecraft.world.level.block.Block> blockGetter,
+            CompoundTag parentTag, String key) {
+        if (!parentTag.contains(key, Tag.TAG_COMPOUND)) {
+            throw new IllegalArgumentException("construction operation effect is missing its own " + key + " block state");
+        }
+        CompoundTag stateTag = parentTag.getCompound(key);
+        if (!stateTag.contains("Name", Tag.TAG_STRING) || stateTag.getString("Name").isEmpty()) {
+            throw new IllegalArgumentException("construction operation effect's " + key + " block state is missing its own block id");
+        }
+        BlockState decoded = net.minecraft.nbt.NbtUtils.readBlockState(blockGetter, stateTag);
+        CompoundTag canonical = net.minecraft.nbt.NbtUtils.writeBlockState(decoded);
+        if (!canonical.equals(stateTag)) {
+            throw new IllegalArgumentException("construction operation effect's " + key + " block state does not round-trip exactly - "
+                    + "recorded " + stateTag + " but its own canonical serialization is " + canonical
+                    + " (unrecognized block id, or an unknown/invalid property)");
+        }
+        return decoded;
+    }
+
+    /** [coordinator review 51336] Decodes {@code parentTag.get(key)} as a {@link
+     *  TownConstructionOperation.BlockEntitySnapshot}, validating every field's own presence/type
+     *  BEFORE decoding. */
+    private static TownConstructionOperation.BlockEntitySnapshot readBlockEntitySnapshot(CompoundTag parentTag, String key) {
+        if (!parentTag.contains(key, Tag.TAG_COMPOUND)) {
+            throw new IllegalArgumentException("construction operation effect is missing its own " + key + " block entity snapshot");
+        }
+        CompoundTag tag = parentTag.getCompound(key);
+        if (!tag.contains("Kind", Tag.TAG_STRING)) {
+            throw new IllegalArgumentException("block entity snapshot is missing its own Kind");
+        }
+        String kind = tag.getString("Kind");
+        if ("Captured".equals(kind)) {
+            if (!tag.contains("Nbt", Tag.TAG_COMPOUND)) {
+                throw new IllegalArgumentException("captured block entity snapshot is missing its own Nbt payload");
+            }
+            return new TownConstructionOperation.BlockEntitySnapshot.Captured(tag.getCompound("Nbt"));
+        } else if ("Unsupported".equals(kind)) {
+            if (!tag.contains("Type", Tag.TAG_STRING) || tag.getString("Type").isEmpty()) {
+                throw new IllegalArgumentException("unsupported block entity snapshot is missing its own Type");
+            }
+            return new TownConstructionOperation.BlockEntitySnapshot.Unsupported(tag.getString("Type"));
+        } else if ("None".equals(kind)) {
+            return new TownConstructionOperation.BlockEntitySnapshot.None();
+        }
+        throw new IllegalArgumentException("invalid block entity snapshot kind: " + kind);
     }
 }

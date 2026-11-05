@@ -376,10 +376,56 @@ public final class TownTerrainTransactionGameTests {
                 template.stream()
                         .map(TownBuildingTemplates.Placement::toPlan).toList(),
                 absoluteCampfire.getX(), absoluteCampfire.getY(), absoluteCampfire.getZ());
-        ConstructionSitePlan.PlannedBlock first = ordered.get(0);
+        // [coordinator review 51497] testForcePlacementInterruptionAt is the LEGACY per-cell hook -
+        // since MINECRAFT-454's structural-cell ledger adapter, the 4 allowlisted structural
+        // materials (walls/floor/roof) no longer reach it at all, they route through the ledger's
+        // own reserve/acknowledge/settle path instead. ordered.get(0) (bottom-up) is reliably a
+        // structural floor cell, so this must deliberately pick the first NON-structural, non-
+        // closing-cell placement (a bed/door/workstation fixture) to keep exercising the genuine
+        // legacy quarantine/no-debit/no-fabricated-record behavior this test is actually about. The
+        // ANALOGOUS ledger-side safety property has its own dedicated coverage in
+        // TownStructuralCellAdapterGameTests instead - these two contracts are intentionally
+        // different and are not collapsed into one assertion here.
+        ConstructionSitePlan.PlannedBlock first = ordered.stream()
+                .filter(block -> !(block.x() == absoluteCampfire.getX() && block.y() == absoluteCampfire.getY()
+                        && block.z() == absoluteCampfire.getZ()))
+                .filter(block -> template.stream().anyMatch(placement -> placement.x() == block.x() && placement.y() == block.y()
+                        && placement.z() == block.z() && !TownConstructionService.isAllowlistedStructuralBlock(placement.state().getBlock())))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException(
+                        "test setup: this building kind must have at least one non-structural, non-closing fixture cell "
+                                + "(bed/door/workstation) for the legacy interruption hook to target"));
         BlockPos interrupted = new BlockPos(first.x(), first.y(), first.z());
         BlockState expectedState = template.stream().filter(placement -> placement.x() == first.x()
                 && placement.y() == first.y() && placement.z() == first.z()).findFirst().orElseThrow().state();
+
+        // [coordinator review 51497, correction] The structural-before-fixture ordering constraint
+        // (anyStructuralCellStillUnplaced) means `interrupted` - a fixture cell - can never even be
+        // ATTEMPTED until every allowlisted structural cell at this site is already placed-and-paid.
+        // Drive real buildAt ticks (same generous-budget idiom as
+        // ordinaryConstructionWithNoReactiveNeighborsStillCompletesNormally) until that is true,
+        // BEFORE ever arming the interruption hook - otherwise the hook's target position is simply
+        // never reached and never fires. planSignature is computed identically to buildAt's own
+        // internal derivation (kind/variant/finalProfession) so this check means the same thing
+        // buildAt itself would mean by it.
+        String siteOwner = TownStorage.siteOwner(absoluteCampfire);
+        String planSignature = kind.name() + ":" + plan.storehouseVariant() + ":"
+                + profession.map(net.minecraft.core.registries.BuiltInRegistries.VILLAGER_PROFESSION::getKey).map(Object::toString).orElse("none");
+        Map<String, TownBuildingTemplates.Placement> byPosition = new HashMap<>();
+        for (int i = 0; i < template.size(); i++) {
+            byPosition.put(String.valueOf(i), template.get(i));
+        }
+        for (int i = 0; i < 500 && TownConstructionService.anyStructuralCellStillUnplaced(
+                storage, helper.getLevel().dimension(), siteOwner, planSignature, byPosition, absoluteCampfire); i++) {
+            TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
+        }
+        helper.assertTrue(!TownConstructionService.anyStructuralCellStillUnplaced(
+                        storage, helper.getLevel().dimension(), siteOwner, planSignature, byPosition, absoluteCampfire),
+                "test setup: every structural cell must be placed-and-paid within a generous tick budget "
+                        + "before the fixture-cell interruption below can ever be attempted");
+        helper.assertTrue(!storage.isCellBlocked(helper.getLevel().dimension(), interrupted),
+                "test setup: the target fixture cell must still be genuinely untouched once structural completes");
+
         int stoneBefore = store.balance(TownResourceCategory.STONE);
         int woodBefore = store.balance(TownResourceCategory.WOOD);
 

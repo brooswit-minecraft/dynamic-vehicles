@@ -837,10 +837,42 @@ public final class TownResidentCapacityAdmissionGameTests {
      */
     @GameTest(template = "settlement_test")
     public static void buildAtRefusesToRetagAPreexistingMalformedLiveMarkerWithNoLedgerBinding(GameTestHelper helper) {
-        prepareFlatGround(helper);
-        helper.setBlock(ANCHOR, Blocks.CAMPFIRE);
-        BlockPos absoluteCampfire = helper.absolutePos(ANCHOR);
-        ResolvedSite site = resolveSite(helper, absoluteCampfire);
+        // [coordinator review 51509] A single fixed anchor can resolve STOREHOUSE for some batch
+        // positions, which this test's own setup forbids - replaced with the same bounded
+        // candidate-selection pattern boundAdmissionHandsOffToItsBeneficiaryNotTheBuilderClaimant
+        // already uses: try each of the four interior corners, in order, and use the first that
+        // both resolves non-STOREHOUSE AND has a same-region, non-blocking companion position for
+        // the beneficiary - independently verified below, never assumed. This also removes the
+        // same fixed-offset-beneficiary hazard the sibling valid-UUID-marker test had.
+        BlockPos foundAnchor = null;
+        ResolvedSite foundSite = null;
+        BlockPos foundCompanion = null;
+        for (BlockPos candidate : HANDOFF_CANDIDATE_ANCHORS) {
+            BlockPos candidateAbsolute = helper.absolutePos(candidate);
+            ResolvedSite candidateSite = resolveSite(helper, candidateAbsolute);
+            if (candidateSite.kind() == TownBuildingTemplates.Kind.STOREHOUSE) {
+                continue;
+            }
+            RegionCoord candidateRegion = TownRegion.fromBlockCoords(candidateAbsolute.getX(), candidateAbsolute.getZ());
+            Optional<BlockPos> companion = findSameRegionNonBlockingCompanion(helper, candidate, candidateRegion);
+            if (companion.isPresent()) {
+                foundAnchor = candidate;
+                foundSite = candidateSite;
+                foundCompanion = companion.get();
+                break;
+            }
+        }
+        helper.assertTrue(foundAnchor != null,
+                "test setup: at least one of the four interior corners must resolve non-STOREHOUSE AND have a "
+                        + "same-region, non-blocking companion position for the beneficiary");
+        BlockPos chosenAnchor = foundAnchor;
+        ResolvedSite site = foundSite;
+        BlockPos chosenCompanion = foundCompanion;
+
+        prepareFlatGroundAround(helper, chosenAnchor);
+        helper.setBlock(chosenAnchor, Blocks.CAMPFIRE);
+        prepareSafeFooting(helper, chosenCompanion);
+        BlockPos absoluteCampfire = helper.absolutePos(chosenAnchor);
         assertNonStorehouseFixture(helper, site);
         String siteOwner = TownStorage.siteOwner(absoluteCampfire);
 
@@ -858,7 +890,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         claimant.setVillagerData(claimant.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
         claimant.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteCampfire));
 
-        BlockPos beneficiarySpot = helper.absolutePos(new BlockPos(9, 2, 1));
+        BlockPos beneficiarySpot = helper.absolutePos(chosenCompanion);
         Villager beneficiary = EntityType.VILLAGER.create(helper.getLevel(), null, beneficiarySpot, MobSpawnType.EVENT, false, false);
         helper.getLevel().addFreshEntity(beneficiary);
 
@@ -875,7 +907,7 @@ public final class TownResidentCapacityAdmissionGameTests {
 
         TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
 
-        helper.assertTrue(helper.getBlockState(ANCHOR).is(Blocks.CAMPFIRE),
+        helper.assertTrue(helper.getBlockState(chosenAnchor).is(Blocks.CAMPFIRE),
                 "a preexisting malformed live marker must block ALL effects, including the closing placement");
         helper.assertTrue(store.balance(TownResourceCategory.STONE) == stoneBefore && store.balance(TownResourceCategory.WOOD) == woodBefore,
                 "a preexisting malformed live marker must cause zero debit");
@@ -1300,12 +1332,11 @@ public final class TownResidentCapacityAdmissionGameTests {
         Villager claimant = EntityType.VILLAGER.create(helper.getLevel(), null, absoluteCampfire, MobSpawnType.EVENT, false, false);
         helper.getLevel().addFreshEntity(claimant);
 
-        // [51506] Hardcoded (9,2,1)/(0,2,9) offsets from ANCHOR can straddle a
-        // TownConstants.REGION_SIZE_BLOCKS region boundary depending on where this run's template
-        // happens to land (the exact class of bug PR204 already fixed for
-        // onlyOneOfTwoCompetingAdmissionsBindsToTheOneAvailableSite) - use the same deterministic
-        // same-region companion search for both the beneficiary's spawn AND its preexisting
-        // workplace instead.
+        // [coordinator review 51511, ported from M455 PR207 commit 809dc0d] Hardcoded (9,2,1)/
+        // (0,2,9) offsets from ANCHOR can straddle a TownConstants.REGION_SIZE_BLOCKS region
+        // boundary depending on where this run's template happens to land - use the same
+        // deterministic same-region companion search for both the beneficiary's spawn AND its
+        // preexisting workplace instead.
         RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
         java.util.List<BlockPos> companions = findSameRegionNonBlockingCompanions(helper, ANCHOR, region, 2);
         helper.assertTrue(companions.size() == 2,

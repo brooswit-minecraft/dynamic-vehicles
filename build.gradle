@@ -210,6 +210,12 @@ neoForge {
             systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m454_donation_box_removal'
         }
 
+        m454StructuralCellAdapterGameTestServer {
+            type = "gameTestServer"
+            gameDirectory = layout.dir(providers.provider { file('/tmp/m454-structural-cell-adapter-focused-20261104/game') })
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m454_structural_cell_adapter'
+        }
+
         data {
             data()
             programArguments.addAll '--mod', project.mod_id, '--all', '--output', file('src/generated/resources/').getAbsolutePath(), '--existing', file('src/main/resources/').getAbsolutePath()

@@ -1365,7 +1365,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         helper.assertTrue(awaiting.isPresent(), "test setup: the home-only admission must be created - beneficiaryPos="
                 + beneficiarySpot + " region=" + region + " founded=" + storage.hasFoundedTown(TownKeys.keyFor(helper.getLevel().dimension(), region)));
         ResidentCapacityAdmission boundAdmission = awaiting.get().boundTo("site:direct-call-test", UUID.randomUUID(),
-                "plan-direct-call-test", UUID.randomUUID());
+                "plan-direct-call-test", UUID.randomUUID(), ResidentCapacityAdmission.State.BUILDING);
 
         Optional<TownConstructionService.ReservedHandoff> reserved = TownConstructionService.tryReserveHandoffDestinations(
                 helper.getLevel(), storage, beneficiary, absoluteCampfire, floorY, explicitKind, Optional.of(siteOfferedProfession),

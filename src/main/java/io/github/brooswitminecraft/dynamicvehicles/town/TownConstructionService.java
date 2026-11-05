@@ -319,6 +319,11 @@ public final class TownConstructionService {
             siteOwnersWithLiveClaimant.add(TownStorage.siteOwner(liveCampfire));
         }
         recoverOrphanedPendingOperations(level, storage, siteOwnersWithLiveClaimant);
+        // [MINECRAFT-455 self-admission liveness] Claimant-independent, same shape as the recovery
+        // pass above: a SELF_CLAIM_LINKED site's own claimant may have positively relinquished its
+        // claim while buildAt itself is never called again for a site findClaimedCampfireSites no
+        // longer enumerates - only reachable here, not inside buildAt.
+        reconcileSelfClaimLinkedAdmissions(level, storage);
         for (Map.Entry<BlockPos, Villager> entry : claimedCampfires.entrySet()) {
             BlockPos campfire = entry.getKey();
             if (!level.getBlockState(campfire).is(Blocks.CAMPFIRE)) {
@@ -579,6 +584,61 @@ public final class TownConstructionService {
         }
     }
 
+    /** [MINECRAFT-455 self-admission liveness, coordinator corrections 51582/51586] Claimant-
+     *  independent, same per-tick shape as {@link #recoverOrphanedPendingOperations} - reverts a
+     *  {@code SELF_CLAIM_LINKED} admission to {@code AWAITING_CLAIM} ONLY on POSITIVE evidence its
+     *  self-claim is genuinely gone, never on mere absence/unload/ambiguity.
+     *
+     *  <p>The ONLY safe trigger: the original anchor is STILL physically {@code CAMPFIRE} with its
+     *  generation token STILL matching (this alone proves no closing could possibly have happened
+     *  yet - closing's own last act is replacing that exact block) AND the recorded {@code
+     *  builderId} villager is positively loaded with its own live claim no longer naming this
+     *  position. Any anchor replacement or generation mismatch - by itself, in either direction -
+     *  is left {@code SELF_CLAIM_LINKED} and fenced, permanently unresolved: that exact fingerprint
+     *  is equally produced by an already-successful or still-interrupted closing, and no crash-
+     *  durable closing machinery is added here to tell them apart. The physical site's own
+     *  permanent reverse-site fence is never cleared regardless - see {@link
+     *  TownStorage#unbindCapacityAdmission}. */
+    static void reconcileSelfClaimLinkedAdmissions(ServerLevel level, TownStorage storage) {
+        for (ResidentCapacityAdmission linked : storage.selfClaimLinkedAdmissions(level.dimension())) {
+            Optional<BlockPos> anchorPos = TownStorage.siteOwnerPos(linked.boundSiteOwner());
+            if (anchorPos.isEmpty() || !level.hasChunkAt(anchorPos.get())) {
+                continue; // unresolved/unloaded chunk - deferred, never treated as loss
+            }
+            BlockPos pos = anchorPos.get();
+            if (!level.getBlockState(pos).is(Blocks.CAMPFIRE)
+                    || !liveAnchorGenerationTokenMatches(level, pos, linked.anchorGenerationToken())) {
+                continue; // not positively distinguishable from a successful/interrupted closing
+            }
+            Villager builderVillager = null;
+            for (Entity entity : level.getEntities().getAll()) {
+                if (entity instanceof Villager candidate && candidate.getUUID().equals(linked.builderId())) {
+                    builderVillager = candidate;
+                    break;
+                }
+            }
+            if (builderVillager == null || TownCampfireClaims.isClaimedBy(builderVillager, level, pos)) {
+                continue; // not loaded (unknown) or still actively claims this exact anchor
+            }
+            // Positive evidence: anchor intact and unambiguously pre-closing, builder loaded, claim
+            // genuinely relinquished/moved elsewhere.
+            storage.unbindCapacityAdmission(linked);
+        }
+    }
+
+    /** [MINECRAFT-455 self-admission liveness] {@code true} only when EVERY identity leg of a
+     *  {@code SELF_CLAIM_LINKED} admission agrees: its own beneficiary is its own recorded
+     *  builder, AND that builder is {@code currentClaimantId} - the live villager {@code buildAt}
+     *  actually resolved this tick. Checked on every re-entry (never trusted merely because the
+     *  state says {@code SELF_CLAIM_LINKED}), so a malformed/corrupted record can never bypass the
+     *  distinct-beneficiary/active-Builder guards this mode exists specifically to skip for a
+     *  GENUINE self-claim. */
+    private static boolean isValidSelfClaim(ResidentCapacityAdmission admission, UUID currentClaimantId) {
+        return admission.state() == ResidentCapacityAdmission.State.SELF_CLAIM_LINKED
+                && admission.beneficiaryId().equals(admission.builderId())
+                && admission.builderId().equals(currentClaimantId);
+    }
+
     /** Exposed {@code public} (mirroring {@code TownFounder#tryFoundAt}'s convention) so a GameTest
      *  can drive a single site deterministically without constructing a real {@link LevelTickEvent.Post}. */
     public static void buildAt(ServerLevel level, BlockPos campfire, TownStorage storage) {
@@ -693,13 +753,31 @@ public final class TownConstructionService {
                 // could disturb an already-delivered beneficiary handoff.
                 return;
             }
-            // MINECRAFT-454 [coordinator review 51356/51358]: a bound admission whose own
-            // beneficiary IS the current claimant/Builder must never be advanced - the distinct
-            // beneficiary/Builder contract (see resolveCapacityAdmissionForSite's own identical
-            // guard at bind time) applies equally to an admission already bound before this fix
-            // existed. No mutation, debit, or POI/ownership change happens here; the durable
-            // admission itself is left completely untouched for a later, eligible Builder.
-            if (bound.beneficiaryId().equals(claimant.getUUID())) {
+            if (bound.state() == ResidentCapacityAdmission.State.SELF_CLAIM_LINKED) {
+                // [MINECRAFT-455 self-admission liveness] Enforce the self-mode identity invariant
+                // on EVERY re-entry, not only at creation: beneficiary == builder == this exact
+                // live claimant. A persisted record that somehow fails this (corruption, a future
+                // bug) is never trusted to skip the distinct-beneficiary/active-Builder guards
+                // below it exists specifically to bypass for a GENUINE self-claim - quarantined
+                // instead, the same fail-closed fence `load` already applies to other malformed
+                // bound records.
+                if (!isValidSelfClaim(bound, claimant.getUUID())) {
+                    storage.quarantineAdmissionSite(level.dimension(), siteOwner);
+                    return;
+                }
+                // Identity confirmed: fall through to the SAME builderId/planSignature/anchorToken
+                // staleness re-validation below, shared unchanged with BUILDING - one generation
+                // authority, not two.
+            } else if (bound.beneficiaryId().equals(claimant.getUUID())) {
+                // MINECRAFT-454 [coordinator review 51356/51358]: a BUILDING admission whose own
+                // beneficiary IS the current claimant/Builder must never be advanced - the distinct
+                // beneficiary/Builder contract (see resolveCapacityAdmissionForSite's own identical
+                // guard at bind time) applies equally to an admission already bound before this fix
+                // existed. No mutation, debit, or POI/ownership change happens here; the durable
+                // admission itself is left completely untouched for a later, eligible Builder.
+                // [MINECRAFT-455 self-admission liveness] Scoped to BUILDING only - a
+                // SELF_CLAIM_LINKED admission's beneficiary-equals-claimant is the expected, valid
+                // case (handled above), never this stale-distinct-beneficiary protection.
                 return;
             }
             // MINECRAFT-454 [coordinator review 51271/51274, matched against NeoForge's own
@@ -725,6 +803,8 @@ public final class TownConstructionService {
             CapacityBindResolution resolution = resolveCapacityAdmissionForSite(level, storage, campfire, region, siteOwner,
                     kind, finalProfession, planSignature, claimant.getUUID());
             if (resolution instanceof CapacityBindResolution.Bound(ResidentCapacityAdmission admission)) {
+                boundAdmission = Optional.of(admission);
+            } else if (resolution instanceof CapacityBindResolution.SelfLinked(ResidentCapacityAdmission admission)) {
                 boundAdmission = Optional.of(admission);
             } else if (resolution instanceof CapacityBindResolution.Denied) {
                 return;
@@ -1170,7 +1250,10 @@ public final class TownConstructionService {
                     // may still be marked against; a COMPLETED handoff means there is nothing left
                     // here to authorize.
                     liveAuthorizedPlanSignature = liveBoundAdmission.get().boundPlanSignature();
-                    currentAuthoritySourceValid = liveBoundAdmission.get().state() == ResidentCapacityAdmission.State.BUILDING;
+                    // [MINECRAFT-455 self-admission liveness] Widened from BUILDING-only: a
+                    // SELF_CLAIM_LINKED site is equally still-actively-authorized to build against
+                    // - COMPLETED remains correctly excluded (nothing left to authorize).
+                    currentAuthoritySourceValid = liveBoundAdmission.get().state().activelyBound();
                 } else if (storage.hasSiteEverBeenBoundToAnAdmission(level.dimension(), siteOwner)) {
                     liveAuthorizedPlanSignature = null;
                     currentAuthoritySourceValid = false;
@@ -1369,7 +1452,10 @@ public final class TownConstructionService {
                 boolean currentAuthoritySourceValid;
                 if (liveBoundAdmission.isPresent()) {
                     liveAuthorizedPlanSignature = liveBoundAdmission.get().boundPlanSignature();
-                    currentAuthoritySourceValid = liveBoundAdmission.get().state() == ResidentCapacityAdmission.State.BUILDING;
+                    // [MINECRAFT-455 self-admission liveness] Widened from BUILDING-only: a
+                    // SELF_CLAIM_LINKED site is equally still-actively-authorized to build against
+                    // - COMPLETED remains correctly excluded (nothing left to authorize).
+                    currentAuthoritySourceValid = liveBoundAdmission.get().state().activelyBound();
                 } else if (storage.hasSiteEverBeenBoundToAnAdmission(level.dimension(), siteOwner)) {
                     liveAuthorizedPlanSignature = null;
                     currentAuthoritySourceValid = false;
@@ -1524,7 +1610,29 @@ public final class TownConstructionService {
                 // here. When present, its beneficiary - never the Builder - is who the handoff
                 // below reserves and hands off to. A site nobody requested capacity for keeps the
                 // existing claimant-only path unchanged.
-                if (boundAdmission.isPresent()) {
+                // [MINECRAFT-455 self-admission liveness] The admission used to AUTHORIZE this
+                // site's construction (`boundAdmission`, read/re-validated above) is kept separate
+                // from the admission used to LIMIT which destinations this handoff reserves
+                // (`destinationAdmission` below) - a SELF_CLAIM_LINKED admission stays the ledger
+                // authority throughout, but must reserve the ordinary claimant-only "whatever this
+                // site offers" destination set, never request-limited to only what it originally
+                // asked for (a home-only self-claim on a COMMERCIAL/INDUSTRIAL site must still
+                // receive the site's own workstation, exactly as the unmodified claimant-only path
+                // already would).
+                Optional<ResidentCapacityAdmission> destinationAdmission = boundAdmission;
+                if (boundAdmission.isPresent() && boundAdmission.get().state() == ResidentCapacityAdmission.State.SELF_CLAIM_LINKED) {
+                    // Re-check the identity invariant immediately before closing - never trusted
+                    // merely because the re-entry check above passed earlier this same tick.
+                    if (!isValidSelfClaim(boundAdmission.get(), claimant.getUUID())) {
+                        storage.quarantineAdmissionSite(level.dimension(), siteOwner);
+                        continue;
+                    }
+                    // Beneficiary IS this exact claimant by construction - the distinct-beneficiary
+                    // lookup/active-Builder-elsewhere guard below is simply inapplicable, not
+                    // bypassed unsafely: there is no OTHER villager's claim this could disturb.
+                    handoffRecipient = claimant;
+                    destinationAdmission = Optional.empty();
+                } else if (boundAdmission.isPresent()) {
                     Optional<Villager> beneficiary = findLoadedBeneficiary(level, region, boundAdmission.get().beneficiaryId());
                     if (beneficiary.isEmpty()) {
                         // The beneficiary this site is bound to is not safely available to receive
@@ -1549,7 +1657,7 @@ public final class TownConstructionService {
                     handoffRecipient = beneficiary.get();
                 }
                 reservedHandoff = tryReserveHandoffDestinations(level, storage, handoffRecipient, campfire, floorY, kind,
-                        finalProfession, boundAdmission, isOwnPlannedFixture);
+                        finalProfession, destinationAdmission, isOwnPlannedFixture);
                 if (reservedHandoff.isEmpty()) {
                     continue;
                 }
@@ -1588,10 +1696,21 @@ public final class TownConstructionService {
                 commitClaimantLifecycle(level, storage, claimant, handoffRecipient, finalProfession, reservedHandoff.get());
                 // The persisted floor commitment has served its purpose once the site is actually done.
                 storage.clearFloor(siteOwner);
-                if (boundAdmission.isPresent()) {
+                if (boundAdmission.isPresent() && boundAdmission.get().state() == ResidentCapacityAdmission.State.BUILDING) {
                     // A positive beneficiary-specific handoff just actually happened above - only
                     // now does this admission reach COMPLETED, never merely on blocks-finished or
                     // Builder-assigned fixtures.
+                    storage.completeCapacityAdmission(boundAdmission.get());
+                } else if (boundAdmission.isPresent() && boundAdmission.get().state() == ResidentCapacityAdmission.State.SELF_CLAIM_LINKED
+                        && isValidSelfClaim(boundAdmission.get(), claimant.getUUID())
+                        && selfClaimCapacityActuallyDelivered(handoffRecipient, boundAdmission.get(), reservedHandoff.get())) {
+                    // [MINECRAFT-455 self-admission liveness] Proof from the ACTUALLY delivered
+                    // post-commit state - handoffRecipient's own real HOME/JOB_SITE/profession
+                    // memory against the destinations this exact attempt reserved - never merely
+                    // that kind/finalProfession could have satisfied the request. commitClaimantLifecycle
+                    // has already run above (setBlock at this cell already landed too), so this is
+                    // always a POST-write check, consistent with completion only ever being proven
+                    // after the fact.
                     storage.completeCapacityAdmission(boundAdmission.get());
                 }
             }
@@ -1611,6 +1730,36 @@ public final class TownConstructionService {
      *  THIS attempt - cleanup must only ever release a ticket this attempt itself took. {@code false}
      *  whenever the corresponding BlockPos is {@code null}. */
     record ReservedHandoff(BlockPos workstationPos, boolean workstationReused, BlockPos bedPos, boolean bedReused) {}
+
+    /** [MINECRAFT-455 self-admission liveness] {@code true} only when {@code recipient}'s OWN,
+     *  now-current {@code HOME}/{@code JOB_SITE} memory and profession actually match what {@code
+     *  admission} requested and {@code reserved} actually secured - called only AFTER {@code
+     *  commitClaimantLifecycle} has already run, so this is always proof of ACTUAL delivery, never
+     *  merely that {@code kind}/{@code finalProfession} could have satisfied the request. A home
+     *  not requested, or a workplace not requested, is correctly never checked (and never
+     *  delivered - see the separate {@code destinationAdmission} limiting at the call site). */
+    private static boolean selfClaimCapacityActuallyDelivered(Villager recipient, ResidentCapacityAdmission admission,
+            ReservedHandoff reserved) {
+        if (admission.requestedHomes() > 0) {
+            boolean homeDelivered = reserved.bedPos() != null && recipient.getBrain().getMemory(MemoryModuleType.HOME)
+                    .map(gp -> gp.dimension().equals(recipient.level().dimension()) && gp.pos().equals(reserved.bedPos()))
+                    .orElse(false);
+            if (!homeDelivered) {
+                return false;
+            }
+        }
+        if (!admission.requestedWorkplaces().isEmpty()) {
+            boolean workplaceDelivered = reserved.workstationPos() != null
+                    && admission.requestedWorkplaces().containsKey(recipient.getVillagerData().getProfession())
+                    && recipient.getBrain().getMemory(MemoryModuleType.JOB_SITE)
+                            .map(gp -> gp.dimension().equals(recipient.level().dimension()) && gp.pos().equals(reserved.workstationPos()))
+                            .orElse(false);
+            if (!workplaceDelivered) {
+                return false;
+            }
+        }
+        return true;
+    }
 
     /**
      * MINECRAFT-388 review round 14, finding #1: every destination a claimant's handoff needs must
@@ -1894,18 +2043,26 @@ public final class TownConstructionService {
             boolean workplaceSatisfied = !needsWorkplace
                     || (finalProfession.isPresent() && candidate.requestedWorkplaces().containsKey(finalProfession.get()));
             if ((needsHome || needsWorkplace) && homeSatisfied && workplaceSatisfied) {
-                // MINECRAFT-454 [coordinator review 51356/51358]: the current claimant/Builder can
-                // never bind ITS OWN awaiting admission here - requestResidentCapacity only
-                // rejects a CURRENT Builder as beneficiary (a villager can legitimately request
-                // capacity while unemployed, then later become a Builder claimant elsewhere). A
-                // real demand match on the self-claim identity is never silently skipped as "no
-                // match" (which would let ordinary claimant-only construction fall through) nor
-                // bound - it is CANDIDATE-specific, so scanning continues for a DIFFERENT, eligible
-                // candidate's own admission; the self-claiming candidate's own durable intent is
-                // left completely untouched, preserved for a later, distinct Builder.
+                // [MINECRAFT-455 self-admission liveness, coordinator design 51579-51586] The
+                // current claimant/Builder matching ITS OWN awaiting admission (requestResidentCapacity
+                // only rejects a CURRENT Builder as beneficiary - a villager can legitimately request
+                // capacity while unemployed, then later become a Builder claimant elsewhere, including
+                // of its own self-built site) is now a genuine, distinct bind mode -
+                // SELF_CLAIM_LINKED - rather than always failing closed: beneficiary == builder ==
+                // this exact live claimant is safe to advance through the ORDINARY claimant-only
+                // construction path (buildAt never routes it through the distinct-beneficiary
+                // handoff). A site-level denial (quarantine/everBound/no-live-anchor) for this
+                // exact bind attempt is reported exactly like the distinct-beneficiary case below -
+                // never silently treated as "no match," which would let the site be permanently
+                // consumed without ever honoring this still-durable intent.
                 if (candidate.beneficiaryId().equals(builderId)) {
-                    matchedButIneligible = true;
-                    continue;
+                    Optional<ResidentCapacityAdmission> selfLinked = storage.bindCapacityAdmissionToSite(candidate, siteOwner,
+                            builderId, planSignature, () -> writeFreshAnchorGenerationToken(level, campfire),
+                            ResidentCapacityAdmission.State.SELF_CLAIM_LINKED);
+                    if (selfLinked.isPresent()) {
+                        return CapacityBindResolution.selfLinked(selfLinked.get());
+                    }
+                    return CapacityBindResolution.denied();
                 }
                 // [MINECRAFT-455 active-Builder containment] A real match whose beneficiary is, right
                 // now, THIS MOD's own temporary construction claimant somewhere else - never an
@@ -1957,11 +2114,20 @@ public final class TownConstructionService {
      *  {@code NoMatch} and {@code Denied} must never be collapsed into each other. */
     sealed interface CapacityBindResolution {
         record Bound(ResidentCapacityAdmission admission) implements CapacityBindResolution {}
+        /** [MINECRAFT-455 self-admission liveness] The beneficiary IS the builder IS the live
+         *  claimant - genuinely bound (reverse site exclusivity, same as {@link Bound}), but
+         *  {@code buildAt} advances it through the ordinary claimant-only path, never the
+         *  distinct-beneficiary handoff {@link Bound} triggers. */
+        record SelfLinked(ResidentCapacityAdmission admission) implements CapacityBindResolution {}
         record NoMatch() implements CapacityBindResolution {}
         record Denied() implements CapacityBindResolution {}
 
         static CapacityBindResolution bound(ResidentCapacityAdmission admission) {
             return new Bound(admission);
+        }
+
+        static CapacityBindResolution selfLinked(ResidentCapacityAdmission admission) {
+            return new SelfLinked(admission);
         }
 
         static CapacityBindResolution noMatch() {

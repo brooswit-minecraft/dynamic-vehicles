@@ -50,6 +50,12 @@ record ResidentCapacityAdmission(ResourceKey<Level> dimension, String townKey, R
         String boundPlanSignature, UUID anchorGenerationToken) {
     enum State {
         AWAITING_CLAIM,
+        /** [MINECRAFT-455 self-admission liveness, coordinator design 51579-51586] A genuine third
+         *  bound state: the beneficiary IS the builder IS the live claimant of this exact site -
+         *  never advanced through the distinct-beneficiary handoff {@link State#BUILDING} owns,
+         *  but carrying the SAME bound-fields/exclusivity/authority as {@link State#BUILDING} so
+         *  the site is never left re-bindable to a different admission. */
+        SELF_CLAIM_LINKED,
         BUILDING,
         COMPLETED,
         CANCELLED;
@@ -59,7 +65,13 @@ record ResidentCapacityAdmission(ResourceKey<Level> dimension, String townKey, R
         }
 
         boolean bound() {
-            return this == BUILDING || this == COMPLETED;
+            return this == SELF_CLAIM_LINKED || this == BUILDING || this == COMPLETED;
+        }
+
+        /** {@code true} for a bound state construction may still actively advance against -
+         *  {@link State#COMPLETED} is bound but has nothing left to authorize. */
+        boolean activelyBound() {
+            return this == SELF_CLAIM_LINKED || this == BUILDING;
         }
     }
 
@@ -86,22 +98,40 @@ record ResidentCapacityAdmission(ResourceKey<Level> dimension, String townKey, R
         }
     }
 
-    /** Transitions this still-{@link State#AWAITING_CLAIM} admission to {@link State#BUILDING},
-     *  reserved against exactly {@code siteOwner}/{@code concretePlanSignature}/{@code
-     *  anchorToken} for {@code builderId}'s own claim - never called directly; {@link
+    /** Transitions this still-{@link State#AWAITING_CLAIM} admission to {@code targetState}
+     *  (either {@link State#BUILDING}, the distinct-beneficiary handoff, or {@link
+     *  State#SELF_CLAIM_LINKED}, the beneficiary-is-builder-is-claimant mode), reserved against
+     *  exactly {@code siteOwner}/{@code concretePlanSignature}/{@code anchorToken} for {@code
+     *  builderId}'s own claim - never called directly; {@link
      *  TownStorage#bindCapacityAdmissionToSite} is the sole, CAS-guarded entry point so reverse
      *  site exclusivity is always enforced alongside this transition. */
-    ResidentCapacityAdmission boundTo(String siteOwner, UUID builderId, String concretePlanSignature, UUID anchorToken) {
+    ResidentCapacityAdmission boundTo(String siteOwner, UUID builderId, String concretePlanSignature, UUID anchorToken,
+            State targetState) {
+        if (targetState != State.BUILDING && targetState != State.SELF_CLAIM_LINKED) {
+            throw new IllegalArgumentException("boundTo's target state must be BUILDING or SELF_CLAIM_LINKED, not " + targetState);
+        }
         return new ResidentCapacityAdmission(dimension, townKey, region, beneficiaryId, requestedHomes,
-                requestedWorkplaces, this.siteOwner, planSignature, State.BUILDING, siteOwner, builderId, concretePlanSignature,
+                requestedWorkplaces, this.siteOwner, planSignature, targetState, siteOwner, builderId, concretePlanSignature,
                 anchorToken);
     }
 
-    /** Transitions this {@link State#BUILDING} admission to {@link State#COMPLETED} - only ever
-     *  called once the beneficiary has actually, positively received its final handoff. */
+    /** Transitions this {@link State#BUILDING} or {@link State#COMPLETED}-eligible {@link
+     *  State#SELF_CLAIM_LINKED} admission to {@link State#COMPLETED} - only ever called once the
+     *  recipient has actually, positively received its final handoff. */
     ResidentCapacityAdmission completedHandoff() {
         return new ResidentCapacityAdmission(dimension, townKey, region, beneficiaryId, requestedHomes,
                 requestedWorkplaces, siteOwner, planSignature, State.COMPLETED, boundSiteOwner, builderId, boundPlanSignature,
                 anchorGenerationToken);
+    }
+
+    /** [MINECRAFT-455 self-admission liveness] Reverts a {@link State#SELF_CLAIM_LINKED}
+     *  admission back to {@link State#AWAITING_CLAIM}, clearing every bound-field - only ever
+     *  called by {@link TownStorage#unbindCapacityAdmission} on POSITIVE evidence the self-claim
+     *  is genuinely gone, never on mere absence/unload. The physical site's own permanent
+     *  reverse-site fence ({@code everBoundAdmissionSites}) is untouched by this - only the
+     *  admission's own identity is freed to match a genuinely different future site/claimant. */
+    ResidentCapacityAdmission unbound() {
+        return new ResidentCapacityAdmission(dimension, townKey, region, beneficiaryId, requestedHomes,
+                requestedWorkplaces, siteOwner, planSignature, State.AWAITING_CLAIM, null, null, null, null);
     }
 }

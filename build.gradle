@@ -114,6 +114,15 @@ neoForge {
             }
         }
 
+        m455SelfClaimLinkedGameTestServer {
+            type = "gameTestServer"
+            // MINECRAFT-455 self-admission liveness [coordinator design 51579-51586, resumed
+            // 51681]: a fresh, disposable game directory, isolated via its own namespace, so this
+            // focused lifecycle slice can run without replaying the default full-suite namespace.
+            gameDirectory = layout.dir(providers.provider { file('/tmp/m455-self-claim-linked-20261105/game') })
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'dynamicvehicles_m455_self_claim_linked'
+        }
+
         m455ActiveBuilderContainmentGameTestServer {
             type = "gameTestServer"
             // MINECRAFT-455 active-Builder containment [coordinator chain 51471]: a fresh,

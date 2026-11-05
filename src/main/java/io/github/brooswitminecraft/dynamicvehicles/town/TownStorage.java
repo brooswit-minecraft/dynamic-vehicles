@@ -572,6 +572,16 @@ public class TownStorage extends SavedData {
         return Optional.ofNullable(capacityAdmissions.get(capacityAdmissionKey(dimension, region, beneficiaryId)));
     }
 
+    /** [MINECRAFT-455 self-admission liveness] Test-only, unconditional overwrite - unlike every
+     *  other admission mutator, this bypasses all CAS/identity guards, exactly so a focused test
+     *  can install a deliberately malformed record (e.g. a mismatched identity invariant) and
+     *  assert production code quarantines it rather than trusting it. Never called from production
+     *  code. */
+    void testOnlyReplaceCapacityAdmission(ResidentCapacityAdmission admission) {
+        capacityAdmissions.put(capacityAdmissionKey(admission.dimension(), admission.region(), admission.beneficiaryId()), admission);
+        setDirty();
+    }
+
     /** Creates one admission atomically for the durable beneficiary identity.  A later allocation
      * tick must reuse a nonterminal admission rather than manufacture another anchor, debit, or
      * reservation. */
@@ -642,6 +652,20 @@ public class TownStorage extends SavedData {
         return result;
     }
 
+    /** [MINECRAFT-455 self-admission liveness] Every currently {@code SELF_CLAIM_LINKED} admission
+     *  in a dimension - a small, town-scale set, scanned by the claimant-independent reconciliation
+     *  pass in {@code TownConstructionService} (the same shape {@link #pendingConstructionOperations}
+     *  already supports for the orphaned-ledger-operation recovery pass). */
+    List<ResidentCapacityAdmission> selfClaimLinkedAdmissions(ResourceKey<Level> dimension) {
+        List<ResidentCapacityAdmission> result = new ArrayList<>();
+        for (ResidentCapacityAdmission admission : capacityAdmissions.values()) {
+            if (admission.dimension().equals(dimension) && admission.state() == ResidentCapacityAdmission.State.SELF_CLAIM_LINKED) {
+                result.add(admission);
+            }
+        }
+        return result;
+    }
+
     /** The admission (if any) already bound - {@link ResidentCapacityAdmission.State#BUILDING} or
      *  {@link ResidentCapacityAdmission.State#COMPLETED} - to exactly this construction site.
      *  Reverse site exclusivity: a site can never be bound to two different admissions. Never
@@ -700,6 +724,18 @@ public class TownStorage extends SavedData {
      */
     Optional<ResidentCapacityAdmission> bindCapacityAdmissionToSite(ResidentCapacityAdmission awaiting, String siteOwner,
             UUID builderId, String concretePlanSignature, java.util.function.Supplier<Optional<UUID>> anchorTokenSupplier) {
+        return bindCapacityAdmissionToSite(awaiting, siteOwner, builderId, concretePlanSignature, anchorTokenSupplier,
+                ResidentCapacityAdmission.State.BUILDING);
+    }
+
+    /** As the four-argument overload, but binding to {@code targetState} (either {@link
+     *  ResidentCapacityAdmission.State#BUILDING}, the distinct-beneficiary handoff, or {@link
+     *  ResidentCapacityAdmission.State#SELF_CLAIM_LINKED}, the beneficiary-is-builder-is-claimant
+     *  mode) - see {@link ResidentCapacityAdmission#boundTo} for the same CAS-guarded semantics,
+     *  now parameterized rather than duplicated per target state. */
+    Optional<ResidentCapacityAdmission> bindCapacityAdmissionToSite(ResidentCapacityAdmission awaiting, String siteOwner,
+            UUID builderId, String concretePlanSignature, java.util.function.Supplier<Optional<UUID>> anchorTokenSupplier,
+            ResidentCapacityAdmission.State targetState) {
         if (isAdmissionSiteQuarantined(awaiting.dimension(), siteOwner)
                 || hasSiteEverBeenBoundToAnAdmission(awaiting.dimension(), siteOwner)) {
             return Optional.empty();
@@ -714,7 +750,7 @@ public class TownStorage extends SavedData {
         if (anchorToken.isEmpty()) {
             return Optional.empty();
         }
-        ResidentCapacityAdmission bound = existing.boundTo(siteOwner, builderId, concretePlanSignature, anchorToken.get());
+        ResidentCapacityAdmission bound = existing.boundTo(siteOwner, builderId, concretePlanSignature, anchorToken.get(), targetState);
         capacityAdmissions.put(key, bound);
         everBoundAdmissionSites.add(quarantinedSiteKey(awaiting.dimension(), siteOwner));
         setDirty();
@@ -722,16 +758,16 @@ public class TownStorage extends SavedData {
     }
 
     /**
-     * Marks a {@code BUILDING} admission {@code COMPLETED} once its beneficiary has actually,
-     * positively received the final handoff - never on blocks-finished or Builder-assigned fixtures
-     * alone. Only succeeds against the EXACT site/builder/concrete-plan/anchor-token that bound it; a
-     * stale, already-resolved, or mismatched admission is left untouched rather than silently
-     * rebound or double-completed.
+     * Marks a {@code BUILDING} or {@code SELF_CLAIM_LINKED} admission {@code COMPLETED} once its
+     * recipient has actually, positively received the final handoff - never on blocks-finished or
+     * Builder-assigned fixtures alone. Only succeeds against the EXACT site/builder/concrete-plan/
+     * anchor-token that bound it; a stale, already-resolved, or mismatched admission is left
+     * untouched rather than silently rebound or double-completed.
      */
     Optional<ResidentCapacityAdmission> completeCapacityAdmission(ResidentCapacityAdmission bound) {
         String key = capacityAdmissionKey(bound.dimension(), bound.region(), bound.beneficiaryId());
         ResidentCapacityAdmission existing = capacityAdmissions.get(key);
-        if (existing == null || existing.state() != ResidentCapacityAdmission.State.BUILDING
+        if (existing == null || !existing.state().activelyBound()
                 || !existing.boundSiteOwner().equals(bound.boundSiteOwner()) || !existing.builderId().equals(bound.builderId())
                 || !existing.boundPlanSignature().equals(bound.boundPlanSignature())
                 || !Objects.equals(existing.anchorGenerationToken(), bound.anchorGenerationToken())) {
@@ -741,6 +777,59 @@ public class TownStorage extends SavedData {
         capacityAdmissions.put(key, completed);
         setDirty();
         return Optional.of(completed);
+    }
+
+    /**
+     * [MINECRAFT-455 self-admission liveness] Reverts a {@code SELF_CLAIM_LINKED} admission back
+     * to {@code AWAITING_CLAIM} on POSITIVE evidence its self-claim is genuinely gone - never on
+     * mere absence/unload (see the caller in {@code TownConstructionService}). Only succeeds
+     * against the EXACT site/builder/concrete-plan/anchor-token that linked it - a stale or
+     * already-advanced reference changes nothing. The site's own permanent reverse-site fence
+     * ({@link #everBoundAdmissionSites}) is deliberately NEVER cleared here - this frees the
+     * ADMISSION's identity to match a genuinely different future site/claimant, never makes the
+     * OLD physical site bindable again.
+     */
+    Optional<ResidentCapacityAdmission> unbindCapacityAdmission(ResidentCapacityAdmission linked) {
+        String key = capacityAdmissionKey(linked.dimension(), linked.region(), linked.beneficiaryId());
+        ResidentCapacityAdmission existing = capacityAdmissions.get(key);
+        if (existing == null || existing.state() != ResidentCapacityAdmission.State.SELF_CLAIM_LINKED
+                || !existing.boundSiteOwner().equals(linked.boundSiteOwner()) || !existing.builderId().equals(linked.builderId())
+                || !existing.boundPlanSignature().equals(linked.boundPlanSignature())
+                || !Objects.equals(existing.anchorGenerationToken(), linked.anchorGenerationToken())) {
+            return Optional.empty();
+        }
+        ResidentCapacityAdmission reverted = existing.unbound();
+        capacityAdmissions.put(key, reverted);
+        setDirty();
+        return Optional.of(reverted);
+    }
+
+    /** [MINECRAFT-455 self-admission liveness] Quarantines {@code siteOwner} at runtime - the same
+     *  fail-closed fence {@code load} already applies to a malformed persisted bound record,
+     *  reused here for a live {@code SELF_CLAIM_LINKED} record whose identity invariant
+     *  (beneficiary == builder == live claimant) fails: never trusted to skip the distinct-
+     *  beneficiary/active-Builder guards it would otherwise bypass. */
+    void quarantineAdmissionSite(ResourceKey<Level> dimension, String siteOwner) {
+        quarantinedAdmissionSites.add(quarantinedSiteKey(dimension, siteOwner));
+        setDirty();
+    }
+
+    /** [MINECRAFT-455 self-admission liveness] The inverse of {@link #siteOwner(BlockPos)} - the
+     *  encoding is a stable, already-persisted identity, so no new field is needed to recover the
+     *  anchor position a {@code SELF_CLAIM_LINKED} admission's own {@code boundSiteOwner} names. */
+    public static Optional<BlockPos> siteOwnerPos(String siteOwner) {
+        if (siteOwner == null || !siteOwner.startsWith("site:")) {
+            return Optional.empty();
+        }
+        String[] parts = siteOwner.substring("site:".length()).split(",", 3);
+        if (parts.length != 3) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(new BlockPos(Integer.parseInt(parts[0]), Integer.parseInt(parts[1]), Integer.parseInt(parts[2])));
+        } catch (NumberFormatException invalid) {
+            return Optional.empty();
+        }
     }
 
     /**
@@ -1604,7 +1693,8 @@ public class TownStorage extends SavedData {
                 if (dimensionIdForQuarantine != null && !boundSiteOwnerForQuarantine.isEmpty()) {
                     ResourceKey<Level> dimension = ResourceKey.create(Registries.DIMENSION, dimensionIdForQuarantine);
                     storage.quarantinedAdmissionSites.add(quarantinedSiteKey(dimension, boundSiteOwnerForQuarantine));
-                } else if ("BUILDING".equals(entry.getString("State")) || "COMPLETED".equals(entry.getString("State"))) {
+                } else if ("SELF_CLAIM_LINKED".equals(entry.getString("State")) || "BUILDING".equals(entry.getString("State"))
+                        || "COMPLETED".equals(entry.getString("State"))) {
                     // [coordinator review 51268, P1] This record's own State says it WAS bound, but
                     // either its Dimension or its BoundSiteOwner is itself unreadable - there is no
                     // site identity left to quarantine at all. Best-effort fencing, documented on

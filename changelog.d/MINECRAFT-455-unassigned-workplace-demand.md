@@ -1,0 +1,5 @@
+bump: patch
+
+### Fixed
+- A genuinely unemployed resident (no profession at all) never contributed to a town's workplace shortage, no matter how long no vacant workstation existed - unlike homelessness, which was always counted regardless of profession. Picking up an *existing* vacant workstation already worked; only requesting *new* capacity for a still-unemployed resident was missing. A town now also requests new construction capacity for an unemployed resident once no existing vacancy can be found, resolving to whichever real profession the next built site offers - not a new profession or feature, the same profession-independent shape `missingHomes`/`requestedHomes` already used.
+- This demand is automatically reconciled: once the resident is actually employed (by this same existing-vacancy path, or by a newly built site) or becomes otherwise ineligible, the stale admission is retired exactly like any other resolved resident intent. Self-claimed sites (beneficiary == builder == live claimant) support this demand shape identically to a retained profession.

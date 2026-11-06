@@ -46,8 +46,8 @@ import java.util.UUID;
  */
 record ResidentCapacityAdmission(ResourceKey<Level> dimension, String townKey, RegionCoord region,
         UUID beneficiaryId, int requestedHomes, Map<VillagerProfession, Integer> requestedWorkplaces,
-        String siteOwner, String planSignature, State state, String boundSiteOwner, UUID builderId,
-        String boundPlanSignature, UUID anchorGenerationToken) {
+        boolean needsAnyWorkplace, String siteOwner, String planSignature, State state, String boundSiteOwner,
+        UUID builderId, String boundPlanSignature, UUID anchorGenerationToken) {
     enum State {
         AWAITING_CLAIM,
         /** [MINECRAFT-455 self-admission liveness, coordinator design 51579-51586] A genuine third
@@ -85,7 +85,7 @@ record ResidentCapacityAdmission(ResourceKey<Level> dimension, String townKey, R
                 throw new IllegalArgumentException("requested workplaces must have a profession and positive count");
             }
         }
-        if (requestedHomes == 0 && requestedWorkplaces.isEmpty()) {
+        if (requestedHomes == 0 && requestedWorkplaces.isEmpty() && !needsAnyWorkplace) {
             throw new IllegalArgumentException("admission must request homes or workplaces");
         }
         if (state.bound() && (boundSiteOwner == null || boundSiteOwner.isEmpty() || builderId == null
@@ -111,8 +111,8 @@ record ResidentCapacityAdmission(ResourceKey<Level> dimension, String townKey, R
             throw new IllegalArgumentException("boundTo's target state must be BUILDING or SELF_CLAIM_LINKED, not " + targetState);
         }
         return new ResidentCapacityAdmission(dimension, townKey, region, beneficiaryId, requestedHomes,
-                requestedWorkplaces, this.siteOwner, planSignature, targetState, siteOwner, builderId, concretePlanSignature,
-                anchorToken);
+                requestedWorkplaces, needsAnyWorkplace, this.siteOwner, planSignature, targetState, siteOwner, builderId,
+                concretePlanSignature, anchorToken);
     }
 
     /** Transitions this {@link State#BUILDING} or {@link State#COMPLETED}-eligible {@link
@@ -120,8 +120,8 @@ record ResidentCapacityAdmission(ResourceKey<Level> dimension, String townKey, R
      *  recipient has actually, positively received its final handoff. */
     ResidentCapacityAdmission completedHandoff() {
         return new ResidentCapacityAdmission(dimension, townKey, region, beneficiaryId, requestedHomes,
-                requestedWorkplaces, siteOwner, planSignature, State.COMPLETED, boundSiteOwner, builderId, boundPlanSignature,
-                anchorGenerationToken);
+                requestedWorkplaces, needsAnyWorkplace, siteOwner, planSignature, State.COMPLETED, boundSiteOwner, builderId,
+                boundPlanSignature, anchorGenerationToken);
     }
 
     /** [MINECRAFT-455 self-admission liveness] Reverts a {@link State#SELF_CLAIM_LINKED}
@@ -132,6 +132,7 @@ record ResidentCapacityAdmission(ResourceKey<Level> dimension, String townKey, R
      *  admission's own identity is freed to match a genuinely different future site/claimant. */
     ResidentCapacityAdmission unbound() {
         return new ResidentCapacityAdmission(dimension, townKey, region, beneficiaryId, requestedHomes,
-                requestedWorkplaces, siteOwner, planSignature, State.AWAITING_CLAIM, null, null, null, null);
+                requestedWorkplaces, needsAnyWorkplace, siteOwner, planSignature, State.AWAITING_CLAIM, null, null, null,
+                null);
     }
 }

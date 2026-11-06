@@ -18,16 +18,31 @@ name: MINECRAFT-489 Rayon diagnostic (prepared, not authorized)
 # cached or vendored on this machine). So a result from this diagnostic would show only: outcome
 # with RAYON_NUM_THREADS set in the CI step's shell vs. outcome without it — not proof of pool
 # size, and not a substitute for native-side instrumentation this repo doesn't have.
+#
+# Publication/dispatch route (none of this has been done): pushing this branch, by itself, does
+# not run or register anything that executes. Making a `workflow_dispatch` workflow on a
+# non-default branch selectable still needs, per GitHub's documented behavior (not independently
+# verified against this specific repo, since no push/dispatch was performed): the branch pushed
+# with this file present, and then a SEPARATE, explicit act -- `gh workflow run
+# minecraft-489-rayon-diagnostic.yml --ref minecraft-489-rayon-diagnostic-prep` (or the
+# equivalent Actions-UI "Run workflow" selection) -- after `if: false` below is also lifted.
+# Neither the push nor that dispatch is approved or performed here.
 
 on:
-  workflow_dispatch:  # never added to push/pull_request; requires a human to manually dispatch,
-                       # and even then the job below stays gated off until that gate is lifted.
+  workflow_dispatch:  # the most manual GitHub Actions trigger: never added to push/pull_request,
+                       # and even once pushed, running it needs the separate explicit dispatch
+                       # act described above, on top of the job-level gate immediately below.
 
 jobs:
   rayon-thread-diagnostic:
     if: false  # MINECRAFT-489: never runs until a separate execution decision flips this.
     runs-on: ubuntu-latest
-    timeout-minutes: 25  # hard per-job ceiling: ~4 min/run * 3 runs + setup, not open-ended.
+    # Headroom, not a tight budget: the per-run/kill-after bounds below mean the loop stops
+    # after its first non-clean run rather than ever attempting a worst-case 3x(420+30)s, but
+    # this ceiling is still set well above even that unreachable worst case (~22.5 min) plus
+    # setup/upload, specifically so the final artifact-upload step is never the thing cut off
+    # by job cancellation -- an always() upload after cancellation is not a guarantee by itself.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
         with:
@@ -39,46 +54,91 @@ jobs:
           java-version: "21"
           cache: gradle
 
-      # 3 repeats, hard-stopped by the loop bound below, each its own log file so none are
-      # overwritten, AND each bounded by its own per-invocation timeout (not just the job-level
-      # ceiling above) so one hung run cannot silently consume the whole job allocation and skip
-      # the remaining repeats. RAYON_NUM_THREADS is rayon-core's own documented startup variable
-      # (read once at global pool creation, per the pinned rayon-core 1.13.0 source cited in
-      # comment 51962); Sable's own runtime path has no overriding pool-builder call. Whether it
-      # is actually observed by the forked JVM/native call is NOT established by this step (see
-      # the file header above) -- the printed value below confirms only this shell's own view.
+      # Up to 3 repeats, each: its own log file (none overwritten); its own fresh, run-specific
+      # game directory via the base's existing -Pm478GameDirectory property (build.gradle's
+      # gameTestServer run block already wires it) rather than sharing the default directory --
+      # unique log names alone do not isolate worlds, locks, fixture state or native outputs,
+      # and a directory that already exists is refused rather than silently reused; nothing is
+      # cleaned up afterward so every attempted root/log is preserved regardless of outcome.
       #
-      # Each run's log is also checked with the SAME scripts/check_gametest_count.py the existing
-      # ci.yml "Run GameTests" step uses, so a required test that silently didn't run or wasn't
-      # reported (not just a non-zero gradle exit) cannot look like a clean run here either.
+      # Each invocation is bounded by its own timeout AND run via `setsid` so `timeout` (and
+      # whatever it execs -- gradle, and gradle's own forked JVM/native children) is the leader
+      # of its own process group: on expiry `timeout --kill-after` sends TERM, then falls back
+      # to KILL if TERM alone wasn't enough, and this step separately confirms that whole owned
+      # group is actually gone (via `kill -0` on the negated PID) before treating the run as
+      # settled -- a job-level or step-level timeout alone leaves no such confirmation. On a
+      # timeout, a non-zero exit, or a group that still won't confirm as gone, the loop stops
+      # rather than starting another run, per the explicit "stop rather than start another run"
+      # requirement -- it does not keep attempting runs 2/3 after run 1 comes back uncertain.
+      #
+      # RAYON_NUM_THREADS is rayon-core's own documented startup variable (read once at global
+      # pool creation, per the pinned rayon-core 1.13.0 source cited in comment 51962); Sable's
+      # own runtime path has no overriding pool-builder call. Whether it is actually observed by
+      # the forked JVM/native call is NOT established by this step (see the file header above)
+      # -- the printed value only confirms this shell's own view.
+      #
+      # scripts/check_gametest_count.py (the same check ci.yml's own "Run GameTests" step uses)
+      # runs against EVERY one of the up-to-3 logs, including a not-attempted/refused/timed-out
+      # one, recording its own result -- a missing/partial run must show up as a failure here,
+      # not be skipped just because the launch itself didn't complete cleanly.
       #
       # GitHub Actions' default `run:` shell is `bash -e`, which would otherwise abort this whole
-      # step (and skip the remaining repeats) the instant one run times out or fails its count
-      # check; each repeat's failure handling below is therefore inside an explicit if/else so
-      # `-e` does not trigger on it, with failures aggregated into the step's own final exit code.
-      - name: Run GameTests x3 with RAYON_NUM_THREADS=1
+      # step on the first non-zero command; every potentially-failing command below is therefore
+      # inside an explicit if/else (or guarded with `|| true` where a non-zero result is itself
+      # the thing being recorded) so `-e` does not trigger on it, with failures aggregated into
+      # the step's own final exit code via `overall_rc`.
+      - name: Run GameTests up to x3 with RAYON_NUM_THREADS=1
         env:
           RAYON_NUM_THREADS: "1"
         run: |
           set -o pipefail
           per_run_timeout_s=420  # ~2x the ~2m10s observed full-suite runtime; not open-ended.
+          kill_after_s=30        # grace after TERM before KILL, for a TERM-resistant JVM.
           overall_rc=0
+          stop_early=0
           for i in 1 2 3; do
             log="gametest-rayon1-run${i}.log"
-            echo "=== MINECRAFT-489 diagnostic run ${i}/3: this step's shell has RAYON_NUM_THREADS=${RAYON_NUM_THREADS}; whether the forked JVM/native call observed it is NOT established here ===" | tee "$log"
-            if timeout "${per_run_timeout_s}s" ./gradlew runGameTestServer --no-daemon 2>&1 | tee -a "$log"; then
-              if ! python3 scripts/check_gametest_count.py "$log"; then
-                echo "=== run ${i}/3: required-count check FAILED ===" | tee -a "$log"
-                overall_rc=1
-              fi
+            run_dir="/tmp/minecraft-489-rayon-diag-run${i}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/game"
+            : > "$log"
+            rc=0
+            group_gone=1
+            if [ "$stop_early" -eq 1 ]; then
+              echo "=== run ${i}/3: not attempted; a prior run timed out, failed, or exited uncertainly ===" >> "$log"
+            elif [ -e "$run_dir" ]; then
+              echo "=== run ${i}/3: refusing pre-existing game directory ${run_dir}; not attempted ===" >> "$log"
+              rc=1
             else
+              echo "=== MINECRAFT-489 diagnostic run ${i}/3: RAYON_NUM_THREADS=${RAYON_NUM_THREADS}; game dir=${run_dir} ===" >> "$log"
+              setsid timeout --signal=TERM --kill-after="${kill_after_s}s" "${per_run_timeout_s}s" \
+                ./gradlew runGameTestServer --no-daemon "-Pm478GameDirectory=${run_dir}" \
+                >> "$log" 2>&1 &
+              pid=$!
+              wait "$pid"
               rc=$?
-              if [ "$rc" -eq 124 ]; then
-                echo "=== run ${i}/3: TIMED OUT after ${per_run_timeout_s}s; partial log preserved ===" | tee -a "$log"
-              else
-                echo "=== run ${i}/3: gradle/pipe exited ${rc} ===" | tee -a "$log"
+              if kill -0 -- "-$pid" 2>/dev/null; then
+                echo "=== run ${i}/3: owned process group still alive after wait; force-killing ===" >> "$log"
+                kill -KILL -- "-$pid" 2>/dev/null || true
+                sleep 2
+                if kill -0 -- "-$pid" 2>/dev/null; then
+                  group_gone=0
+                fi
               fi
+              if [ "$rc" -eq 124 ]; then
+                echo "=== run ${i}/3: TIMED OUT after ${per_run_timeout_s}s (TERM, then KILL after ${kill_after_s}s grace) ===" >> "$log"
+              elif [ "$rc" -ne 0 ]; then
+                echo "=== run ${i}/3: gradle exited ${rc} ===" >> "$log"
+              fi
+              if [ "$group_gone" -ne 1 ]; then
+                echo "=== run ${i}/3: cannot confirm the owned process group actually exited; treating as uncertain ===" >> "$log"
+              fi
+            fi
+            if ! python3 scripts/check_gametest_count.py "$log"; then
+              echo "=== run ${i}/3: required-count check reported failure ===" >> "$log"
               overall_rc=1
+            fi
+            if [ "$rc" -ne 0 ] || [ "$group_gone" -ne 1 ]; then
+              overall_rc=1
+              stop_early=1
             fi
           done
           exit "$overall_rc"

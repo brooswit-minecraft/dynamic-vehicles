@@ -1,53 +1,75 @@
 name: MINECRAFT-489 Rayon diagnostic (prepared, not authorized)
 
-# Diagnostic preparation ONLY (ticket comments 51964, 51972). A SEPARATE workflow file so the
-# main CI workflow (.github/workflows/ci.yml) is not modified by this preparation at all.
-# Disabled (if: false below) and not pushed by the preparing agent; running this still needs a
-# separate authorization to flip that gate and actually push the branch.
+# Diagnostic preparation ONLY (ticket comments 51964, 51972, 51982, 51985, 51989). A SEPARATE
+# workflow file so the main CI workflow (.github/workflows/ci.yml) is not modified by this
+# preparation at all. Disabled (if: false below) and not pushed by the preparing agent; running
+# this still needs a separate authorization to flip that gate and actually push/merge it.
 #
 # Narrowed scope (per 51972): this prepares to answer ONLY "does setting RAYON_NUM_THREADS=1 in
 # this CI step's shell change airborneDrivenWheelsKeepTurningAndTheClutchSeesNoStaleTireLoad's
 # own per-20-tick trace, under the same full-suite/default-namespace batch as the two
-# already-recorded runs (42140562220 passed, 42142250830 failed, both with this var unset)?"
-# It makes NO claim about Sable's actual native Rayon pool size, and no claim that the forked
-# JVM or the native JNI call actually observed the variable. No local, execution-free mechanism
-# to verify JVM/native environment inheritance was found in this repo (Gradle's own documented
+# already-recorded runs (42140562220 passed, 42142250830 failed, both with this var unset)?" It
+# makes NO claim about Sable's actual native Rayon pool size, and no claim that the forked JVM or
+# the native JNI call actually observed the variable. No local, execution-free mechanism to
+# verify JVM/native environment inheritance was found in this repo (Gradle's own documented
 # default for ProcessForkOptions-based tasks, including JavaExec, is to inherit the launching
 # process's environment unless a plugin explicitly overrides it, but confirming NeoGradle's own
 # gameTestServer run type does not override it would need that plugin's own source, which is not
 # cached or vendored on this machine). So a result from this diagnostic would show only: outcome
-# with RAYON_NUM_THREADS set in the CI step's shell vs. outcome without it — not proof of pool
+# with RAYON_NUM_THREADS set in the CI step's shell vs. outcome without it -- not proof of pool
 # size, and not a substitute for native-side instrumentation this repo doesn't have.
 #
-# Publication/dispatch route (none of this has been done; this corrects an earlier, INCOMPLETE
-# claim that pushing this branch plus `gh workflow run ... --ref ...` would be sufficient). Per
-# GitHub's own documentation
+# One attempt per isolated runner (per 51989), not a loop in one job (superseding the prior
+# design): whether gradle's own forked JVM/native descendants reliably settle after
+# `timeout`'s TERM/KILL to its one direct child is explicitly NOT established here (no
+# source-supported, positively-owned settlement contract exists on this machine, and an
+# unverified recycled-PID/group signal fallback was already flagged as unsafe and removed, not
+# reinstated). Rather than risk one attempt's leftover state reaching the next, each of the 3
+# attempts below runs as its own `strategy.matrix` job on its own fresh `ubuntu-latest` runner,
+# with `max-parallel: 1` and the default `fail-fast: true` so attempt 2 never starts if attempt 1
+# fails (launch, timeout, or required-count failure alike), and the runner (and anything left
+# running on it) is simply discarded after each job ends -- no cross-attempt interference to
+# reason about, because there is no shared process or machine between attempts.
+#
+# Publication/dispatch route (none of this has been done; corrects an earlier, still-incomplete
+# claim). Per GitHub's own documentation
 # (https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow), a
 # `workflow_dispatch` workflow must exist on the repository's DEFAULT branch (main) before it is
 # dispatchable for ANY ref -- a feature-branch-only push is not a complete registration route by
-# itself. The actual initial step would be merging this file to main, not just pushing this
-# branch -- a materially bigger, more consequential action, which would also incidentally
-# trigger ci.yml's own existing push-triggered jobs against main as normal course (not something
-# this diagnostic file itself adds). That merge is named here for a future approval request to
-# weigh explicitly; it is NOT performed, requested, or assumed by this preparation.
+# itself. The actual initial step would be a PR merging this file to main, not just pushing this
+# branch. That PR would itself run through this repo's EXISTING ci.yml as ordinary CI before any
+# merge -- `ci.yml` triggers on both `pull_request` (no branch filter) and `push` to `main`, so
+# opening the PR runs the existing `build`/`client-acceptance`/`release-gate` jobs against the PR
+# as normal course, and merging then runs them again against `main` -- neither of which this
+# diagnostic file adds or changes; it is simply the existing required CI any PR already goes
+# through. Only after that PR merges would `workflow_dispatch` on this new file become
+# selectable at all, and even then a separate, explicit dispatch act (`gh workflow run
+# minecraft-489-rayon-diagnostic.yml --ref main`, or the Actions UI equivalent) would still be
+# needed on top of lifting `if: false` below. None of the PR, the merge, or the dispatch is
+# performed, requested, or assumed by this preparation -- named here so a future approval
+# request can weigh the complete route, not a partial one.
 
 on:
   workflow_dispatch:  # the most manual GitHub Actions trigger: never added to push/pull_request.
-                       # Per the file header above, actually making this dispatchable for any ref
-                       # first requires this file to reach the default branch (main) -- not just
-                       # a feature-branch push -- and even then needs a separate, explicit
-                       # dispatch act, on top of the job-level gate immediately below.
+                       # Per the file header above, this also cannot be dispatched for any ref
+                       # until the file itself reaches the default branch via ordinary, existing
+                       # CI-gated PR merge -- not a feature-branch push -- and even then needs a
+                       # separate, explicit dispatch act, on top of the job-level gate below.
 
 jobs:
   rayon-thread-diagnostic:
     if: false  # MINECRAFT-489: never runs until a separate execution decision flips this.
+    strategy:
+      max-parallel: 1  # strictly one attempt's runner alive at a time; never overlapping.
+      fail-fast: true  # (the default; stated explicitly) a failed attempt cancels the rest
+                        # rather than starting another -- launch, timeout, AND required-count
+                        # failures all map to a non-zero job exit below, so all three stop it.
+      matrix:
+        attempt: [1, 2, 3]
     runs-on: ubuntu-latest
-    # Headroom, not a tight budget: the per-run/kill-after bounds below mean the loop stops
-    # after its first non-clean run rather than ever attempting a worst-case 3x(420+30)s, but
-    # this ceiling is still set well above even that unreachable worst case (~22.5 min) plus
-    # setup/upload, specifically so the final artifact-upload step is never the thing cut off
-    # by job cancellation -- an always() upload after cancellation is not a guarantee by itself.
-    timeout-minutes: 35
+    # Headroom for one attempt only (per_run_timeout_s + kill_after_s + setup/upload), not a
+    # tight budget -- there is no loop here to size this against anymore.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -59,113 +81,133 @@ jobs:
           java-version: "21"
           cache: gradle
 
-      # Up to 3 repeats, each: its own log file (none overwritten); its own fresh, run-specific
-      # game directory via the base's existing -Pm478GameDirectory property (build.gradle's
-      # gameTestServer run block already wires it) rather than sharing the default directory --
-      # unique log names alone do not isolate worlds, locks, fixture state or native outputs,
-      # and a directory that already exists is refused rather than silently reused; nothing is
-      # cleaned up afterward, so every attempted root is still present on disk when this step
-      # ends (see the manifest step below for what of that is actually captured as evidence).
+      # This attempt's own fresh, run-specific game directory via the base's existing
+      # -Pm478GameDirectory property (build.gradle's gameTestServer run block already wires it)
+      # rather than the default directory -- and refuses to proceed (rather than silently
+      # reusing it) if that exact path already exists. Nothing is cleaned up afterward; whatever
+      # this attempt leaves on disk is discarded with the runner regardless, per the isolation
+      # note above.
       #
-      # Termination contract, deliberately narrow: each invocation is bounded by its own
-      # `timeout --signal=TERM --kill-after=30s`, GNU coreutils' own documented, positively-owned
-      # mechanism for signaling the ONE direct child process it itself spawned and tracks by its
-      # own retained reference -- not a PID this script re-derives. This script does NOT also
-      # probe or signal anything by PID/process-group after `wait` returns: once wait returns,
-      # the original PID may already be recycled by the kernel for an unrelated process, so a
-      # same-PID (or negated-PID/group) kill at that point cannot be verified as still pointing
-      # at this run's own processes -- an unverified fallback kill was flagged as unsafe and is
-      # not used. Whether gradle's own forked JVM, and that JVM's own forked native/server
-      # process, are reliably reaped by `timeout`'s TERM/KILL to the direct child alone is NOT
-      # independently established here. On a timeout or any non-zero exit this script fails
-      # closed: it stops attempting further repeats rather than trying to clean up more than the
-      # contract above actually covers, and leaves whatever remains for the ephemeral runner's
-      # own teardown when the job ends.
+      # Termination contract, deliberately narrow: bounded by `timeout --signal=TERM
+      # --kill-after=30s`, GNU coreutils' own documented, positively-owned mechanism for
+      # signaling the ONE direct child process it itself spawned and tracks by its own retained
+      # reference -- not a PID this script re-derives, and not re-probed or re-signaled after
+      # `wait` returns (a same-PID or process-group signal at that point cannot be verified as
+      # still pointing at this attempt's own processes, since the kernel is free to recycle that
+      # PID once the original process has exited; that unverified fallback was already flagged
+      # as unsafe and stays removed). Whether gradle's own forked JVM/native descendants are
+      # reliably reaped by TERM/KILL to the direct child alone is NOT independently established
+      # here -- which is exactly why this attempt's own runner, not a next loop iteration, is
+      # what absorbs that uncertainty (see the file header's isolation note).
       #
       # RAYON_NUM_THREADS is rayon-core's own documented startup variable (read once at global
       # pool creation, per the pinned rayon-core 1.13.0 source cited in comment 51962); Sable's
       # own runtime path has no overriding pool-builder call. Whether it is actually observed by
-      # the forked JVM/native call is NOT established by this step (see the file header above)
-      # -- the printed value only confirms this shell's own view.
+      # the forked JVM/native call is NOT established by this step (see the file header above) --
+      # the printed value only confirms this shell's own view.
       #
       # scripts/check_gametest_count.py (the same check ci.yml's own "Run GameTests" step uses)
-      # runs against EVERY one of the up-to-3 logs, including a not-attempted/refused/timed-out
-      # one, recording its own result -- a missing/partial run must show up as a failure here,
-      # not be skipped just because the launch itself didn't complete cleanly.
+      # always runs against this attempt's log, including a refused/timed-out one, and its result
+      # is tracked SEPARATELY from gradle's own exit code -- the repository's own CI comment
+      # already documents that Gradle can exit zero even when GameTests never actually ran, so a
+      # clean gradle exit alone must not be read as "this attempt succeeded."
       #
-      # GitHub Actions' default `run:` shell is `bash -e`, which would otherwise abort this whole
-      # step on the first non-zero command -- including a bare `wait "$pid"` whose child exited
+      # GitHub Actions' default `run:` shell is `bash -e`, which would otherwise abort this step
+      # on the first non-zero command -- including a bare `wait "$pid"` whose child exited
       # non-zero. Every potentially-failing command below is therefore inside an explicit if/else
-      # (or guarded with `|| true` where a non-zero result is itself the thing being recorded) so
-      # `-e` does not trigger on it, with failures aggregated into the step's own exit code.
-      - name: Run GameTests up to x3 with RAYON_NUM_THREADS=1
+      # (or guarded with `|| true` where a non-zero result is itself the thing being recorded).
+      - name: Run GameTests (attempt ${{ matrix.attempt }}) with RAYON_NUM_THREADS=1
         env:
           RAYON_NUM_THREADS: "1"
         run: |
           set -o pipefail
           per_run_timeout_s=420  # ~2x the ~2m10s observed full-suite runtime; not open-ended.
           kill_after_s=30        # grace after TERM before KILL, timeout's own direct-child-only contract.
-          overall_rc=0
-          stop_early=0
-          manifest="minecraft-489-rayon-diag-manifest.txt"
+          log="gametest-rayon1-attempt${{ matrix.attempt }}.log"
+          manifest="minecraft-489-rayon-diag-manifest-attempt${{ matrix.attempt }}.txt"
+          run_dir="/tmp/minecraft-489-rayon-diag-attempt${{ matrix.attempt }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/game"
+          : > "$log"
           : > "$manifest"
-          for i in 1 2 3; do
-            log="gametest-rayon1-run${i}.log"
-            run_dir="/tmp/minecraft-489-rayon-diag-run${i}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/game"
-            : > "$log"
-            rc=0
-            if [ "$stop_early" -eq 1 ]; then
-              echo "=== run ${i}/3: not attempted; a prior run timed out, failed, or exited non-zero ===" >> "$log"
-            elif [ -e "$run_dir" ]; then
-              echo "=== run ${i}/3: refusing pre-existing game directory ${run_dir}; not attempted ===" >> "$log"
-              rc=1
+          attempted=0
+          rc=0
+          if [ -e "$run_dir" ]; then
+            echo "=== attempt ${{ matrix.attempt }}: refusing pre-existing game directory ${run_dir}; not attempted ===" >> "$log"
+            rc=1
+          else
+            attempted=1
+            echo "=== MINECRAFT-489 diagnostic attempt ${{ matrix.attempt }}: RAYON_NUM_THREADS=${RAYON_NUM_THREADS}; game dir=${run_dir} ===" >> "$log"
+            timeout --signal=TERM --kill-after="${kill_after_s}s" "${per_run_timeout_s}s" \
+              ./gradlew runGameTestServer --no-daemon "-Pm478GameDirectory=${run_dir}" \
+              >> "$log" 2>&1 &
+            pid=$!
+            if wait "$pid"; then
+              rc=0
             else
-              echo "=== MINECRAFT-489 diagnostic run ${i}/3: RAYON_NUM_THREADS=${RAYON_NUM_THREADS}; game dir=${run_dir} ===" >> "$log"
-              setsid timeout --signal=TERM --kill-after="${kill_after_s}s" "${per_run_timeout_s}s" \
-                ./gradlew runGameTestServer --no-daemon "-Pm478GameDirectory=${run_dir}" \
-                >> "$log" 2>&1 &
-              pid=$!
-              if wait "$pid"; then
-                rc=0
-              else
-                rc=$?
-              fi
-              if [ "$rc" -eq 124 ]; then
-                echo "=== run ${i}/3: TIMED OUT after ${per_run_timeout_s}s; timeout's own --kill-after=${kill_after_s}s covers its direct child only, further descendants not independently verified as reaped -- stopping rather than guessing at their identity ===" >> "$log"
-              elif [ "$rc" -ne 0 ]; then
-                echo "=== run ${i}/3: gradle exited ${rc} ===" >> "$log"
-              fi
+              rc=$?
             fi
-            if ! python3 scripts/check_gametest_count.py "$log"; then
-              echo "=== run ${i}/3: required-count check reported failure ===" >> "$log"
-              overall_rc=1
+            if [ "$rc" -eq 124 ]; then
+              echo "=== attempt ${{ matrix.attempt }}: TIMED OUT after ${per_run_timeout_s}s; timeout's own --kill-after=${kill_after_s}s covers its direct child only, further descendants not independently verified as reaped ===" >> "$log"
+            elif [ "$rc" -ne 0 ]; then
+              echo "=== attempt ${{ matrix.attempt }}: gradle exited ${rc} ===" >> "$log"
             fi
-            # Bounded evidence manifest: names only (find, not cat/tar), so it cannot capture
-            # credentials, broad home/workspace contents or dependency binaries; this is the one
-            # record of each attempted /tmp game root's existence once the ephemeral runner (and
-            # whatever that root held) is gone after the job.
-            {
-              echo "run ${i}/3: rc=${rc} game_dir=${run_dir}"
-              if [ -e "$run_dir" ]; then
-                echo "run ${i}/3: game_dir exists; bounded listing (names only, depth 2):"
-                find "$run_dir" -maxdepth 2 2>/dev/null || true
-              else
-                echo "run ${i}/3: game_dir does not exist (not attempted, or failed before creating it)"
-              fi
-            } >> "$manifest"
-            if [ "$rc" -ne 0 ]; then
-              overall_rc=1
-              stop_early=1
-            fi
-          done
-          exit "$overall_rc"
+          fi
 
-      - name: Preserve MINECRAFT-489 diagnostic logs
+          count_rc=0
+          if ! python3 scripts/check_gametest_count.py "$log"; then
+            count_rc=1
+            echo "=== attempt ${{ matrix.attempt }}: required-count check reported failure (tracked separately from gradle's own exit code: Gradle can exit zero even when GameTests never started) ===" >> "$log"
+          fi
+
+          # Bounded evidence manifest: names only (find, not cat/tar) for the directory listing,
+          # plus an explicit present/MISSING line for each specific native evidence file this
+          # repo's own client-acceptance job already treats as the relevant server evidence
+          # (logs/latest.log, crash-reports/) -- so a future reader knows exactly what was or
+          # was not collected, rather than inferring it from silence.
+          {
+            echo "attempt ${{ matrix.attempt }}: attempted=${attempted} rc=${rc} count_rc=${count_rc} game_dir=${run_dir}"
+            if [ -e "$run_dir" ]; then
+              echo "attempt ${{ matrix.attempt }}: game_dir exists; bounded listing (names only, depth 2):"
+              find "$run_dir" -maxdepth 2 2>/dev/null || true
+              for evidence in "logs/latest.log" "crash-reports"; do
+                if [ -e "${run_dir}/${evidence}" ]; then
+                  echo "attempt ${{ matrix.attempt }}: evidence present: ${run_dir}/${evidence}"
+                else
+                  echo "attempt ${{ matrix.attempt }}: evidence MISSING: ${run_dir}/${evidence}"
+                fi
+              done
+            else
+              echo "attempt ${{ matrix.attempt }}: game_dir does not exist (not attempted, or failed before creating it)"
+            fi
+          } >> "$manifest"
+
+          if [ "$rc" -ne 0 ] || [ "$count_rc" -ne 0 ]; then
+            exit 1
+          fi
+          exit 0
+
+      # Required evidence: this attempt's own log and manifest must always exist.
+      - name: Preserve MINECRAFT-489 diagnostic log/manifest (attempt ${{ matrix.attempt }})
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: minecraft-489-rayon-diagnostic
+          name: minecraft-489-rayon-diagnostic-attempt-${{ matrix.attempt }}
           path: |
-            gametest-rayon1-run*.log
-            minecraft-489-rayon-diag-manifest.txt
+            gametest-rayon1-attempt${{ matrix.attempt }}.log
+            minecraft-489-rayon-diag-manifest-attempt${{ matrix.attempt }}.txt
           if-no-files-found: error
+
+      # Optional native evidence: logs/latest.log and crash-reports/ are the same server
+      # evidence this repo's own client-acceptance job already collects, if this attempt's own
+      # game directory produced them -- their absence is expected (e.g. no crash occurred) and
+      # already recorded explicitly in the manifest above, so this upload is best-effort (warn,
+      # not error) and deliberately does not capture anything else from that directory (no world
+      # data, no native binaries, no credentials).
+      - name: Preserve MINECRAFT-489 native server evidence if present (attempt ${{ matrix.attempt }})
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: minecraft-489-rayon-diagnostic-native-evidence-attempt-${{ matrix.attempt }}
+          path: |
+            /tmp/minecraft-489-rayon-diag-attempt${{ matrix.attempt }}-*/game/logs/latest.log
+            /tmp/minecraft-489-rayon-diag-attempt${{ matrix.attempt }}-*/game/crash-reports/**
+          if-no-files-found: warn

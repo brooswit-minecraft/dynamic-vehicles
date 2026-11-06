@@ -19,19 +19,24 @@ name: MINECRAFT-489 Rayon diagnostic (prepared, not authorized)
 # with RAYON_NUM_THREADS set in the CI step's shell vs. outcome without it — not proof of pool
 # size, and not a substitute for native-side instrumentation this repo doesn't have.
 #
-# Publication/dispatch route (none of this has been done): pushing this branch, by itself, does
-# not run or register anything that executes. Making a `workflow_dispatch` workflow on a
-# non-default branch selectable still needs, per GitHub's documented behavior (not independently
-# verified against this specific repo, since no push/dispatch was performed): the branch pushed
-# with this file present, and then a SEPARATE, explicit act -- `gh workflow run
-# minecraft-489-rayon-diagnostic.yml --ref minecraft-489-rayon-diagnostic-prep` (or the
-# equivalent Actions-UI "Run workflow" selection) -- after `if: false` below is also lifted.
-# Neither the push nor that dispatch is approved or performed here.
+# Publication/dispatch route (none of this has been done; this corrects an earlier, INCOMPLETE
+# claim that pushing this branch plus `gh workflow run ... --ref ...` would be sufficient). Per
+# GitHub's own documentation
+# (https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow), a
+# `workflow_dispatch` workflow must exist on the repository's DEFAULT branch (main) before it is
+# dispatchable for ANY ref -- a feature-branch-only push is not a complete registration route by
+# itself. The actual initial step would be merging this file to main, not just pushing this
+# branch -- a materially bigger, more consequential action, which would also incidentally
+# trigger ci.yml's own existing push-triggered jobs against main as normal course (not something
+# this diagnostic file itself adds). That merge is named here for a future approval request to
+# weigh explicitly; it is NOT performed, requested, or assumed by this preparation.
 
 on:
-  workflow_dispatch:  # the most manual GitHub Actions trigger: never added to push/pull_request,
-                       # and even once pushed, running it needs the separate explicit dispatch
-                       # act described above, on top of the job-level gate immediately below.
+  workflow_dispatch:  # the most manual GitHub Actions trigger: never added to push/pull_request.
+                       # Per the file header above, actually making this dispatchable for any ref
+                       # first requires this file to reach the default branch (main) -- not just
+                       # a feature-branch push -- and even then needs a separate, explicit
+                       # dispatch act, on top of the job-level gate immediately below.
 
 jobs:
   rayon-thread-diagnostic:
@@ -59,17 +64,23 @@ jobs:
       # gameTestServer run block already wires it) rather than sharing the default directory --
       # unique log names alone do not isolate worlds, locks, fixture state or native outputs,
       # and a directory that already exists is refused rather than silently reused; nothing is
-      # cleaned up afterward so every attempted root/log is preserved regardless of outcome.
+      # cleaned up afterward, so every attempted root is still present on disk when this step
+      # ends (see the manifest step below for what of that is actually captured as evidence).
       #
-      # Each invocation is bounded by its own timeout AND run via `setsid` so `timeout` (and
-      # whatever it execs -- gradle, and gradle's own forked JVM/native children) is the leader
-      # of its own process group: on expiry `timeout --kill-after` sends TERM, then falls back
-      # to KILL if TERM alone wasn't enough, and this step separately confirms that whole owned
-      # group is actually gone (via `kill -0` on the negated PID) before treating the run as
-      # settled -- a job-level or step-level timeout alone leaves no such confirmation. On a
-      # timeout, a non-zero exit, or a group that still won't confirm as gone, the loop stops
-      # rather than starting another run, per the explicit "stop rather than start another run"
-      # requirement -- it does not keep attempting runs 2/3 after run 1 comes back uncertain.
+      # Termination contract, deliberately narrow: each invocation is bounded by its own
+      # `timeout --signal=TERM --kill-after=30s`, GNU coreutils' own documented, positively-owned
+      # mechanism for signaling the ONE direct child process it itself spawned and tracks by its
+      # own retained reference -- not a PID this script re-derives. This script does NOT also
+      # probe or signal anything by PID/process-group after `wait` returns: once wait returns,
+      # the original PID may already be recycled by the kernel for an unrelated process, so a
+      # same-PID (or negated-PID/group) kill at that point cannot be verified as still pointing
+      # at this run's own processes -- an unverified fallback kill was flagged as unsafe and is
+      # not used. Whether gradle's own forked JVM, and that JVM's own forked native/server
+      # process, are reliably reaped by `timeout`'s TERM/KILL to the direct child alone is NOT
+      # independently established here. On a timeout or any non-zero exit this script fails
+      # closed: it stops attempting further repeats rather than trying to clean up more than the
+      # contract above actually covers, and leaves whatever remains for the ephemeral runner's
+      # own teardown when the job ends.
       #
       # RAYON_NUM_THREADS is rayon-core's own documented startup variable (read once at global
       # pool creation, per the pinned rayon-core 1.13.0 source cited in comment 51962); Sable's
@@ -83,27 +94,28 @@ jobs:
       # not be skipped just because the launch itself didn't complete cleanly.
       #
       # GitHub Actions' default `run:` shell is `bash -e`, which would otherwise abort this whole
-      # step on the first non-zero command; every potentially-failing command below is therefore
-      # inside an explicit if/else (or guarded with `|| true` where a non-zero result is itself
-      # the thing being recorded) so `-e` does not trigger on it, with failures aggregated into
-      # the step's own final exit code via `overall_rc`.
+      # step on the first non-zero command -- including a bare `wait "$pid"` whose child exited
+      # non-zero. Every potentially-failing command below is therefore inside an explicit if/else
+      # (or guarded with `|| true` where a non-zero result is itself the thing being recorded) so
+      # `-e` does not trigger on it, with failures aggregated into the step's own exit code.
       - name: Run GameTests up to x3 with RAYON_NUM_THREADS=1
         env:
           RAYON_NUM_THREADS: "1"
         run: |
           set -o pipefail
           per_run_timeout_s=420  # ~2x the ~2m10s observed full-suite runtime; not open-ended.
-          kill_after_s=30        # grace after TERM before KILL, for a TERM-resistant JVM.
+          kill_after_s=30        # grace after TERM before KILL, timeout's own direct-child-only contract.
           overall_rc=0
           stop_early=0
+          manifest="minecraft-489-rayon-diag-manifest.txt"
+          : > "$manifest"
           for i in 1 2 3; do
             log="gametest-rayon1-run${i}.log"
             run_dir="/tmp/minecraft-489-rayon-diag-run${i}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/game"
             : > "$log"
             rc=0
-            group_gone=1
             if [ "$stop_early" -eq 1 ]; then
-              echo "=== run ${i}/3: not attempted; a prior run timed out, failed, or exited uncertainly ===" >> "$log"
+              echo "=== run ${i}/3: not attempted; a prior run timed out, failed, or exited non-zero ===" >> "$log"
             elif [ -e "$run_dir" ]; then
               echo "=== run ${i}/3: refusing pre-existing game directory ${run_dir}; not attempted ===" >> "$log"
               rc=1
@@ -113,30 +125,35 @@ jobs:
                 ./gradlew runGameTestServer --no-daemon "-Pm478GameDirectory=${run_dir}" \
                 >> "$log" 2>&1 &
               pid=$!
-              wait "$pid"
-              rc=$?
-              if kill -0 -- "-$pid" 2>/dev/null; then
-                echo "=== run ${i}/3: owned process group still alive after wait; force-killing ===" >> "$log"
-                kill -KILL -- "-$pid" 2>/dev/null || true
-                sleep 2
-                if kill -0 -- "-$pid" 2>/dev/null; then
-                  group_gone=0
-                fi
+              if wait "$pid"; then
+                rc=0
+              else
+                rc=$?
               fi
               if [ "$rc" -eq 124 ]; then
-                echo "=== run ${i}/3: TIMED OUT after ${per_run_timeout_s}s (TERM, then KILL after ${kill_after_s}s grace) ===" >> "$log"
+                echo "=== run ${i}/3: TIMED OUT after ${per_run_timeout_s}s; timeout's own --kill-after=${kill_after_s}s covers its direct child only, further descendants not independently verified as reaped -- stopping rather than guessing at their identity ===" >> "$log"
               elif [ "$rc" -ne 0 ]; then
                 echo "=== run ${i}/3: gradle exited ${rc} ===" >> "$log"
-              fi
-              if [ "$group_gone" -ne 1 ]; then
-                echo "=== run ${i}/3: cannot confirm the owned process group actually exited; treating as uncertain ===" >> "$log"
               fi
             fi
             if ! python3 scripts/check_gametest_count.py "$log"; then
               echo "=== run ${i}/3: required-count check reported failure ===" >> "$log"
               overall_rc=1
             fi
-            if [ "$rc" -ne 0 ] || [ "$group_gone" -ne 1 ]; then
+            # Bounded evidence manifest: names only (find, not cat/tar), so it cannot capture
+            # credentials, broad home/workspace contents or dependency binaries; this is the one
+            # record of each attempted /tmp game root's existence once the ephemeral runner (and
+            # whatever that root held) is gone after the job.
+            {
+              echo "run ${i}/3: rc=${rc} game_dir=${run_dir}"
+              if [ -e "$run_dir" ]; then
+                echo "run ${i}/3: game_dir exists; bounded listing (names only, depth 2):"
+                find "$run_dir" -maxdepth 2 2>/dev/null || true
+              else
+                echo "run ${i}/3: game_dir does not exist (not attempted, or failed before creating it)"
+              fi
+            } >> "$manifest"
+            if [ "$rc" -ne 0 ]; then
               overall_rc=1
               stop_early=1
             fi
@@ -148,5 +165,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: minecraft-489-rayon-diagnostic
-          path: gametest-rayon1-run*.log
+          path: |
+            gametest-rayon1-run*.log
+            minecraft-489-rayon-diag-manifest.txt
           if-no-files-found: error

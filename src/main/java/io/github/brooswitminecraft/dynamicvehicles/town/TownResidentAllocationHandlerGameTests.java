@@ -1968,4 +1968,51 @@ public final class TownResidentAllocationHandlerGameTests {
                 })
                 .thenSucceed();
     }
+
+    /** [reviewer correction, PR210] A baby villager can never hold a profession in vanilla -
+     *  exactly the same "impossible workplace request" {@code NITWIT} is already excluded for -
+     *  so a baby {@code NONE} resident must never receive a {@code needsAnyWorkplace} admission,
+     *  while an otherwise-identical adult {@code NONE} resident still does. Home demand (not
+     *  profession-gated at all) is unaffected either way. */
+    @GameTest(template = "settlement_test", batch = "residentNeedsAnyWorkplaceBabyExclusionIsolated")
+    public static void aBabyVillagerNeverReceivesANeedsAnyWorkplaceAdmissionButAnAdultStillDoes(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        Villager baby = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        baby.setBaby(true);
+        Villager adult = spawnVillager(helper, anchor(helper).offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+
+        helper.startSequence()
+                .thenIdle(2)
+                .thenExecute(() -> {
+                    helper.assertTrue(helper.getLevel().getEntity(baby.getUUID()) == baby
+                                    && helper.getLevel().getEntity(adult.getUUID()) == adult
+                                    && baby.isAlive() && adult.isAlive()
+                                    && baby.isBaby() && !adult.isBaby()
+                                    && baby.getVillagerData().getProfession() == VillagerProfession.NONE
+                                    && adult.getVillagerData().getProfession() == VillagerProfession.NONE,
+                            "test setup: both named residents must be alive, UUID-resolvable, genuinely unemployed, and differ only by age");
+
+                    TownResidentAllocationHandler.runResidentAllocationTick(helper.getLevel(), storage);
+
+                    Optional<ResidentCapacityAdmission> babyAdmission = storage.capacityAdmissionFor(
+                            helper.getLevel().dimension(), region, baby.getUUID());
+                    Optional<ResidentCapacityAdmission> adultAdmission = storage.capacityAdmissionFor(
+                            helper.getLevel().dimension(), region, adult.getUUID());
+                    helper.assertTrue(babyAdmission.filter(ResidentCapacityAdmission::needsAnyWorkplace).isEmpty(),
+                            "a baby villager (profession NONE) must never receive a needsAnyWorkplace admission - vanilla "
+                                    + "never lets it hold a profession at all; found " + babyAdmission);
+                    helper.assertTrue(adultAdmission.filter(a -> a.state() == ResidentCapacityAdmission.State.AWAITING_CLAIM
+                                    && a.needsAnyWorkplace() && a.requestedWorkplaces().isEmpty()).isPresent(),
+                            "an otherwise-identical adult villager (profession NONE) must still receive its own "
+                                    + "needsAnyWorkplace admission; found " + adultAdmission);
+
+                    TownResidentDemand aggregateDemand = TownResidentAllocationHandler.unmetDemand(helper.getLevel(), region, storage);
+                    helper.assertTrue(aggregateDemand.needsAnyWorkplace(),
+                            "the town aggregate must still correctly report needsAnyWorkplace demand from the adult, even "
+                                    + "with a baby sharing the same region and profession");
+                })
+                .thenSucceed();
+    }
 }

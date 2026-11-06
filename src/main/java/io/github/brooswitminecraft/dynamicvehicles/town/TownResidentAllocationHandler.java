@@ -153,7 +153,11 @@ public final class TownResidentAllocationHandler {
      *  genuinely unemployed villager - {@link #allocateWorkplaceIfNeeded} already ran earlier this
      *  same tick (see the fixed call order in {@link #runResidentAllocationTick}) and would have
      *  assigned a real profession already if any existing vacant workstation was available; still
-     *  being {@code NONE} here is positive proof that attempt already found nothing this tick. */
+     *  being {@code NONE} here is positive proof that attempt already found nothing this tick.
+     *  [reviewer correction] A baby is excluded exactly like {@code NITWIT} is - vanilla never lets
+     *  a baby villager hold a profession at all, so requesting workplace capacity on its behalf
+     *  would be exactly the same impossible request the existing {@code NITWIT} exclusion already
+     *  guards against; it still counts toward home demand unchanged. */
     private static TownResidentDemand unmetDemandForResident(ServerLevel level, Villager villager,
             RegionCoord region, TownStorage storage) {
         int missingHomes = hasValidHome(level, villager, region, storage) ? 0 : 1;
@@ -161,7 +165,7 @@ public final class TownResidentAllocationHandler {
         Map<VillagerProfession, Integer> missingWorkplaces = new HashMap<>();
         boolean needsAnyWorkplace = false;
         if (profession == VillagerProfession.NONE) {
-            needsAnyWorkplace = true;
+            needsAnyWorkplace = !villager.isBaby();
         } else if (profession != VillagerProfession.NITWIT && profession != BuilderProfession.BUILDER.get()
                 && !hasValidWorkplace(level, villager, region, storage)) {
             missingWorkplaces.put(profession, 1);
@@ -219,8 +223,11 @@ public final class TownResidentAllocationHandler {
             // [MINECRAFT-455 unassigned-workplace demand] A genuinely unemployed (NONE) villager
             // contributes to the profession-independent needsAnyWorkplace flag instead of the
             // retained-profession map - mirrors the identical split in unmetDemandForResident.
+            // [reviewer correction] A baby NONE villager is excluded exactly like NITWIT - vanilla
+            // never lets it hold a profession at all; the flag is OR'd in, never overwritten, so an
+            // earlier adult's true is never reset back to false by a later baby in the same scan.
             if (profession == VillagerProfession.NONE) {
-                needsAnyWorkplace = true;
+                needsAnyWorkplace = needsAnyWorkplace || !villager.isBaby();
             } else if (profession != VillagerProfession.NITWIT && profession != BuilderProfession.BUILDER.get()
                     && !hasValidWorkplace(level, villager, region, storage)) {
                 missingWorkplaces.merge(profession, 1, Integer::sum);

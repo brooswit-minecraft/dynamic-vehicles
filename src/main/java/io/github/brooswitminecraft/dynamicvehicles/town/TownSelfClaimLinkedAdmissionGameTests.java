@@ -99,7 +99,7 @@ public final class TownSelfClaimLinkedAdmissionGameTests {
             // mirroring TownResidentCapacityAdmissionGameTests' own identical setup.
             resident.setVillagerData(resident.getVillagerData().setProfession(finalProfession.get()));
         }
-        TownResidentDemand demand = new TownResidentDemand(1, requestedWorkplaces);
+        TownResidentDemand demand = new TownResidentDemand(1, requestedWorkplaces, false);
         Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
                 helper.getLevel(), region, resident.getUUID(), demand, storage);
         helper.assertTrue(admission.isPresent() && admission.get().state() == ResidentCapacityAdmission.State.AWAITING_CLAIM,
@@ -232,6 +232,75 @@ public final class TownSelfClaimLinkedAdmissionGameTests {
         helper.succeed();
     }
 
+    /** [MINECRAFT-455 unassigned-workplace demand] A self-claimed admission whose ONLY request is
+     *  {@code needsAnyWorkplace} - a genuinely unemployed resident, never a retained specific
+     *  profession - must complete through the exact same SELF_CLAIM_LINKED lifecycle, matching
+     *  whichever real profession this site's own workstation happens to resolve to. Mirrors {@link
+     *  #selfClaimedAdmissionCompletesThroughTheOrdinaryClaimantOnlyPathAndMatchesItsOwnRequestedCapacity}
+     *  but for the new profession-independent demand shape instead of a retained profession. */
+    @GameTest(template = "settlement_test", templateNamespace = "dynamicvehicles_m455_self_claim_linked",
+            batch = "m455SelfClaimLinked", skyAccess = true)
+    public static void selfClaimedNeedsAnyWorkplaceOnlyAdmissionCompletesAndDeliversWhicheverRealProfessionTheSiteOffers(
+            GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        prepareFlatGround(helper);
+
+        BlockPos foundAnchor = null;
+        ResolvedSite foundSite = null;
+        for (BlockPos candidate : CANDIDATE_ANCHORS) {
+            BlockPos candidateAbsolute = helper.absolutePos(candidate);
+            ResolvedSite candidateSite = resolveSite(helper, candidateAbsolute);
+            if (candidateSite.kind() != TownBuildingTemplates.Kind.STOREHOUSE && candidateSite.finalProfession().isPresent()) {
+                foundAnchor = candidate;
+                foundSite = candidateSite;
+                break;
+            }
+        }
+        helper.assertTrue(foundAnchor != null,
+                "test setup: at least one of the 4 candidate anchors must resolve to a profession-bearing, non-STOREHOUSE site");
+        BlockPos absoluteCampfire = helper.absolutePos(foundAnchor);
+        helper.setBlock(foundAnchor, Blocks.CAMPFIRE);
+        RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
+        String siteOwner = TownStorage.siteOwner(absoluteCampfire);
+
+        TownStorage storage = new TownStorage();
+        storage.markTownFounded(TownKeys.keyFor(level.dimension(), region));
+        fundStore(helper, storage, absoluteCampfire, 100000);
+
+        Villager resident = EntityType.VILLAGER.create(level, null, absoluteCampfire, MobSpawnType.EVENT, false, false);
+        level.addFreshEntity(resident);
+        helper.assertTrue(resident.getVillagerData().getProfession() == VillagerProfession.NONE,
+                "test setup: resident must start genuinely unemployed - needsAnyWorkplace's only eligible beneficiary state");
+        TownResidentDemand demand = new TownResidentDemand(0, Map.of(), true);
+        Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
+                level, region, resident.getUUID(), demand, storage);
+        helper.assertTrue(admission.isPresent() && admission.get().state() == ResidentCapacityAdmission.State.AWAITING_CLAIM
+                        && admission.get().needsAnyWorkplace() && admission.get().requestedWorkplaces().isEmpty()
+                        && admission.get().requestedHomes() == 0,
+                "test setup: the resident's own needsAnyWorkplace-only admission must be created AWAITING_CLAIM before it "
+                        + "becomes a Builder - admission=" + admission);
+        resident.setVillagerData(resident.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
+        resident.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(level.dimension(), absoluteCampfire));
+
+        driveBuildAt(level, absoluteCampfire, storage, resident, 500);
+
+        helper.assertTrue(resident.getVillagerData().getProfession() == foundSite.finalProfession().get(),
+                "a needsAnyWorkplace-only self-claim must receive whichever real profession this site's own workstation "
+                        + "resolves to - actualProfession=" + resident.getVillagerData().getProfession()
+                        + " expectedProfession=" + foundSite.finalProfession());
+        int floorY = TownTerrain.estimateGroundHeightBelow(level, absoluteCampfire);
+        BlockPos expectedWorkstation = TownBuildingTemplates.workstationPosition(absoluteCampfire.getX(), floorY, absoluteCampfire.getZ());
+        helper.assertTrue(resident.getBrain().getMemory(MemoryModuleType.JOB_SITE)
+                        .map(gp -> gp.pos().equals(expectedWorkstation)).orElse(false),
+                "the resident's JOB_SITE must point at the real workstation this build placed, not be left null/stale");
+        Optional<ResidentCapacityAdmission> afterBuild = storage.capacityAdmissionFor(level.dimension(), region, resident.getUUID());
+        helper.assertTrue(afterBuild.filter(a -> a.state() == ResidentCapacityAdmission.State.COMPLETED
+                        && a.boundSiteOwner().equals(siteOwner)).isPresent(),
+                "the needsAnyWorkplace-only admission must reach COMPLETED once its workplace was actually delivered; found "
+                        + afterBuild);
+        helper.succeed();
+    }
+
     @GameTest(template = "settlement_test", templateNamespace = "dynamicvehicles_m455_self_claim_linked",
             batch = "m455SelfClaimLinked", skyAccess = true)
     public static void aDistinctCompetingAdmissionCanNeverBindToAnAlreadySelfClaimedSite(GameTestHelper helper) {
@@ -275,7 +344,7 @@ public final class TownSelfClaimLinkedAdmissionGameTests {
         BlockPos competitorPos = helper.absolutePos(competitorRelative);
         Villager competitor = EntityType.VILLAGER.create(level, null, competitorPos, MobSpawnType.EVENT, false, false);
         level.addFreshEntity(competitor);
-        TownResidentDemand competitorDemand = new TownResidentDemand(1, Map.of());
+        TownResidentDemand competitorDemand = new TownResidentDemand(1, Map.of(), false);
         Optional<ResidentCapacityAdmission> competitorAdmission = TownConstructionService.requestResidentCapacity(
                 level, region, competitor.getUUID(), competitorDemand, storage);
         helper.assertTrue(competitorAdmission.isPresent(), "test setup: the competitor's own admission must be created");
@@ -446,8 +515,9 @@ public final class TownSelfClaimLinkedAdmissionGameTests {
         UUID unrelatedBuilderId = UUID.randomUUID();
         ResidentCapacityAdmission corrupted = new ResidentCapacityAdmission(linked.get().dimension(), linked.get().townKey(),
                 linked.get().region(), linked.get().beneficiaryId(), linked.get().requestedHomes(), linked.get().requestedWorkplaces(),
-                linked.get().siteOwner(), linked.get().planSignature(), ResidentCapacityAdmission.State.SELF_CLAIM_LINKED,
-                linked.get().boundSiteOwner(), unrelatedBuilderId, linked.get().boundPlanSignature(), linked.get().anchorGenerationToken());
+                linked.get().needsAnyWorkplace(), linked.get().siteOwner(), linked.get().planSignature(),
+                ResidentCapacityAdmission.State.SELF_CLAIM_LINKED, linked.get().boundSiteOwner(), unrelatedBuilderId,
+                linked.get().boundPlanSignature(), linked.get().anchorGenerationToken());
         storage.testOnlyReplaceCapacityAdmission(corrupted);
 
         TownConstructionService.buildAt(level, absoluteCampfire, storage);

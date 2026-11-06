@@ -1,9 +1,11 @@
-name: MINECRAFT-489 Rayon diagnostic (prepared, not authorized)
+name: MINECRAFT-489 Rayon diagnostic (user-authorized, ticket comment 52017)
 
-# Diagnostic preparation ONLY (ticket comments 51964, 51972, 51982, 51985, 51989). A SEPARATE
-# workflow file so the main CI workflow (.github/workflows/ci.yml) is not modified by this
-# preparation at all. Disabled (if: false below) and not pushed by the preparing agent; running
-# this still needs a separate authorization to flip that gate and actually push/merge it.
+# Diagnostic, user-authorized per ticket comment 52017 (ticket history: 51964, 51972, 51982,
+# 51985, 51989, 51996, 52004, 52010). A SEPARATE workflow file so the main CI workflow
+# (.github/workflows/ci.yml) is not modified by this at all. `workflow_dispatch` below is the
+# only trigger -- this never runs on push/pull_request, and the one manual dispatch of it is
+# itself authorized to happen at most once, after this file's own PR and merge go through the
+# repository's normal, unmodified CI and review process.
 #
 # Narrowed scope (per 51972): this prepares to answer ONLY "does setting RAYON_NUM_THREADS=1 in
 # this CI step's shell change airborneDrivenWheelsKeepTurningAndTheClutchSeesNoStaleTireLoad's
@@ -74,7 +76,10 @@ on:
 
 jobs:
   rayon-thread-diagnostic:
-    if: false  # MINECRAFT-489: never runs until a separate execution decision flips this.
+    # MINECRAFT-489: the extra if:false hard-block is lifted (user-authorized, ticket comment
+    # 52017) -- `workflow_dispatch` above remains the only trigger, so this still only runs on an
+    # explicit, deliberate manual dispatch, never on push/pull_request, and that one dispatch is
+    # itself authorized to happen at most once.
     strategy:
       max-parallel: 1  # strictly one attempt's runner alive at a time; never overlapping.
       fail-fast: true  # (the default; stated explicitly) a failed attempt cancels the rest

@@ -31,17 +31,21 @@ name: MINECRAFT-489 Rayon diagnostic (prepared, not authorized)
 # running on it) is simply discarded after each job ends -- no cross-attempt interference to
 # reason about, because there is no shared process or machine between attempts.
 #
-# Evidence contract for a fail-fast-canceled attempt, stated precisely (corrects an earlier,
-# imprecise claim that an unattempted run is "recorded as attempted=0"): that in-script
-# attempted=0 marker only covers a run that STARTS and then refuses a pre-existing game
-# directory; it says nothing about a LATER matrix attempt that `fail-fast` cancels before it
-# ever starts. A canceled attempt's "Run GameTests" step never executes, so it produces NO log,
-# NO manifest, and NO artifact at all -- not a falsely-successful record, but a genuine absence.
-# Reading the results therefore means: for attempts 1..N, a missing attempt-K artifact (for any
-# K greater than the first attempt whose own artifact shows a failure) must be read as "canceled
-# because an earlier attempt failed," never as lost evidence to explain away: GitHub Actions'
-# own run summary -- not this script -- is the authoritative record of which matrix jobs were
-# cancelled versus run.
+# Evidence contract for a missing attempt artifact, stated precisely (corrects two successive
+# earlier imprecisions). First: that in-script attempted=0 marker only covers a run that STARTS
+# and then refuses a pre-existing game directory; it says nothing about a LATER matrix attempt
+# that `fail-fast` cancels before it ever starts -- a canceled attempt's "Run GameTests" step
+# never executes, so it produces NO log, NO manifest, and NO artifact at all, not a
+# falsely-successful record. Second, and separately: a missing artifact does NOT by itself prove
+# cancellation either -- the same absence would also follow a job that started, then failed
+# before it ever reached the upload steps (e.g. the runner itself failing, not just the script).
+# So reading the results means consulting GitHub Actions' own per-job/per-step status (the
+# Actions UI, or `gh run view --json jobs`) for that specific attempt, not inferring it from the
+# artifact list or from matrix labels/ordering: only an attempt whose own job/step status shows
+# it was cancelled BEFORE the "Run GameTests" step started may be recorded as not attempted.
+# Every other missing-artifact case is missing/unknown evidence, not automatically explained away
+# as cancellation -- a canceled job stays recorded as canceled, never folded into a pass or fail
+# test result.
 #
 # Publication/dispatch route (none of this has been done; corrects an earlier, still-incomplete
 # claim). Per GitHub's own documentation
@@ -170,13 +174,24 @@ jobs:
             echo "=== attempt ${{ matrix.attempt }}: required-count check reported failure (tracked separately from gradle's own exit code: Gradle can exit zero even when GameTests never started) ===" >> "$log"
           fi
 
+          # The normal server log (logs/latest.log) is required evidence for an attempt that
+          # otherwise looks successful -- its absence there is itself an incomplete result, not
+          # something to pass with a warning, so it is checked and folded into this attempt's
+          # own pass/fail decision, separately from crash-reports (which stays optional: no crash
+          # report is the EXPECTED outcome on a clean run, not missing evidence).
+          log_missing_rc=0
+          if [ "$attempted" -eq 1 ] && [ "$rc" -eq 0 ] && [ "$count_rc" -eq 0 ] && [ ! -e "${run_dir}/logs/latest.log" ]; then
+            log_missing_rc=1
+            echo "=== attempt ${{ matrix.attempt }}: required server log ${run_dir}/logs/latest.log missing after an apparently successful run; treating as incomplete ===" >> "$log"
+          fi
+
           # Bounded evidence manifest: names only (find, not cat/tar) for the directory listing,
           # plus an explicit present/MISSING line for each specific native evidence file this
           # repo's own client-acceptance job already treats as the relevant server evidence
           # (logs/latest.log, crash-reports/) -- so a future reader knows exactly what was or
           # was not collected, rather than inferring it from silence.
           {
-            echo "attempt ${{ matrix.attempt }}: attempted=${attempted} rc=${rc} count_rc=${count_rc} game_dir=${run_dir}"
+            echo "attempt ${{ matrix.attempt }}: attempted=${attempted} rc=${rc} count_rc=${count_rc} log_missing_rc=${log_missing_rc} game_dir=${run_dir}"
             if [ -e "$run_dir" ]; then
               echo "attempt ${{ matrix.attempt }}: game_dir exists; bounded listing (names only, depth 2):"
               find "$run_dir" -maxdepth 2 2>/dev/null || true
@@ -192,7 +207,7 @@ jobs:
             fi
           } >> "$manifest"
 
-          if [ "$rc" -ne 0 ] || [ "$count_rc" -ne 0 ]; then
+          if [ "$rc" -ne 0 ] || [ "$count_rc" -ne 0 ] || [ "$log_missing_rc" -ne 0 ]; then
             exit 1
           fi
           exit 0
@@ -208,18 +223,32 @@ jobs:
             minecraft-489-rayon-diag-manifest-attempt${{ matrix.attempt }}.txt
           if-no-files-found: error
 
-      # Optional native evidence: logs/latest.log and crash-reports/ are the same server
-      # evidence this repo's own client-acceptance job already collects, if this attempt's own
-      # game directory produced them -- their absence is expected (e.g. no crash occurred) and
-      # already recorded explicitly in the manifest above, so this upload is best-effort (warn,
-      # not error) and deliberately does not capture anything else from that directory (no world
+      # Required-on-success-only (no `if:` -> the default, runs only if the preceding step
+      # succeeded): the previous step already exits non-zero whenever an apparently-successful
+      # attempt is missing its own normal server log, so by the time this step can run at all,
+      # that log is already known to exist -- this upload is a defense-in-depth confirmation of
+      # that same fact, at the EXACT run-specific game root this attempt itself constructed
+      # (never a wildcard over other attempts' roots), not a substitute gate. It never runs, and
+      # never errors, for an attempt that failed, timed out, or was refused -- that absence is
+      # already the expected, already-recorded case for those outcomes.
+      - name: Preserve required server log (attempt ${{ matrix.attempt }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: minecraft-489-rayon-diagnostic-server-log-attempt-${{ matrix.attempt }}
+          path: /tmp/minecraft-489-rayon-diag-attempt${{ matrix.attempt }}-${{ github.run_id }}-${{ github.run_attempt }}/game/logs/latest.log
+          if-no-files-found: error
+
+      # Optional evidence: crash-reports/ is the same server evidence this repo's own
+      # client-acceptance job already collects, if this attempt's own game directory produced
+      # it. Its absence is the EXPECTED outcome on a clean run (no crash occurred), already
+      # recorded explicitly in the manifest above as "evidence MISSING" with that same meaning
+      # spelled out there -- so this upload is deliberately best-effort (warn, not error), at the
+      # EXACT run-specific game root, and captures nothing else from that directory (no world
       # data, no native binaries, no credentials).
-      - name: Preserve MINECRAFT-489 native server evidence if present (attempt ${{ matrix.attempt }})
+      - name: Preserve optional crash-report evidence if present (attempt ${{ matrix.attempt }})
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: minecraft-489-rayon-diagnostic-native-evidence-attempt-${{ matrix.attempt }}
-          path: |
-            /tmp/minecraft-489-rayon-diag-attempt${{ matrix.attempt }}-*/game/logs/latest.log
-            /tmp/minecraft-489-rayon-diag-attempt${{ matrix.attempt }}-*/game/crash-reports/**
+          name: minecraft-489-rayon-diagnostic-crash-reports-attempt-${{ matrix.attempt }}
+          path: /tmp/minecraft-489-rayon-diag-attempt${{ matrix.attempt }}-${{ github.run_id }}-${{ github.run_attempt }}/game/crash-reports/**
           if-no-files-found: warn

@@ -55,6 +55,59 @@ jobs:
       gated-paths: '["^src/"]'
       version-file: 'gradle.properties'
 
+  # MINECRAFT-489 diagnostic preparation ONLY (comment 51964): not wired to any trigger change,
+  # not part of the required build job, and not to be pushed/published without a separate
+  # execution decision. Bounded to a hard 3-run ceiling and a hard per-job timeout, so it cannot
+  # become an unbounded "rerun until green" loop. Tests one narrow question against the two
+  # already-recorded runs (42140562220 passed, 42142250830 failed, both with this var unset):
+  # does forcing Rapier's embedded Rayon pool to a single worker change this one test's own
+  # per-20-tick trace, under the SAME shared, full-suite, ~50-concurrent-island conditions as
+  # those two runs (see MINECRAFT-489 comment 51963 on why isolating away from that batch would
+  # test a different, narrower question instead). Does not touch the `build` job, its default
+  # gameTestNamespaces selection, or scripts/check_gametest_count.py's required-count check.
+  rayon-thread-diagnostic:
+    if: false  # MINECRAFT-489: never runs until a separate execution decision flips this.
+    runs-on: ubuntu-latest
+    timeout-minutes: 25  # hard per-job ceiling: ~4 min/run * 3 runs + setup, not open-ended.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      # MINECRAFT-489: 3 repeats, hard-stopped by the loop bound below, each its own log file so
+      # none are overwritten. RAYON_NUM_THREADS is rayon-core's own documented startup variable
+      # (read once at global pool creation, per the pinned rayon-core 1.13.0 source cited in
+      # comment 51962); Sable's own runtime path has no overriding pool-builder call, so this
+      # should reach it with zero source changes IF Gradle's forked test-worker JVM inherits this
+      # step's shell environment (the project default for Gradle JavaExec-family tasks, but not
+      # independently verified against this repo's exact NeoGradle wiring).
+      #
+      # What the printed RAYON_NUM_THREADS line below actually establishes: that the variable was
+      # present in THIS shell, for THIS run. It does NOT establish that the forked JVM inherited
+      # it, that Sable's native pool-creation call observed it, or what the resulting pool size
+      # actually was — this repo has no hook into Sable's own thread-pool state to confirm that,
+      # short of native-side instrumentation this diagnostic does not add.
+      - name: Run GameTests x3 with RAYON_NUM_THREADS=1
+        env:
+          RAYON_NUM_THREADS: "1"
+        run: |
+          set -o pipefail
+          for i in 1 2 3; do
+            echo "=== MINECRAFT-489 diagnostic run ${i}/3, RAYON_NUM_THREADS=${RAYON_NUM_THREADS} ===" | tee "gametest-rayon1-run${i}.log"
+            ./gradlew runGameTestServer --no-daemon 2>&1 | tee -a "gametest-rayon1-run${i}.log"
+          done
+
+      - name: Preserve MINECRAFT-489 diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: minecraft-489-rayon-diagnostic
+          path: gametest-rayon1-run*.log
+          if-no-files-found: error
+
   client-acceptance:
     runs-on: ubuntu-latest
     timeout-minutes: 20

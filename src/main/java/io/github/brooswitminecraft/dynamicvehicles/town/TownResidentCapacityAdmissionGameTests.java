@@ -1365,7 +1365,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         helper.assertTrue(awaiting.isPresent(), "test setup: the home-only admission must be created - beneficiaryPos="
                 + beneficiarySpot + " region=" + region + " founded=" + storage.hasFoundedTown(TownKeys.keyFor(helper.getLevel().dimension(), region)));
         ResidentCapacityAdmission boundAdmission = awaiting.get().boundTo("site:direct-call-test", UUID.randomUUID(),
-                "plan-direct-call-test", UUID.randomUUID());
+                "plan-direct-call-test", UUID.randomUUID(), ResidentCapacityAdmission.State.BUILDING);
 
         Optional<TownConstructionService.ReservedHandoff> reserved = TownConstructionService.tryReserveHandoffDestinations(
                 helper.getLevel(), storage, beneficiary, absoluteCampfire, floorY, explicitKind, Optional.of(siteOfferedProfession),
@@ -2154,17 +2154,17 @@ public final class TownResidentCapacityAdmissionGameTests {
     }
 
     /**
-     * MINECRAFT-454 [coordinator review 51356/51358]: a beneficiary that requested a durable,
-     * unbound, home-only admission while genuinely unemployed must never bind (or advance) that
-     * SAME admission once it later becomes the claimant/Builder of a site - there is no such thing
-     * as a villager building its own home. requestResidentCapacity only rejects a CURRENT Builder
-     * as beneficiary; this proves the later-identity-collision path is independently closed at
-     * bind time too: zero mutation, debit, anchor-token write, POI/handoff effect, or exception for
-     * the self-claim tick, the durable admission left completely untouched, and a DIFFERENT,
-     * genuinely eligible Builder still able to satisfy the exact same admission afterward.
+     * [MINECRAFT-455 self-admission liveness, coordinator design 51564-51715] A beneficiary that
+     * requested a durable, unbound, home-only admission while genuinely unemployed, then later
+     * becomes the claimant/Builder of a matching site it self-built, now correctly BINDS and
+     * ADVANCES that SAME admission - as {@code SELF_CLAIM_LINKED}, through the ordinary claimant-
+     * only construction path, never the distinct-beneficiary handoff. This method previously
+     * asserted the opposite (a permanent refusal) - that was the exact self-admission liveness gap
+     * this ticket fixes, confirmed via a bounded diagnostic (comment 51569) before any code was
+     * written; updated here to assert the now-correct, intentional behavior.
      */
     @GameTest(template = "settlement_test")
-    public static void aBeneficiaryThatLaterBecomesTheClaimantNeverBindsOrAdvancesItsOwnAdmission(GameTestHelper helper) {
+    public static void aBeneficiaryThatLaterBecomesTheClaimantBindsAndAdvancesItsOwnAdmissionAsASelfClaim(GameTestHelper helper) {
         prepareFlatGround(helper);
         helper.setBlock(ANCHOR, Blocks.CAMPFIRE);
         BlockPos absoluteCampfire = helper.absolutePos(ANCHOR);
@@ -2194,43 +2194,34 @@ public final class TownResidentCapacityAdmissionGameTests {
 
         int stoneBefore = store.balance(TownResourceCategory.STONE);
         int woodBefore = store.balance(TownResourceCategory.WOOD);
-        for (int i = 0; i < 10; i++) {
-            TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
-        }
-
-        helper.assertTrue(helper.getBlockState(ANCHOR).is(Blocks.CAMPFIRE),
-                "a self-claiming Builder must cause ZERO placement, including the closing cell, at its own site");
-        helper.assertTrue(store.balance(TownResourceCategory.STONE) == stoneBefore && store.balance(TownResourceCategory.WOOD) == woodBefore,
-                "a self-claiming Builder must cause ZERO debit");
-        Optional<ResidentCapacityAdmission> afterSelfClaim = storage.capacityAdmissionFor(
+        TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
+        Optional<ResidentCapacityAdmission> afterFirstTick = storage.capacityAdmissionFor(
                 helper.getLevel().dimension(), region, selfClaimingBeneficiary.getUUID());
-        helper.assertTrue(afterSelfClaim.filter(value -> value.state() == ResidentCapacityAdmission.State.AWAITING_CLAIM
-                        && value.boundSiteOwner() == null && value.builderId() == null).isPresent(),
-                "the durable admission must remain completely unbound and untouched - found " + afterSelfClaim);
-        helper.assertTrue(selfClaimingBeneficiary.getBrain().getMemory(MemoryModuleType.HOME).isEmpty(),
-                "a self-claiming Builder must never receive its own handoff");
-        helper.assertTrue(!storage.hasSiteEverBeenBoundToAnAdmission(helper.getLevel().dimension(), TownStorage.siteOwner(absoluteCampfire)),
-                "a correctly-refused self-claim must never record this site as ever bound");
+        helper.assertTrue(afterFirstTick.filter(value -> value.state() == ResidentCapacityAdmission.State.SELF_CLAIM_LINKED
+                        && value.builderId().equals(selfClaimingBeneficiary.getUUID())
+                        && value.beneficiaryId().equals(selfClaimingBeneficiary.getUUID())
+                        && value.boundSiteOwner().equals(TownStorage.siteOwner(absoluteCampfire))).isPresent(),
+                "binding must happen at the first construction effect, as SELF_CLAIM_LINKED, against the exact self-claiming villager - found "
+                        + afterFirstTick);
+        helper.assertTrue(storage.hasSiteEverBeenBoundToAnAdmission(helper.getLevel().dimension(), TownStorage.siteOwner(absoluteCampfire)),
+                "a SELF_CLAIM_LINKED bind must set the SAME permanent reverse-site fence a BUILDING bind sets");
 
-        // A DIFFERENT, genuinely eligible Builder must still be able to satisfy the SAME admission.
-        selfClaimingBeneficiary.getBrain().eraseMemory(MemoryModuleType.JOB_SITE);
-        selfClaimingBeneficiary.setVillagerData(selfClaimingBeneficiary.getVillagerData().setProfession(VillagerProfession.NONE));
-        selfClaimingBeneficiary.teleportTo(selfClaimSpot.getX() + 0.5, selfClaimSpot.getY(), selfClaimSpot.getZ() + 0.5);
-
-        Villager distinctBuilder = EntityType.VILLAGER.create(helper.getLevel(), null, absoluteCampfire, MobSpawnType.EVENT, false, false);
-        helper.getLevel().addFreshEntity(distinctBuilder);
-        distinctBuilder.setVillagerData(distinctBuilder.getVillagerData().setProfession(BuilderProfession.BUILDER.get()));
-        distinctBuilder.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), absoluteCampfire));
-
-        Optional<ResidentCapacityAdmission> boundToDistinctBuilder = Optional.empty();
-        for (int i = 0; i < 5 && boundToDistinctBuilder.isEmpty(); i++) {
+        for (int i = 1; i < 500 && selfClaimingBeneficiary.getVillagerData().getProfession() == BuilderProfession.BUILDER.get(); i++) {
             TownConstructionService.buildAt(helper.getLevel(), absoluteCampfire, storage);
-            boundToDistinctBuilder = storage.capacityAdmissionFor(helper.getLevel().dimension(), region, selfClaimingBeneficiary.getUUID())
-                    .filter(value -> value.state() == ResidentCapacityAdmission.State.BUILDING);
         }
-        helper.assertTrue(boundToDistinctBuilder.filter(value -> value.builderId().equals(distinctBuilder.getUUID())).isPresent(),
-                "a DIFFERENT, eligible Builder must still be able to bind and advance the SAME admission the self-claim correctly refused - found "
-                        + boundToDistinctBuilder);
+
+        helper.assertTrue(!helper.getBlockState(ANCHOR).is(Blocks.CAMPFIRE), "the self-claimed site must actually finish");
+        helper.assertTrue(selfClaimingBeneficiary.getVillagerData().getProfession() != BuilderProfession.BUILDER.get(),
+                "the resident must no longer be Builder once its own self-claimed site is done");
+        helper.assertTrue(store.balance(TownResourceCategory.STONE) < stoneBefore || store.balance(TownResourceCategory.WOOD) < woodBefore,
+                "a genuinely completed self-claim must have actually debited resources");
+        Optional<ResidentCapacityAdmission> afterBuild = storage.capacityAdmissionFor(
+                helper.getLevel().dimension(), region, selfClaimingBeneficiary.getUUID());
+        helper.assertTrue(afterBuild.filter(value -> value.state() == ResidentCapacityAdmission.State.COMPLETED).isPresent(),
+                "the SELF_CLAIM_LINKED admission must reach COMPLETED once the resident's own handoff actually happened, found "
+                        + afterBuild.map(ResidentCapacityAdmission::state).orElse(null));
+        helper.assertTrue(selfClaimingBeneficiary.getBrain().getMemory(MemoryModuleType.HOME).isPresent(),
+                "the resident must receive its own real HOME this self-claimed build placed");
         helper.succeed();
     }
 

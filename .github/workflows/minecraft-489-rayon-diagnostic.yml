@@ -223,20 +223,25 @@ jobs:
             minecraft-489-rayon-diag-manifest-attempt${{ matrix.attempt }}.txt
           if-no-files-found: error
 
-      # Required-on-success-only (no `if:` -> the default, runs only if the preceding step
-      # succeeded): the previous step already exits non-zero whenever an apparently-successful
-      # attempt is missing its own normal server log, so by the time this step can run at all,
-      # that log is already known to exist -- this upload is a defense-in-depth confirmation of
-      # that same fact, at the EXACT run-specific game root this attempt itself constructed
-      # (never a wildcard over other attempts' roots), not a substitute gate. It never runs, and
-      # never errors, for an attempt that failed, timed out, or was refused -- that absence is
-      # already the expected, already-recorded case for those outcomes.
-      - name: Preserve required server log (attempt ${{ matrix.attempt }})
+      # Always attempted (per 52004): a server log that exists on a FAILED or timed-out attempt
+      # is exactly the evidence needed to diagnose that failure, so it must be preserved too, not
+      # only when the preceding step succeeded -- "not required to exist after a launch failure"
+      # is a different statement from "do not retain it if it exists." Whether this attempt's own
+      # log was actually REQUIRED to exist is already decided by the preceding step's own
+      # log_missing_rc check (which fails the whole attempt if an apparently-successful run is
+      # missing it); this upload's job is only to capture whatever is actually there, for success
+      # or failure alike, from the EXACT run-specific game root this attempt itself constructed
+      # (never a wildcard over other attempts' roots) -- so a merely-possible absence here (e.g.
+      # a refused pre-existing directory, or a timeout before the server ever wrote a log) is
+      # best-effort (warn), while the preceding step remains the actual authority on whether that
+      # absence was acceptable for this attempt's own outcome.
+      - name: Preserve server log if present (attempt ${{ matrix.attempt }})
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: minecraft-489-rayon-diagnostic-server-log-attempt-${{ matrix.attempt }}
           path: /tmp/minecraft-489-rayon-diag-attempt${{ matrix.attempt }}-${{ github.run_id }}-${{ github.run_attempt }}/game/logs/latest.log
-          if-no-files-found: error
+          if-no-files-found: warn
 
       # Optional evidence: crash-reports/ is the same server evidence this repo's own
       # client-acceptance job already collects, if this attempt's own game directory produced

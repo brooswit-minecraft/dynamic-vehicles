@@ -31,6 +31,18 @@ name: MINECRAFT-489 Rayon diagnostic (prepared, not authorized)
 # running on it) is simply discarded after each job ends -- no cross-attempt interference to
 # reason about, because there is no shared process or machine between attempts.
 #
+# Evidence contract for a fail-fast-canceled attempt, stated precisely (corrects an earlier,
+# imprecise claim that an unattempted run is "recorded as attempted=0"): that in-script
+# attempted=0 marker only covers a run that STARTS and then refuses a pre-existing game
+# directory; it says nothing about a LATER matrix attempt that `fail-fast` cancels before it
+# ever starts. A canceled attempt's "Run GameTests" step never executes, so it produces NO log,
+# NO manifest, and NO artifact at all -- not a falsely-successful record, but a genuine absence.
+# Reading the results therefore means: for attempts 1..N, a missing attempt-K artifact (for any
+# K greater than the first attempt whose own artifact shows a failure) must be read as "canceled
+# because an earlier attempt failed," never as lost evidence to explain away: GitHub Actions'
+# own run summary -- not this script -- is the authoritative record of which matrix jobs were
+# cancelled versus run.
+#
 # Publication/dispatch route (none of this has been done; corrects an earlier, still-incomplete
 # claim). Per GitHub's own documentation
 # (https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow), a

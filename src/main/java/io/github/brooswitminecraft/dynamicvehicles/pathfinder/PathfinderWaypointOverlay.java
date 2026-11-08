@@ -9,7 +9,7 @@ import net.minecraft.network.chat.Component;
 
 import java.util.List;
 
-import io.github.brooswitminecraft.dynamicvehicles.delivery.OfferDistanceFormat;
+import io.github.brooswitminecraft.dynamicvehicles.village.OfferDistanceFormat;
 import io.github.brooswitminecraft.dynamicvehicles.hud.CountdownFormat;
 import io.github.brooswitminecraft.dynamicvehicles.hud.MissionPresentation;
 import io.github.brooswitminecraft.dynamicvehicles.hud.MissionWaypointLayout;

@@ -31,22 +31,12 @@ import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredItem;
 import net.neoforged.neoforge.registries.DeferredRegister;
 
-import io.github.brooswitminecraft.dynamicvehicles.delivery.ContractTickHandler;
-import io.github.brooswitminecraft.dynamicvehicles.delivery.DeliveryHudPayload;
-import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatchBoardBlockEntities;
-import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherBlocks;
-import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherInteractionHandler;
-import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherOfferAcceptPayload;
-import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherOfferMenus;
-import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherOfferScreen;
-import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherPoiTypes;
-import io.github.brooswitminecraft.dynamicvehicles.delivery.DispatcherProfession;
-import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderPoiTypes;
-import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderProfession;
-import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderTradeHandler;
-import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderCampfireHandler;
-import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderPassiveSettlementHandler;
-import io.github.brooswitminecraft.dynamicvehicles.delivery.VillagerNoonProgressionHandler;
+import io.github.brooswitminecraft.dynamicvehicles.village.BuilderPoiTypes;
+import io.github.brooswitminecraft.dynamicvehicles.village.BuilderProfession;
+import io.github.brooswitminecraft.dynamicvehicles.village.BuilderTradeHandler;
+import io.github.brooswitminecraft.dynamicvehicles.village.BuilderCampfireHandler;
+import io.github.brooswitminecraft.dynamicvehicles.village.BuilderPassiveSettlementHandler;
+import io.github.brooswitminecraft.dynamicvehicles.village.VillagerNoonProgressionHandler;
 import io.github.brooswitminecraft.dynamicvehicles.town.TownFounder;
 import io.github.brooswitminecraft.dynamicvehicles.town.TownPassiveProductionHandler;
 import io.github.brooswitminecraft.dynamicvehicles.town.TownConstructionService;
@@ -155,7 +145,6 @@ public class DynamicVehiclesMod {
         modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.SERVER, CarConfig.SPEC);
         // Explicit file name: the default ("dynamicvehicles-server.toml") is already claimed by
         // CarConfig.SPEC above, and ConfigTracker throws on a second SERVER config reusing it.
-        modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.SERVER, DispatcherOfferConfig.SPEC, "dynamicvehicles-dispatcher-server.toml");
         modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.SERVER, PathfinderServerConfig.SPEC, "dynamicvehicles-pathfinder-server.toml");
         modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.SERVER, MotorboatConfig.SPEC, "dynamicvehicles-motorboat-server.toml");
         modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.CLIENT, ClientConfig.SPEC);
@@ -164,16 +153,11 @@ public class DynamicVehiclesMod {
         ITEMS.register(modEventBus);
         TownDonationBoxes.BLOCKS.register(modEventBus);
         TownDonationBoxEntities.TYPES.register(modEventBus);
-        DispatcherBlocks.BLOCKS.register(modEventBus);
-        DispatchBoardBlockEntities.BLOCK_ENTITY_TYPES.register(modEventBus);
-        DispatcherPoiTypes.POI_TYPES.register(modEventBus);
-        DispatcherProfession.PROFESSIONS.register(modEventBus);
         BuilderPoiTypes.POI_TYPES.register(modEventBus);
         BuilderProfession.PROFESSIONS.register(modEventBus);
         PathfinderBlocks.BLOCKS.register(modEventBus);
         PathfinderPoiTypes.POI_TYPES.register(modEventBus);
         PathfinderProfession.PROFESSIONS.register(modEventBus);
-        DispatcherOfferMenus.MENUS.register(modEventBus);
         // MINECRAFT-454 [stage 2 port]: the construction-operation ledger's chunk-checkpoint
         // witness attachment type must be registered, or any access to it (even indirectly, via
         // TownStorageChunkCheckpoint#checkpointLoadedChunk/checkpointLoadedChunkForOperation)
@@ -191,7 +175,6 @@ public class DynamicVehiclesMod {
         // before a single saved CarEntity can be deserialized from world data and read it.
         NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.server.ServerAboutToStartEvent e) ->
                 VehicleSpecOverrides.load(net.neoforged.fml.loading.FMLPaths.CONFIGDIR.get()));
-        NeoForge.EVENT_BUS.addListener(DispatcherInteractionHandler::onEntityInteract);
         NeoForge.EVENT_BUS.addListener(BuilderTradeHandler::registerTrades);
         NeoForge.EVENT_BUS.addListener(BuilderTradeHandler::onTrade);
         NeoForge.EVENT_BUS.addListener(BuilderCampfireHandler::onLevelTick);
@@ -205,11 +188,6 @@ public class DynamicVehiclesMod {
         NeoForge.EVENT_BUS.addListener(TownDonationHandler::onTrade);
         NeoForge.EVENT_BUS.addListener(TownDonationBoxProtection::onBreak);
         NeoForge.EVENT_BUS.addListener(TownDonationBoxProtection::onExplosion);
-        NeoForge.EVENT_BUS.addListener(ContractTickHandler::onServerTick);
-        NeoForge.EVENT_BUS.addListener(ContractTickHandler::onPlayerLoggedIn);
-        NeoForge.EVENT_BUS.addListener(ContractTickHandler::onPlayerLoggedOut);
-        NeoForge.EVENT_BUS.addListener(io.github.brooswitminecraft.dynamicvehicles.delivery.PillagerAmbushHandler::onEntityJoinLevel);
-        NeoForge.EVENT_BUS.addListener(io.github.brooswitminecraft.dynamicvehicles.delivery.PillagerAmbushHandler::onEntityLeaveLevel);
         NeoForge.EVENT_BUS.addListener(PathfinderInteractionHandler::onEntityInteract);
         NeoForge.EVENT_BUS.addListener(PathfinderTickHandler::onServerTick);
         NeoForge.EVENT_BUS.addListener(PathfinderTickHandler::onPlayerLoggedIn);
@@ -224,8 +202,6 @@ public class DynamicVehiclesMod {
         registrar.playToServer(GearTogglePayload.TYPE, GearTogglePayload.STREAM_CODEC, GearTogglePayload::handle);
         registrar.playToServer(GearSelectPayload.TYPE, GearSelectPayload.STREAM_CODEC, GearSelectPayload::handle);
         registrar.playToServer(RadioTogglePayload.TYPE, RadioTogglePayload.STREAM_CODEC, RadioTogglePayload::handle);
-        registrar.playToServer(DispatcherOfferAcceptPayload.TYPE, DispatcherOfferAcceptPayload.STREAM_CODEC, DispatcherOfferAcceptPayload::handle);
-        registrar.playToClient(DeliveryHudPayload.TYPE, DeliveryHudPayload.STREAM_CODEC, DeliveryHudPayload::handle);
         registrar.playToClient(PathfinderHudPayload.TYPE, PathfinderHudPayload.STREAM_CODEC, PathfinderHudPayload::handle);
     }
 
@@ -348,7 +324,6 @@ public class DynamicVehiclesMod {
             event.accept(MOTORBOAT_ITEM);
             event.accept(CHOPPER_ITEM);
             event.accept(BIPLANE_ITEM);
-            event.accept(DispatcherBlocks.DISPATCH_BOARD_ITEM);
             event.accept(PathfinderBlocks.ROUTE_BOARD_ITEM);
         }
     }
@@ -377,17 +352,12 @@ public class DynamicVehiclesMod {
 
         @SubscribeEvent
         public static void registerScreens(net.neoforged.neoforge.client.event.RegisterMenuScreensEvent event) {
-            event.register(DispatcherOfferMenus.DISPATCHER_OFFER.get(), DispatcherOfferScreen::new);
         }
 
         @SubscribeEvent
         public static void registerGuiLayers(net.neoforged.neoforge.client.event.RegisterGuiLayersEvent event) {
             event.registerAboveAll(ResourceLocation.fromNamespaceAndPath(MODID, "driving_hud"),
                     new io.github.brooswitminecraft.dynamicvehicles.hud.DrivingHudOverlay());
-            event.registerAboveAll(ResourceLocation.fromNamespaceAndPath(MODID, "delivery_hud"),
-                    new io.github.brooswitminecraft.dynamicvehicles.delivery.ContractHudOverlay());
-            event.registerAboveAll(ResourceLocation.fromNamespaceAndPath(MODID, "delivery_waypoint"),
-                    new io.github.brooswitminecraft.dynamicvehicles.delivery.ContractWaypointOverlay());
             event.registerAboveAll(ResourceLocation.fromNamespaceAndPath(MODID, "pathfinder_hud"),
                     new io.github.brooswitminecraft.dynamicvehicles.pathfinder.PathfinderHudOverlay());
             event.registerAboveAll(ResourceLocation.fromNamespaceAndPath(MODID, "pathfinder_waypoint"),

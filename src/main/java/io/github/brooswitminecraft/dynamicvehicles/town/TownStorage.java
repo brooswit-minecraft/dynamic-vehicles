@@ -1,6 +1,6 @@
 package io.github.brooswitminecraft.dynamicvehicles.town;
 
-import io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord;
+import io.github.brooswitminecraft.dynamicvehicles.village.RegionCoord;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
 import net.minecraft.core.HolderLookup;
@@ -472,7 +472,7 @@ public class TownStorage extends SavedData {
     }
 
     /** {@code true} iff Dynamic Towns' plan identified by {@code owner} (e.g.
-     *  {@link #siteOwner(BlockPos)} or {@link #roadOwner(ResourceKey, io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord)})
+     *  {@link #siteOwner(BlockPos)} or {@link #roadOwner(ResourceKey, io.github.brooswitminecraft.dynamicvehicles.village.RegionCoord)})
      *  has already placed-and-paid-for {@code pos} in {@code dimension} UNDER THE EXACT SAME
      *  {@code signature} (expected block/cost/template identity) — never merely "the live block
      *  happens to match the plan", never merely "SOME plan already claimed this cell" (a different
@@ -951,7 +951,7 @@ public class TownStorage extends SavedData {
     }
 
     /** The stable owner key for a region's road plan. */
-    public static String roadOwner(ResourceKey<Level> dimension, io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord region) {
+    public static String roadOwner(ResourceKey<Level> dimension, io.github.brooswitminecraft.dynamicvehicles.village.RegionCoord region) {
         return "road:" + TownKeys.keyFor(dimension, region);
     }
 

@@ -11,12 +11,13 @@ import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.ModList;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
+import net.neoforged.neoforge.client.event.RenderGuiEvent;
 
 import io.github.brooswitminecraft.dynamicvehicles.hud.MissionWaypointLayout;
 import io.github.brooswitminecraft.dynamicvehicles.hud.Rect;
 
 /**
- * MINECRAFT-493 review (comments 52327 onward, decision 52345): hosted, exact-head, real
+ * MINECRAFT-493 review (comments 52327 onward, decision 52345, 52552): hosted, exact-head, real
  * NeoForge class-loading proof that Courier Craft's {@code ContractWaypointOverlay} genuinely
  * shares THIS mod's real {@code hud.MissionWaypointLayout} state with Pathfinder's own waypoint
  * when both mods are actually coinstalled and mod-loaded together -- not a plain-JUnit proxy.
@@ -28,22 +29,32 @@ import io.github.brooswitminecraft.dynamicvehicles.hud.Rect;
  * builds Courier Craft's exact paired-PR head and adds it to this same run.
  *
  * <p>Simulates an active Dispatcher contract and an active Pathfinder attempt pointed at the
- * same destination (so their screen-projected markers would coincide without coordination),
- * lets a few real client ticks render both mods' real waypoint overlays, then reads {@code
- * MissionWaypointLayout}'s own private {@code occupied} state via reflection (public API only
- * exposes {@code reserve}/{@code clear}, not a peek) to verify: both missions actually reserved
- * (Courier Craft's bridge really called through), the two reservations don't overlap, and
- * clearing the simulated Dispatcher contract releases its slot. Edge-placement/shift-direction
- * math itself is already covered by {@code hud.MissionWaypointLayoutTest} and {@code
- * WaypointMarkerLayoutTest} (pure-function unit tests with controlled inputs); this class's job
- * is proving the live, dual-mod WIRING reaches that already-tested logic for real, not
- * re-proving the math.
+ * same destination (so their screen-projected markers would coincide without coordination), then
+ * -- gated on actually-rendered {@link RenderGuiEvent.Post} frames, NOT a fixed tick count (a
+ * real first attempt here showed 5 client ticks can elapse in ~50ms with zero intervening render
+ * frames under this harness's software-rendered xvfb load, so a tick-based wait cannot tell
+ * "the bridge never ran" apart from "no frame has rendered yet since the state changed") --
+ * reads {@code MissionWaypointLayout}'s own private {@code occupied} state via reflection (public
+ * API only exposes {@code reserve}/{@code clear}, not a peek) to verify: both missions actually
+ * reserved (Courier Craft's bridge really called through), the two reservations don't overlap,
+ * and clearing the simulated Dispatcher contract releases its slot once an actual subsequent
+ * frame has rendered. Edge-placement/shift-direction math itself is already covered by {@code
+ * hud.MissionWaypointLayoutTest} and {@code WaypointMarkerLayoutTest} (pure-function unit tests
+ * with controlled inputs); this class's job is proving the live, dual-mod WIRING reaches that
+ * already-tested logic for real, not re-proving the math.
  */
 @EventBusSubscriber(modid = DynamicVehiclesMod.MODID, value = Dist.CLIENT)
 public final class CourierCraftAcceptance {
     private static final String COURIER_CRAFT_MODID = "couriercraft";
+    /** Generous: real frames observed well under 100 in this harness's own baseline runs. */
+    private static final int MAX_FRAMES_TO_WAIT = 600;
+
+    private enum Stage { START, SETUP_DONE, RESERVED, CLEARED, DONE }
+
+    private static Stage stage = Stage.START;
     private static int ticksSinceStart = -1;
-    private static boolean done;
+    private static long renderedFrames;
+    private static long framesAtLastTransition;
 
     private CourierCraftAcceptance() {}
 
@@ -69,9 +80,36 @@ public final class CourierCraftAcceptance {
         Minecraft.getInstance().stop();
     }
 
+    /** Counts actually-rendered frames, so the checks below can wait for a real intervening
+     *  frame instead of a fixed tick count (MINECRAFT-493 review comment 52552). */
+    @SubscribeEvent
+    public static void onRenderGui(RenderGuiEvent.Post event) {
+        renderedFrames++;
+    }
+
+    private static Rect dispatcherSlot() throws Exception {
+        Rect[] occupied = (Rect[]) get(MissionWaypointLayout.class, "occupied", null);
+        return occupied[MissionWaypointLayout.Mission.DISPATCHER.ordinal()];
+    }
+
+    private static Rect pathfinderSlot() throws Exception {
+        Rect[] occupied = (Rect[]) get(MissionWaypointLayout.class, "occupied", null);
+        return occupied[MissionWaypointLayout.Mission.PATHFINDER.ordinal()];
+    }
+
+    /** Frames rendered since the last stage transition -- "at least one real intervening frame". */
+    private static long framesSinceTransition() {
+        return renderedFrames - framesAtLastTransition;
+    }
+
+    private static void transitionTo(Stage next) {
+        stage = next;
+        framesAtLastTransition = renderedFrames;
+    }
+
     @SubscribeEvent
     public static void tick(ClientTickEvent.Post event) {
-        if (done || !ModList.get().isLoaded(COURIER_CRAFT_MODID)) {
+        if (stage == Stage.DONE || !ModList.get().isLoaded(COURIER_CRAFT_MODID)) {
             return;
         }
         Minecraft minecraft = Minecraft.getInstance();
@@ -84,7 +122,7 @@ public final class CourierCraftAcceptance {
             double destY = minecraft.player.getY();
             double destZ = minecraft.player.getZ();
 
-            if (ticksSinceStart == 5) {
+            if (stage == Stage.START && ticksSinceStart == 5) {
                 // A real NeoForge mod file for Courier Craft is actually on this run's
                 // classpath and FML reports it loaded -- the class-loading half of the claim.
                 check(ModList.get().isLoaded(COURIER_CRAFT_MODID), "Courier Craft did not report as loaded");
@@ -93,12 +131,12 @@ public final class CourierCraftAcceptance {
                 // coincide without MissionWaypointLayout's coordination.
                 injectDispatcherContract(true, destX, destY, destZ);
                 injectPathfinderAttempt(true, destX, destY, destZ);
+                transitionTo(Stage.SETUP_DONE);
             }
 
-            if (ticksSinceStart == 10) {
-                Rect[] occupied = (Rect[]) get(MissionWaypointLayout.class, "occupied", null);
-                Rect dispatcherBounds = occupied[MissionWaypointLayout.Mission.DISPATCHER.ordinal()];
-                Rect pathfinderBounds = occupied[MissionWaypointLayout.Mission.PATHFINDER.ordinal()];
+            if (stage == Stage.SETUP_DONE && framesSinceTransition() >= 3) {
+                Rect dispatcherBounds = dispatcherSlot();
+                Rect pathfinderBounds = pathfinderSlot();
                 check(dispatcherBounds != null,
                         "Dispatcher never reserved a slot -- Courier Craft's ModList-gated bridge did not run");
                 check(pathfinderBounds != null, "Pathfinder never reserved a slot");
@@ -109,31 +147,29 @@ public final class CourierCraftAcceptance {
                         dispatcherBounds, pathfinderBounds);
 
                 // Clear the simulated Dispatcher contract; Courier Craft's overlay must release
-                // its slot through the same real bridge next frame.
+                // its slot through the same real bridge on a subsequent real frame.
                 injectDispatcherContract(false, 0, 0, 0);
+                transitionTo(Stage.RESERVED);
             }
 
-            if (ticksSinceStart > 10 && ticksSinceStart <= 15) {
-                // Diagnostic only (MINECRAFT-493): the tick-15 check below failed once already
-                // with no indication of whether/when the slot ever actually cleared in between.
-                Rect[] occupied = (Rect[]) get(MissionWaypointLayout.class, "occupied", null);
-                DynamicVehiclesMod.LOGGER.info("COURIER_CRAFT_ACCEPTANCE_DIAGNOSTIC tick={} dispatcherSlot={} active={}",
-                        ticksSinceStart, occupied[MissionWaypointLayout.Mission.DISPATCHER.ordinal()],
-                        get(Class.forName("io.github.brooswitminecraft.couriercraft.dispatcher.ClientContractHud"), "current", null));
+            if (stage == Stage.RESERVED) {
+                check(framesSinceTransition() <= MAX_FRAMES_TO_WAIT,
+                        "no real frame released the Dispatcher slot within " + MAX_FRAMES_TO_WAIT
+                                + " rendered frames after clearing the simulated contract");
+                if (framesSinceTransition() >= 3 && dispatcherSlot() == null) {
+                    DynamicVehiclesMod.LOGGER.info(
+                            "COURIER_CRAFT_ACCEPTANCE_RELEASE_AFTER_CLEAR ok=true framesWaited={}",
+                            framesSinceTransition());
+                    injectPathfinderAttempt(false, 0, 0, 0);
+                    transitionTo(Stage.CLEARED);
+                }
             }
 
-            if (ticksSinceStart == 15) {
-                Rect[] occupied = (Rect[]) get(MissionWaypointLayout.class, "occupied", null);
-                Rect dispatcherBounds = occupied[MissionWaypointLayout.Mission.DISPATCHER.ordinal()];
-                check(dispatcherBounds == null,
-                        "clearing the simulated Dispatcher contract did not release its slot through Courier Craft's bridge");
-                DynamicVehiclesMod.LOGGER.info("COURIER_CRAFT_ACCEPTANCE_RELEASE_AFTER_CLEAR ok=true");
-
-                injectPathfinderAttempt(false, 0, 0, 0);
+            if (stage == Stage.CLEARED && framesSinceTransition() >= 2) {
                 Files.writeString(Path.of("courier-craft-acceptance-result.json"),
                         "{\"passed\":true,\"couriercraft_loaded\":true,\"shared_reservation_no_overlap\":true,\"dispatcher_release_on_clear\":true}");
                 DynamicVehiclesMod.LOGGER.info("COURIER_CRAFT_ACCEPTANCE_PASS");
-                done = true;
+                transitionTo(Stage.DONE);
             }
         } catch (Exception failure) {
             fail(failure);

@@ -113,6 +113,15 @@ public final class CourierCraftAcceptance {
                 injectDispatcherContract(false, 0, 0, 0);
             }
 
+            if (ticksSinceStart > 10 && ticksSinceStart <= 15) {
+                // Diagnostic only (MINECRAFT-493): the tick-15 check below failed once already
+                // with no indication of whether/when the slot ever actually cleared in between.
+                Rect[] occupied = (Rect[]) get(MissionWaypointLayout.class, "occupied", null);
+                DynamicVehiclesMod.LOGGER.info("COURIER_CRAFT_ACCEPTANCE_DIAGNOSTIC tick={} dispatcherSlot={} active={}",
+                        ticksSinceStart, occupied[MissionWaypointLayout.Mission.DISPATCHER.ordinal()],
+                        get(Class.forName("io.github.brooswitminecraft.couriercraft.dispatcher.ClientContractHud"), "current", null));
+            }
+
             if (ticksSinceStart == 15) {
                 Rect[] occupied = (Rect[]) get(MissionWaypointLayout.class, "occupied", null);
                 Rect dispatcherBounds = occupied[MissionWaypointLayout.Mission.DISPATCHER.ordinal()];

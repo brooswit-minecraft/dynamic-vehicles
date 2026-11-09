@@ -45,11 +45,18 @@ try:
             # gradle.properties' version=0.0.0 is a release-gate placeholder, never the real
             # shipped version (see that file's own comment) -- a dev run that doesn't pass
             # -Pmod_version reports "0.0.0" to FML, which fails Courier Craft's declared
-            # versionRange="[0.82.0,)" on this optional dependency. Pin to the actual latest
-            # release so the coinstalled run's version check matches what a real player's two
-            # installed mods would see.
+            # versionRange="[0.82.0,)" on this optional dependency. MINECRAFT-493 review (comment
+            # 52567, finding 1): an earlier version of this pinned the REAL released number
+            # (0.82.1), which is misleading -- that release is pre-split and would actually
+            # conflict with Courier Craft's own Dispatcher registrations; this run's code is this
+            # PR's unreleased head, not that release. Use an obviously-synthetic, unmistakably
+            # unreleased version instead: it exists only to satisfy this dev build's own version
+            # *range* check, never to claim a real release. The real compatibility gate Courier
+            # Craft actually relies on is DynamicVehiclesCompatibility's runtime marker-class
+            # handshake (version-independent by design -- see that class and
+            # DynamicVehiclesBridgeSchemaTest), not this declared range.
             ['./gradlew', task, '-PclientAcceptance', f'-PcourierCraftJar={courier_craft_jar}',
-             '-Pmod_version=0.82.1',
+             '-Pmod_version=999.0.0-ci-unreleased',
              '--no-daemon', '-Dorg.gradle.jvmargs=-Xmx1G',
              *args],
             cwd=root, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)

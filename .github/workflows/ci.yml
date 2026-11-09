@@ -89,3 +89,54 @@ jobs:
             run-acceptance-client/screenshots/client-acceptance-hud-*.png
             run-acceptance-server/logs/latest.log
           if-no-files-found: warn
+
+  # MINECRAFT-493 review (decision 52345): hosted, exact-head proof that Courier Craft and
+  # Dynamic Vehicles' current paired PR heads actually mod-load together in one real NeoForge
+  # client and that ContractWaypointOverlay's ModList-gated bridge genuinely reaches this mod's
+  # real hud.MissionWaypointLayout -- not a plain-JUnit proxy. Builds Courier Craft's branch here
+  # (hosted CI, not a release -- it has none yet), the same branch name this ticket's paired PR
+  # uses in both repos, so this always reflects the two PRs' current actual pairing rather than a
+  # SHA that would go stale on the very next push to either side.
+  coinstalled-acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: brooswit-minecraft/courier-craft
+          ref: minecraft-493-extract-dispatcher
+          path: courier-craft-src
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+      - name: Build Courier Craft's exact paired-PR head
+        working-directory: courier-craft-src
+        run: ./gradlew build --no-daemon
+      - name: Install virtual display and software GL
+        run: sudo apt-get update && sudo apt-get install -y xvfb xauth imagemagick libgl1-mesa-dri libopenal1
+      - name: Compile test-only client harness against Courier Craft's real jar
+        run: |
+          COURIER_CRAFT_JAR=$(ls courier-craft-src/build/libs/*.jar | grep -v -e sources -e javadoc | head -1)
+          echo "COURIER_CRAFT_JAR=$COURIER_CRAFT_JAR" >> "$GITHUB_ENV"
+          ./gradlew classes -PclientAcceptance "-PcourierCraftJar=$COURIER_CRAFT_JAR" --no-daemon -Dorg.gradle.jvmargs=-Xmx1G
+      - name: Run disposable local server and real client with both mods loaded
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          ALSOFT_DRIVERS: 'null'
+        run: xvfb-run -a -s '-screen 0 1280x720x24' python3 tools/client-smoke/coinstalled_acceptance.py "$COURIER_CRAFT_JAR"
+      - name: Preserve coinstalled acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coinstalled-acceptance
+          path: |
+            coinstalled-acceptance-*.log
+            run-acceptance-client/courier-craft-acceptance-*.json
+            run-acceptance-client/courier-craft-acceptance-failure.txt
+            run-acceptance-client/logs/latest.log
+            run-acceptance-client/crash-reports/
+            run-acceptance-server/logs/latest.log
+          if-no-files-found: warn

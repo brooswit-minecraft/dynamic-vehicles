@@ -42,7 +42,14 @@ try:
         log = open(root / output, 'w')
         logs.append(log)
         process = subprocess.Popen(
+            # gradle.properties' version=0.0.0 is a release-gate placeholder, never the real
+            # shipped version (see that file's own comment) -- a dev run that doesn't pass
+            # -Pmod_version reports "0.0.0" to FML, which fails Courier Craft's declared
+            # versionRange="[0.82.0,)" on this optional dependency. Pin to the actual latest
+            # release so the coinstalled run's version check matches what a real player's two
+            # installed mods would see.
             ['./gradlew', task, '-PclientAcceptance', f'-PcourierCraftJar={courier_craft_jar}',
+             '-Pmod_version=0.82.1',
              '--no-daemon', '-Dorg.gradle.jvmargs=-Xmx1G',
              *args],
             cwd=root, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)

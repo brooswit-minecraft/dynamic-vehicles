@@ -624,8 +624,8 @@ public class TownStorage extends SavedData {
         }
         capacityAdmissions.put(key, new ResidentCapacityAdmission(existing.dimension(), existing.townKey(),
                 existing.region(), existing.beneficiaryId(), existing.requestedHomes(), existing.requestedWorkplaces(),
-                existing.siteOwner(), existing.planSignature(), ResidentCapacityAdmission.State.CANCELLED,
-                null, null, null, null));
+                existing.needsAnyWorkplace(), existing.siteOwner(), existing.planSignature(),
+                ResidentCapacityAdmission.State.CANCELLED, null, null, null, null));
         setDirty();
         return true;
     }
@@ -1416,6 +1416,7 @@ public class TownStorage extends SavedData {
             entry.putInt("RegionZ", admission.region().z());
             entry.putUUID("Beneficiary", admission.beneficiaryId());
             entry.putInt("Homes", admission.requestedHomes());
+            entry.putBoolean("NeedsAnyWorkplace", admission.needsAnyWorkplace());
             entry.putString("SiteOwner", admission.siteOwner());
             entry.putString("PlanSignature", admission.planSignature());
             entry.putString("State", admission.state().name());
@@ -1673,9 +1674,9 @@ public class TownStorage extends SavedData {
                 UUID anchorGenerationToken = entry.hasUUID("AnchorGenerationToken") ? entry.getUUID("AnchorGenerationToken") : null;
                 ResidentCapacityAdmission admission = new ResidentCapacityAdmission(dimension, entry.getString("TownKey"),
                         new RegionCoord(entry.getInt("RegionX"), entry.getInt("RegionZ")), entry.getUUID("Beneficiary"),
-                        entry.getInt("Homes"), workplaces, entry.getString("SiteOwner"), entry.getString("PlanSignature"),
-                        ResidentCapacityAdmission.State.valueOf(entry.getString("State")), boundSiteOwner, builderId,
-                        boundPlanSignature, anchorGenerationToken);
+                        entry.getInt("Homes"), workplaces, entry.getBoolean("NeedsAnyWorkplace"), entry.getString("SiteOwner"),
+                        entry.getString("PlanSignature"), ResidentCapacityAdmission.State.valueOf(entry.getString("State")),
+                        boundSiteOwner, builderId, boundPlanSignature, anchorGenerationToken);
                 storage.capacityAdmissions.put(capacityAdmissionKey(dimension, admission.region(), admission.beneficiaryId()), admission);
                 if (admission.state().bound() && admission.anchorGenerationToken() == null) {
                     // [coordinator review 51271/51274] Legacy BUILDING/COMPLETED record predating

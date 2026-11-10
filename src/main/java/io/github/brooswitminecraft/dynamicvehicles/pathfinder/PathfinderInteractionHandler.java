@@ -5,7 +5,7 @@ import net.minecraft.server.level.ServerPlayer;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
 
-import io.github.brooswitminecraft.dynamicvehicles.delivery.ProfessionInteraction;
+import io.github.brooswitminecraft.dynamicvehicles.village.ProfessionInteraction;
 
 /**
  * Right-click a Pathfinder villager to start (or check the status of) an attempt — the villager

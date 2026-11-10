@@ -382,3 +382,16 @@ if (project.hasProperty('clientAcceptance')) {
     neoForge.runs.client.gameDirectory = layout.projectDirectory.dir('run-acceptance-client')
     neoForge.runs.server.gameDirectory = layout.projectDirectory.dir('run-acceptance-server')
 }
+
+// MINECRAFT-493: optional, exact-head coinstalled acceptance only -- a real jar built from
+// Courier Craft's own paired PR, passed in by path (courier-craft has no release to download by
+// version yet). Absent by default, so every other run (including the existing standalone
+// clientAcceptance job) is unaffected; see CourierCraftAcceptance's own javadoc and
+// tools/client-smoke/coinstalled_acceptance.py for the CI job that builds this jar and sets it.
+if (project.hasProperty('courierCraftJar')) {
+    def courierCraftJarFile = files(project.property('courierCraftJar'))
+    dependencies {
+        compileOnly courierCraftJarFile
+        runtimeOnly courierCraftJarFile
+    }
+}

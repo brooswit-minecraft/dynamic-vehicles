@@ -1,6 +1,6 @@
 package io.github.brooswitminecraft.dynamicvehicles.town;
 
-import io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord;
+import io.github.brooswitminecraft.dynamicvehicles.village.RegionCoord;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.Level;
 

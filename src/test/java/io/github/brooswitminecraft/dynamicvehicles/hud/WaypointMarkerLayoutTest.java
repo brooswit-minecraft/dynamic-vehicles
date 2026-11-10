@@ -2,8 +2,8 @@ package io.github.brooswitminecraft.dynamicvehicles.hud;
 
 import org.junit.jupiter.api.Test;
 
-import io.github.brooswitminecraft.dynamicvehicles.delivery.DangerGauge;
-import io.github.brooswitminecraft.dynamicvehicles.delivery.OfferDistanceFormat;
+import io.github.brooswitminecraft.dynamicvehicles.village.DangerGauge;
+import io.github.brooswitminecraft.dynamicvehicles.village.OfferDistanceFormat;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;

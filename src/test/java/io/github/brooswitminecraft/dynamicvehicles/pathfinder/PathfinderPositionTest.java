@@ -2,7 +2,7 @@ package io.github.brooswitminecraft.dynamicvehicles.pathfinder;
 
 import org.junit.jupiter.api.Test;
 
-import io.github.brooswitminecraft.dynamicvehicles.delivery.ArrivalPredicate;
+import io.github.brooswitminecraft.dynamicvehicles.village.ArrivalPredicate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;

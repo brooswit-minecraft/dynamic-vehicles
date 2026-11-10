@@ -1,6 +1,6 @@
 package io.github.brooswitminecraft.dynamicvehicles.town;
 
-import io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord;
+import io.github.brooswitminecraft.dynamicvehicles.village.RegionCoord;
 
 /**
  * Deterministic road connection points on a town region's four edges. MINECRAFT-388 requires

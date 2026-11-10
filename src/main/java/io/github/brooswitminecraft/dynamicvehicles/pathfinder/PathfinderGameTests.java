@@ -18,7 +18,7 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 import net.neoforged.neoforge.network.registration.ChannelAttributes;
 
 import io.github.brooswitminecraft.dynamicvehicles.DynamicVehiclesMod;
-import io.github.brooswitminecraft.dynamicvehicles.delivery.GameTestMockPlayers;
+import io.github.brooswitminecraft.dynamicvehicles.village.GameTestMockPlayers;
 
 /**
  * Integration coverage for the Pathfinder vertical slice (MINECRAFT-379 review follow-up:

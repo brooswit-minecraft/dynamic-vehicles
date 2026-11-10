@@ -1,6 +1,6 @@
 package io.github.brooswitminecraft.dynamicvehicles.town;
 
-import io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord;
+import io.github.brooswitminecraft.dynamicvehicles.village.RegionCoord;
 
 import java.util.EnumMap;
 import java.util.Map;

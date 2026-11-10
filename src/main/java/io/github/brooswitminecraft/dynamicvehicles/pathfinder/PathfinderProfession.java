@@ -6,7 +6,7 @@ import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredRegister;
 
 import io.github.brooswitminecraft.dynamicvehicles.DynamicVehiclesMod;
-import io.github.brooswitminecraft.dynamicvehicles.delivery.VillagerJobSites;
+import io.github.brooswitminecraft.dynamicvehicles.village.VillagerJobSites;
 
 /**
  * Registers the {@code pathfinder} villager profession (MINECRAFT-379).

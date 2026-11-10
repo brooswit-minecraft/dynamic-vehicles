@@ -1,7 +1,7 @@
 package io.github.brooswitminecraft.dynamicvehicles.town;
 
-import io.github.brooswitminecraft.dynamicvehicles.delivery.BuilderProfession;
-import io.github.brooswitminecraft.dynamicvehicles.delivery.RegionCoord;
+import io.github.brooswitminecraft.dynamicvehicles.village.BuilderProfession;
+import io.github.brooswitminecraft.dynamicvehicles.village.RegionCoord;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.GlobalPos;
 import net.minecraft.nbt.CompoundTag;

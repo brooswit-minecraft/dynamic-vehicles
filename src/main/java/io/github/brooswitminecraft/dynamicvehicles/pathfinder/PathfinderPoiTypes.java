@@ -6,7 +6,7 @@ import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredRegister;
 
 import io.github.brooswitminecraft.dynamicvehicles.DynamicVehiclesMod;
-import io.github.brooswitminecraft.dynamicvehicles.delivery.VillagerJobSites;
+import io.github.brooswitminecraft.dynamicvehicles.village.VillagerJobSites;
 
 /**
  * The Pathfinder profession's own PoiType, backed by {@link

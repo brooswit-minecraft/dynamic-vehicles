@@ -1,6 +1,7 @@
 package io.github.brooswitminecraft.dynamicvehicles;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -28,5 +29,12 @@ class MinecraftFiveFiveSixNamingTest {
         }
         assertEquals("dynamicvehicles", props.getProperty("mod_id"));
         assertEquals("Legacy Dynamic Vehicles", props.getProperty("mod_name"));
+    }
+
+    @Test
+    void settingsGradleRootProjectNameIsTheNormalizedName() throws IOException {
+        String settings = Files.readString(Path.of("settings.gradle"));
+        assertTrue(settings.contains("rootProject.name = \"legacy-dynamic-vehicles\""),
+                "settings.gradle should set rootProject.name to legacy-dynamic-vehicles");
     }
 }

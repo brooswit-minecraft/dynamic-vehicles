@@ -1,15 +1,24 @@
-# dynamic-vehicles
+# legacy-dynamic-vehicles
 
-In-game display name: **Legacy Dynamic Vehicles** (MINECRAFT-556 naming
-normalization). GitHub repository rename to `legacy-dynamic-vehicles` is
-staged but blocked pending org-admin access — see MINECRAFT-556; this repo
-is still at its original name/URL until that rename executes. The shipped
-mod ID, package, registry, config and networking namespaces are deliberately
-unchanged either way.
+Legacy Dynamic Vehicles — repository and display name normalized from
+`dynamic-vehicles` for naming consistency (MINECRAFT-556); GitHub repo rename
+to `legacy-dynamic-vehicles` lands in a coordinated admin-rename window right
+after this PR merges. The shipped mod ID, package, registry, config and
+networking namespaces are deliberately unchanged — see Compatibility note
+below.
 
 Drivable vehicles for Minecraft (NeoForge 1.21.1, Java 21). Mod ID:
-`dynamicvehicles` (unchanged). MIT licensed. Built on
-[dynamic-terrain](https://github.com/brooswit-minecraft/dynamic-terrain).
+`dynamicvehicles` (unchanged; see Compatibility note). MIT licensed. Built on
+[Legacy Dynamic Terrain](https://github.com/brooswit-minecraft/legacy-dynamic-terrain).
+
+## Compatibility note
+
+This repository and its GitHub display name changed; the shipped mod ID
+(`dynamicvehicles`), Java package, config keys, registry/resource/data
+namespaces, migration checks and networking IDs did not. Existing worlds and
+modpacks keep recognizing this mod exactly as before — do not install this
+alongside any build still published under the old repository as a separate
+mod; they are the same mod.
 
 **Current state: first car.** A drivable 4-wheel car with a simple physics model that
 reports tire slip to Dynamic Terrain. Surface-aware handling (grip, roughness,

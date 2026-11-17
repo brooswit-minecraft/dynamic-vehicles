@@ -1,7 +1,14 @@
 # dynamic-vehicles
 
+In-game display name: **Legacy Dynamic Vehicles** (MINECRAFT-556 naming
+normalization). GitHub repository rename to `legacy-dynamic-vehicles` is
+staged but blocked pending org-admin access — see MINECRAFT-556; this repo
+is still at its original name/URL until that rename executes. The shipped
+mod ID, package, registry, config and networking namespaces are deliberately
+unchanged either way.
+
 Drivable vehicles for Minecraft (NeoForge 1.21.1, Java 21). Mod ID:
-`dynamicvehicles`. MIT licensed. Built on
+`dynamicvehicles` (unchanged). MIT licensed. Built on
 [dynamic-terrain](https://github.com/brooswit-minecraft/dynamic-terrain).
 
 **Current state: first car.** A drivable 4-wheel car with a simple physics model that

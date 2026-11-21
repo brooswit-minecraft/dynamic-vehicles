@@ -386,7 +386,7 @@ public final class TownResidentCapacityAdmissionGameTests {
                 }
                 Map<VillagerProfession, Integer> requestedWorkplaces = site.finalProfession()
                         .map(profession -> Map.of(profession, 1)).orElse(Map.of());
-                TownResidentDemand demand = new TownResidentDemand(1, requestedWorkplaces);
+                TownResidentDemand demand = new TownResidentDemand(1, requestedWorkplaces, false);
                 Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
                         level, region, beneficiary.getUUID(), demand, storage);
                 helper.assertTrue(admission.isPresent() && admission.get().state() == ResidentCapacityAdmission.State.AWAITING_CLAIM,
@@ -490,7 +490,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
         RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
         storage.markTownFounded(TownKeys.keyFor(helper.getLevel().dimension(), region));
-        TownResidentDemand demand = new TownResidentDemand(1, Map.of());
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of(), false);
         Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
                 helper.getLevel(), region, beneficiary.getUUID(), demand, storage);
         helper.assertTrue(admission.isPresent(), "test setup: beneficiary admission must be created");
@@ -649,7 +649,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
         RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
         storage.markTownFounded(TownKeys.keyFor(helper.getLevel().dimension(), region));
-        TownResidentDemand demand = new TownResidentDemand(1, Map.of());
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of(), false);
         Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
                 helper.getLevel(), region, beneficiary.getUUID(), demand, storage);
         helper.assertTrue(admission.isPresent(), "test setup: the home-only admission must be created");
@@ -718,7 +718,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
         RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
         storage.markTownFounded(TownKeys.keyFor(helper.getLevel().dimension(), region));
-        TownResidentDemand demand = new TownResidentDemand(1, Map.of());
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of(), false);
         Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
                 helper.getLevel(), region, beneficiary.getUUID(), demand, storage);
         helper.assertTrue(admission.isPresent(), "test setup: the home-only admission must be created");
@@ -804,7 +804,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         TownStorage storage = new TownStorage();
         TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
         storage.markTownFounded(TownKeys.keyFor(helper.getLevel().dimension(), region));
-        TownResidentDemand demand = new TownResidentDemand(1, Map.of());
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of(), false);
         Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
                 helper.getLevel(), region, beneficiary.getUUID(), demand, storage);
         helper.assertTrue(admission.isPresent(), "test setup: the home-only admission (a real, matching demand) must be created");
@@ -898,7 +898,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
         RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
         storage.markTownFounded(TownKeys.keyFor(helper.getLevel().dimension(), region));
-        TownResidentDemand demand = new TownResidentDemand(1, Map.of());
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of(), false);
         Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
                 helper.getLevel(), region, beneficiary.getUUID(), demand, storage);
         helper.assertTrue(admission.isPresent(), "test setup: the home-only admission (a real, matching demand) must be created");
@@ -932,7 +932,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         Villager beneficiary = resident(helper, new BlockPos(5, 2, 5), VillagerProfession.ARMORER);
         RegionCoord region = TownRegion.fromBlockCoords(beneficiary.blockPosition().getX(), beneficiary.blockPosition().getZ());
         TownStorage storage = foundedStorage(helper, region);
-        TownResidentDemand demand = new TownResidentDemand(1, Map.of(VillagerProfession.ARMORER, 1));
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of(VillagerProfession.ARMORER, 1), false);
         Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
                 helper.getLevel(), region, beneficiary.getUUID(), demand, storage);
         helper.assertTrue(admission.isPresent(), "test setup: admission must be created");
@@ -1027,7 +1027,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
         RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
         storage.markTownFounded(TownKeys.keyFor(helper.getLevel().dimension(), region));
-        TownResidentDemand demand = new TownResidentDemand(1, Map.of());
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of(), false);
         Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
                 helper.getLevel(), region, beneficiary.getUUID(), demand, storage);
         helper.assertTrue(admission.isPresent(), "test setup: the home-only admission (a real, matching demand) must be created");
@@ -1086,7 +1086,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         TownStorage storage = new TownStorage();
         TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
         storage.markTownFounded(TownKeys.keyFor(helper.getLevel().dimension(), region));
-        TownResidentDemand demand = new TownResidentDemand(1, Map.of());
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of(), false);
         Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
                 helper.getLevel(), region, beneficiary.getUUID(), demand, storage);
         helper.assertTrue(admission.isPresent(), "test setup: the home-only admission must be created - beneficiaryPos="
@@ -1172,7 +1172,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         TownStorage storage = new TownStorage();
         TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
         storage.markTownFounded(TownKeys.keyFor(helper.getLevel().dimension(), region));
-        TownResidentDemand demand = new TownResidentDemand(1, Map.of());
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of(), false);
         Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
                 helper.getLevel(), region, beneficiary.getUUID(), demand, storage);
         helper.assertTrue(admission.isPresent(), "test setup: the home-only admission must be created");
@@ -1256,7 +1256,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         Villager beneficiary = resident(helper, new BlockPos(9, 2, 1), VillagerProfession.FARMER);
         RegionCoord region = TownRegion.fromBlockCoords(beneficiary.blockPosition().getX(), beneficiary.blockPosition().getZ());
         TownStorage storage = foundedStorage(helper, region);
-        TownResidentDemand demand = new TownResidentDemand(1, Map.of(VillagerProfession.FARMER, 1));
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of(VillagerProfession.FARMER, 1), false);
         Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
                 helper.getLevel(), region, beneficiary.getUUID(), demand, storage);
         helper.assertTrue(admission.isPresent(), "test setup: the home+FARMER admission must be created");
@@ -1359,7 +1359,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         storage.markTownFounded(TownKeys.keyFor(helper.getLevel().dimension(), region));
         // Home-only request - never mentions a workplace, regardless of what this EXPLICIT kind
         // offers.
-        TownResidentDemand demand = new TownResidentDemand(1, Map.of());
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of(), false);
         Optional<ResidentCapacityAdmission> awaiting = TownConstructionService.requestResidentCapacity(
                 helper.getLevel(), region, beneficiary.getUUID(), demand, storage);
         helper.assertTrue(awaiting.isPresent(), "test setup: the home-only admission must be created - beneficiaryPos="
@@ -1436,7 +1436,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         TownStorage storage = new TownStorage();
         TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
         storage.markTownFounded(TownKeys.keyFor(helper.getLevel().dimension(), region));
-        TownResidentDemand demand = new TownResidentDemand(1, Map.of());
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of(), false);
         Optional<ResidentCapacityAdmission> admissionA = TownConstructionService.requestResidentCapacity(
                 helper.getLevel(), region, beneficiaryA.getUUID(), demand, storage);
         Optional<ResidentCapacityAdmission> admissionB = TownConstructionService.requestResidentCapacity(
@@ -1476,7 +1476,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         String townKey = TownKeys.keyFor(helper.getLevel().dimension(), region);
         storage.markTownFounded(townKey);
         storage.creditStore(townKey, TownResourceCategory.WOOD, 7);
-        TownResidentDemand demand = new TownResidentDemand(1, Map.of(VillagerProfession.ARMORER, 1));
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of(VillagerProfession.ARMORER, 1), false);
 
         Optional<ResidentCapacityAdmission> first = TownConstructionService.requestResidentCapacity(
                 helper.getLevel(), region, villager.getUUID(), demand, storage);
@@ -1578,7 +1578,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         fulfilledA.getBrain().setMemory(MemoryModuleType.JOB_SITE, GlobalPos.of(helper.getLevel().dimension(), workplace));
 
         TownResidentDemand observedDemand = TownResidentAllocationHandler.unmetDemand(helper.getLevel(), region, storage);
-        TownResidentDemand demand = new TownResidentDemand(1, Map.of(VillagerProfession.ARMORER, 1));
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of(VillagerProfession.ARMORER, 1), false);
         Optional<ResidentCapacityAdmission> forFulfilledA = TownConstructionService.requestResidentCapacity(
                 helper.getLevel(), region, fulfilledA.getUUID(), demand, storage);
         Optional<ResidentCapacityAdmission> forUnfulfilledB = TownConstructionService.requestResidentCapacity(
@@ -1708,7 +1708,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
         RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
         storage.markTownFounded(TownKeys.keyFor(helper.getLevel().dimension(), region));
-        TownResidentDemand demand = new TownResidentDemand(1, Map.of());
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of(), false);
         Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
                 helper.getLevel(), region, beneficiary.getUUID(), demand, storage);
         helper.assertTrue(admission.isPresent(), "test setup: the home-only admission must be created");
@@ -1726,7 +1726,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         // requests only a workplace) - requestResidentCapacity's own existing
         // createOrReuseCapacityAdmission legitimately replaces the now-terminal record.
         beneficiary.setVillagerData(beneficiary.getVillagerData().setProfession(VillagerProfession.FARMER));
-        TownResidentDemand newDemand = new TownResidentDemand(0, Map.of(VillagerProfession.FARMER, 1));
+        TownResidentDemand newDemand = new TownResidentDemand(0, Map.of(VillagerProfession.FARMER, 1), false);
         Optional<ResidentCapacityAdmission> replaced = TownConstructionService.requestResidentCapacity(
                 helper.getLevel(), region, beneficiary.getUUID(), newDemand, storage);
         helper.assertTrue(replaced.isPresent() && replaced.get().state() == ResidentCapacityAdmission.State.AWAITING_CLAIM,
@@ -1787,7 +1787,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         Villager beneficiary = resident(helper, new BlockPos(9, 2, 1), VillagerProfession.ARMORER);
         RegionCoord region = TownRegion.fromBlockCoords(beneficiary.blockPosition().getX(), beneficiary.blockPosition().getZ());
         TownStorage storage = foundedStorage(helper, region);
-        TownResidentDemand demand = new TownResidentDemand(1, Map.of(VillagerProfession.ARMORER, 1));
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of(VillagerProfession.ARMORER, 1), false);
         Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
                 helper.getLevel(), region, beneficiary.getUUID(), demand, storage);
         helper.assertTrue(admission.isPresent(), "test setup: the original admission must be created");
@@ -1804,7 +1804,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         // The SAME beneficiary now has a brand-new, unrelated need - requestResidentCapacity's own
         // existing createOrReuseCapacityAdmission legitimately replaces the terminal record.
         beneficiary.setVillagerData(beneficiary.getVillagerData().setProfession(VillagerProfession.FARMER));
-        TownResidentDemand newDemand = new TownResidentDemand(1, Map.of(VillagerProfession.FARMER, 1));
+        TownResidentDemand newDemand = new TownResidentDemand(1, Map.of(VillagerProfession.FARMER, 1), false);
         Optional<ResidentCapacityAdmission> replaced = TownConstructionService.requestResidentCapacity(
                 helper.getLevel(), region, beneficiary.getUUID(), newDemand, storage);
         helper.assertTrue(replaced.isPresent() && replaced.get().state() == ResidentCapacityAdmission.State.AWAITING_CLAIM,
@@ -1866,7 +1866,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
         RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
         storage.markTownFounded(TownKeys.keyFor(helper.getLevel().dimension(), region));
-        TownResidentDemand demand = new TownResidentDemand(1, Map.of());
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of(), false);
         claimant.setNoAi(true);
         beneficiary.setNoAi(true);
         helper.startSequence().thenIdle(2).thenExecute(() -> {
@@ -1947,7 +1947,7 @@ public final class TownResidentCapacityAdmissionGameTests {
                         && TownRegion.fromBlockCoords(beneficiaryB.blockPosition().getX(), beneficiaryB.blockPosition().getZ()).equals(region),
                 "test setup: both beneficiaries must resolve to the exact same region as the campfire");
         TownStorage storage = foundedStorage(helper, region);
-        TownResidentDemand demand = new TownResidentDemand(1, Map.of(VillagerProfession.ARMORER, 1));
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of(VillagerProfession.ARMORER, 1), false);
         Optional<ResidentCapacityAdmission> admissionA = TownConstructionService.requestResidentCapacity(
                 helper.getLevel(), region, beneficiaryA.getUUID(), demand, storage);
         Optional<ResidentCapacityAdmission> admissionB = TownConstructionService.requestResidentCapacity(
@@ -2181,7 +2181,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         BlockPos selfClaimSpot = helper.absolutePos(new BlockPos(9, 2, 1));
         Villager selfClaimingBeneficiary = EntityType.VILLAGER.create(helper.getLevel(), null, selfClaimSpot, MobSpawnType.EVENT, false, false);
         helper.getLevel().addFreshEntity(selfClaimingBeneficiary);
-        TownResidentDemand demand = new TownResidentDemand(1, Map.of());
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of(), false);
         Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
                 helper.getLevel(), region, selfClaimingBeneficiary.getUUID(), demand, storage);
         helper.assertTrue(admission.isPresent() && admission.get().state() == ResidentCapacityAdmission.State.AWAITING_CLAIM,
@@ -2252,7 +2252,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
         RegionCoord region = TownRegion.fromBlockCoords(absoluteCampfire.getX(), absoluteCampfire.getZ());
         storage.markTownFounded(TownKeys.keyFor(helper.getLevel().dimension(), region));
-        TownResidentDemand demand = new TownResidentDemand(1, Map.of());
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of(), false);
         Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
                 helper.getLevel(), region, beneficiary.getUUID(), demand, storage);
         helper.assertTrue(admission.isPresent(), "test setup: the home-only admission must be created");
@@ -2346,7 +2346,7 @@ public final class TownResidentCapacityAdmissionGameTests {
 
         Villager villagerA = EntityType.VILLAGER.create(level, null, absoluteA, MobSpawnType.EVENT, false, false);
         level.addFreshEntity(villagerA);
-        TownResidentDemand demand = new TownResidentDemand(1, Map.of());
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of(), false);
         Optional<ResidentCapacityAdmission> admissionA = TownConstructionService.requestResidentCapacity(
                 level, region, villagerA.getUUID(), demand, storage);
         helper.assertTrue(admissionA.isPresent() && admissionA.get().state() == ResidentCapacityAdmission.State.AWAITING_CLAIM,
@@ -2441,7 +2441,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         TownStorage storage = new TownStorage();
         TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
         storage.markTownFounded(TownKeys.keyFor(level.dimension(), region));
-        TownResidentDemand demand = new TownResidentDemand(1, Map.of());
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of(), false);
         Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
                 level, region, villagerA.getUUID(), demand, storage);
         helper.assertTrue(admission.isPresent(), "test setup: A's home-only admission must be created while genuinely NONE");
@@ -2516,7 +2516,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         TownStorage storage = new TownStorage();
         TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
         storage.markTownFounded(TownKeys.keyFor(level.dimension(), region));
-        TownResidentDemand demand = new TownResidentDemand(1, Map.of());
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of(), false);
         Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
                 level, region, villagerA.getUUID(), demand, storage);
         helper.assertTrue(admission.isPresent(), "test setup: A's home-only admission must be created while genuinely NONE");
@@ -2591,7 +2591,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         // its own count, so the admission must exist BEFORE the candidate becomes a Builder, exactly
         // mirroring the real sequence (unemployed resident requests capacity, then later becomes an
         // active Builder claimant elsewhere before this site's own bind attempt).
-        TownResidentDemand demand = new TownResidentDemand(1, Map.of());
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of(), false);
         Optional<ResidentCapacityAdmission> awaiting = TownConstructionService.requestResidentCapacity(
                 level, region, candidateBeneficiary.getUUID(), demand, storage);
         helper.assertTrue(awaiting.isPresent(), "test setup: the candidate's home-only admission must be created while genuinely NONE");
@@ -2658,7 +2658,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         TownStorage storage = new TownStorage();
         TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
         storage.markTownFounded(TownKeys.keyFor(level.dimension(), region));
-        TownResidentDemand demand = new TownResidentDemand(1, Map.of());
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of(), false);
         Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
                 level, region, villagerA.getUUID(), demand, storage);
         helper.assertTrue(admission.isPresent(), "test setup: A's home-only admission must be created while genuinely NONE");
@@ -2760,7 +2760,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         TownStorage storage = new TownStorage();
         TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
         storage.markTownFounded(TownKeys.keyFor(level.dimension(), region));
-        TownResidentDemand demand = new TownResidentDemand(1, Map.of());
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of(), false);
         Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
                 level, region, villagerA.getUUID(), demand, storage);
         helper.assertTrue(admission.isPresent(), "test setup: A's home-only admission must be created while genuinely NONE");
@@ -2864,7 +2864,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         TownStorage storage = new TownStorage();
         TownResourceStore store = fundStore(helper, storage, absoluteCampfire, 100000);
         storage.markTownFounded(TownKeys.keyFor(level.dimension(), region));
-        TownResidentDemand demand = new TownResidentDemand(1, Map.of());
+        TownResidentDemand demand = new TownResidentDemand(1, Map.of(), false);
         Optional<ResidentCapacityAdmission> admission = TownConstructionService.requestResidentCapacity(
                 level, region, villagerA.getUUID(), demand, storage);
         helper.assertTrue(admission.isPresent(), "test setup: A's home-only admission must be created while genuinely NONE");
@@ -2950,8 +2950,9 @@ public final class TownResidentCapacityAdmissionGameTests {
         String siteOwner = TownStorage.siteOwner(absoluteCampfire);
         ResidentCapacityAdmission boundAdmission = new ResidentCapacityAdmission(level.dimension(),
                 TownKeys.keyFor(level.dimension(), region), region, villagerA.getUUID(), 1,
-                Map.of(VillagerProfession.ARMORER, 1), siteOwner, "capacity-v1:test", ResidentCapacityAdmission.State.BUILDING,
-                siteOwner, villagerA.getUUID(), "test-plan-signature", java.util.UUID.randomUUID());
+                Map.of(VillagerProfession.ARMORER, 1), false, siteOwner, "capacity-v1:test",
+                ResidentCapacityAdmission.State.BUILDING, siteOwner, villagerA.getUUID(), "test-plan-signature",
+                java.util.UUID.randomUUID());
         java.util.function.Predicate<BlockPos> isOwnPlannedFixture = p -> true;
 
         // A already, genuinely holds BOTH its own real bed and real workstation tickets.
@@ -3086,7 +3087,7 @@ public final class TownResidentCapacityAdmissionGameTests {
         storage.markTownFounded(TownKeys.keyFor(level.dimension(), region));
         String siteOwner = TownStorage.siteOwner(absoluteCampfire);
         ResidentCapacityAdmission boundAdmission = new ResidentCapacityAdmission(level.dimension(),
-                TownKeys.keyFor(level.dimension(), region), region, villagerA.getUUID(), 1, Map.of(), siteOwner,
+                TownKeys.keyFor(level.dimension(), region), region, villagerA.getUUID(), 1, Map.of(), false, siteOwner,
                 "capacity-v1:test", ResidentCapacityAdmission.State.BUILDING, siteOwner, villagerA.getUUID(),
                 "test-plan-signature", java.util.UUID.randomUUID());
         java.util.function.Predicate<BlockPos> isOwnPlannedFixture = p -> true;
@@ -3358,7 +3359,7 @@ public final class TownResidentCapacityAdmissionGameTests {
             String townKey = TownKeys.keyFor(level.dimension(), region);
             String placeholderSiteOwner = "capacity:" + townKey + ":" + villagerA.getUUID();
             ResidentCapacityAdmission admission = storage.createOrReuseCapacityAdmission(new ResidentCapacityAdmission(
-                    level.dimension(), townKey, region, villagerA.getUUID(), 1, Map.of(profFinalProfession, 1),
+                    level.dimension(), townKey, region, villagerA.getUUID(), 1, Map.of(profFinalProfession, 1), false,
                     placeholderSiteOwner, "capacity-v1:test", ResidentCapacityAdmission.State.AWAITING_CLAIM,
                     null, null, null, null));
             helper.assertTrue(admission.state() == ResidentCapacityAdmission.State.AWAITING_CLAIM,

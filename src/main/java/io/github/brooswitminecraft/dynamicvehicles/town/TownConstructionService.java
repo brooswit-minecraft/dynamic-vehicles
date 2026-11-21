@@ -367,7 +367,7 @@ public final class TownConstructionService {
     static Optional<ResidentCapacityAdmission> requestResidentCapacity(ServerLevel level, RegionCoord region,
             UUID beneficiaryId, TownResidentDemand demand, TownStorage storage) {
         if (!level.dimension().equals(Level.OVERWORLD) || demand == TownResidentDemand.NONE
-                || (demand.missingHomes() == 0 && demand.missingWorkplaces().isEmpty())) {
+                || (demand.missingHomes() == 0 && demand.missingWorkplaces().isEmpty() && !demand.needsAnyWorkplace())) {
             return Optional.empty();
         }
         String townKey = TownKeys.keyFor(level.dimension(), region);
@@ -392,7 +392,8 @@ public final class TownConstructionService {
         TownResidentDemand currentDemand = TownResidentAllocationHandler.unmetDemand(level, region, storage);
         if (currentDemand == TownResidentDemand.NONE || demand.missingHomes() > currentDemand.missingHomes()
                 || demand.missingWorkplaces().entrySet().stream().anyMatch(entry -> entry.getValue()
-                        > currentDemand.missingWorkplaces().getOrDefault(entry.getKey(), 0))) {
+                        > currentDemand.missingWorkplaces().getOrDefault(entry.getKey(), 0))
+                || (demand.needsAnyWorkplace() && !currentDemand.needsAnyWorkplace())) {
             return Optional.empty();
         }
         VillagerProfession retainedProfession = beneficiary.getVillagerData().getProfession();
@@ -403,13 +404,17 @@ public final class TownConstructionService {
         int requestedHomes = demand.missingHomes() > 0 ? 1 : 0;
         Map<VillagerProfession, Integer> requestedWorkplaces = demand.missingWorkplaces().containsKey(retainedProfession)
                 ? Map.of(retainedProfession, 1) : Map.of();
+        boolean needsAnyWorkplace = demand.needsAnyWorkplace() && retainedProfession == VillagerProfession.NONE;
         if (requestedHomes > 0 && hasValidBeneficiaryHome(level, beneficiary, region, storage)) {
             requestedHomes = 0;
         }
         if (!requestedWorkplaces.isEmpty() && hasValidBeneficiaryWorkplace(level, beneficiary, region, storage)) {
             requestedWorkplaces = Map.of();
         }
-        if (requestedHomes == 0 && requestedWorkplaces.isEmpty()) {
+        if (needsAnyWorkplace && hasValidBeneficiaryWorkplace(level, beneficiary, region, storage)) {
+            needsAnyWorkplace = false;
+        }
+        if (requestedHomes == 0 && requestedWorkplaces.isEmpty() && !needsAnyWorkplace) {
             return Optional.empty();
         }
 
@@ -421,15 +426,17 @@ public final class TownConstructionService {
                         profession -> net.minecraft.core.registries.BuiltInRegistries.VILLAGER_PROFESSION.getKey(profession).toString())))
                 .map(entry -> net.minecraft.core.registries.BuiltInRegistries.VILLAGER_PROFESSION.getKey(entry.getKey())
                         + "=" + entry.getValue())
-                .reduce((left, right) -> left + "," + right).orElse("none");
+                .reduce((left, right) -> left + "," + right).orElse("none")
+                + ":" + needsAnyWorkplace;
         ResidentCapacityAdmission admission = new ResidentCapacityAdmission(level.dimension(), townKey, region, beneficiaryId,
-                requestedHomes, requestedWorkplaces, siteOwner, planSignature,
+                requestedHomes, requestedWorkplaces, needsAnyWorkplace, siteOwner, planSignature,
                 ResidentCapacityAdmission.State.AWAITING_CLAIM, null, null, null, null);
         Optional<ResidentCapacityAdmission> existing = storage.capacityAdmissionFor(level.dimension(), region, beneficiaryId);
         if (existing.isPresent() && !existing.get().state().terminal()) {
             ResidentCapacityAdmission current = existing.get();
             if (current.requestedHomes() == requestedHomes
-                    && current.requestedWorkplaces().equals(requestedWorkplaces)) {
+                    && current.requestedWorkplaces().equals(requestedWorkplaces)
+                    && current.needsAnyWorkplace() == needsAnyWorkplace) {
                 // Same current beneficiary need: preserve the one durable admission identity.
                 return existing;
             }
@@ -1748,9 +1755,13 @@ public final class TownConstructionService {
                 return false;
             }
         }
-        if (!admission.requestedWorkplaces().isEmpty()) {
-            boolean workplaceDelivered = reserved.workstationPos() != null
-                    && admission.requestedWorkplaces().containsKey(recipient.getVillagerData().getProfession())
+        if (!admission.requestedWorkplaces().isEmpty() || admission.needsAnyWorkplace()) {
+            VillagerProfession deliveredProfession = recipient.getVillagerData().getProfession();
+            boolean professionMatches = admission.requestedWorkplaces().containsKey(deliveredProfession)
+                    || (admission.needsAnyWorkplace() && deliveredProfession != VillagerProfession.NONE
+                            && deliveredProfession != VillagerProfession.NITWIT
+                            && deliveredProfession != BuilderProfession.BUILDER.get());
+            boolean workplaceDelivered = reserved.workstationPos() != null && professionMatches
                     && recipient.getBrain().getMemory(MemoryModuleType.JOB_SITE)
                             .map(gp -> gp.dimension().equals(recipient.level().dimension()) && gp.pos().equals(reserved.workstationPos()))
                             .orElse(false);
@@ -1797,7 +1808,8 @@ public final class TownConstructionService {
         // happens to offer one, and vice versa. The unmodified claimant-only path (boundAdmission
         // empty) keeps the exact original "whatever this site offers" behavior.
         boolean needsWorkstation = finalProfession.isPresent()
-                && boundAdmission.map(admission -> admission.requestedWorkplaces().containsKey(finalProfession.get())).orElse(true);
+                && boundAdmission.map(admission -> admission.requestedWorkplaces().containsKey(finalProfession.get())
+                        || admission.needsAnyWorkplace()).orElse(true);
         boolean needsBed = (kind == TownBuildingTemplates.Kind.RESIDENTIAL || kind == TownBuildingTemplates.Kind.COMMERCIAL
                 || kind == TownBuildingTemplates.Kind.INDUSTRIAL)
                 && boundAdmission.map(admission -> admission.requestedHomes() > 0).orElse(true);
@@ -2038,10 +2050,11 @@ public final class TownConstructionService {
         boolean matchedButIneligible = false;
         for (ResidentCapacityAdmission candidate : storage.awaitingCapacityAdmissionsFor(level.dimension(), region)) {
             boolean needsHome = candidate.requestedHomes() > 0;
-            boolean needsWorkplace = !candidate.requestedWorkplaces().isEmpty();
+            boolean needsWorkplace = !candidate.requestedWorkplaces().isEmpty() || candidate.needsAnyWorkplace();
             boolean homeSatisfied = !needsHome || offersBed;
             boolean workplaceSatisfied = !needsWorkplace
-                    || (finalProfession.isPresent() && candidate.requestedWorkplaces().containsKey(finalProfession.get()));
+                    || (finalProfession.isPresent() && (candidate.requestedWorkplaces().containsKey(finalProfession.get())
+                            || candidate.needsAnyWorkplace()));
             if ((needsHome || needsWorkplace) && homeSatisfied && workplaceSatisfied) {
                 // [MINECRAFT-455 self-admission liveness, coordinator design 51579-51586] The
                 // current claimant/Builder matching ITS OWN awaiting admission (requestResidentCapacity

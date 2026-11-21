@@ -346,7 +346,7 @@ public final class TownConstructionOperationServiceGameTests {
         realBeneficiary.getBrain().setMemory(MemoryModuleType.HOME, GlobalPos.of(dimension, home));
 
         ResidentCapacityAdmission awaiting = new ResidentCapacityAdmission(dimension, townKey, region, realBeneficiaryId, 1, Map.of(),
-                "", "demand-sig", ResidentCapacityAdmission.State.AWAITING_CLAIM, null, null, null, null);
+                false, "", "demand-sig", ResidentCapacityAdmission.State.AWAITING_CLAIM, null, null, null, null);
         storage.createOrReuseCapacityAdmission(awaiting);
         UUID builderId = UUID.randomUUID();
         UUID anchorToken = UUID.randomUUID();
@@ -385,7 +385,7 @@ public final class TownConstructionOperationServiceGameTests {
         level.addFreshEntity(beneficiary);
 
         ResidentCapacityAdmission ownAwaiting = new ResidentCapacityAdmission(dimension, townKey, region, ownBeneficiaryId, 1, Map.of(),
-                "", "demand-sig", ResidentCapacityAdmission.State.AWAITING_CLAIM, null, null, null, null);
+                false, "", "demand-sig", ResidentCapacityAdmission.State.AWAITING_CLAIM, null, null, null, null);
         storage.createOrReuseCapacityAdmission(ownAwaiting);
         String ownSiteOwner = "site:handoff-own";
         UUID builderId = UUID.randomUUID();
@@ -435,7 +435,7 @@ public final class TownConstructionOperationServiceGameTests {
 
         UUID foreignBeneficiaryId = UUID.randomUUID();
         ResidentCapacityAdmission foreignAwaiting = new ResidentCapacityAdmission(dimension, townKey, region, foreignBeneficiaryId, 1,
-                Map.of(), "", "demand-sig", ResidentCapacityAdmission.State.AWAITING_CLAIM, null, null, null, null);
+                Map.of(), false, "", "demand-sig", ResidentCapacityAdmission.State.AWAITING_CLAIM, null, null, null, null);
         storage.createOrReuseCapacityAdmission(foreignAwaiting);
         String foreignSiteOwner = "site:handoff-foreign";
         ResidentCapacityAdmission foreignBound = storage.bindCapacityAdmissionToSite(foreignAwaiting, foreignSiteOwner, UUID.randomUUID(),
@@ -488,7 +488,7 @@ public final class TownConstructionOperationServiceGameTests {
         storage.setReservationOwner(dimension, home, beneficiaryId);
 
         ResidentCapacityAdmission awaiting = new ResidentCapacityAdmission(dimension, townKey, region, beneficiaryId, 1, Map.of(),
-                "", "demand-sig", ResidentCapacityAdmission.State.AWAITING_CLAIM, null, null, null, null);
+                false, "", "demand-sig", ResidentCapacityAdmission.State.AWAITING_CLAIM, null, null, null, null);
         storage.createOrReuseCapacityAdmission(awaiting);
         UUID realBuilderId = UUID.randomUUID();
         UUID anchorToken = UUID.randomUUID();

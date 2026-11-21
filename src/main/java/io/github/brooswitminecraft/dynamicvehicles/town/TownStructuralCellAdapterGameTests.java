@@ -963,7 +963,7 @@ public final class TownStructuralCellAdapterGameTests {
                 "test setup: the beneficiary villager must be constructible and accepted by the level");
 
         Optional<ResidentCapacityAdmission> awaiting = TownConstructionService.requestResidentCapacity(
-                level, region, beneficiary.getUUID(), new TownResidentDemand(1, Map.of()), storage);
+                level, region, beneficiary.getUUID(), new TownResidentDemand(1, Map.of(), false), storage);
         helper.assertTrue(awaiting.isPresent() && awaiting.get().state() == ResidentCapacityAdmission.State.AWAITING_CLAIM,
                 "test setup: the beneficiary's home-only admission must be created and unbound before construction begins - found "
                         + awaiting);

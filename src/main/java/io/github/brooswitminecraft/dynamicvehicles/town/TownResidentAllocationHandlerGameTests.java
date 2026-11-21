@@ -574,7 +574,7 @@ public final class TownResidentAllocationHandlerGameTests {
     public static void townResidentDemandIsImmutable(GameTestHelper helper) {
         Map<VillagerProfession, Integer> mutable = new HashMap<>();
         mutable.put(VillagerProfession.ARMORER, 1);
-        TownResidentDemand demand = new TownResidentDemand(2, mutable);
+        TownResidentDemand demand = new TownResidentDemand(2, mutable, false);
         mutable.clear();
         boolean immutable = false;
         try {
@@ -1663,7 +1663,15 @@ public final class TownResidentAllocationHandlerGameTests {
 
     /** The consumer asks construction only for the resident still missing capacity after normal
      * fixture allocation. In particular, it must not pass the two-resident aggregate shortage to
-     * both residents and manufacture duplicate admissions across a retry/reload. */
+     * both residents and manufacture duplicate admissions across a retry/reload.
+     *
+     * <p>[MINECRAFT-455 unassigned-workplace demand] Both residents are explicitly {@code NITWIT},
+     * never the default {@code NONE} - this test isolates HOME demand specifically (there is no
+     * workstation fixture here at all), and a genuinely unemployed ({@code NONE}) resident would
+     * now ALSO, correctly, contribute its own {@code needsAnyWorkplace} demand even once housed,
+     * which is real new coverage ({@link #multipleUnemployedResidentsEachReceiveAndRetainTheirOwnNeedsAnyWorkplaceAdmission}
+     * exercises it directly) but would defeat this test's own "exactly one admission" assertion for
+     * reasons unrelated to what THIS test checks. */
     @GameTest(template = "settlement_test", batch = "residentAllocationConsumerIsolated")
     public static void allocationConsumerAdmitsOnlyTheStillUnhousedResidentAndReusesItAfterReload(GameTestHelper helper) {
         prepareFlatGround(helper);
@@ -1674,6 +1682,8 @@ public final class TownResidentAllocationHandlerGameTests {
         markTownOwned(helper, storage, helper.absolutePos(bedHead));
         Villager first = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
         Villager second = spawnVillager(helper, anchor(helper).offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+        first.setVillagerData(first.getVillagerData().setProfession(VillagerProfession.NITWIT));
+        second.setVillagerData(second.getVillagerData().setProfession(VillagerProfession.NITWIT));
 
         // EntityType#create + addFreshEntity is synchronous for block access but a freshly spawned
         // GameTest villager does not always appear in the exact production iterable
@@ -1828,6 +1838,180 @@ public final class TownResidentAllocationHandlerGameTests {
                     helper.assertTrue(reloaded.capacityAdmissionFor(helper.getLevel().dimension(), region, resident.getUUID())
                                     .filter(cancelled.get()::equals).isPresent(),
                             "the terminal disposition of the resolved resident admission must survive reload and a later allocation pass");
+                })
+                .thenSucceed();
+    }
+
+    /** [MINECRAFT-455 unassigned-workplace demand] Two genuinely unemployed ({@code NONE})
+     *  residents, with no vacant workstation anywhere in town for {@link
+     *  TownResidentAllocationHandler#allocateWorkplaceIfNeeded} to claim, must EACH receive their
+     *  own {@code needsAnyWorkplace} admission - the town-aggregate boolean ({@link
+     *  TownResidentDemand#needsAnyWorkplace()}) is recomputed fresh every call, never decremented
+     *  like a budget, so it must never be "consumed" by the first resident it is checked against,
+     *  leaving the second with none. A second successive tick must reuse both exact admissions,
+     *  never duplicate or drop either one. */
+    @GameTest(template = "settlement_test", batch = "residentNeedsAnyWorkplaceMultiplicityIsolated")
+    public static void multipleUnemployedResidentsEachReceiveAndRetainTheirOwnNeedsAnyWorkplaceAdmission(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        Villager first = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        Villager second = spawnVillager(helper, anchor(helper).offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+
+        helper.startSequence()
+                .thenIdle(2)
+                .thenExecute(() -> {
+                    helper.assertTrue(helper.getLevel().getEntity(first.getUUID()) == first
+                                    && helper.getLevel().getEntity(second.getUUID()) == second
+                                    && first.isAlive() && second.isAlive()
+                                    && first.getVillagerData().getProfession() == VillagerProfession.NONE
+                                    && second.getVillagerData().getProfession() == VillagerProfession.NONE,
+                            "test setup: both named residents must be alive, UUID-resolvable, and genuinely unemployed");
+
+                    TownResidentAllocationHandler.runResidentAllocationTick(helper.getLevel(), storage);
+                    Optional<ResidentCapacityAdmission> firstAfterOne = storage.capacityAdmissionFor(
+                            helper.getLevel().dimension(), region, first.getUUID());
+                    Optional<ResidentCapacityAdmission> secondAfterOne = storage.capacityAdmissionFor(
+                            helper.getLevel().dimension(), region, second.getUUID());
+                    helper.assertTrue(firstAfterOne.filter(a -> a.state() == ResidentCapacityAdmission.State.AWAITING_CLAIM
+                                    && a.needsAnyWorkplace() && a.requestedWorkplaces().isEmpty()).isPresent(),
+                            "the first still-unemployed resident must receive its own needsAnyWorkplace admission; found " + firstAfterOne);
+                    helper.assertTrue(secondAfterOne.filter(a -> a.state() == ResidentCapacityAdmission.State.AWAITING_CLAIM
+                                    && a.needsAnyWorkplace() && a.requestedWorkplaces().isEmpty()).isPresent(),
+                            "the second still-unemployed resident must ALSO receive its own needsAnyWorkplace admission, never "
+                                    + "starved by the first - the town aggregate boolean must not be consumed like a budget; found "
+                                    + secondAfterOne);
+                    helper.assertTrue(!firstAfterOne.get().equals(secondAfterOne.get())
+                                    && !firstAfterOne.get().beneficiaryId().equals(secondAfterOne.get().beneficiaryId()),
+                            "the two admissions must be genuinely distinct, one per beneficiary");
+
+                    TownResidentAllocationHandler.runResidentAllocationTick(helper.getLevel(), storage);
+                    Optional<ResidentCapacityAdmission> firstAfterTwo = storage.capacityAdmissionFor(
+                            helper.getLevel().dimension(), region, first.getUUID());
+                    Optional<ResidentCapacityAdmission> secondAfterTwo = storage.capacityAdmissionFor(
+                            helper.getLevel().dimension(), region, second.getUUID());
+                    helper.assertTrue(firstAfterTwo.filter(firstAfterOne.get()::equals).isPresent(),
+                            "a second successive tick must reuse the first resident's exact same admission identity, never duplicate it");
+                    helper.assertTrue(secondAfterTwo.filter(secondAfterOne.get()::equals).isPresent(),
+                            "a second successive tick must reuse the second resident's exact same admission identity, never duplicate it");
+
+                    CompoundTag saved = storage.save(new CompoundTag(), helper.getLevel().registryAccess());
+                    ListTag savedAdmissions = saved.getList("ResidentCapacityAdmissions", Tag.TAG_COMPOUND);
+                    helper.assertTrue(savedAdmissions.size() == 2,
+                            "exactly two admissions must exist after two successive ticks - one per unemployed resident, never "
+                                    + "multiplied or collapsed; found " + savedAdmissions.size());
+                })
+                .thenSucceed();
+    }
+
+    /** [MINECRAFT-455 unassigned-workplace demand] A genuinely unemployed resident's own
+     *  needsAnyWorkplace admission must be reconciled (CANCELLED) the moment this SAME existing-
+     *  fixture allocation naturally resolves its need - here, by picking up a real already-built
+     *  vacant workstation - exactly mirroring how a retained-profession admission is already
+     *  retired by {@link #allocationCancelsOnlyAnAwaitingAdmissionWhenExistingFixturesResolveNeed}. */
+    @GameTest(template = "settlement_test", batch = "residentNeedsAnyWorkplaceReconciliationIsolated")
+    public static void anUnemployedResidentsNeedsAnyWorkplaceAdmissionIsCancelledOnceItPicksUpARealVacantWorkstation(
+            GameTestHelper helper) {
+        prepareFlatGround(helper);
+        BlockPos anchor = anchor(helper);
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        BlockPos bed = anchor.offset(BED_HEAD_OFFSET.getX(), BED_HEAD_OFFSET.getY(), BED_HEAD_OFFSET.getZ());
+        placeValidBed(helper, bed);
+        markTownOwned(helper, storage, helper.absolutePos(bed));
+        BlockPos workstation = anchor.offset(WORKSTATION_OFFSET.getX(), WORKSTATION_OFFSET.getY(), WORKSTATION_OFFSET.getZ());
+        Villager resident = spawnVillager(helper, anchor.offset(FIRST_VILLAGER_OFFSET.getX(),
+                FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+
+        helper.startSequence()
+                .thenIdle(2)
+                .thenExecute(() -> {
+                    helper.assertTrue(helper.getLevel().getEntity(resident.getUUID()) == resident && resident.isAlive()
+                                    && resident.getVillagerData().getProfession() == VillagerProfession.NONE,
+                            "test setup: the resident must be alive, UUID-resolvable, and genuinely unemployed");
+
+                    // Tick 1: the real town-owned bed is already there, but no workstation exists yet
+                    // - the resident ends up housed but still with nothing offering it a profession,
+                    // isolating this test to workplace demand once homing is already resolved.
+                    TownResidentAllocationHandler.runResidentAllocationTick(helper.getLevel(), storage);
+                    helper.assertTrue(resident.getBrain().getMemory(MemoryModuleType.HOME).isPresent(),
+                            "test setup: the resident must already be housed by the first tick, isolating this test to workplace demand alone");
+                    Optional<ResidentCapacityAdmission> awaiting = storage.capacityAdmissionFor(
+                            helper.getLevel().dimension(), region, resident.getUUID());
+                    helper.assertTrue(awaiting.filter(a -> a.state() == ResidentCapacityAdmission.State.AWAITING_CLAIM
+                                    && a.needsAnyWorkplace() && a.requestedWorkplaces().isEmpty() && a.requestedHomes() == 0).isPresent(),
+                            "a housed but genuinely unemployed resident with no vacant workstation anywhere must receive a "
+                                    + "home-satisfied, needsAnyWorkplace-only admission; found " + awaiting);
+
+                    // Now a real, town-owned vacant workstation appears.
+                    placeWorkstation(helper, workstation, Blocks.BLAST_FURNACE);
+                    markTownOwned(helper, storage, helper.absolutePos(workstation));
+
+                    // Tick 2: allocateWorkplaceIfNeeded (which runs BEFORE requestConstructionCapacityIfStillNeeded,
+                    // same tick) claims the now-real vacancy directly, resolving demand entirely.
+                    TownResidentAllocationHandler.runResidentAllocationTick(helper.getLevel(), storage);
+                    VillagerProfession assignedProfession = resident.getVillagerData().getProfession();
+                    helper.assertTrue(assignedProfession != VillagerProfession.NONE,
+                            "the resident must pick up the newly-available real vacant workstation and a real profession, found "
+                                    + assignedProfession);
+                    helper.assertTrue(resident.getBrain().getMemory(MemoryModuleType.JOB_SITE)
+                                    .map(gp -> gp.pos().equals(helper.absolutePos(workstation))).orElse(false),
+                            "the resident's own JOB_SITE must point at the real workstation it was just matched to");
+
+                    Optional<ResidentCapacityAdmission> cancelled = storage.capacityAdmissionFor(
+                            helper.getLevel().dimension(), region, resident.getUUID());
+                    helper.assertTrue(cancelled.filter(a -> a.state() == ResidentCapacityAdmission.State.CANCELLED
+                                    && a.beneficiaryId().equals(resident.getUUID())).isPresent(),
+                            "becoming employed through the ordinary existing-fixture path must reconcile (cancel) the now-stale "
+                                    + "needsAnyWorkplace admission, exactly like the retained-profession case already does; found "
+                                    + cancelled);
+                })
+                .thenSucceed();
+    }
+
+    /** [reviewer correction, PR210] A baby villager can never hold a profession in vanilla -
+     *  exactly the same "impossible workplace request" {@code NITWIT} is already excluded for -
+     *  so a baby {@code NONE} resident must never receive a {@code needsAnyWorkplace} admission,
+     *  while an otherwise-identical adult {@code NONE} resident still does. Home demand (not
+     *  profession-gated at all) is unaffected either way. */
+    @GameTest(template = "settlement_test", batch = "residentNeedsAnyWorkplaceBabyExclusionIsolated")
+    public static void aBabyVillagerNeverReceivesANeedsAnyWorkplaceAdmissionButAnAdultStillDoes(GameTestHelper helper) {
+        prepareFlatGround(helper);
+        RegionCoord region = regionOf(helper);
+        TownStorage storage = newStorageWithFoundedTown(helper, region);
+        Villager baby = spawnVillager(helper, anchor(helper).offset(FIRST_VILLAGER_OFFSET.getX(), FIRST_VILLAGER_OFFSET.getY(), FIRST_VILLAGER_OFFSET.getZ()));
+        baby.setBaby(true);
+        Villager adult = spawnVillager(helper, anchor(helper).offset(SECOND_VILLAGER_OFFSET.getX(), SECOND_VILLAGER_OFFSET.getY(), SECOND_VILLAGER_OFFSET.getZ()));
+
+        helper.startSequence()
+                .thenIdle(2)
+                .thenExecute(() -> {
+                    helper.assertTrue(helper.getLevel().getEntity(baby.getUUID()) == baby
+                                    && helper.getLevel().getEntity(adult.getUUID()) == adult
+                                    && baby.isAlive() && adult.isAlive()
+                                    && baby.isBaby() && !adult.isBaby()
+                                    && baby.getVillagerData().getProfession() == VillagerProfession.NONE
+                                    && adult.getVillagerData().getProfession() == VillagerProfession.NONE,
+                            "test setup: both named residents must be alive, UUID-resolvable, genuinely unemployed, and differ only by age");
+
+                    TownResidentAllocationHandler.runResidentAllocationTick(helper.getLevel(), storage);
+
+                    Optional<ResidentCapacityAdmission> babyAdmission = storage.capacityAdmissionFor(
+                            helper.getLevel().dimension(), region, baby.getUUID());
+                    Optional<ResidentCapacityAdmission> adultAdmission = storage.capacityAdmissionFor(
+                            helper.getLevel().dimension(), region, adult.getUUID());
+                    helper.assertTrue(babyAdmission.filter(ResidentCapacityAdmission::needsAnyWorkplace).isEmpty(),
+                            "a baby villager (profession NONE) must never receive a needsAnyWorkplace admission - vanilla "
+                                    + "never lets it hold a profession at all; found " + babyAdmission);
+                    helper.assertTrue(adultAdmission.filter(a -> a.state() == ResidentCapacityAdmission.State.AWAITING_CLAIM
+                                    && a.needsAnyWorkplace() && a.requestedWorkplaces().isEmpty()).isPresent(),
+                            "an otherwise-identical adult villager (profession NONE) must still receive its own "
+                                    + "needsAnyWorkplace admission; found " + adultAdmission);
+
+                    TownResidentDemand aggregateDemand = TownResidentAllocationHandler.unmetDemand(helper.getLevel(), region, storage);
+                    helper.assertTrue(aggregateDemand.needsAnyWorkplace(),
+                            "the town aggregate must still correctly report needsAnyWorkplace demand from the adult, even "
+                                    + "with a baby sharing the same region and profession");
                 })
                 .thenSucceed();
     }
